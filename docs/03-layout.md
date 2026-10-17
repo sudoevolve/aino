@@ -1,0 +1,275 @@
+# 03 · 布局
+
+立即模式没有控件树，"先画完再排版"这条路走不通 —— 只能**边画边切**。
+`Stack` 就是把一个矩形按顺序切开的工具：给一个区域、一条主方向、一个间距，
+然后每画一个元素就切走一块。
+
+```cpp
+aino::Stack col = ui.vbox({24, 24, 400, 300}, 10.0f, 18.0f);   // 纵向 / 间距 10 / 内边距 18
+ui.heading("设置",  col.next(34.0f));
+ui.input(&email,    col.next(36.0f));
+ui.checkbox(&on, "通知", col.next(22.0f));
+ui.button("保存",   col.next(36.0f));
+```
+
+和手写 `yy += 44` 相比，它多做了四件事：
+
+1. `gap` **只在两个元素之间**垫（同 CSS 的 `gap`），所以 `fill()` 拿到的是精确剩余空间；
+2. `next_frac` / `part` 直接做比例与等分，不用自己算 `(pw - 12) * 0.5`；
+3. `next_text` 按文字的**真实像素宽度**定宽 —— 系统字体引擎能直接量宽；
+4. 子布局可嵌套，父子之间继承 `gap`。
+
+它刻意不做：内容自适应**高度**、自动换行、网格、约束求解。
+这些要么需要两趟遍历，要么需要尺寸缓存依赖图，与「单头文件」的目标冲突。
+
+---
+
+## 1. 构造
+
+```cpp
+aino::Stack col = ui.vbox(const Rect& box, float gap = 0.0f, float pad = 0.0f);
+aino::Stack row = ui.hbox(const Rect& box, float gap = 0.0f, float pad = 0.0f);
+```
+
+| 参数 | 说明 |
+|---|---|
+| `box` | 可用区域（逻辑坐标） |
+| `gap` | 元素间距；0 = 紧贴 |
+| `pad` | 内边距，`> 0` 时先对 `box` 做 `inset(pad)`；0 = 不缩进 |
+
+`Stack` 是**纯值语义**：一个 `Rect` + 方向 + 间距 + 一个「上一元素已产出」标志。
+不注册任何状态，所以复制、嵌套、丢弃都没有代价。
+
+---
+
+## 2. 全部方法
+
+| 方法 | 说明 |
+|---|---|
+| `vertical()` | 是否是纵向 |
+| `rest()` | 剩余区域。**已结算待垫的 gap**，即「下一个元素的起始位置」；只读不消费 |
+| `remain()` | 剩余量（纵向返回高度，横向返回宽度） |
+| `valid()` | 区域还有效（`w>0 && h>0`） |
+| `next(size)` | 沿主方向切走 `size`；**超出剩余时收窄，绝不溢出** |
+| `next_frac(f)` | 按**当前剩余空间**的比例切，`0.5` = 一半 |
+| `next_text(s, extra=0, font_size=0, weight=-1)` | 按 `s` 的真实文字宽度 + `extra` 切（横向布局里做「刚好包住文字」的格子） |
+| `fill()` | 吃掉全部剩余空间 |
+| `skip(amount)` | 只推进游标，不产出矩形（做空隙） |
+| `part(i, n)` | **不改游标**，把剩余区等分成 `n` 份、份间留 `gap`，取第 `i` 份（0 基） |
+| `vbox(box, g=-1)` / `hbox(box, g=-1)` | 在指定区域开子布局；`g < 0` 继承当前 `gap` |
+| `vbox(size, g=-1)` / `hbox(size, g=-1)` | **切走一块并立刻**在它里面开子布局（链式写两栏最省事） |
+
+### 2.1 `gap` 的语义细节
+
+```cpp
+Stack c = ui.vbox({0, 0, 100, 200}, 10);
+
+Rect a = c.next(30);   // y=0   h=30     ← 第一个元素不垫 gap
+Rect b = c.next(30);   // y=40  h=30     ← 垫了一个 gap
+Rect r = c.rest();     // y=80  h=120    ← 已结算待垫的 gap，就是下一个元素的起点
+Rect f = c.fill();     // y=80  h=120    ← 拿到精确剩余，不会白少 10
+```
+
+`rest()` 和 `fill()` 都返回「下一个元素的起点」，这也是为什么
+`c.remain()` 在 `next()` 之后立刻是可用的。
+
+### 2.2 超出剩余会被收窄
+
+```cpp
+Stack c = ui.vbox({0, 0, 100, 50}, 0);
+ui.button("A", c.next(40));   // h=40，剩 10
+ui.button("B", c.next(40));   // h=10 ← 被收窄，不会画到 y=50 之外
+ui.button("C", c.next(40));   // h=0  ← 空矩形
+```
+
+这条保证了「窗口缩小后内容不会溢出父容器」—— 内容会被压扁，而不是越界。
+**代价**：压扁的组件看起来会很奇怪。所以要么给窗口设最小尺寸，要么把内容放进
+滚动容器（见第 4 节）。
+
+### 2.3 等分：`part`
+
+```cpp
+Stack c = ui.vbox({0, 0, 400, 100}, 12);
+ui.button("左", c.part(0, 3));   // 宽度已按 3 等分并扣掉 2 个 gap
+ui.button("中", c.part(1, 3));
+ui.button("右", c.part(2, 3));
+```
+
+`part` **不改游标**，所以可以先用它拿几何、再另外决定内容。
+
+### 2.4 嵌套
+
+```cpp
+Stack root = ui.hbox({0, 0, 800, 500}, 0);       // 左右两栏，无间距
+Stack side = root.vbox(200.0f);                  // 切 200 宽，并立刻在里面开子布局
+    ui.nav_item("概览", true, side.next(34.0f));
+    ui.nav_item("设置", false, side.next(34.0f));
+
+Stack main = root.vbox(0.0f);                    // 剩余全部宽度给主区
+    ui.heading("标题", main.next(40.0f));
+```
+
+`root.vbox(200.0f)` 是「切一块 + 在其中开子布局」的合并写法，等价于：
+
+```cpp
+Rect side_box = root.next(200.0f);
+Stack side = root.vbox(side_box);   // 注意：用 root 开，能继承 gap
+```
+
+---
+
+## 3. 宽度自适应，高度不能
+
+`next_text` 能量出文字宽度，是因为系统字体引擎直接给宽度。
+**高度没有对应能力** —— 理由很实际：折行结果依赖宽度，而宽度又要先排版才知道，
+两趟遍历与「边画边切」直接冲突。
+
+所以正文类组件的高度必须**显式给**，但可以**量**：
+
+```cpp
+const float h = ui.text_height(long_text, 380.0f, aino::Style().wrap_text());
+ui.label(long_text, col.next(h), aino::Style().wrap_text());
+```
+
+`text_height` 和 `draw_text` 用的是同一套折行代码（`layout_wrapped_lines`），
+不是估算 —— 给多少就画多少，不会裁掉最后一行。`alert` 同理用 `alert_height`：
+
+```cpp
+const float h = ui.alert_height(title, desc, 380.0f, st);
+ui.alert(title, desc, col.next(h), st);
+```
+
+---
+
+## 4. 滚动
+
+滚动只有一件事：**一个视口 + 一段内容高度**。虚拟列表不是第二个 API，只是
+「内容高度 = 行数 × 行高」的特例 —— 所以两者共用一个函数、一份偏移（按 `box`
+记忆）、一根滚动条、一套裁剪。早先它们各存一份偏移，同一个 `box` 换个写法
+位置就丢了，那是设计缺陷，0.2.1 已经合并。
+
+### 4.1 通用：内容高度自己给
+
+```cpp
+// 作用域即视口：析构自动收尾（弹裁剪、还原布局偏移、把滚动条画在最上面）
+{
+    auto sc = ui.scroll(viewport, content_h);
+    aino::Stack c = ui.vbox({viewport.x, viewport.y, viewport.w, content_h}, 10.0f);
+    for (int i = 0; i < 40; ++i)
+        ui.label("第 " + std::to_string(i + 1) + " 行", c.next(28.0f));
+    // sc.y() 读当前偏移；sc.to(0) 回到顶部；sc.content(h) 事后改内容高度
+}
+```
+
+老写法 `ui.begin_scroll(...) ... ui.end_scroll();` 与上面完全等价
+（只是不返回句柄，收尾交给 `end_scroll()`）。
+
+| 项 | 说明 |
+|---|---|
+| 触发条件 | 滚轮**只有在鼠标位于视口内**时生效 |
+| 步长 | 每格 `44px`（`wheel * 44`） |
+| 滚动条 | 收尾时画在内容之上，3px 宽，`muted_foreground` 45% alpha |
+| `scroll_y()` | 当前偏移；收尾之后也能读（返回最近一次的值） |
+| `scroll_to(off)` | 程序化滚动，clamp 到合法范围；也可以 `sc.to(off)` |
+| 裁剪 | 视口自带 `push_clip`，内容不会画到外面 |
+
+实现方式是把「视口」翻译成布局语义：压一个负向偏移的 group + 一个裁剪区。
+所以内部的 `row()`/`column()`/`vbox()` 自动吃到偏移，**不需要逐个组件改坐标**。
+
+用 `scroll()` 就不存在「忘了 `end_scroll`」这种事；手工配对时漏了，裁剪区会
+一直留着，**后面画的东西全被裁掉**（踩过一次，找了一小时）。
+
+### 4.2 虚拟：固定行高，只画可见行
+
+```cpp
+int drawn = ui.scroll(list_box, 100000, 26.0f, [&](int i, const aino::Rect& row) {
+    ui.label("第 " + std::to_string(i + 1) + " 行", row);
+});
+// drawn ≈ 视口高度 / 行高，与 100000 无关
+```
+
+| 项 | 说明 |
+|---|---|
+| 回调 | **只对可见项调用**；不可见的项连布局都不做 |
+| `row` | 已经算好屏幕位置（含滚动偏移），可直接当组件的 `box` |
+| 返回值 | 本帧实际画了几项 —— 可以直接断言「只有一屏的量」 |
+| 回顶/跳转 | `ui.scroll_to_index(box, 99999, row_h, n)`，只改偏移，不全量遍历 |
+| 偏移记忆 | 和通用滚动**是同一份**：先 `scroll(box, h)` 再 `scroll(box, n, h, cb)`，滚到哪继续在哪 |
+
+**为什么固定行高**：可见区间 = `floor(off/item_h) .. ceil((off+h)/item_h)`，
+是 O(1)。行高不固定就得先累加前 k 项高度才能定位第 k 项，那是另一套
+（前缀和 + 版本号）机制，本库没做 —— 要可变行高就把行高对齐到统一值，
+或者把「前缀和」算在调用方。
+
+实测（`tools/probe/bigfeat_probe.cpp`）：**1000000 项，本帧绘制 10 项**。
+
+### 4.3 只要区间，自己画
+
+```cpp
+int   first, last;
+float off = ui.scroll_visible(box, n, row_h, &first, &last);  // 算区间 + 处理滚轮
+ui.scroll_bar(box, n * row_h);                                 // 自己补滚动条
+float cur = ui.scroll_offset(box);                             // 当前偏移
+```
+
+这三个是「我已经有一套绘制方式，只想借偏移」时用的零件，和 `scroll()` 共用同一份状态。
+
+---
+
+## 5. 裁剪
+
+```cpp
+ui.push_clip(box);
+    // 这里的几何与文字都被限制在 box 内
+ui.pop_clip();
+```
+
+裁剪对**文字也生效**（连同 `clip ∩ box` 一起裁），长英文串不会冲出面板。
+这是踩过的坑：早期只裁几何，长串会横穿整个窗口。
+
+`scroll()` / `begin_scroll` 内部已经做了裁剪，不需要再包一层。
+
+---
+
+## 6. 早期接口（保留兼容）
+
+`row()` / `column()` / `push_padding()` / `pop_padding()` / `begin_group()` / `end_group()`
+是 Stack 之前的接口，仍可用但**新代码建议直接用 Stack**：
+
+| 旧接口 | 等价写法 |
+|---|---|
+| `Rect row(h)` | 在「当前容器」里切一行 |
+| `Rect column(w)` | 切一列 |
+| `push_padding(x, y)` / `pop_padding()` | `Stack(box, gap, pad)` 的内边距 |
+| `begin_group(box)` / `end_group()` | `Stack` 的 `box` 参数 |
+
+`begin_group` 仍然有用：它压入一个「当前容器」，让 `row()`/`column()` 相对它切分。
+但 `Stack` 的显式 `box` 更清晰，不必依赖隐式容器状态。
+
+---
+
+## 7. 完整示例（gallery 的页面骨架）
+
+```cpp
+void composePage(aino::Ui& ui, AppState& s) {
+    const aino::Rect page = {292, 92, ui.width() - 292 - 32, ui.height() - 92 - 24};
+    ui.panel(page);
+
+    aino::Stack col = ui.vbox(page, 14.0f, 24.0f);
+    ui.heading("标题", col.next(34.0f), aino::Style().left());
+    ui.muted_text("说明文字", col.next(20.0f), aino::Style().left());
+    ui.separator(col.next(1.0f));
+
+    // 两栏：左 1/2、右 1/2（part 不改游标，所以先取两份再用 fill 收尾）
+    aino::Rect left  = col.part(0, 2);
+    aino::Rect right = col.part(1, 2);
+    aino::Stack lc = ui.vbox(left,  10.0f);
+    aino::Stack rc = ui.vbox(right, 10.0f);
+    ui.input(&s.email, lc.next(36.0f));
+    ui.toggle(&s.on,   rc.next(26.0f));
+
+    ui.button("保存", col.fill(), aino::Style().primary());   // 吃到底部
+}
+```
+
+这一页**没有一个手算坐标**。`gallery.cpp` 的 6 页全部是这种写法。

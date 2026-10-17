@@ -1,0 +1,17 @@
+# 构建产物
+build/
+*.exe
+*.o
+*.obj
+*.ilk
+*.pdb
+
+# 调试 / 中间文件
+*.ppm
+*.log
+__pycache__/
+
+# 编辑器 / 系统
+.vs/
+.vscode/
+.DS_Store
