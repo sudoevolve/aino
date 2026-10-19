@@ -26,13 +26,76 @@ aino 是**单个头文件**，没有构建系统、没有第三方库、没有�
 
 | 工具链 | 命令 |
 |---|---|
-| MSVC | `cl /std:c++17 /utf-8 /EHsc /O2 main.cpp user32.lib gdi32.lib` |
-| MinGW | `g++ -std=c++17 -O2 main.cpp -o app.exe -lgdi32 -luser32` |
+| MSVC | `cl /std:c++17 /utf-8 /EHsc /O2 /MT main.cpp user32.lib gdi32.lib` |
+| MinGW | `g++ -std=c++17 -O2 -static-libgcc -static-libstdc++ main.cpp -o app.exe -lgdi32 -luser32` |
 | GCC/X11 | `g++ -std=c++17 -O2 main.cpp -lX11` |
 | Clang/macOS | `clang++ -std=c++17 -O2 main.cpp -framework Cocoa -framework CoreText -framework CoreGraphics` |
 
 要求 **C++17**（用到 `std::function`、`std::string_view` 为可选、结构化绑定）
 和 **`std::uint8_t` 等定宽类型**。
+
+### 分发：怎么做到「只有一个 exe，不带 DLL」
+
+这不是 aino 的问题，是**编译器运行时的链接方式**。默认参数下 exe 会动态导入编译器的
+运行库，而它们只活在开发机上（这里是 CLion 自带 MinGW 的 `bin` 目录），目标机一份都没有：
+
+| 工具链 | 默认参数下动态导入 | 目标机典型报错 |
+|---|---|---|
+| MinGW / g++ | `libgcc_s_seh-1.dll`、`libstdc++-6.dll` | 找不到 libstdc++-6.dll |
+| MSVC（默认 `/MD`） | `vcruntime140.dll`、`msvcp140.dll` | 缺少 VCRUNTIME140.dll |
+
+自己确认一眼：MSVC 用 `dumpbin /dependents app.exe`，MinGW 用
+`objdump -p app.exe | findstr "DLL Name"`。**只有 KERNEL32 / USER32 / GDI32 /
+msvcrt 是系统自带的**，其余都得自己解决。
+
+**做法一句话：静态链接运行时。**
+
+| 工具链 | 加什么 | 结果 |
+|---|---|---|
+| MSVC | `/MT`（别和 `/MD` 混用） | 一个 exe，零 DLL |
+| MinGW / g++ | `-static`（配 `-s` 去符号） | 一个 exe，零 DLL |
+
+实测（本仓库 gallery，w64devkit GCC 16.2.0）：
+
+```sh
+g++ -std=c++17 -O2 -mwindows -s -static gallery.cpp -o app.exe -luser32 -lgdi32
+objdump -p app.exe | findstr "DLL Name"
+#   GDI32.dll  KERNEL32.dll  msvcrt.dll  USER32.dll     ← 全是系统自带
+#   493 KB，就这一个文件，拷到任何 Win10/11 上直接双击
+```
+
+**但 `-static` 能不能成功，取决于工具链的静态运行时是否完整。**
+CLion 自带的那套 MinGW 15.2.0 是坏的：`libwinpthread.a` 引用 `__intrinsic_setjmpex`、
+`libmsvcrt.a` 引用 `__ms_vsnprintf`，两个符号它自己都没提供，`-static` 直接链接失败。
+试过 `-lucrt`、`-Wl,--whole-archive`、`--allow-multiple-definition`、`-lmsvcrt-os`
+全都不管用 —— 只能换工具链（w64devkit / MSYS2 / winlibs 都行），或者退回下面这条：
+
+```sh
+# 半静态：甩掉 libgcc/libstdc++，但还会剩一个 libwinpthread-1.dll（72 KB）
+g++ -std=c++17 -O2 -mwindows -s -static-libgcc -static-libstdc++ gallery.cpp -o app.exe -luser32 -lgdi32
+```
+
+为什么甩不掉 winpthread：libstdc++ 的静态库（`guard.o`、`eh_alloc.o`）和 libgcc 的
+`emutls.o`（`thread_local`）都要 `pthread_mutex_lock`。所以「究竟能不能只出一个 exe」，
+答案在工具链手上，不在 aino 的代码里。
+
+`tools/build.py` 已经写好这段逻辑：先试 `-static`，失败才退回半静态并把
+`libwinpthread-1.dll` 拷到 exe 旁边。
+
+**工具链怎么找**：`tools/toolchain.py` 按这个顺序探测，**不需要改系统 PATH**——
+
+1. 环境变量 `AINO_GXX`（想指定编译器就 `set AINO_GXX=D://gcc//bin//g++.exe`）
+2. 常见便携安装位置：`%USERPROFILE%\Downloads\w64devkit\w64devkit\bin`、
+   `C://w64devkit//bin`、`C://msys64//mingw64//bin`、`C://msys2//mingw64//bin`
+3. `PATH` 里的 `g++`（最后兜底）
+
+`tools/build.py` 会按这个顺序**逐个试 `-static`，第一个成功的就用**。所以哪怕
+`PATH` 里排第一的是那套残废 MinGW，只要机器上还有一套健康的，产物就是单文件。
+
+CLion 走的是 CMake，编译器由 Toolchain 决定，不受上面这套探测影响：
+`Settings → Build, Execution, Deployment → Toolchains` 新建一个 MinGW，
+指向 `...\w64devkit\w64devkit\bin` 即可（CMakeLists 那边有配置期探测，
+工具链不支持 `-static` 时会自动退回半静态，不会一构建就报链接错误）。
 
 ### 两个必须注意的编码细节
 

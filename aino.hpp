@@ -36,6 +36,12 @@
 //      GCC  : g++ -std=c++17 demo.cpp -lX11
 //      Clang: clang++ -std=c++17 demo.cpp -framework Cocoa -framework CoreText
 //
+//  分发（不这么做，exe 到别人机器上会报缺一堆 DLL）
+//      MSVC 加 /MT；g++ 加 -static 再 -s，产物就只有一个 exe、零 DLL 依赖。
+//      CLion 自带 MinGW 15.2.0 的静态运行时是坏的（-static 链接失败），
+//      换 w64devkit / MSYS2，或退回 -static-libgcc -static-libstdc++ + 附 DLL。
+//      详见 docs/01-quickstart.md《分发：怎么做到「只有一个 exe，不带 DLL」》
+//
 //  编码（重要，两个独立的问题）
 //    1) 源码读取：本文件注释是中文 UTF-8 且带 BOM。BOM 是为了让 MSVC 不按系统
 //       代码页(GBK)去读源码 —— 否则中文注释的多字节序列会吃掉落单字节，把后面

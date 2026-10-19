@@ -2,7 +2,7 @@
 
 单头文件 C++17 桌面 UI 库 —— 立即模式、零第三方依赖、空闲 0.00% CPU。
 
-一个 `aino.hpp`（7257 行 / 327.5 KiB），一个 exe 497 KiB，只链 `user32` + `gdi32`。
+一个 `aino.hpp`（7263 行 / 327.9 KiB），一个 exe 482 KiB，零 DLL 依赖（只用系统 DLL）。
 
 ## Preview
 
@@ -51,15 +51,19 @@ int main() {
 Build：
 
 ```sh
-# MSVC（/utf-8 必须加，否则中文字面量按 GBK 编）
-cl /std:c++17 /utf-8 /EHsc /O2 main.cpp user32.lib gdi32.lib
+# MSVC（/utf-8 必须加，否则中文字面量按 GBK 编；/MT = 静态链 CRT，目标机不用装运行库）
+cl /std:c++17 /utf-8 /EHsc /O2 /MT main.cpp user32.lib gdi32.lib
 
-# MinGW
-g++ -std=c++17 -O2 -mwindows main.cpp -o app.exe -lgdi32 -luser32
+# MinGW（-static = 静态链运行时，产物一个 DLL 都不带）
+g++ -std=c++17 -O2 -mwindows -s -static main.cpp -o app.exe -lgdi32 -luser32
 
 # GCC / X11
 g++ -std=c++17 -O2 main.cpp -o app -lX11
 ```
+
+`-static` 要求工具链的静态运行时完整：CLion 自带的那套 MinGW 15.2.0 链接不过
+（缺 `__intrinsic_setjmpex`），换 w64devkit / MSYS2 即可；坚持用它就只能退回
+`-static-libgcc -static-libstdc++` 并随附一个 `libwinpthread-1.dll`。MSVC 用 `/MT` 则零 DLL。
 
 Run：
 
