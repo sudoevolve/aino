@@ -50,6 +50,9 @@ using aino::detail::CH_A;
 using aino::detail::CH_B;
 using aino::detail::CH_G;
 using aino::detail::CH_R;
+// 注意：Window **不能**靠 using 引入 —— Xlib 里 Window 是个类型
+// （`typedef XID Window`），和 aino::Window 在全局作用域直接二义。
+// 所以下面一律写 aino::Window。
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -89,7 +92,7 @@ struct Shot {
     }
 };
 
-static bool grab(Window& win, Shot& s) {
+static bool grab(aino::Window& win, Shot& s) {
     Canvas& cv = win.impl->canvas;
     if (!cv.px || cv.w <= 0 || cv.h <= 0 || cv.stride <= 0) return false;
     s.w = cv.w;
@@ -104,7 +107,7 @@ static bool grab(Window& win, Shot& s) {
 
 // 渲染固定帧数后抓图。为什么要跑 2 帧而不是 1 帧：第一帧里 animate_value 之类
 // 的插值状态还是初始值，某些组件会请求下一帧；跑两帧拿到的才是"稳定态"。
-static bool render_scene(Window& win, const std::function<void(Ui&)>& body, Shot& out) {
+static bool render_scene(aino::Window& win, const std::function<void(Ui&)>& body, Shot& out) {
     int n = 0;
     win.run([&](Ui& ui) {
         body(ui);
@@ -269,7 +272,7 @@ static bool scene_clear() {
     const Theme th = Theme::light();
     const Color bg = th.background;
 
-    Window win(200, 150, "aino pixels: clear");
+    aino::Window win(200, 150, "aino pixels: clear");
     if (!win.ok()) { std::printf("[pixels] 窗口创建失败（Linux 上多半是没有 DISPLAY）\n"); return false; }
     win.set_theme(th);
 
@@ -329,7 +332,7 @@ static bool scene_primitives() {
     const Color c_green = Color(30, 180, 90);
     const Color c_yell  = Color(255, 200, 0);
 
-    Window win(420, 380, "aino pixels: primitives");
+    aino::Window win(420, 380, "aino pixels: primitives");
     if (!win.ok()) { std::printf("[pixels] 窗口创建失败\n"); return false; }
     win.set_theme(th);
 
@@ -486,7 +489,7 @@ static bool scene_dark() {
     const Color bg   = th.background;   // 0x09090B
     const Color card = th.card;         // 0x101012
 
-    Window win(300, 220, "aino pixels: dark");
+    aino::Window win(300, 220, "aino pixels: dark");
     if (!win.ok()) { std::printf("[pixels] 窗口创建失败\n"); return false; }
     win.set_theme(th);
 
