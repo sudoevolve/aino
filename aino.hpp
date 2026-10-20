@@ -7508,8 +7508,17 @@ inline void cocoa_feed_input(CocoaState* s) {
 }
 
 // --- NSView 子类的事件回调（C 函数，通过 class_addMethod 注册）---
+// 原来用 setTag:/tag 把 CocoaState* 塞进 view，但 NSView 根本没有 tag 方法
+// （那是 NSControl 的），真机上直接 unrecognized selector 崩掉。改成一张表。
+inline std::unordered_map<void*, CocoaState*>& cocoa_view_map() {
+    static std::unordered_map<void*, CocoaState*> m;
+    return m;
+}
+
 inline CocoaState* cocoa_state_of(id self) {
-    return reinterpret_cast<CocoaState*>(uintptr_t(oc_send<long>(self, sel_registerName("tag"))));
+    auto& m = cocoa_view_map();
+    auto it = m.find(reinterpret_cast<void*>(self));
+    return it == m.end() ? nullptr : it->second;
 }
 
 inline void cocoa_view_draw(id self, SEL, id) {
@@ -7607,7 +7616,7 @@ inline void cocoa_create(Window* self, int w, int h, const std::string& title) {
                             rect, (unsigned long)15, (unsigned long)2, (BOOL)NO);
     id view = oc_send<id>(oc_send<id>(view_cls, sel_registerName("alloc")),
                           sel_registerName("initWithFrame:"), rect);
-    oc_send<void>(view, sel_registerName("setTag:"), (long)uintptr_t(s));
+    cocoa_view_map()[reinterpret_cast<void*>(view)] = s;
     oc_send<void>(view, sel_registerName("setWantsLayer:"), (BOOL)YES);
     oc_send<void>(window, sel_registerName("setContentView:"), view);
 
@@ -7638,6 +7647,7 @@ inline void cocoa_destroy(Window* self) {
     if (!s) return;
     if (s->ctx) { CGContextRelease(s->ctx); s->ctx = nullptr; }
     if (s->pending_image) { CGImageRelease(s->pending_image); s->pending_image = nullptr; }
+    if (s->view) cocoa_view_map().erase(reinterpret_cast<void*>(s->view));
     if (s->window) oc_send<void>(s->window, sel_registerName("close"));
     delete s;
     o->native = nullptr;
