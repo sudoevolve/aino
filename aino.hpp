@@ -7332,9 +7332,12 @@ namespace detail {
 // arm64 上 Apple 不允许直接变参调 objc_msgSend（x86_64 能编但 arm64 直接报
 // "no matching function"），必须先把函数指针转成具体签名再调。统一走这里：
 // 返回类型用手写（id / void / BOOL / long / CGPoint ...），实参类型由模板推导。
-template <class R, class... Args>
-inline R oc_send(id self, SEL op, Args... args) {
-    return reinterpret_cast<R (*)(id, SEL, Args...)>(objc_msgSend)(self, op, args...);
+template <class R, class Recv, class... Args>
+inline R oc_send(Recv recv, SEL op, Args... args) {
+    // 接收者类型也不能写死成 id —— objc_getClass 返回的是 Class，
+    // 这是纯 C++ 编译单元，Class → id 没有隐式转换，所以先 reinterpret_cast。
+    return reinterpret_cast<R (*)(id, SEL, Args...)>(objc_msgSend)(
+        reinterpret_cast<id>(recv), op, args...);
 }
 
 class CoreTextRenderer : public TextRenderer {
@@ -7641,6 +7644,8 @@ inline void cocoa_destroy(Window* self) {
 }
 
 } // namespace detail
+
+using detail::oc_send;   // 下面 Window::xxx 在 aino 命名空间里，别每次都写 detail::
 
 inline bool Window::poll() {
     Window::Impl* o = impl;
