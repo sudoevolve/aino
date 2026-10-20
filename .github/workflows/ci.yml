@@ -59,10 +59,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 装 X11 头文件与虚拟屏
+      - name: 装 X11 头文件、虚拟屏与基础字体
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libx11-dev xvfb
+          # xfonts-base 提供 core X 的 XLFD 位图字体（fixed / 6x13 ...）。
+          # 没有它，XCreateFontSet 在裸 xvfb 上找不到任何字体 → 文字全不显示，
+          # 而"什么都没画"和"画了但被覆盖"在日志里长得一模一样。
+          sudo apt-get install -y --no-install-recommends libx11-dev xvfb xfonts-base
 
       - name: 编译 gallery、冒烟程序与像素断言
         run: |

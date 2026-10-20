@@ -444,8 +444,10 @@ static bool scene_primitives() {
     {
         const int n = count_diff(shot, Rect(20.0f, 170.0f, 120.0f, 24.0f), bg);
         char buf[160];
-        std::snprintf(buf, sizeof buf, "文字框里只有 %d 个墨点 —— 字体大概率没加载上"
-                      "（Linux 上看 XCreateFontSet / fontconfig 是否可用）", n);
+        std::snprintf(buf, sizeof buf, "文字框里只有 %d 个墨点，text_width(\"Hg\") = %.1f —— "
+                      "%s（Linux 上看 core X 字体是否装了：xfonts-base）", n, double(tw_hg),
+                      tw_hg <= 0.0f ? "字体根本没量出来，XCreateFontSet 失败或缺字"
+                                    : "能量出宽度却没画上，问题在绘制路径");
         want_true(n >= 20, "S2 文字画出了墨（字体加载成功）", buf);
     }
     {

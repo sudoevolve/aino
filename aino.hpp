@@ -6876,7 +6876,11 @@ public:
         family_ = family.empty() ? std::string("*") : family;
     }
     void release() override {
-        for (auto& kv : sets_) if (kv.second) XFreeFontSet(dpy_, kv.second);
+        if (dpy_) {
+            for (auto& kv : sets_) if (kv.second) XFreeFontSet(dpy_, kv.second);
+            if (gc1_) { XFreeGC(dpy_, gc1_); gc1_ = nullptr; }
+            if (pm1_) { XFreePixmap(dpy_, pm1_); pm1_ = 0; }
+        }
         sets_.clear();
         dpy_ = nullptr;
     }
@@ -6885,6 +6889,9 @@ public:
         if (!fs) return float(utf8.size()) * size * 0.55f;
         XRectangle ink{}, logical{};
         Xutf8TextExtents(fs, utf8.c_str(), int(utf8.size()), &ink, &logical);
+        // 字体集里缺这个字符时 width 会是 0 —— 直接返回 0 会让上层布局把整段
+        // 文字算成"零宽"，居中/右对齐全错位。退回按字宽估算。
+        if (logical.width <= 0) return float(utf8.size()) * size * 0.55f;
         return float(logical.width);
     }
     float ascent(float size, int) override {
@@ -6902,61 +6909,112 @@ public:
         return float(e->max_logical_extent.height);
         (void)w;
     }
+    // ---------------------------------------------------------------------
+    //  为什么不用 Xutf8DrawString 直接往窗口上画
+    //
+    //  X11 后端和 Windows 的架构不同：几何图形是**在客户端 XImage 里**光栅化的，
+    //  一帧结束才 XPutImage 整块上屏。文字如果再用 Xutf8DrawString 画到窗口上，
+    //  它会先出现在屏幕上，然后被紧接着的 XPutImage 整块盖掉 —— 结果就是
+    //  「Linux 上一个字都看不见」。CI 的像素断言抓到的正是这条：27 条几何断言
+    //  全过，文字框里 0 个墨点。
+    //
+    //  所以文字也必须画进后备缓冲：先画到一张 1bit Pixmap（白字黑底），
+    //  XGetImage 取回来当覆盖率，逐像素混进 Canvas。代价是 X11 上文字没有
+    //  抗锯齿（core X 字体本来就是位图），且每次 draw 一次 XGetImage 往返；
+    //  换来的是"文字真的在缓冲里"，于是任何读缓冲的地方（含像素断言）都看得见。
+    // ---------------------------------------------------------------------
     void draw(Canvas& cv, const std::string& utf8, float x, float y_top,
               float size, int weight, const Color& c, const Rect& clip) override {
+        if (!dpy_ || utf8.empty()) return;
         XFontSet fs = fontset(size);
-        Display* d = cv.platform_dc ? reinterpret_cast<Display*>(cv.platform_dc) : dpy_;
-        if (!fs || !d) return;
-        // Canvas 只有在被 render 时才拿得到 GC 句柄，见 x11_present
-        GC gc = reinterpret_cast<GC>(cv.platform_gc);
-        if (!gc) return;
+        if (!fs) return;
+        ensure_scratch();
+        if (!gc1_ || !pm1_) return;
         (void)weight;
-        XSetForeground(d, gc,
-                       (static_cast<unsigned long>(c.r) << 16) |
-                       (static_cast<unsigned long>(c.g) << 8) |
-                       static_cast<unsigned long>(c.b));
-        float base_y = y_top + ascent(size, weight);
-        if (clip.w >= 0.0f) {
-            // Xlib 没有 save/restore，改完要还原
-            XRectangle old{};
-            int oclip = 0;
-            (void)oclip;
-            XRectangle r;
-            r.x = short(std::max(0.0f, clip.x)); r.y = short(std::max(0.0f, clip.y));
-            r.width = short(std::max(0.0f, clip.w)); r.height = short(std::max(0.0f, clip.h));
-            XSetClipRectangles(d, gc, 0, 0, &r, 1, Unsorted);
-            Xutf8DrawString(d, gc_target(d), fs, gc, int(x), int(base_y), utf8.c_str(), int(utf8.size()));
-            XSetClipMask(d, gc, None);
-            (void)old;
-        } else {
-            Xutf8DrawString(d, gc_target(d), fs, gc, int(x), int(base_y), utf8.c_str(), int(utf8.size()));
+
+        XFontSetExtents* ex = XExtentsOfFontSet(fs);
+        if (!ex) return;
+        const int asc = int(-ex->max_logical_extent.y + 0.5f);
+        int desc = int(ex->max_logical_extent.height + 0.5f) - asc;
+        if (asc <= 0) return;
+        if (desc <= 0) desc = asc / 3;
+
+        XRectangle ink{}, logical{};
+        Xutf8TextExtents(fs, utf8.c_str(), int(utf8.size()), &ink, &logical);
+        const int tw = int(logical.width) + 2;
+        const int th = asc + desc + 2;
+        if (tw <= 2) return;
+
+        Pixmap pm = XCreatePixmap(dpy_, pm1_, unsigned(tw), unsigned(th), 1);
+        if (!pm) return;
+        XSetForeground(dpy_, gc1_, 0);
+        XFillRectangle(dpy_, pm, gc1_, 0, 0, unsigned(tw), unsigned(th));
+        XSetForeground(dpy_, gc1_, 1);
+        Xutf8DrawString(dpy_, pm, fs, gc1_, 1, 1 + asc, utf8.c_str(), int(utf8.size()));
+
+        XImage* im = XGetImage(dpy_, pm, 0, 0, unsigned(tw), unsigned(th), AllPlanes, ZPixmap);
+        if (im) {
+            // 1bit Pixmap 里 bit=1 的像素就是字形覆盖到的地方（core X 字体没有
+            // 灰度，所以覆盖率只有 0/1 —— 这也是"X11 文字没有抗锯齿"的由来）。
+            const int ox = int(x) - 1;      // pixmap 第 0 列对应 x-1
+            const int oy = int(y_top) - 1;
+            const bool use_clip = clip.w >= 0.0f;
+            for (int gy = 0; gy < th; ++gy) {
+                const int py = oy + gy;
+                if (use_clip && (float(py) < clip.y || float(py) >= clip.bottom())) continue;
+                for (int gx = 0; gx < tw; ++gx) {
+                    if (!XGetPixel(im, gx, gy)) continue;
+                    const int px = ox + gx;
+                    if (use_clip && (float(px) < clip.x || float(px) >= clip.right())) continue;
+                    cv.blend(px, py, c, 1.0f);   // 内部还会再过一遍 Canvas 自己的裁剪区
+                }
+            }
+            XDestroyImage(im);
         }
+        XFreePixmap(dpy_, pm);
     }
 
-    void set_drawable(Display* d, Drawable target, GC gc) { dpy_ = d; target_ = target; gc_ = gc; }
+    void set_drawable(Display* d, Drawable target, GC) {
+        dpy_ = d;
+        target_ = target;      // 只用来给 Pixmap 定位屏幕，不再直接往上画
+    }
 
 private:
-    Drawable gc_target(Display*) const { return target_; }
+    // GC 的深度必须与被画 drawable 的深度一致，所以往 1bit Pixmap 上画不能复用
+    // 窗口那份 24bit 的 GC。这里常驻一个 1×1 的 1bit pixmap 专门用来建那个 GC。
+    void ensure_scratch() {
+        if (gc1_ || !dpy_ || !target_) return;
+        pm1_ = XCreatePixmap(dpy_, target_, 1, 1, 1);
+        if (pm1_) gc1_ = XCreateGC(dpy_, pm1_, 0, nullptr);
+    }
+
     XFontSet fontset(float size) {
-        int q = int(size * 2.0f + 0.5f);
+        const int q = int(size * 2.0f + 0.5f);
         auto it = sets_.find(q);
         if (it != sets_.end()) return it->second;
         if (!dpy_) return nullptr;
-        char pattern[256];
-        snprintf(pattern, sizeof(pattern), "-*-%s-*-*-*-*-*-%d-*-*-*-*-*-*",
-                 family_.c_str(), int(size + 0.5f));
+        const int px = int(size + 0.5f);
+        // XCreateFontSet 收的是**逗号分隔的候选列表**（不是单个名字）：
+        // 先按族名匹配，再退到"同像素尺寸的任意字体"，最后退到"任意字体"。
+        // 裸 Xvfb / 精简容器里中文字体基本不存在，所以最终一定落到 * 上，
+        // 至少保证拉丁字符画得出来。
+        char cand[512];
+        snprintf(cand, sizeof(cand),
+                 "-*-%s-*-*-*-*-*-%d-*-*-*-*-*-*,-*-*-*-*-*-*-*-%d-*-*-*-*-*-*,*",
+                 family_.c_str(), px, px);
         char** missing = nullptr;
         int nmissing = 0;
         char* def = nullptr;
-        XFontSet fs = XCreateFontSet(dpy_, pattern, &missing, &nmissing, &def);
+        XFontSet fs = XCreateFontSet(dpy_, cand, &missing, &nmissing, &def);
         if (missing) XFreeStringList(missing);
-        if (!fs) fs = XCreateFontSet(dpy_, "-*-*-*-*-*-*-*-*-*-*-*-*-*-*", &missing, &nmissing, &def);
+        if (def) XFree(def);
         sets_[q] = fs;
         return fs;
     }
     Display* dpy_ = nullptr;
-    Drawable target_ = 0;
-    GC gc_ = nullptr;
+    Drawable target_ = 0;      // 窗口：只用来定位屏幕
+    Pixmap pm1_ = 0;           // 1×1 depth 1 —— 只为建下面那个 GC
+    GC gc1_ = nullptr;         // depth 1 的 GC
     std::string family_;
     std::unordered_map<int, XFontSet> sets_;
 };
