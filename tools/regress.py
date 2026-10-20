@@ -1,4 +1,4 @@
-"""aino 一键回归：数值探针 + 光栅化等价性 + 像素断言 + 空闲 CPU。
+﻿"""aino 一键回归：数值探针 + 光栅化等价性 + 像素断言 + 空闲 CPU。
 
 用法：
   python regress.py            # 全跑
@@ -68,6 +68,29 @@ def run_probe(name, want_tail):
     ok = want_tail in out
     tail = [l for l in out.strip().splitlines() if l.strip()][-1:] or [""]
     return ok, tail[0][:90]
+
+
+def ci_pixels():
+    """跨平台像素断言（tools/ci_pixels.cpp）。
+
+    它是**唯一**能在 Linux / macOS 上跑的像素断言：直接从后备缓冲读像素，
+    不依赖 PrintWindow。本地跑它的意义是"改光栅化时先在 Windows 上红给你看"，
+    而不是等 CI 三平台各红一遍。
+    """
+    r = run([PY, os.path.join(HERE, "cl_one.py"),
+             os.path.join(ROOT, "tools", "ci_pixels.cpp"),
+             os.path.join(ROOT, "build", "ci_pixels.exe"),
+             "/utf-8", "user32.lib", "gdi32.lib", "msimg32.lib"], cwd=ROOT)
+    if r.returncode != 0:
+        return False, "编译失败: " + ((r.stdout or "") + (r.stderr or ""))[-160:]
+    exe = os.path.join(ROOT, "build", "ci_pixels.exe")
+    r = run([exe], cwd=ROOT)
+    out = (r.stdout or "") + (r.stderr or "")
+    fails = [l.strip() for l in out.splitlines() if "[ FAIL ]" in l]
+    if fails:
+        return False, fails[0][:150]
+    tail = [l for l in out.splitlines() if l.startswith("===")][-1:] or [""]
+    return r.returncode == 0, tail[0][:60]
 
 
 def verify_gallery(extra=()):
@@ -244,6 +267,10 @@ def main():
     print("\n== 窗口像素断言（PrintWindow，逻辑坐标，含换页与主题）==")
     ok, d = verify_gallery()
     step("gallery 6 页 + 浅深主题", ok, d)
+
+    print("\n== 跨平台像素断言（直接读后备缓冲，CI 三平台同跑）==")
+    ok, d = ci_pixels()
+    step("图元像素断言（29 项 / 无字形依赖）", ok, d)
 
     print("\n== 空闲 CPU（aino 的核心承诺）==")
     # 默认落在「概览」页：这一页没有任何常驻动画，必须真正空闲 —— 这是硬指标。
