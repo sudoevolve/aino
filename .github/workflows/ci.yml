@@ -1,0 +1,71 @@
+name: CI
+
+# 三平台各跑一遍「能编译 + 能开窗跑满 20 帧」。
+#
+# 现状（写这个文件的当天）：
+#   · Windows —— 唯一真正验证过的后端，这个 job 必须绿；
+#   · Linux   —— X11 后端结构完整但从没在 Linux 上编过，红了就照日志修；
+#   · macOS   —— Cocoa 后端还在补，允许失败（continue-on-error），
+#                等它真绿了就把 job 上那行 continue-on-error 删掉，变成硬门槛。
+#
+# 不跑像素断言：verify_gallery.py 依赖 PrintWindow + 真实桌面，CI 里不稳。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Windows / MSVC
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 导入 MSVC 环境
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: 编译 gallery 与冒烟程序
+        run: |
+          cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT examples\gallery.cpp user32.lib gdi32.lib /Fe:gallery.exe
+          cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT tools\ci_smoke.cpp user32.lib gdi32.lib /Fe:ci_smoke.exe
+
+      - name: 冒烟（跑满 20 帧）
+        run: .\ci_smoke.exe
+
+  linux:
+    name: Linux / X11
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 X11 头文件与虚拟屏
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libx11-dev xvfb
+
+      - name: 编译 gallery 与冒烟程序
+        run: |
+          g++ -std=c++17 -O2 -Wall examples/gallery.cpp -o gallery -lX11
+          g++ -std=c++17 -O2 -Wall tools/ci_smoke.cpp -o ci_smoke -lX11
+
+      - name: 冒烟（xvfb 虚拟屏，跑满 20 帧）
+        run: xvfb-run -a ./ci_smoke
+
+  macos:
+    name: macOS / Cocoa（实验性，允许失败）
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 编译 gallery 与冒烟程序
+        run: |
+          clang++ -std=c++17 -O2 examples/gallery.cpp -o gallery \
+            -framework Cocoa -framework CoreText -framework CoreGraphics -framework ApplicationServices
+          clang++ -std=c++17 -O2 tools/ci_smoke.cpp -o ci_smoke \
+            -framework Cocoa -framework CoreText -framework CoreGraphics -framework ApplicationServices
+
+      - name: 冒烟（runner 没有交互桌面，能开窗就算过）
+        run: ./ci_smoke

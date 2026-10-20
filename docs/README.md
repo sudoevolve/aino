@@ -162,7 +162,7 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 |---|---|---|
 | Windows | GDI（`BitBlt` + 自绘 AA 光栅化） | **已验证**（Win11 / MSVC 与 MinGW g++） |
 | Linux | X11 + XFontSet 系统字体 | 代码完整，**从未在 Linux 上编译或运行过** |
-| macOS | Cocoa / CoreText / CoreGraphics | **当前编译不过**（`CocoaState` 缺 4 个字段） |
+| macOS | Cocoa / CoreText / CoreGraphics | 补齐 4 个缺失字段后**仍未验证**，以 CI 结果为准 |
 
 两个非 Windows 后端的具体状态（静读源码得出，不是猜的）：
 
@@ -171,9 +171,12 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
   `XSetClipMask(..., None)` 收尾，外层裁剪不会还原，嵌套裁剪会漏；
   ② 全程没有 `setlocale(LC_ALL, "")`，`XCreateFontSet` 在部分环境会直接失败（文字全不显示）。
 - **macOS / Cocoa**：`cocoa_present` 写 `s->pending_image`、`cocoa_feed_input` 读
-  `s->key_ctrl / key_shift / key_alt`，但 `CocoaState` 里这四个字段都没声明 —— 
-  也就是**现在这份代码在 macOS 上一个 `.cpp` 都编不过**。补字段是机械活，补完还要验证
-  事件回调和 `drawRect:` 上屏路径，没真机就只能算「写了一半」。
+  `s->key_ctrl / key_shift / key_alt`，而 `CocoaState` 里原本这四个字段都没声明 ——
+  曾经在 macOS 上一个 `.cpp` 都编不过（2026-10-20 已补上）。但补字段只是让它「不再挡编译」，
+  剩下的坑还得靠真机：① 修饰键**没有任何代码往里写值**，`ctrl_of()` 在 macOS 上恒为 false；
+  ② `objc_msgSend` 有多处直接变参调用，arm64 上必须先转成函数指针再调；
+  ③ 剪贴板两个方法直接返回空串；④ `poll()` 里事件循环 mode 传的是 `kCFRunLoopDefaultMode`
+  而不是 `NSDefaultRunLoopMode`。所以「跨 mac」目前只能算写了一半。
 
 链接依赖：Windows 只需 `user32` + `gdi32`；Linux 只需 `-lX11`；
 macOS 只需 `-framework Cocoa -framework CoreText -framework CoreGraphics`。

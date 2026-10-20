@@ -81,7 +81,11 @@ cmake --build build --config Release
 
 `win.run(frame_cb)` 就是完整主循环：没事件时阻塞在 `WaitMessage`，帧回调只在需要重绘时被调用 —— 窗口静止时 0 帧 / 0.00% CPU，不是低帧率空转。
 
-平台状态：**Windows 后端已实测**；Linux(X11) 与 macOS(Cocoa) 后端代码都在里面，但**没有在真机上编译/运行验证过**，其中 macOS 分支目前还编译不过 —— 具体到什么程度见 [docs/README.md 的平台支持表](docs/README.md#平台支持)。
+平台状态：**Windows 后端已实测**；Linux(X11) 与 macOS(Cocoa) 后端代码都在里面，但**没有在真机上编译/运行验证过**，其中 macOS 分支刚补齐四个缺失字段、能走到哪一步以 CI 为准 —— 具体到什么程度见 [docs/README.md 的平台支持表](docs/README.md#平台支持)。
+
+CI（`.github/workflows/ci.yml`）在 Windows / Linux(xvfb) / macOS 三个 runner 上各跑一遍
+「编译 + 冒烟」：Windows 是硬门槛，macOS 目前标了 `continue-on-error` —— 它红不红
+就是那个后端还剩多少活的直接读数。
 
 ## Project Layout
 
@@ -93,6 +97,7 @@ examples/zoom_demo.cpp 缩放按钮（Transform 的最小用法）
 docs/                文档，01 快速开始 … 11 动画与变换
 screenshots/         预览截图
 tools/               构建、像素断言与回归脚本
+tools/ci_smoke.cpp   CI 冒烟程序：开窗 + 跑满 20 帧就退（三平台共用）
 tools/probe/         数值/像素探针（回归用，不参与发布）
 CMakeLists.txt       构建 gallery 与两个 demo
 ```

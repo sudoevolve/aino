@@ -7427,6 +7427,13 @@ struct CocoaState {
     std::string text_in;
     bool  key_down[KEY_COUNT] = {};
     bool  key_pressed[KEY_COUNT] = {};
+    // 修饰键锁存：和 Windows / X11 后端保持同一套语义（Input::ctrl_of 靠它）。
+    // ⚠ 目前 macOS 侧还没有代码往里写值 —— 能编译，但 ctrl_of() 恒为 false。
+    bool  key_ctrl[KEY_COUNT]  = {};
+    bool  key_shift[KEY_COUNT] = {};
+    bool  key_alt[KEY_COUNT]   = {};
+    // present 生成、drawRect: 取用的图像。换新的一帧前要把旧的放掉，否则逐帧泄漏。
+    CGImageRef pending_image = nullptr;
 };
 
 inline void cocoa_create_backbuffer(CocoaState* s, int w, int h) {
@@ -7455,6 +7462,7 @@ inline void cocoa_present(CocoaState* s) {
     if (!image) return;
     objc_msgSend(s->view, sel_registerName("setNeedsDisplay:"), (BOOL)YES);
     // 真正的绘制发生在 NSView 的 drawRect: 回调里，这里把图像先收起来
+    if (s->pending_image) CGImageRelease(s->pending_image);
     s->pending_image = image;
     objc_msgSend(s->view, sel_registerName("display"));
 }
@@ -7612,6 +7620,7 @@ inline void cocoa_destroy(Window* self) {
     CocoaState* s = reinterpret_cast<CocoaState*>(o->native);
     if (!s) return;
     if (s->ctx) { CGContextRelease(s->ctx); s->ctx = nullptr; }
+    if (s->pending_image) { CGImageRelease(s->pending_image); s->pending_image = nullptr; }
     if (s->window) objc_msgSend(s->window, sel_registerName("close"));
     delete s;
     o->native = nullptr;
