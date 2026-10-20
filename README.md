@@ -81,11 +81,10 @@ cmake --build build --config Release
 
 `win.run(frame_cb)` 就是完整主循环：没事件时阻塞在 `WaitMessage`，帧回调只在需要重绘时被调用 —— 窗口静止时 0 帧 / 0.00% CPU，不是低帧率空转。
 
-平台状态：**Windows 后端已实测**；Linux(X11) 与 macOS(Cocoa) 后端代码都在里面，但**没有在真机上编译/运行验证过**，其中 macOS 分支刚补齐四个缺失字段、能走到哪一步以 CI 为准 —— 具体到什么程度见 [docs/README.md 的平台支持表](docs/README.md#平台支持)。
+平台状态：三个后端都能编译、都能开窗画帧 —— Windows 有像素断言与 CPU 回归，Linux(xvfb) 与 macOS 由 CI 冒烟验证（建窗 + 跑满 20 帧 + 正常退出）。但 Linux/macOS 的**像素、输入、IME、剪贴板**都还没人核对过，细节见 [docs/README.md 的平台支持表](docs/README.md#平台支持)。
 
 CI（`.github/workflows/ci.yml`）在 Windows / Linux(xvfb) / macOS 三个 runner 上各跑一遍
-「编译 + 冒烟」：Windows 是硬门槛，macOS 目前标了 `continue-on-error` —— 它红不红
-就是那个后端还剩多少活的直接读数。
+「编译 + 冒烟」，三个都是硬门槛：任何一个后端退步，CI 直接红。
 
 ## Project Layout
 

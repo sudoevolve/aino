@@ -161,22 +161,32 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 | 平台 | 后端 | 状态 |
 |---|---|---|
 | Windows | GDI（`BitBlt` + 自绘 AA 光栅化） | **已验证**（Win11 / MSVC 与 MinGW g++） |
-| Linux | X11 + XFontSet 系统字体 | 代码完整，**从未在 Linux 上编译或运行过** |
-| macOS | Cocoa / CoreText / CoreGraphics | 补齐 4 个缺失字段后**仍未验证**，以 CI 结果为准 |
+| Linux | X11 + XFontSet 系统字体 | **CI 通过**：编译 + xvfb 下开窗跑满 20 帧 |
+| macOS | Cocoa / CoreText / CoreGraphics | **CI 通过**：编译 + 开窗跑满 20 帧（arm64 runner） |
 
-两个非 Windows 后端的具体状态（静读源码得出，不是猜的）：
+上表不是「能编译就算过」—— `tools/ci_smoke.cpp` 必须真的建出窗口、跑满 20 帧、
+自己退出（退出码 2/3 分别代表开不了窗 / 帧没跑满）。
+
+**仍然没有验证的东西**（CI 跑不出来，得真机点一点）：像素与文字排版是否正确、
+鼠标键盘与组合键、IME 组字、剪贴板、窗口缩放与 DPI。所以准确说法是
+「三平台都能编译、都能开窗画帧」，不是「三平台表现一致」。
+
+两个非 Windows 后端的具体状态（静读源码 + CI 实跑）：
 
 - **Linux / X11**：后端结构是完整的（Display / XImage 后备缓冲 / XIM 输入 / XFontSet 画字）。
   已发现的问题：① `X11TextRenderer::draw` 里改完 `XSetClipRectangles` 后用
   `XSetClipMask(..., None)` 收尾，外层裁剪不会还原，嵌套裁剪会漏；
   ② 全程没有 `setlocale(LC_ALL, "")`，`XCreateFontSet` 在部分环境会直接失败（文字全不显示）。
-- **macOS / Cocoa**：`cocoa_present` 写 `s->pending_image`、`cocoa_feed_input` 读
-  `s->key_ctrl / key_shift / key_alt`，而 `CocoaState` 里原本这四个字段都没声明 ——
-  曾经在 macOS 上一个 `.cpp` 都编不过（2026-10-20 已补上）。但补字段只是让它「不再挡编译」，
-  剩下的坑还得靠真机：① 修饰键**没有任何代码往里写值**，`ctrl_of()` 在 macOS 上恒为 false；
-  ② `objc_msgSend` 有多处直接变参调用，arm64 上必须先转成函数指针再调；
-  ③ 剪贴板两个方法直接返回空串；④ `poll()` 里事件循环 mode 传的是 `kCFRunLoopDefaultMode`
-  而不是 `NSDefaultRunLoopMode`。所以「跨 mac」目前只能算写了一半。
+  CI 只证明「跑得起来」，这两个问题它看不见。
+- **macOS / Cocoa**：曾经一个 `.cpp` 都编不过；2026-10-20 用 CI 当编译器，一路修到能跑：
+  ① `CocoaState` 补上 `pending_image` / `key_ctrl` / `key_shift` / `key_alt` 四个字段；
+  ② arm64 不允许裸调 `objc_msgSend`，加 `oc_send<R>(...)` 模板统一转型；
+  ③ 系统头的 QuickDraw `::Rect` / `::Style` 与 `aino::Rect` 撞名，包含前用宏改名；
+  ④ 原来用 `setTag:` 存 `CocoaState*` —— NSView 没有这个 selector，真机一进来就抛异常，
+  改成 `view → state` 的哈希表；⑤ runloop mode 名字从 `kCFRunLoopDefaultMode` 改回
+  `NSDefaultRunLoopMode`。
+  仍缺：修饰键没有任何代码写值（`ctrl_of()` 在 macOS 上恒为 false）、剪贴板两个方法
+  直接返回空串、`drawRect:` 的像素正确性没人核对过。
 
 链接依赖：Windows 只需 `user32` + `gdi32`；Linux 只需 `-lX11`；
 macOS 只需 `-framework Cocoa -framework CoreText -framework CoreGraphics`。

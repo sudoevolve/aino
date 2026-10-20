@@ -1,12 +1,12 @@
-name: CI
+﻿name: CI
 
 # 三平台各跑一遍「能编译 + 能开窗跑满 20 帧」。
 #
 # 现状（写这个文件的当天）：
 #   · Windows —— 唯一真正验证过的后端，这个 job 必须绿；
 #   · Linux   —— X11 后端结构完整但从没在 Linux 上编过，红了就照日志修；
-#   · macOS   —— Cocoa 后端还在补，允许失败（continue-on-error），
-#                等它真绿了就把 job 上那行 continue-on-error 删掉，变成硬门槛。
+#   · macOS   —— Cocoa 后端 2026-10-20 头一次跑绿（编译 + 开窗跑满 20 帧），
+#                已经从「允许失败」提成硬门槛。
 #
 # 不跑像素断言：verify_gallery.py 依赖 PrintWindow + 真实桌面，CI 里不稳。
 
@@ -54,9 +54,8 @@ jobs:
         run: xvfb-run -a ./ci_smoke
 
   macos:
-    name: macOS / Cocoa（实验性，允许失败）
+    name: macOS / Cocoa
     runs-on: macos-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
