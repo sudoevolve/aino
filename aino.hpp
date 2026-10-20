@@ -7329,6 +7329,14 @@ inline std::string Window::clipboard() const { return std::string(); }
 
 namespace detail {
 
+// arm64 上 Apple 不允许直接变参调 objc_msgSend（x86_64 能编但 arm64 直接报
+// "no matching function"），必须先把函数指针转成具体签名再调。统一走这里：
+// 返回类型用手写（id / void / BOOL / long / CGPoint ...），实参类型由模板推导。
+template <class R, class... Args>
+inline R oc_send(id self, SEL op, Args... args) {
+    return reinterpret_cast<R (*)(id, SEL, Args...)>(objc_msgSend)(self, op, args...);
+}
+
 class CoreTextRenderer : public TextRenderer {
 public:
     void init(float, const std::string& family, const std::string&) override {
@@ -7466,11 +7474,11 @@ inline void cocoa_present(CocoaState* s) {
     if (!s->ctx || !s->view) return;
     CGImageRef image = CGBitmapContextCreateImage(s->ctx);
     if (!image) return;
-    objc_msgSend(s->view, sel_registerName("setNeedsDisplay:"), (BOOL)YES);
+    oc_send<void>(s->view, sel_registerName("setNeedsDisplay:"), (BOOL)YES);
     // 真正的绘制发生在 NSView 的 drawRect: 回调里，这里把图像先收起来
     if (s->pending_image) CGImageRelease(s->pending_image);
     s->pending_image = image;
-    objc_msgSend(s->view, sel_registerName("display"));
+    oc_send<void>(s->view, sel_registerName("display"));
 }
 
 inline void cocoa_feed_input(CocoaState* s) {
@@ -7498,14 +7506,14 @@ inline void cocoa_feed_input(CocoaState* s) {
 
 // --- NSView 子类的事件回调（C 函数，通过 class_addMethod 注册）---
 inline CocoaState* cocoa_state_of(id self) {
-    return reinterpret_cast<CocoaState*>(uintptr_t(objc_msgSend(self, sel_registerName("tag"))));
+    return reinterpret_cast<CocoaState*>(uintptr_t(oc_send<long>(self, sel_registerName("tag"))));
 }
 
 inline void cocoa_view_draw(id self, SEL, id) {
     CocoaState* s = cocoa_state_of(self);
     if (!s) return;
-    id ctx_obj = objc_msgSend(objc_getClass("NSGraphicsContext"), sel_registerName("currentContext"));
-    CGContextRef cg = reinterpret_cast<CGContextRef>(objc_msgSend(ctx_obj, sel_registerName("CGContext")));
+    id ctx_obj = oc_send<id>(objc_getClass("NSGraphicsContext"), sel_registerName("currentContext"));
+    CGContextRef cg = oc_send<CGContextRef>(ctx_obj, sel_registerName("CGContext"));
     if (!cg || !s->ctx) return;
     CGImageRef img = CGBitmapContextCreateImage(s->ctx);
     if (!img) return;
@@ -7522,7 +7530,7 @@ inline void cocoa_view_draw(id self, SEL, id) {
 inline void cocoa_mouse_moved(id self, SEL, id ev) {
     CocoaState* s = cocoa_state_of(self);
     if (!s) return;
-    CGPoint p = reinterpret_cast<CGPoint(*)(id, SEL)>(objc_msgSend)(ev, sel_registerName("locationInWindow"));
+    CGPoint p = oc_send<CGPoint>(ev, sel_registerName("locationInWindow"));
     s->mx = float(p.x);
     s->my = float(s->ph) - float(p.y);
     s->owner->need_frame = true;
@@ -7548,7 +7556,7 @@ inline void cocoa_mouse_up(id self, SEL, id ev) {
 inline void cocoa_key_down(id self, SEL, id ev) {
     CocoaState* s = cocoa_state_of(self);
     if (!s) return;
-    CFStringRef chars = reinterpret_cast<CFStringRef(*)(id, SEL)>(objc_msgSend)(ev, sel_registerName("characters"));
+    CFStringRef chars = oc_send<CFStringRef>(ev, sel_registerName("characters"));
     if (chars) {
         CFIndex n = CFStringGetLength(chars);
         char buf[8];
@@ -7575,8 +7583,8 @@ inline void cocoa_create(Window* self, int w, int h, const std::string& title) {
     o->native = s;
 
     Class app_cls = objc_getClass("NSApplication");
-    id app = objc_msgSend(app_cls, sel_registerName("sharedApplication"));
-    objc_msgSend(app, sel_registerName("setActivationPolicy:"), (long)0);
+    id app = oc_send<id>(app_cls, sel_registerName("sharedApplication"));
+    oc_send<void>(app, sel_registerName("setActivationPolicy:"), (long)0);
 
     // 动态注册 NSView 子类
     static Class view_cls = nullptr;
@@ -7591,21 +7599,21 @@ inline void cocoa_create(Window* self, int w, int h, const std::string& title) {
     }
 
     CGRect rect = CGRectMake(0, 0, CGFloat(w), CGFloat(h));
-    id window = objc_msgSend(objc_msgSend(objc_getClass("NSWindow"), sel_registerName("alloc")),
-                             sel_registerName("initWithContentRect:styleMask:backing:defer:"),
-                             rect, (unsigned long)15, (unsigned long)2, (BOOL)NO);
-    id view = objc_msgSend(objc_msgSend(view_cls, sel_registerName("alloc")),
-                           sel_registerName("initWithFrame:"), rect);
-    objc_msgSend(view, sel_registerName("setTag:"), (long)uintptr_t(s));
-    objc_msgSend(view, sel_registerName("setWantsLayer:"), (BOOL)YES);
-    objc_msgSend(window, sel_registerName("setContentView:"), view);
+    id window = oc_send<id>(oc_send<id>(objc_getClass("NSWindow"), sel_registerName("alloc")),
+                            sel_registerName("initWithContentRect:styleMask:backing:defer:"),
+                            rect, (unsigned long)15, (unsigned long)2, (BOOL)NO);
+    id view = oc_send<id>(oc_send<id>(view_cls, sel_registerName("alloc")),
+                          sel_registerName("initWithFrame:"), rect);
+    oc_send<void>(view, sel_registerName("setTag:"), (long)uintptr_t(s));
+    oc_send<void>(view, sel_registerName("setWantsLayer:"), (BOOL)YES);
+    oc_send<void>(window, sel_registerName("setContentView:"), view);
 
     CFStringRef t = CFStringCreateWithCString(kCFAllocatorDefault, title.c_str(), kCFStringEncodingUTF8);
-    objc_msgSend(window, sel_registerName("setTitle:"), t);
+    oc_send<void>(window, sel_registerName("setTitle:"), t);
     CFRelease(t);
 
-    objc_msgSend(window, sel_registerName("makeKeyAndOrderFront:"), (id)nullptr);
-    objc_msgSend(app, sel_registerName("activateIgnoringOtherApps:"), (BOOL)YES);
+    oc_send<void>(window, sel_registerName("makeKeyAndOrderFront:"), (id)nullptr);
+    oc_send<void>(app, sel_registerName("activateIgnoringOtherApps:"), (BOOL)YES);
 
     s->window = window;
     s->view = view;
@@ -7627,7 +7635,7 @@ inline void cocoa_destroy(Window* self) {
     if (!s) return;
     if (s->ctx) { CGContextRelease(s->ctx); s->ctx = nullptr; }
     if (s->pending_image) { CGImageRelease(s->pending_image); s->pending_image = nullptr; }
-    if (s->window) objc_msgSend(s->window, sel_registerName("close"));
+    if (s->window) oc_send<void>(s->window, sel_registerName("close"));
     delete s;
     o->native = nullptr;
 }
@@ -7639,18 +7647,21 @@ inline bool Window::poll() {
     detail::CocoaState* s = reinterpret_cast<detail::CocoaState*>(o->native);
     if (!s) return false;
     // 抽干一次 runloop
-    id distant = objc_msgSend(objc_msgSend(objc_getClass("NSDate"), sel_registerName("alloc")),
-                              sel_registerName("init"));
+    id distant = oc_send<id>(oc_send<id>(objc_getClass("NSDate"), sel_registerName("alloc")),
+                             sel_registerName("init"));
     while (true) {
-        id ev = objc_msgSend(objc_msgSend(objc_getClass("NSApplication"), sel_registerName("sharedApplication")),
-                             sel_registerName("nextEventMatchingMask:untilDate:inMode:dequeue:"),
-                             (unsigned long)-1, distant, objc_msgSend(objc_getClass("NSString"), sel_registerName("stringWithUTF8String:"), "kCFRunLoopDefaultMode"), (BOOL)YES);
+        id ev = oc_send<id>(oc_send<id>(objc_getClass("NSApplication"), sel_registerName("sharedApplication")),
+                            sel_registerName("nextEventMatchingMask:untilDate:inMode:dequeue:"),
+                            (unsigned long)-1, distant,
+                            oc_send<id>(objc_getClass("NSString"), sel_registerName("stringWithUTF8String:"),
+                                        "NSDefaultRunLoopMode"),   // 不是 kCFRunLoopDefaultMode
+                            (BOOL)YES);
         if (!ev) break;
-        objc_msgSend(objc_msgSend(objc_getClass("NSApplication"), sel_registerName("sharedApplication")),
-                     sel_registerName("sendEvent:"), ev);
+        oc_send<void>(oc_send<id>(objc_getClass("NSApplication"), sel_registerName("sharedApplication")),
+                      sel_registerName("sendEvent:"), ev);
     }
-    objc_msgSend(objc_msgSend(objc_getClass("NSApplication"), sel_registerName("sharedApplication")),
-                 sel_registerName("updateWindows"));
+    oc_send<void>(oc_send<id>(objc_getClass("NSApplication"), sel_registerName("sharedApplication")),
+                  sel_registerName("updateWindows"));
     return o->running;
 }
 
@@ -7710,12 +7721,13 @@ inline void Window::set_title(const std::string& title) {
     detail::CocoaState* s = reinterpret_cast<detail::CocoaState*>(impl->native);
     if (!s || !s->window) return;
     CFStringRef t = CFStringCreateWithCString(kCFAllocatorDefault, title.c_str(), kCFStringEncodingUTF8);
-    objc_msgSend(s->window, sel_registerName("setTitle:"), t);
+    oc_send<void>(s->window, sel_registerName("setTitle:"), t);
     CFRelease(t);
 }
 inline void Window::set_size(int w, int h) {
     detail::CocoaState* s = reinterpret_cast<detail::CocoaState*>(impl->native);
-    if (s && s->window) objc_msgSend(s->window, sel_registerName("setContentSize:"), CGSizeMake(CGFloat(w), CGFloat(h)));
+    if (s && s->window)
+        oc_send<void>(s->window, sel_registerName("setContentSize:"), CGSizeMake(CGFloat(w), CGFloat(h)));
 }
 inline void Window::close() { if (impl) impl->running = false; }
 inline void Window::set_clipboard(const std::string&) {}
