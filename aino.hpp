@@ -7019,34 +7019,78 @@ private:
         if (pm1_) gc1_ = XCreateGC(dpy_, pm1_, 0, nullptr);
     }
 
+    // 字体集里挑出来的那个字体到底"像不像字"？
+    //
+    // 踩过的坑：候选列表最后一项写 "*" 时，X 会挑到第一个能匹配的字体 ——
+    // 在 Ubuntu runner 上它挑到的是 1px 宽的点阵字体，"Hg" 量出来 2px 宽、
+    // 画上去只有 3 个墨点。所以挑完必须**体检**：拿固定字符串量一下宽度，
+    // 明显偏小就换下一个候选。
+    bool plausible(XFontSet fs, float size) {
+        if (!fs) return false;
+        XRectangle ink{}, logical{};
+        Xutf8TextExtents(fs, "Hg", 2, &ink, &logical);
+        // 正常字体 "Hg" 在 size 号字下大约是 1.1~1.3 倍 size 宽；
+        // 门槛取 0.7 倍，只用来挡"退化字体"，不参与排版判断。
+        return float(logical.width) >= size * 0.7f;
+    }
+
     XFontSet fontset(float size) {
         const int q = int(size * 2.0f + 0.5f);
         auto it = sets_.find(q);
         if (it != sets_.end()) return it->second;
         if (!dpy_) return nullptr;
         const int px = int(size + 0.5f);
-        // XCreateFontSet 收的是**逗号分隔的候选列表**（不是单个名字）：
-        // 先按族名匹配，再退到"同像素尺寸的任意字体"，最后退到"任意字体"。
-        // 裸 Xvfb / 精简容器里中文字体基本不存在，所以最终一定落到 * 上，
-        // 至少保证拉丁字符画得出来。
-        char cand[512];
-        snprintf(cand, sizeof(cand),
-                 "-*-%s-*-*-*-*-*-%d-*-*-*-*-*-*,-*-*-*-*-*-*-*-%d-*-*-*-*-*-*,*",
-                 family_.c_str(), px, px);
-        char** missing = nullptr;
-        int nmissing = 0;
-        char* def = nullptr;
-        x11_trace("fontset(%d) ask: %s", px, cand);
-        XFontSet fs = XCreateFontSet(dpy_, cand, &missing, &nmissing, &def);
-        x11_trace("fontset(%d) -> %p missing=%p n=%d def=%p", px, (void*)fs, (void*)missing, nmissing, (void*)def);
-        if (missing) { x11_trace("  XFreeStringList"); XFreeStringList(missing); }
-        // def 故意不 free：Xlib 文档说要用 XFree 释放，但不同版本的实现里它
-        // 未必是 malloc 出来的（CI 上就是 free(): invalid pointer）。
-        // 代价是每个字号泄漏一个短字符串，量级可以忽略。
-        (void)def;
-        sets_[q] = fs;
-        x11_trace("fontset(%d) done", px);
-        return fs;
+
+        // XLFD 有 14 个字段：
+        //   foundry family weight slant setwidth addstyle pixel_size point_size
+        //   res_x res_y spacing avg_width registry encoding
+        // 第 7 个才是像素尺寸（以前把 %d 写在第 8 个，那一位是"点数"，
+        // 大部分 core 字体的这个字段是 0，于是永远匹配不上 → 一路落到 "*"）。
+        const char* tmpl[] = {
+            "-*-%s-*-*-*-*-%d-*-*-*-*-*-*-*",     // 指定族名 + 像素尺寸
+            "-*-*-*-*-*-*-%d-*-*-*-*-*-*-*",      // 任意族名 + 像素尺寸
+            "fixed",                              // 经典别名，几乎所有 X 都有
+            "-*-fixed-*-*-*-*-%d-*-*-*-*-*-*-*",  // 指定 fixed 族
+            "*",                                  // 兜底
+        };
+
+        XFontSet first = nullptr;
+        XFontSet chosen = nullptr;
+        for (const char* t : tmpl) {
+            char cand[512];
+            snprintf(cand, sizeof(cand), t, family_.c_str(), px);
+            char** missing = nullptr;
+            int nmissing = 0;
+            char* def = nullptr;
+            if (x11_trace_on()) x11_trace("fontset(%d) try: %s", px, cand);
+            XFontSet fs = XCreateFontSet(dpy_, cand, &missing, &nmissing, &def);
+            if (missing) XFreeStringList(missing);
+            // def 故意不 free：Xlib 文档说要用 XFree 释放，但不同版本的实现里
+            // 它未必是 malloc 出来的（CI 上就报 free(): invalid pointer）。
+            // 代价是每个字号泄漏一个短字符串，量级可以忽略。
+            (void)def;
+            if (!fs) {
+                if (x11_trace_on()) x11_trace("fontset(%d)   -> null", px);
+                continue;
+            }
+            const bool ok = plausible(fs, size);
+            if (x11_trace_on()) {
+                XRectangle ink2{}, lg2{};
+                Xutf8TextExtents(fs, "Hg", 2, &ink2, &lg2);
+                x11_trace("fontset(%d)   -> %p width(Hg)=%d plausible=%d", px, (void*)fs,
+                          int(lg2.width), ok ? 1 : 0);
+            }
+            if (!first) first = fs;
+            if (ok) { chosen = fs; break; }
+            // 不合适的立刻释放，免得攒一堆字体集
+            if (fs) XFreeFontSet(dpy_, fs);
+        }
+        // 所有候选都不像字 —— 留第一个能用的（总比完全没有强），
+        // 但 measure() 那边还会再兜一层估算，避免布局塌成零宽。
+        if (!chosen) chosen = first;
+        sets_[q] = chosen;
+        if (x11_trace_on()) x11_trace("fontset(%d) done -> %p", px, (void*)chosen);
+        return chosen;
     }
     Display* dpy_ = nullptr;
     Drawable target_ = 0;      // 窗口：只用来定位屏幕
