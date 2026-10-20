@@ -1,4 +1,4 @@
-# aino 文档
+﻿# aino 文档
 
 > 单头文件跨平台 C++ GUI 库 —— 立即模式、零第三方依赖、事件驱动、空闲 0% CPU。
 
@@ -161,8 +161,19 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 | 平台 | 后端 | 状态 |
 |---|---|---|
 | Windows | GDI（`BitBlt` + 自绘 AA 光栅化） | **已验证**（Win11 / MSVC 与 MinGW g++） |
-| Linux | X11 + 系统字体 | 代码已写，**未验证** |
-| macOS | Cocoa / CoreText / CoreGraphics | 代码已写，**未验证** |
+| Linux | X11 + XFontSet 系统字体 | 代码完整，**从未在 Linux 上编译或运行过** |
+| macOS | Cocoa / CoreText / CoreGraphics | **当前编译不过**（`CocoaState` 缺 4 个字段） |
+
+两个非 Windows 后端的具体状态（静读源码得出，不是猜的）：
+
+- **Linux / X11**：后端结构是完整的（Display / XImage 后备缓冲 / XIM 输入 / XFontSet 画字）。
+  已发现的问题：① `X11TextRenderer::draw` 里改完 `XSetClipRectangles` 后用
+  `XSetClipMask(..., None)` 收尾，外层裁剪不会还原，嵌套裁剪会漏；
+  ② 全程没有 `setlocale(LC_ALL, "")`，`XCreateFontSet` 在部分环境会直接失败（文字全不显示）。
+- **macOS / Cocoa**：`cocoa_present` 写 `s->pending_image`、`cocoa_feed_input` 读
+  `s->key_ctrl / key_shift / key_alt`，但 `CocoaState` 里这四个字段都没声明 —— 
+  也就是**现在这份代码在 macOS 上一个 `.cpp` 都编不过**。补字段是机械活，补完还要验证
+  事件回调和 `drawRect:` 上屏路径，没真机就只能算「写了一半」。
 
 链接依赖：Windows 只需 `user32` + `gdi32`；Linux 只需 `-lX11`；
 macOS 只需 `-framework Cocoa -framework CoreText -framework CoreGraphics`。

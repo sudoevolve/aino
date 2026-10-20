@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.15)
+﻿cmake_minimum_required(VERSION 3.15)
 project(aino_demo LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -91,3 +91,5 @@ endfunction()
 # 组件总览 components.cpp）—— 分页比三个 exe 更好用：同一套 AppState 跨页共享，
 # 而且浮层能天然盖在所有页之上，不会出现"三个窗口各画各的"。
 aino_add_demo(aino_gallery examples/gallery.cpp)
+aino_add_demo(aino_sidebar_demo examples/sidebar_demo.cpp)
+aino_add_demo(aino_zoom_demo examples/zoom_demo.cpp)

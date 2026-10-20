@@ -60,7 +60,7 @@
 
 #define AINO_VERSION_MAJOR 0
 #define AINO_VERSION_MINOR 2
-#define AINO_VERSION_PATCH 7
+#define AINO_VERSION_PATCH 9
 #define AINO_VERSION "0.2.9"
 
 #include <cstdint>

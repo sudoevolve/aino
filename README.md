@@ -81,18 +81,20 @@ cmake --build build --config Release
 
 `win.run(frame_cb)` 就是完整主循环：没事件时阻塞在 `WaitMessage`，帧回调只在需要重绘时被调用 —— 窗口静止时 0 帧 / 0.00% CPU，不是低帧率空转。
 
-平台状态：Windows 后端已验证；X11 与 macOS 后端代码已写但**未验证**。
+平台状态：**Windows 后端已实测**；Linux(X11) 与 macOS(Cocoa) 后端代码都在里面，但**没有在真机上编译/运行验证过**，其中 macOS 分支目前还编译不过 —— 具体到什么程度见 [docs/README.md 的平台支持表](docs/README.md#平台支持)。
 
 ## Project Layout
 
 ```text
 aino.hpp             库本体，单文件（全部实现都在这一个头里）
-examples/gallery.cpp 唯一示例：6 页组件画廊（按域分页）
+examples/gallery.cpp 6 页组件画廊（功能最全，也是像素回归的靶子）
+examples/sidebar_demo.cpp 侧边栏切换（100 行，新手第一个 demo）
+examples/zoom_demo.cpp 缩放按钮（Transform 的最小用法）
 docs/                文档，01 快速开始 … 11 动画与变换
 screenshots/         预览截图
 tools/               构建、像素断言与回归脚本
 tools/probe/         数值/像素探针（回归用，不参与发布）
-CMakeLists.txt       构建 gallery
+CMakeLists.txt       构建 gallery 与两个 demo
 ```
 
 改完跑一遍 `python tools/regress.py`（编译 + 探针 + 像素断言 + 空闲 CPU），全绿再提交。

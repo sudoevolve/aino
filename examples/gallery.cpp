@@ -139,7 +139,8 @@ void composeSidebar(Ui& ui, AppState& s, const Rect& sb) {
     Stack c = ui.vbox(sb, 3.0f, 20.0f);
     ui.heading("aino", c.next(32.0f), Style().font(22.0f).left());
     c.skip(2.0f);
-    ui.muted_text("单头文件 GUI 库 · 0.2.1", c.next(18.0f), Style().font(11.5f).left());
+    ui.muted_text(std::string("单头文件 GUI 库 · ") + AINO_VERSION,
+                 c.next(18.0f), Style().font(11.5f).left());
     c.skip(10.0f);
     ui.separator(c.next(1.0f));
     c.skip(10.0f);
