@@ -907,6 +907,7 @@ namespace icons {
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdarg>
 #include <algorithm>
 #include <unordered_map>
 
@@ -6869,20 +6870,46 @@ inline std::string Window::clipboard() const {
 #if defined(AINO_PLATFORM_X11)
 namespace detail {
 
+// 诊断开关：AINO_X11_TRACE=1 时把 X11 文本路径的每一步打到 stderr。
+// 为什么必须 fflush：崩溃（free(): invalid pointer / abort）时管道里的 stderr
+// 是**全缓冲**的，不 flush 的话进程一死，前面打的字全部丢失 —— 日志里只剩
+// 一行 glibc 的报错，看不出死在哪一步。
+inline bool x11_trace_on() {
+    static const bool on = (std::getenv("AINO_X11_TRACE") != nullptr);
+    return on;
+}
+inline void x11_trace(const char* fmt, ...) {
+    if (!x11_trace_on()) return;
+    va_list ap;
+    va_start(ap, fmt);
+    std::fputs("[x11] ", stderr);
+    std::vfprintf(stderr, fmt, ap);
+    std::fputc('\n', stderr);
+    std::fflush(stderr);
+    va_end(ap);
+}
+
 class X11TextRenderer : public TextRenderer {
 public:
     void init(float, const std::string& family, const std::string&) override {
         dpy_ = XOpenDisplay(nullptr);
         family_ = family.empty() ? std::string("*") : family;
+        x11_trace("text init: dpy=%p family=%s", (void*)dpy_, family_.c_str());
     }
     void release() override {
+        x11_trace("text release: dpy=%p sets=%zu", (void*)dpy_, sets_.size());
         if (dpy_) {
-            for (auto& kv : sets_) if (kv.second) XFreeFontSet(dpy_, kv.second);
-            if (gc1_) { XFreeGC(dpy_, gc1_); gc1_ = nullptr; }
-            if (pm1_) { XFreePixmap(dpy_, pm1_); pm1_ = 0; }
+            for (auto& kv : sets_) {
+                if (!kv.second) continue;
+                x11_trace("  free fontset size*2=%d fs=%p", kv.first, (void*)kv.second);
+                XFreeFontSet(dpy_, kv.second);
+            }
+            if (gc1_) { x11_trace("  free gc1"); XFreeGC(dpy_, gc1_); gc1_ = nullptr; }
+            if (pm1_) { x11_trace("  free pm1"); XFreePixmap(dpy_, pm1_); pm1_ = 0; }
         }
         sets_.clear();
         dpy_ = nullptr;
+        x11_trace("text release done");
     }
     float measure(const std::string& utf8, float size, int) override {
         XFontSet fs = fontset(size);
@@ -6943,6 +6970,7 @@ public:
         Xutf8TextExtents(fs, utf8.c_str(), int(utf8.size()), &ink, &logical);
         const int tw = int(logical.width) + 2;
         const int th = asc + desc + 2;
+        x11_trace("draw \"%s\" tw=%d th=%d asc=%d desc=%d", utf8.c_str(), tw, th, asc, desc);
         if (tw <= 2) return;
 
         Pixmap pm = XCreatePixmap(dpy_, pm1_, unsigned(tw), unsigned(th), 1);
@@ -6953,6 +6981,7 @@ public:
         Xutf8DrawString(dpy_, pm, fs, gc1_, 1, 1 + asc, utf8.c_str(), int(utf8.size()));
 
         XImage* im = XGetImage(dpy_, pm, 0, 0, unsigned(tw), unsigned(th), AllPlanes, ZPixmap);
+        x11_trace("  XGetImage -> %p depth=%d bpp=%d", (void*)im, im ? im->depth : -1, im ? im->bits_per_pixel : -1);
         if (im) {
             // 1bit Pixmap 里 bit=1 的像素就是字形覆盖到的地方（core X 字体没有
             // 灰度，所以覆盖率只有 0/1 —— 这也是"X11 文字没有抗锯齿"的由来）。
@@ -6969,8 +6998,10 @@ public:
                     cv.blend(px, py, c, 1.0f);   // 内部还会再过一遍 Canvas 自己的裁剪区
                 }
             }
+            x11_trace("  XDestroyImage");
             XDestroyImage(im);
         }
+        x11_trace("  XFreePixmap");
         XFreePixmap(dpy_, pm);
     }
 
@@ -7005,10 +7036,16 @@ private:
         char** missing = nullptr;
         int nmissing = 0;
         char* def = nullptr;
+        x11_trace("fontset(%d) ask: %s", px, cand);
         XFontSet fs = XCreateFontSet(dpy_, cand, &missing, &nmissing, &def);
-        if (missing) XFreeStringList(missing);
-        if (def) XFree(def);
+        x11_trace("fontset(%d) -> %p missing=%p n=%d def=%p", px, (void*)fs, (void*)missing, nmissing, (void*)def);
+        if (missing) { x11_trace("  XFreeStringList"); XFreeStringList(missing); }
+        // def 故意不 free：Xlib 文档说要用 XFree 释放，但不同版本的实现里它
+        // 未必是 malloc 出来的（CI 上就是 free(): invalid pointer）。
+        // 代价是每个字号泄漏一个短字符串，量级可以忽略。
+        (void)def;
         sets_[q] = fs;
+        x11_trace("fontset(%d) done", px);
         return fs;
     }
     Display* dpy_ = nullptr;
@@ -7272,6 +7309,10 @@ inline void x11_destroy(Window* self) {
     Window::Impl* o = self->impl;
     X11State* s = reinterpret_cast<X11State*>(o->native);
     if (!s) return;
+    // 文本渲染器持有的 XFontSet / GC / Pixmap 必须在 XCloseDisplay **之前**释放：
+    // 它们都是这个连接上的资源。放后面的话 release() 会拿着一个已关闭的 Display
+    // 去 XFreeFontSet —— 本机测不出来，CI 上就是 free(): invalid pointer。
+    if (o->text) o->text->release();
     if (s->img) { s->img->data = nullptr; XDestroyImage(s->img); s->img = nullptr; }
     if (s->ic) { XDestroyIC(s->ic); s->ic = nullptr; }
     if (s->im) { XCloseIM(s->im); s->im = nullptr; }
