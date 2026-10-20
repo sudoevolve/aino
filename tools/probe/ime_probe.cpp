@@ -1,4 +1,4 @@
-// IME 定位探针。
+﻿// IME 定位探针。
 //
 // 要证明两件事，缺一不可：
 //   ① 底层：win_set_ime_pos() 写进去的组合窗/候选窗位置，系统能原样读回来
@@ -66,9 +66,9 @@ int main() {
             cadf.ptCurrentPos.y = -1;
             const BOOL got_d = ImmGetCandidateWindow(himc, 0, &cadf);
             char d2[160];
-            std::snprintf(d2, sizeof(d2), "(候选窗读回 %ld,%ld，应 = 下沿+4)",
+            std::snprintf(d2, sizeof(d2), "(候选窗读回 %ld,%ld，应 = 下沿+2)",
                           long(cadf.ptCurrentPos.x), long(cadf.ptCurrentPos.y));
-            check(got_d && cadf.ptCurrentPos.x == 123 && cadf.ptCurrentPos.y == 80,
+            check(got_d && cadf.ptCurrentPos.x == 123 && cadf.ptCurrentPos.y == 78,
                   "候选窗位置设进去能原样读回", d2);
 
             ImmReleaseContext(h, himc);

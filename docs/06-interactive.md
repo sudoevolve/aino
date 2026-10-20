@@ -218,6 +218,121 @@ bool input(std::string* value, const Rect& box, const Style& st = Style());
 
 鼠标：单击定位、**按住拖动选**、**双击选词**、**三击全选**、`Shift+单击` 扩选。
 
+### 输入法：拼音要画在框里
+
+只处理 `WM_CHAR` 的话，**上屏前**那串拼音归系统那个悬空组合窗管，输入框里一个
+字都看不见 —— 看起来就像"输入法没预填充"。后端现在会取组字串：
+
+| 消息 | 处理 |
+|---|---|
+| `WM_IME_STARTCOMPOSITION` | 清空草稿 |
+| `WM_IME_COMPOSITION`（非 `GCS_RESULTSTR`） | **无条件**去问 `ImmGetCompositionString(GCS_COMPSTR)`，存进 `ui.impl->ime_comp`（UTF-8） |
+| `WM_IME_COMPOSITION` + `GCS_RESULTSTR` | 清空草稿（正文字符随后由 `WM_CHAR` 送到） |
+| `WM_IME_ENDCOMPOSITION` | 清空草稿 |
+| `WM_IME_SETCONTEXT` | 去掉 `ISC_SHOWUICOMPOSITIONWINDOW` |
+
+`input` / `textarea` 在聚焦时把 `ime_comp` 画在 caret 处，**主色 + 下划线**，
+caret 顺延到它后面；正文一个字都不动（预编辑不是 value 的一部分，写进去就等于
+"打拼音时正文被污染"）。水平滚动也把草稿宽度算进去了，长拼音不会被框边切掉。
+
+**组字期间 placeholder 必须让位**：空输入框 + hint 太常见，如果画草稿的条件里带
+`!show_placeholder`，空框里永远看不到拼音。现在 `composing` 只看
+`focused && !ime_comp.empty()`，hint 反过来让位。
+
+**上屏字符只走一条路**：库里绝不自己去插 `GCS_RESULTSTR` —— 两条路都插就是双份。
+
+#### 三个坑（都真机复现过，别踩回去）
+
+1. **不要用 `w & GCS_COMPSTR` 当门槛。** 微软拼音是 TSF 输入法，经 CUAS 转发过来的
+   `WM_IME_COMPOSITION` 里 `w = 0x73`（只有 `GCS_COMPREADSTR/READATTR/COMPATTR/COMPCLAUSE`），
+   **没有** `GCS_COMPSTR (0x08)` 这一位，可字确实在。按那一位判断 → 草稿永远是空 →
+   用户看到的就是"拼音根本没有预先填充输入框"。
+2. **不要信 lParam 里那个 `HIMC`。** 同一条消息里 lParam 是 `0x1b8` 这类句柄，
+   `ImmGetCompositionString` 对它返回 0 字节；换成 `ImmGetContext(hwnd)` 拿到的上下文
+   立刻能读到。所以先 `get_ctx(hwnd)`，拿不到才回退到 lParam。
+3. **系统那个浮动组合窗要压，而且不能只靠 `SW_HIDE`。** 微软拼音会在**本进程**里
+   开一个类名为 `MSCTFIME Composition` 的顶层窗口画组字串 —— 你画一份、它画一份，
+   就是"框里框外各一份"。后端按 `pid + 类名`（`EnumWindows`）压它，候选窗（另一个
+   类 `MSCTFIME UI`）不动。触发点有两条：
+   - `WM_IME_COMPOSITION` / `WM_IME_STARTCOMPOSITION` 处理完之后（**必须在
+     `DefWindowProc` 之后**，系统是在那里面把窗口显示出来的）；
+   - 组字期间的 20 ms **线程计时器**。为什么非要计时器：帧不是一直在跑的 ——
+     光标闪烁有 38% 的相位不请求重绘，循环会阻塞在 `WaitMessage` 里，这时输入法
+     再把窗口亮出来就没人压了（多行 textarea 上实测会漏）。
+     另外线程计时器的 id 是**系统分配**的，`SetTimer(nullptr, 0xA1, …)` 返回的
+     不是 `0xA1`（本机是 0x63CD），`WM_TIMER` 的 `wParam` 也是那个值 —— 存返回值去比，
+     拿常量比则一次都命中不了。
+4. **`SW_HIDE` 会闪。** `SW_HIDE` 只是改状态，输入法每次更新组字都会再 `ShowWindow`
+   一次 —— 我们 20 ms 后才压回去，于是"亮一下、藏起来、再亮一下"。实测（8 ms 一帧的
+   抓图对比）：**空闲**时它是干净的（240 帧零变化），**每个按键**都会在框下露出一次
+   `11x15` 的小白块；连打就是用户报的"一直闪烁"。
+   做法是把它变成**全透明的分层窗**：`WS_EX_LAYERED | WS_EX_TRANSPARENT |
+   WS_EX_NOACTIVATE` + `SetLayeredWindowAttributes(alpha = 0)`。之后窗口**照旧是
+   可见的**（输入法不会再来抢显示，也就没有拉锯），只是画不出任何像素；对不可见的
+   窗口也提前上好，等它下次亮出来时已经透明。`SW_HIDE` 保留当兜底（老主题/输入法
+   重置样式的情况下分层可能没生效）。
+
+5. **候选窗挂在组合窗底下，`ImmSetCandidateWindow` 说了不算。** 这是"候选窗离输入框
+   那么远"的真正原因。我们原本报的是 `(caret_x, 输入框底边)`，测量（`ime_real_check`
+   抓图 + `ime_align_probe` 打三方矩形）显示：组合窗有 22px 高，正好占在框底与候选窗
+   之间，候选窗顶边比框底低 **23px**。而报给 `ImmSetCandidateWindow` 的
+   `(caret, 底边+4)` 被输入法完全忽略。
+   解法：让组合窗整**上移它自己的高度**，把它的**底边**落在框底上 ——
+   `cf.ptCurrentPos.y = bottom - ghost_h`（`ghost_h` 从组合窗 `GetWindowRect` 实时量，
+   存在 `Win32State::ime_ghost_h`）。组合窗已经被涂成全透明，挪上去没有任何视觉副作用，
+   候选窗则跟着贴到框底（实测间距 23px → 约 4px）。候选窗请求位置顺手从 `+4` 收到 `+2`。
+
+什么时候**不**压：没有任何输入框接管 IME 时（`Ui::Impl::ime_owner` 为 false，
+它由 `ime_pos` 回调每帧置位）。焦点在按钮上打拼音时，系统那份是唯一可见的反馈，
+压掉等于把字吞了。
+
+平台诚实度：**Windows 已验证**（`ime_comp_probe` 走真实消息路径，含 CUAS 那条怪消息；
+`ime_real_check` 用 `SendInput` 真打拼音 + 抓屏核对过内联草稿和浮动窗；
+`ime_flicker_probe` 按帧抓图对比，确认打字过程中框下不再露出小白块；
+`ime_align_probe` / `ime_gallery_drive` 在真实 gallery 里量出候选窗与输入框的间距）；
+X11 / macOS 后端没有组字串，`ime_comp` 恒为空，行为回到"只有系统组合窗"。
+
+> 量"候选窗离输入框多远"时**别用坐标推**：gallery 窗口在 150% DPI 下客户区是
+> 1680x1080 物理像素，而 `GetClientRect` / `ClientToScreen` 从**没开 DPI 感知**的工具
+> 进程里调用拿到的是虚拟化坐标，一乘一除就能差出两百像素（这个坑踩了半小时）。
+> 抓一张屏、按已知输入框矩形做锚点换算，或者直接读被查进程自己算出来的值。
+
+> `ime_flicker_probe` / `ime_real_check` **不进 regress**：它们会抢键盘、切中文输入法、
+> 还要人看着屏幕，只能手动跑（`tools/cl_one.py` 编译，命令行见文件头）。
+
+### 剪贴板：谁来绑回调
+
+`Ctrl+C / X / V` 不直接调 Win32，而是走 `Ui::Impl` 上两个 `std::function`：
+
+| 回调 | 签名 | 作用 |
+|---|---|---|
+| `set_clipboard` | `void(const std::string&)` | 把选中的 UTF-8 文本写进系统剪贴板 |
+| `get_clipboard` | `std::string()` | 读回系统剪贴板（UTF-8） |
+
+用 `Window` 时**不用管** —— 构造函数里已经绑好了（Windows 写 `CF_UNICODETEXT`，
+读时先试 `CF_UNICODETEXT`，没有再退到 `CF_TEXT` 并转 UTF-8；剪贴板被别的进程
+占着时重试几次，不会"时灵时不灵"）。只持有 `Ui` 的场合（离屏渲染、单元测试、
+把组件画进自己的窗口）才需要自己绑：
+
+```cpp
+ui.impl->set_clipboard = [](const std::string& s) { my_clipboard = s; };
+ui.impl->get_clipboard = [] { return my_clipboard; };
+```
+
+**没绑也不许崩**（以前就是这里漏了判空：调一个空的 `std::function` 抛
+`std::bad_function_call`，没人接，`std::terminate` —— 按一下 `Ctrl+C` 程序直接
+退出）。降级行为是有意设计的：
+
+| 情况 | 行为 |
+|---|---|
+| `set_clipboard` 未绑 | `Ctrl+C` 不动作；`Ctrl+X` **不删内容**（剪了却没地方放 = 丢数据） |
+| `get_clipboard` 未绑 | `Ctrl+V` 不动作 |
+| 无选区按 `Ctrl+C` | 不碰剪贴板（不会把用户刚复制的东西清空） |
+| 剪贴板为空按 `Ctrl+V` | 不删选区（先删后插空 = 白删） |
+
+平台诚实度：**Windows 已验证**；X11 后端只声明剪贴板所有权、读取返回空串；
+macOS 后端是空实现。跨平台生产使用前请自行补全。
+
 ### 撤销 / 重做
 
 `input` 和 `textarea` 各自维护一份撤销栈（按控件 id 记忆，最多 200 步）：

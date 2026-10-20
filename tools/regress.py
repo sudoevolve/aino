@@ -206,6 +206,20 @@ PROBES = (
     # 会开窗并连续 SetWindowPos 改尺寸（不碰鼠标），直接读后备缓冲的像素。
     # 钉的是"缩放变黑"的根因：改尺寸后缓冲必须是按新尺寸渲染过的画面。
     ("resize_probe",     "通过 19 项，失败 0 项",           "缩放后缓冲一致（无黑帧/无拉伸）"),
+    # 离屏驱动 impl->input，验证 dialog/menu/select 打开时遮罩上的点击、
+    # hover、滚轮都不会落到下层控件（"弹窗能点到后面的"那个 bug）。
+    ("overlay_probe",    "通过 35 项，失败 0 项",           "浮层不穿透（点击/hover/光标/滚轮/键盘/层级）"),
+    # 离屏驱动 Ctrl+C/X/V。A 组**不绑** set_clipboard / get_clipboard ——
+    # 修复前这里调空 std::function 抛 bad_function_call，进程直接 exit 132
+    # （用户报的"按 Ctrl+C 闪退"）。C 组真读写系统剪贴板，跑完还原；
+    # 原剪贴板不是文本时自动跳过，所以判据用固定尾标而不是用例总数。
+    ("clip_probe",       "[clip] verdict: PASS",            "剪贴板 C/X/V（不崩 + 复制/剪切/粘贴语义）"),
+    # 离屏驱动滚动条：拖滑块、点轨道、拖出视口、两端夹紧。改造前它是纯装饰
+    # （只画不判命中），所以除了滚轮根本"操控不了"。
+    ("scrollbar_probe",  "[scrollbar] verdict: PASS",        "滚动条拖动/点轨道（不再是纯装饰）"),
+    # 会开窗、抢前台焦点，并用 ImmSetCompositionStringW 塞一个组字串走真实
+    # WM_IME_COMPOSITION 路径 —— 不需要真人打拼音，也能验"拼音画在框里"。
+    ("ime_comp_probe",   "[imecomp] verdict: PASS",          "IME 组字串画进输入框（不是只在组合窗）"),
 )
 
 

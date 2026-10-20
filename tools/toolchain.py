@@ -8,14 +8,32 @@
 
 为什么不改系统 PATH：
   改 PATH 是全局副作用，换机器/换 shell 就失效，也会影响别的项目。
-  这里按固定顺序探测，命中即用；优先级由高到低：
-    1. 环境变量 AINO_GXX（显式指定，最优先）
-    2. 常见便携安装位置（w64devkit / MSYS2 / winlibs）
-    3. PATH 里的 g++（最后兜底）
+
+为什么不放在 Downloads：
+  那是"清理垃圾"脚本和清理软件的重点扫描区，700+ MB 的工具链很容易被顺手清掉；
+  清掉之后产物就从「一个 exe」变回「exe + 一堆 DLL」，报错还很难看懂。
+  所以约定装到 `C:\\Tools\\w64devkit`（可用 AINO_TOOLS_DIR 改根目录），
+  丢了就跑 `python tools/get_toolchain.py` 一键重装。
+
+优先级由高到低：
+  1. 环境变量 AINO_GXX（显式指定编译器，最优先）
+  2. C:\\Tools\\w64devkit\\bin（get_toolchain.py 的默认安装位置）
+  3. 其它常见位置（w64devkit / MSYS2 / winlibs，含早先下载到 Downloads 的旧目录）
+  4. PATH 里的 g++（最后兜底）
 """
 
 import os
 import shutil
+
+
+def tools_root():
+    """工具链的根目录，默认 C:\\Tools。"""
+    return os.environ.get("AINO_TOOLS_DIR") or r"C:\Tools"
+
+
+def install_dir():
+    """w64devkit 的默认安装位置。"""
+    return os.path.join(tools_root(), "w64devkit")
 
 
 def gxx_candidates():
@@ -26,11 +44,16 @@ def gxx_candidates():
     if explicit and os.path.isfile(explicit):
         found.append(explicit)
 
+    root = tools_root()
     home = os.path.expanduser("~")
     for d in (
+        # 主位置：tools/get_toolchain.py 装到这里
+        os.path.join(root, "w64devkit", "bin"),
+        os.path.join(root, "w64devkit", "w64devkit", "bin"),   # 解压时多套了一层
+        r"C:\w64devkit\bin",
+        # 兜底：早先下载/手动解压的位置
         os.path.join(home, "Downloads", "w64devkit", "w64devkit", "bin"),
         os.path.join(home, "w64devkit", "bin"),
-        r"C:\w64devkit\bin",
         r"C:\msys64\mingw64\bin",
         r"C:\msys2\mingw64\bin",
         r"C:\Program Files\mingw64\bin",

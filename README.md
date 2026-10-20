@@ -1,8 +1,8 @@
-# aino
+﻿# aino
 
 单头文件 C++17 桌面 UI 库 —— 立即模式、零第三方依赖、空闲 0.00% CPU。
 
-一个 `aino.hpp`（7263 行 / 327.9 KiB），一个 exe 482 KiB，零 DLL 依赖（只用系统 DLL）。
+一个 `aino.hpp`（7714 行 / 354.6 KiB），一个 exe 492 KiB，零 DLL 依赖（只用系统 DLL）。
 
 ## Preview
 

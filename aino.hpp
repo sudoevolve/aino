@@ -60,8 +60,8 @@
 
 #define AINO_VERSION_MAJOR 0
 #define AINO_VERSION_MINOR 2
-#define AINO_VERSION_PATCH 2
-#define AINO_VERSION "0.2.2"
+#define AINO_VERSION_PATCH 7
+#define AINO_VERSION "0.2.9"
 
 #include <cstdint>
 #include <cstddef>
@@ -2147,6 +2147,66 @@ struct Ui::Impl {
     // 离散的跨帧状态（如 select 是否展开）
     std::unordered_map<uint64_t, float> flags;
 
+    // 本帧 interact() 的调用序号。立即模式下"调用顺序 = 绘制顺序 = 层级"，
+    // 序号小的先画、在下面，所以它可以直接当 z 序用。每帧归零重数。
+    uint64_t seq = 0;
+
+    // ---- 浮层输入闸门 ----
+    // 立即模式的绘制顺序决定视觉层级，交互却按调用顺序处理：最后画的对话框
+    // 其实最晚拿到点击，于是点遮罩会连带点到底下的按钮（穿透）。
+    // 这里反过来 —— 上一帧登记过的浮层决定本帧谁能接收输入。
+    // 为什么用"上一帧"：dialog()/menu() 在帧末才调用，同一帧救不了；
+    // 差一帧肉眼看不出来（那一帧用户点的正是遮罩）。
+    bool gate_on = false;
+    bool gate_next = false;
+    Rect gate_allow[4] = {};
+    uint64_t gate_allow_z[4] = {};    // 该浮层"第一个属于自己的控件"的序号
+    int  gate_allow_n = 0;
+    Rect gate_next_allow[4] = {};
+    uint64_t gate_next_allow_z[4] = {};
+    int  gate_next_allow_n = 0;
+
+    // 判定 = 位置 + 层级。两条都要，缺一条就漏：
+    //   · 落在所有浮层区域之外          → 挡住（遮罩）
+    //   · 落在浮层区域内，但控件的 z 比该浮层小 → 挡住（压在面板底下的东西）
+    // 第二条是关键：只按位置白名单放行的话，面板几何范围内的一切都算"允许"，
+    // 被面板盖住的按钮照样吃 hover / click —— 那还是穿透。
+    bool gate_blocked(uint64_t z, float x, float y) const {
+        if (!gate_on) return false;
+        uint64_t need = 0;
+        bool inside = false;
+        for (int i = 0; i < gate_allow_n; ++i) {
+            if (!gate_allow[i].contains(x, y)) continue;
+            inside = true;
+            if (gate_allow_z[i] > need) need = gate_allow_z[i];  // 最上层那个说了算
+        }
+        return !inside || z < need;
+    }
+
+    // 给"不产生 interact 的读取"用：tooltip / spinner / skeleton / 滚轮 / 键盘。
+    // 取调用点当下的 seq —— 页面控件的 seq 小、浮层自己的内容 seq 大，判断一致。
+    bool gate_blocked_here(const Rect& r) const {
+        if (!gate_on) return false;
+        return gate_blocked(seq, r.cx(), r.cy());
+    }
+    bool gate_blocked_pointer() const {
+        if (!gate_on) return false;
+        return gate_blocked(seq, input.mouse.x, input.mouse.y);
+    }
+
+    // 浮层在帧内登记"下一帧谁能交互"（触发器、面板、下拉列表都算）。
+    // z 传**浮层第一个控件的序号**（函数入口处 seq+1），不是登记那一刻的 seq：
+    // dialog 的关闭按钮在 claim 之前就 interact 过了，传晚了会把自己也挡住。
+    void gate_claim(const Rect& r, uint64_t z) {
+        if (gate_next_allow_n < 4) {
+            gate_next_allow[gate_next_allow_n] = r;
+            gate_next_allow_z[gate_next_allow_n] = z;
+            ++gate_next_allow_n;
+        }
+        gate_next = true;
+    }
+
+
     // ---- 文本折行缓存 ----
     // 折行是 O(字符数) 的逐字量宽。一段 20 万字的文档，每帧重排一次就是
     // 十几毫秒 —— 于是"大块文本"在立即模式里必然卡。这里把**整段**折行结果
@@ -2210,6 +2270,15 @@ struct Ui::Impl {
     // 把输入法的组合窗 / 候选窗挪到光标处（参数是**物理客户区**像素：
     // caret_x, 输入框上沿, 输入框下沿）。平台后端绑定；未绑定就什么都不做。
     std::function<void(float, float, float)> ime_pos;
+    // IME 正在组字的串（拼音/注音…，UTF-8）。这是**预编辑**文本：上屏前它不属于
+    // value，一个字节都不该写进去（写进去就等于"打拼音时正文被污染"）。
+    // input / textarea 在聚焦时把它画在 caret 处、带下划线，caret 顺延到它后面。
+    // Windows 后端从 WM_IME_COMPOSITION 的 GCS_COMPSTR 取；未绑定输入法的平台恒为空。
+    std::string ime_comp;
+    // 本帧有没有输入框在画组字串（input / textarea 每次把 IME 钉到光标处都会置位）。
+    // 后端靠它判断"系统那个浮动组合窗要不要藏"：有输入框接管才藏，
+    // 否则焦点落在按钮之类的地方时，藏了就等于把拼音吞掉。
+    bool ime_owner = false;
 
     // 把逻辑坐标矩形转成物理像素矩形
     Rect phys(const Rect& r) const {
@@ -2291,6 +2360,18 @@ inline void Ui::begin_frame(float w, float h, float dt, float dpi) {
     if (impl->text_veto > 0.0f) impl->text_veto -= impl->dt;
     if (impl->input.any_ctrl_key() || impl->input.any_alt_key()) impl->text_veto = 0.15f;
     impl->focus_consumed = false;
+    impl->ime_owner = false;
+    // 浮层闸门：把上一帧登记的"可交互区"搬进本帧，再清空下一帧的槽位。
+    // 没有浮层登记的那一帧就是"不挡"，所以关闭后自动释放。
+    impl->gate_on = impl->gate_next;
+    impl->gate_allow_n = impl->gate_next_allow_n;
+    for (int i = 0; i < impl->gate_next_allow_n; ++i) {
+        impl->gate_allow[i] = impl->gate_next_allow[i];
+        impl->gate_allow_z[i] = impl->gate_next_allow_z[i];
+    }
+    impl->gate_next = false;
+    impl->gate_next_allow_n = 0;
+    impl->seq = 0;          // 本帧的 z 序从头数
     impl->defer.clear();
     impl->hot = impl->next_hot;
     impl->next_hot = 0;
@@ -2367,6 +2448,13 @@ struct Interact {
 inline Interact interact(Ui::Impl* im, uint64_t id, const Rect& r, bool enabled) {
     Interact res;
     const Input& in = im->input;
+    const uint64_t z = ++im->seq;      // 先取序号：它同时是"我在第几层"
+    // 浮层打开时，遮罩上的鼠标不属于任何下层控件；被浮层盖住的控件同样不算。
+    // 少了这一句，点遮罩 / 点面板都会同时点到它下面的按钮 —— 最典型的穿透。
+    if (im->gate_blocked(z, in.mouse.x, in.mouse.y)) {
+        if (im->active == id) im->active = 0;   // 遮罩上松开不算点击
+        return res;
+    }
     bool inside = enabled && r.contains(in.mouse.x, in.mouse.y);
     if (inside) {
         res.hovered = true;
@@ -3458,7 +3546,9 @@ inline void Ui::skeleton(const Rect& box, const Style& st) {
     // Style().animate() 点名要求它动 —— 但也只在**鼠标悬停**时动。理由同上：
     // 一个常驻动画就是整窗每帧重画，代价和窗口面积成正比，不能默认付。
     if (st.animated) {
-        const bool hovered = box.contains(impl->input.mouse.x, impl->input.mouse.y);
+        // 被浮层盖住时不算悬停，否则遮罩底下那块还在亮暗呼吸 —— 一眼就穿。
+        const bool hovered = box.contains(impl->input.mouse.x, impl->input.mouse.y)
+                          && !impl->gate_blocked_pointer();
         float& ph = impl->phase[detail::make_id("skeleton_phase", box)];
         if (hovered) {
             ph += impl->dt * 3.2f;
@@ -3599,9 +3689,16 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
     const bool enabled = !st.disabled;
 
     detail::Interact in = detail::interact(impl, id, box, enabled);
-    if (in.hovered || detail::is_focused(impl, id)) set_cursor(Cursor::IBeam);
 
     bool focused = detail::is_focused(impl, id);
+    // 被浮层盖住就交回键盘焦点。块本身已经收不到点击，但焦点还留着，
+    // 用户打的字会照样进这个框 —— 和"能点到后面"是同一类穿透，
+    // 只是走的是键盘而不是鼠标。
+    if (focused && impl->gate_blocked_here(box)) {
+        detail::drop_focus(impl);
+        focused = false;
+    }
+    if (in.hovered || focused) set_cursor(Cursor::IBeam);
     bool changed = false;
 
     // 点击别处 → 失焦
@@ -3763,25 +3860,36 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
             impl->caret = n_cp;
         }
 
-        // 剪贴板
+        // 剪贴板。三条纪律：
+        //  · impl->set_clipboard 可能为空（Ui 脱离 Window 使用时没人绑），
+        //    直接调会抛 bad_function_call → terminate，所以每个调用点都判空；
+        //  · 没有选区时**不碰**系统剪贴板，否则按一下 Ctrl+C 就把用户刚复制的
+        //    东西清空了；
+        //  · 用 ctrl_of() 而非 ctrl()：Ctrl 的 KEYUP 可能排在字母 KEYDOWN 之后。
         if (!undone && kin.ctrl_of('C')) {
-            std::vector<uint32_t> cps = utf8_codepoints(*value);
-            impl->set_clipboard(utf8_from_codepoints(cps, size_t(sel_from), size_t(sel_to - sel_from)));
+            if (has_sel && impl->set_clipboard) {
+                std::vector<uint32_t> cps = utf8_codepoints(*value);
+                impl->set_clipboard(utf8_from_codepoints(cps, size_t(sel_from), size_t(sel_to - sel_from)));
+            }
         }
-        if (!undone && kin.ctrl_of('X')) {
+        // 剪切必须"进了剪贴板才删"。回调不可用却照样删，等于把用户选中的东西
+        // 凭空丢掉了 —— 比不响应更糟。
+        if (!undone && kin.ctrl_of('X') && has_sel && impl->set_clipboard) {
             edit_kind = detail::EDIT_OTHER;
             std::vector<uint32_t> cps = utf8_codepoints(*value);
             impl->set_clipboard(utf8_from_codepoints(cps, size_t(sel_from), size_t(sel_to - sel_from)));
             delete_selection();
         }
         if (!undone && kin.ctrl_of('V')) {
-            edit_kind = detail::EDIT_OTHER;
-            delete_selection();
             std::string paste = impl->get_clipboard ? impl->get_clipboard() : std::string();
             // 单行输入：过滤换行
             std::string filtered;
             for (char ch : paste) if (ch != '\n' && ch != '\r') filtered.push_back(ch);
+            // 先确认有东西可粘再删选区 —— 剪贴板为空（或只有换行）时先删后插
+            // 会把选区直接抹掉，什么都没换来。
             if (!filtered.empty()) {
+                edit_kind = detail::EDIT_OTHER;
+                delete_selection();
                 std::vector<uint32_t> cps = utf8_codepoints(*value);
                 std::vector<uint32_t> ins = utf8_codepoints(filtered);
                 cps.insert(cps.begin() + impl->caret, ins.begin(), ins.end());
@@ -3828,14 +3936,23 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
     float bw = st.border_width >= 0.0f ? st.border_width : 1.0f;
     if (bw > 0.0f) stroke_rect(box, bd, rad, focused ? bw + 0.4f : bw);
 
-    const bool show_placeholder = value->empty() && !st.placeholder.empty();
+    // IME 预编辑串（拼音）。它不是 value 的一部分，所以单独量宽、单独画：
+    // 画在 caret 处、带下划线，caret 顺延到它后面，看上去才是"字还没定"。
+    // 不画的话框里就是空的 —— 用户只能盯着框下面那个系统组合窗念拼音。
+    //
+    // 组字期间**必须**让 placeholder 让位：空框 + hint 的组合太常见，条件里带
+    // !show_placeholder 就等于"空输入框永远不显示拼音"，正是用户截图那一幕。
+    const bool composing = focused && !impl->ime_comp.empty();
+    const bool show_placeholder = value->empty() && !st.placeholder.empty() && !composing;
     const std::string& shown = show_placeholder ? st.placeholder : *value;
-    const float shown_w = show_placeholder ? text_width(st.placeholder, fs, 400) : tw;
 
-    // 水平滚动：保证光标可见
+    const float comp_w = composing ? text_width(impl->ime_comp, fs, 400) : 0.0f;
+    const float shown_w = (show_placeholder ? text_width(st.placeholder, fs, 400) : tw) + comp_w;
+
+    // 水平滚动：保证光标可见（组字串也算进宽度，否则打长拼音时会被框边切掉）
     float scroll = 0.0f;
     if (shown_w > avail) {
-        float caret_x = text_width(utf8_from_codepoints(utf8_codepoints(*value), 0, size_t(impl->caret)), fs, 400);
+        float caret_x = text_width(utf8_from_codepoints(utf8_codepoints(*value), 0, size_t(impl->caret)), fs, 400) + comp_w;
         if (caret_x - scroll > avail) scroll = caret_x - avail;
         if (caret_x - scroll < 0.0f) scroll = caret_x;
         scroll = detail::clampf(scroll, 0.0f, std::max(0.0f, shown_w - avail));
@@ -3860,14 +3977,30 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
 
     Color fg = !st.fg.is_none() ? st.fg : (show_placeholder ? th.muted_foreground : th.foreground);
     if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
-    draw_text(shown, text_box, fg, ts);
+    if (composing) {
+        // 分三段画：正文前半 / 预编辑串（主色 + 下划线）/ 正文后半。
+        // 只在组字期间分段，平时还是一次 draw_text —— 不拖慢常规输入。
+        const std::vector<uint32_t> cps = utf8_codepoints(*value);
+        const size_t cut = size_t(detail::clampi(impl->caret, 0, int(cps.size())));
+        const std::string before = utf8_from_codepoints(cps, 0, cut);
+        const std::string after  = utf8_from_codepoints(cps, cut);
+        const float bx = box.x + pad - scroll;
+        const float bw = text_width(before, fs, 400);
+        draw_text(before, Rect(bx, box.y, std::max(bw, 1.0f), box.h), fg, ts);
+        draw_text(impl->ime_comp, Rect(bx + bw, box.y, comp_w + 2.0f, box.h), th.primary, ts);
+        fill_rect(Rect(bx + bw, box.cy() + fs * 0.60f, comp_w, 1.0f),
+                  th.primary.with_alpha(170), 0.0f);
+        draw_text(after, Rect(bx + bw + comp_w, box.y, std::max(box.w, 1.0f), box.h), fg, ts);
+    } else {
+        draw_text(shown, text_box, fg, ts);
+    }
 
     // 光标位置（不管闪不闪都要算：IME 的组合窗/候选窗跟着它走）
     float caret_x = box.x + pad;
     {
         std::vector<uint32_t> cps = utf8_codepoints(*value);
         float cx = text_width(utf8_from_codepoints(cps, 0, size_t(impl->caret)), fs, 400);
-        caret_x = detail::clampf(box.x + pad + cx - scroll, box.x + pad - 1.0f, box.right() - pad);
+        caret_x = detail::clampf(box.x + pad + cx - scroll + comp_w, box.x + pad - 1.0f, box.right() - pad);
     }
     if (focused && std::fmod(impl->caret_blink, 1.06f) < 0.62f) {
         float ch = fs * 1.15f;
@@ -4103,6 +4236,8 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
     if (!index || items.empty()) return false;
     const Theme& th = impl->theme;
     uint64_t id = detail::make_id("select", box);
+    // 本组件第一个控件的层级号。弹层下一帧用它判定"谁在下面"。
+    const uint64_t z_first = impl->seq + 1;
     const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
     const bool enabled = !st.disabled;
@@ -4154,6 +4289,10 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
         float ly = box.bottom() + 4.0f;
         if (ly + list_h > height() - 4.0f) ly = std::max(4.0f, box.y - 4.0f - list_h);
         Rect list(box.x, ly, box.w, list_h);
+
+        // 同上：展开期间只有主体和下拉列表能接收点击。
+        impl->gate_claim(box, z_first);
+        impl->gate_claim(list, z_first);
 
         std::vector<std::string> items_copy = items;
         int* idx_ptr = index;
@@ -4372,6 +4511,10 @@ inline bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
 
     detail::Interact in = detail::interact(impl, id, box, enabled);
     bool focused = detail::is_focused(impl, id);
+    if (focused && impl->gate_blocked_here(box)) {   // 同上：焦点也要被挡住
+        detail::drop_focus(impl);
+        focused = false;
+    }
     if (in.hovered || focused) set_cursor(Cursor::IBeam);
 
     bool changed = false;
@@ -4607,21 +4750,24 @@ inline bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
             }
             impl->caret_blink = 0.0f;
         }
-        if (!undone && kin.ctrl() && kin.key_pressed['C']) {
-            const std::vector<uint32_t> cps = utf8_codepoints(*value);
-            impl->set_clipboard(utf8_from_codepoints(cps, size_t(sel_from), size_t(sel_to - sel_from)));
+        // 与单行 input 同一条纪律：可能没绑回调 → 必须判空；无选区不动剪贴板。
+        if (!undone && kin.ctrl_of('C')) {
+            if (has_sel && impl->set_clipboard) {
+                const std::vector<uint32_t> cps = utf8_codepoints(*value);
+                impl->set_clipboard(utf8_from_codepoints(cps, size_t(sel_from), size_t(sel_to - sel_from)));
+            }
         }
-        if (!undone && kin.ctrl() && kin.key_pressed['X']) {
+        if (!undone && kin.ctrl_of('X') && has_sel && impl->set_clipboard) {
             edit_kind = detail::EDIT_OTHER;
             const std::vector<uint32_t> cps = utf8_codepoints(*value);
             impl->set_clipboard(utf8_from_codepoints(cps, size_t(sel_from), size_t(sel_to - sel_from)));
             delete_sel();
         }
-        if (!undone && kin.ctrl() && kin.key_pressed['V']) {
-            edit_kind = detail::EDIT_OTHER;
-            if (impl->get_clipboard) insert_text(impl->get_clipboard());
+        if (!undone && kin.ctrl_of('V') && impl->get_clipboard) {
+            const std::string paste = impl->get_clipboard();
+            if (!paste.empty()) { edit_kind = detail::EDIT_OTHER; insert_text(paste); }
         }
-        if (!undone && kin.ctrl() && kin.key_pressed['A']) { impl->sel_anchor = 0; impl->caret = n_cp; }
+        if (!undone && kin.ctrl_of('A')) { impl->sel_anchor = 0; impl->caret = n_cp; }
         if (!undone && kin.key_pressed[KEY_ESC]) { detail::drop_focus(impl); focused = false; }
         // 字符输入（Enter 走上面的 KEY_ENTER，所以这里排除掉 ctrl 组合键）
         if (!undone && !kin.ctrl() && impl->text_veto <= 0.0f && !kin.text_input.empty()) {
@@ -4659,7 +4805,9 @@ inline bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
     const float bw = st.border_width >= 0.0f ? st.border_width : 1.0f;
     if (bw > 0.0f) stroke_rect(box, bd, rad, focused ? bw + 0.4f : bw);
 
-    const bool show_ph = value->empty() && !st.placeholder.empty();
+    // 组字串优先于 placeholder（空框 + hint 很常见，不能让 hint 把拼音顶掉）
+    const bool composing = focused && !impl->ime_comp.empty();
+    const bool show_ph = value->empty() && !st.placeholder.empty() && !composing;
     Style ts;
     ts.font_size = fs;
     ts.font_weight = 400;
@@ -4691,18 +4839,40 @@ inline bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
     }
 
     const Color fg = show_ph ? th.muted_foreground : (!st.fg.is_none() ? st.fg : th.foreground);
+
+    // IME 预编辑串只挂在一行上（caret 所在行），在这里算一次就够
+    std::pair<int, int> comp_lc(-1, -1);
+    float comp_w = 0.0f;
+    if (composing) { comp_lc = to_linecol(impl->caret); comp_w = text_width(impl->ime_comp, fs, 400); }
+
     for (size_t i = 0; i < lines.size(); ++i) {
         const float y = box.y + pady + lh * float(i) - tscroll;
         if (y > box.bottom()) break;
         if (y + lh < box.y) continue;
         const std::string text_line = (show_ph && i == 0) ? st.placeholder : lines[i];
-        draw_text(text_line, Rect(box.x + padx, y, std::max(box.w - padx * 2.0f, 1.0f), lh), fg, ts);
+        if (composing && int(i) == comp_lc.first) {
+            // 与 input 同理：正文前半 / 拼音（主色+下划线）/ 正文后半
+            const std::vector<uint32_t> cps = utf8_codepoints(text_line);
+            const size_t cut = size_t(detail::clampi(comp_lc.second, 0, int(cps.size())));
+            const std::string before = utf8_from_codepoints(cps, 0, cut);
+            const std::string after  = utf8_from_codepoints(cps, cut);
+            const float bx = box.x + padx;
+            const float bw = text_width(before, fs, 400);
+            draw_text(before, Rect(bx, y, std::max(bw, 1.0f), lh), fg, ts);
+            draw_text(impl->ime_comp, Rect(bx + bw, y, comp_w + 2.0f, lh), th.primary, ts);
+            fill_rect(Rect(bx + bw, y + lh * 0.78f, comp_w, 1.0f),
+                      th.primary.with_alpha(170), 0.0f);
+            draw_text(after, Rect(bx + bw + comp_w, y, std::max(box.w, 1.0f), lh), fg, ts);
+        } else {
+            draw_text(text_line, Rect(box.x + padx, y, std::max(box.w - padx * 2.0f, 1.0f), lh), fg, ts);
+        }
     }
 
     // 光标（IME 的组合窗/候选窗也跟着它走，所以位置先算出来）
     if (focused) {
         const std::pair<int, int> lc = to_linecol(impl->caret);
-        const float cx = box.x + padx + line_x(lc.first, lc.second);
+        const float cx = box.x + padx + line_x(lc.first, lc.second)
+                       + (composing && lc.first == comp_lc.first ? comp_w : 0.0f);
         float cy = box.y + pady + lh * float(lc.first) - tscroll;
         if (std::fmod(impl->caret_blink, 1.06f) < 0.62f) {
             if (cy + lh > box.y && cy < box.bottom())
@@ -4825,7 +4995,8 @@ inline void Ui::spinner(const Rect& box, const Style& st) {
     Color arc   = !st.bg.is_none() ? st.bg : th.primary;
     if (st.disabled) { track.a = uint8_t(float(track.a) * 0.45f); arc.a = uint8_t(float(arc.a) * 0.45f); }
 
-    const bool hovered = box.contains(impl->input.mouse.x, impl->input.mouse.y);
+    const bool hovered = box.contains(impl->input.mouse.x, impl->input.mouse.y)
+                      && !impl->gate_blocked_pointer();
     const bool spin = st.animated || hovered;
 
     const float cx = impl->px(box.cx());
@@ -5132,6 +5303,8 @@ inline void Ui::tooltip(const Rect& anchor, const std::string& text, const Style
     if (text.empty() || st.disabled) return;
     const Input& kin = impl->input;
     if (!anchor.contains(kin.mouse.x, kin.mouse.y)) return;
+    // 锚点被浮层压住时不出提示：悬停类行为同样属于"穿透"。
+    if (impl->gate_blocked_pointer()) return;
 
     const Theme& th = impl->theme;
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size - 1.0f;
@@ -5165,6 +5338,8 @@ inline bool Ui::menu(const std::string& label, const std::vector<std::string>& i
                      int* clicked_index, const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
     uint64_t id = detail::make_id("menu", box);
+    // 同 select：触发器在 claim 之前就 interact 过了，层级号要取入口处。
+    const uint64_t z_first = impl->seq + 1;
     const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const bool enabled = !st.disabled;
@@ -5211,6 +5386,10 @@ inline bool Ui::menu(const std::string& label, const std::vector<std::string>& i
         float ly = box.bottom() + 4.0f;
         if (ly + list_h > height() - 4.0f) ly = std::max(4.0f, box.y - 4.0f - list_h);
         const Rect list(box.x, ly, list_w, list_h);
+
+        // 打开时把"触发器 + 下拉列表"登记为可交互区，其余地方全被闸门挡住。
+        impl->gate_claim(box, z_first);
+        impl->gate_claim(list, z_first);
 
         std::vector<Rect>    rects;
         std::vector<uint64_t> ids;
@@ -5276,6 +5455,9 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
     if (!open || !*open) return false;
     const Theme& th = impl->theme;
     uint64_t cid = detail::make_id("dialog_close", box);
+    // 关闭按钮在下面 claim 之前就 interact 了，所以层级号必须在入口处取，
+    // 否则它会被自己的闸门挡住（点了没反应，看着像"按钮坏了"）。
+    const uint64_t z_first = impl->seq + 1;
     const float rad = st.radius >= 0.0f ? st.radius : th.radius_lg;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float pad = st.pad_x >= 0.0f ? st.pad_x : 24.0f;
@@ -5332,6 +5514,10 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
         draw_line(close_r.cx() + s, close_r.cy() - s, close_r.cx() - s, close_r.cy() + s, cc, 1.6f);
     }
 
+    // 登记下一帧的输入闸门：面板自己接收输入，遮罩上的点击、以及被面板
+    // 盖住的控件都不许响应（层级由 z_first 判定，不只是位置）。
+    // 即使本帧就要关闭也照登 —— 多挡一帧，免得"点遮罩关闭"那一下顺手点到后面的按钮。
+    impl->gate_claim(box, z_first);
     if (dismiss) { *open = false; repaint(); }
     return true;      // 本帧仍然按"打开"画完了，下一帧才真的消失（不会闪一下）
 }
@@ -5375,6 +5561,61 @@ inline void Ui::toast(const std::string& text, const Rect& box, const Style& st)
 //  行数 × 行高，然后按可见区间挑着调用回调。所以偏移只存一份（按 box 记忆），
 //  滚动条、裁剪、滚轮都只有一套 —— 不会出现"两个滚动区各自记位置"的怪事。
 // =============================================================================
+namespace detail {
+// 滚动条几何。视觉上只有 3px 宽，但**热区给到 11px** —— 3px 是画给人看的，
+// 不是点得中的尺寸（原来它连命中都没有，纯装饰，所以"拖不动"）。
+struct ScrollbarGeom {
+    Rect track;     // 命中区（右侧 11px 竖条）
+    Rect thumb;     // 滑块（3px 宽，贴右边）
+    float travel;   // 滑块可移动的行程 = box.h - thumb.h
+};
+
+inline ScrollbarGeom scrollbar_geom(const Rect& box, float offset, float max_offset) {
+    ScrollbarGeom g;
+    g.track = Rect(box.right() - 11.0f, box.y, 11.0f, box.h);
+    const float mo = std::max(max_offset, 0.0f);
+    const float thumb_h = std::max(24.0f, box.h * (box.h / (box.h + mo)));
+    const float t = mo > 0.0f ? clampf(offset / mo, 0.0f, 1.0f) : 0.0f;
+    g.thumb = Rect(box.right() - 5.0f, box.y + (box.h - thumb_h) * t, 3.0f, thumb_h);
+    g.travel = std::max(box.h - thumb_h, 0.0f);
+    return g;
+}
+
+// 滚动条交互：按下滑块 → 拖动；按下轨道 → 滑块中心跳到点击处（Windows 传统行为，
+// 比"翻一页"更好预测，也少一次点击）。拖动时鼠标可以离开视口 —— 后端已经
+// SetCapture，down[0] 仍然成立。返回鼠标是否在热区上（用来加深颜色）。
+inline bool scrollbar_interact(Ui::Impl* ui, const Rect& box, float max_offset, float& offset) {
+    const ScrollbarGeom g = scrollbar_geom(box, offset, max_offset);
+    const Input& kin = ui->input;
+    const bool on_track = g.track.contains(kin.mouse.x, kin.mouse.y);
+    if (ui->gate_blocked_pointer()) return on_track;   // 浮层打开时不许动下层滚动条
+
+    const uint64_t sid = make_id("scrollbar-grab", box);
+    float& grab = ui->flags[sid];       // 按下时鼠标在滑块内的相对位置
+    const float travel = std::max(g.travel, 1.0f);
+
+    if (kin.pressed[0] && on_track) {
+        ui->active = sid;
+        if (g.thumb.contains(kin.mouse.x, kin.mouse.y)) {
+            grab = kin.mouse.y - g.thumb.y;
+        } else {
+            grab = g.thumb.h * 0.5f;
+            offset = clampf((kin.mouse.y - box.y - grab) / travel, 0.0f, 1.0f) * max_offset;
+            if (ui->request_repaint) ui->request_repaint();
+        }
+    }
+    if (ui->active == sid && kin.down[0]) {
+        const float nv = clampf((kin.mouse.y - box.y - grab) / travel, 0.0f, 1.0f) * max_offset;
+        if (std::fabs(nv - offset) > 0.01f) {
+            offset = nv;
+            if (ui->request_repaint) ui->request_repaint();
+        }
+    }
+    if (kin.released[0] && ui->active == sid) ui->active = 0;
+    return on_track;
+}
+} // namespace detail
+
 inline ScrollScope Ui::scroll(const Rect& box, float content_h) {
     ScrollScope sc;
     sc.ui         = this;
@@ -5385,7 +5626,9 @@ inline ScrollScope Ui::scroll(const Rect& box, float content_h) {
 
     float& off = impl->flags[sc.id];
     const Input& kin = impl->input;
-    if (sc.max_offset > 0.0f && box.contains(kin.mouse.x, kin.mouse.y) && std::fabs(kin.wheel) > 0.001f) {
+    if (sc.max_offset > 0.0f && box.contains(kin.mouse.x, kin.mouse.y)
+        && !impl->gate_blocked_pointer()
+        && std::fabs(kin.wheel) > 0.001f) {
         off = detail::clampf(off - kin.wheel * 44.0f, 0.0f, sc.max_offset);
         repaint();
     }
@@ -5458,12 +5701,17 @@ inline void Ui::end_scroll() {
     if (impl->scroll_stack.empty()) return;
     const Ui::Impl::ScrollCtx ctx = impl->scroll_stack.back();
 
-    // 滚动条画在内容之上（所以放在 end_scroll 里，而不是 begin_scroll）
+    // 滚动条在内容之上（所以放在 end_scroll 里，而不是 begin_scroll）。
+    // 先吃交互再画：同一帧里拖动要立刻反映到滑块位置上，晚一帧会明显发黏。
     if (ctx.max_offset > 0.0f) {
-        const float thumb_h = std::max(24.0f, ctx.box.h * (ctx.box.h / (ctx.box.h + ctx.max_offset)));
-        const float ty = ctx.box.y + (ctx.box.h - thumb_h) * (ctx.offset / ctx.max_offset);
-        fill_rect(Rect(ctx.box.right() - 5.0f, ty, 3.0f, thumb_h),
-                  impl->theme.muted_foreground.scaled_alpha(0.45f), 1.5f);
+        float& off = impl->flags[ctx.id];
+        off = detail::clampf(off, 0.0f, ctx.max_offset);
+        const bool hot = detail::scrollbar_interact(impl, ctx.box, ctx.max_offset, off);
+        off = detail::clampf(off, 0.0f, ctx.max_offset);
+        const detail::ScrollbarGeom g = detail::scrollbar_geom(ctx.box, off, ctx.max_offset);
+        const float a = (hot || impl->active == detail::make_id("scrollbar-grab", ctx.box)) ? 0.78f : 0.45f;
+        fill_rect(g.thumb, impl->theme.muted_foreground.scaled_alpha(a), 1.5f);
+        impl->last_scroll = off;
     }
 
     impl->last_scroll = ctx.offset;
@@ -5502,7 +5750,9 @@ inline int Ui::scroll_visible(const Rect& box, int count, float item_h, int* fir
 
     float& off = impl->flags[id];
     const Input& kin = impl->input;
-    if (max_off > 0.0f && box.contains(kin.mouse.x, kin.mouse.y) && std::fabs(kin.wheel) > 0.001f) {
+    if (max_off > 0.0f && box.contains(kin.mouse.x, kin.mouse.y)
+        && !impl->gate_blocked_pointer()
+        && std::fabs(kin.wheel) > 0.001f) {
         off = detail::clampf(off - kin.wheel * 44.0f, 0.0f, max_off);
         repaint();
     }
@@ -5521,11 +5771,13 @@ inline int Ui::scroll_visible(const Rect& box, int count, float item_h, int* fir
 inline void Ui::scroll_bar(const Rect& box, float content_h) {
     const float max_off = std::max(0.0f, content_h - box.h);
     if (max_off <= 0.0f) return;
-    const float off = scroll_offset(box);
-    const float thumb_h = std::max(24.0f, box.h * (box.h / (box.h + max_off)));
-    const float ty = box.y + (box.h - thumb_h) * (off / max_off);
-    fill_rect(Rect(box.right() - 5.0f, ty, 3.0f, thumb_h),
-              impl->theme.muted_foreground.scaled_alpha(0.45f), 1.5f);
+    float& off = impl->flags[detail::make_id("scroll", box)];
+    off = detail::clampf(off, 0.0f, max_off);
+    const bool hot = detail::scrollbar_interact(impl, box, max_off, off);
+    off = detail::clampf(off, 0.0f, max_off);
+    const detail::ScrollbarGeom g = detail::scrollbar_geom(box, off, max_off);
+    const float a = (hot || impl->active == detail::make_id("scrollbar-grab", box)) ? 0.78f : 0.45f;
+    fill_rect(g.thumb, impl->theme.muted_foreground.scaled_alpha(a), 1.5f);
 }
 
 inline float Ui::scroll_offset(const Rect& box) const {
@@ -5597,9 +5849,17 @@ inline Window::Window(int w, int h, const std::string& title) : impl(new Impl())
     // 输入框有焦点时把 IME 的组合窗 / 候选窗钉到光标处。
     // 不绑的话系统会把它们丢在客户区左上角 —— 中文输入时候选框飘得老远。
     impl->ui.impl->ime_pos = [this](float x, float top, float bottom) {
+        impl->ui.impl->ime_owner = true;   // 本帧有输入框接管 IME（组字串自己画）
         detail::win_set_ime_pos(reinterpret_cast<detail::Win32State*>(impl->native), x, top, bottom);
     };
 #endif
+    // 剪贴板：input / textarea 的 Ctrl+C / X / V 从这里读写系统剪贴板。
+    // 这两个回调原先**忘了绑** —— 结果是按 Ctrl+C 时调用一个空的 std::function，
+    // 抛 std::bad_function_call、没人接、std::terminate，进程当场没了（用户看到的
+    // 就是"复制一下程序自己关了"）。Ctrl+V 因为调用点写了判空所以不崩，只是没反应。
+    // 现在两头都补：这里绑上真实实现，调用点也一律判空（Ui 可以脱离 Window 用）。
+    impl->ui.impl->set_clipboard = [this](const std::string& t) { Window::set_clipboard(t); };
+    impl->ui.impl->get_clipboard = [this]() { return Window::clipboard(); };
     // 诊断开关：AINO_FRAME_LOG=1 时每 120 帧打印一次渲染耗时。
 #if defined(_MSC_VER)
 #  pragma warning(push)
@@ -5687,6 +5947,14 @@ struct Win32State {
     // 铁律：bb_valid 为 false 时**绝不允许 BitBlt 上屏** —— 那块新建的 DIB 全是 0，
     // 贴上去就是一片黑（这就是拖边框时的黑闪）。
     bool bb_valid = false;
+    // 组字期间的低频计时器（见 WM_TIMER）。0 = 没开。
+    UINT_PTR ime_timer = 0;
+    // 系统那个浮动组合窗，以及它的高度（物理像素）。
+    // 为什么要高度：候选窗是**挂在组合窗底下**的 —— 输入法自己算，我们的
+    // ImmSetCandidateWindow 说了不算。所以想让候选窗贴着输入框，就得把组合窗
+    // 整体上移它自己的高度，让它的**底边**落在框底（反正它已经被我们涂透明了）。
+    HWND ime_ghost = nullptr;
+    int  ime_ghost_h = 0;
 
     // 待消费的输入
     float mx = 0.0f, my = 0.0f;
@@ -5882,12 +6150,22 @@ struct AinoCandidateFormW {
 };
 constexpr DWORD AINO_CFS_POINT        = 0x0002;   // 组合窗左上角 = ptCurrentPos
 constexpr DWORD AINO_CFS_CANDIDATEPOS = 0x0040;   // 候选窗左上角 = ptCurrentPos
+// WM_IME_COMPOSITION 的 lParam 位
+constexpr DWORD AINO_GCS_COMPSTR      = 0x0008;   // 还没上屏的组字串（拼音）
+constexpr DWORD AINO_GCS_RESULTSTR    = 0x0800;   // 已经上屏的结果串
+// 组字期间压输入法浮动组合窗用的线程计时器 id（见 Window::poll）。
+// 只是个"想要的" id —— 线程计时器最终由系统分配，实际值存在 Win32State::ime_timer。
+constexpr UINT_PTR AINO_IME_TIMER_ID = 0xA1;
+
+// WM_IME_SETCONTEXT 的 lParam 位：让系统画那个悬空的组合窗
+constexpr LPARAM AINO_ISC_SHOWUICOMPOSITIONWINDOW = LPARAM(0x80000000);
 
 struct ImmApi {
     HIMC (WINAPI* get_ctx)   (HWND) = nullptr;
     BOOL (WINAPI* rel_ctx)   (HWND, HIMC) = nullptr;
     BOOL (WINAPI* set_comp)  (HIMC, const AinoCompositionFormW*) = nullptr;
     BOOL (WINAPI* set_cand)  (HIMC, const AinoCandidateFormW*) = nullptr;
+    LONG (WINAPI* get_str)   (HIMC, DWORD, void*, DWORD) = nullptr;
     bool ok = false;
     ImmApi() {
         HMODULE h = LoadLibraryW(L"imm32.dll");
@@ -5898,7 +6176,9 @@ struct ImmApi {
                        GetProcAddress(h, "ImmSetCompositionWindow"));
         set_cand = reinterpret_cast<BOOL (WINAPI*)(HIMC, const AinoCandidateFormW*)>(
                        GetProcAddress(h, "ImmSetCandidateWindow"));
-        ok = get_ctx && rel_ctx && set_comp && set_cand;
+        get_str  = reinterpret_cast<LONG (WINAPI*)(HIMC, DWORD, void*, DWORD)>(
+                       GetProcAddress(h, "ImmGetCompositionStringW"));
+        ok = get_ctx && rel_ctx && set_comp && set_cand && get_str;
     }
 };
 
@@ -5912,20 +6192,74 @@ inline void win_set_ime_pos(Win32State* s, float caret_x, float top, float botto
     HIMC himc = api.get_ctx(s->hwnd);
     if (!himc) return;
 
+    // 组合窗整体上移它自己的高度：让它的**底边**落在输入框底边上。
+    // 候选窗是挂在组合窗底下由输入法自己摆的（ImmSetCandidateWindow 对它无效，
+    // 实测报 (caret, bottom+4) 完全没人理），所以只报 bottom 的话，候选窗会被
+    // 组合窗那 22px 顶下去 —— 用户看到的就是"候选窗离输入框那么远"。
+    // 组合窗本身已经被涂成全透明了，挪上去不会有任何视觉副作用。
+    const int ghost_h = s->ime_ghost_h;
     AinoCompositionFormW cf{};
     cf.dwStyle = AINO_CFS_POINT;
     cf.ptCurrentPos.x = LONG(caret_x);
-    cf.ptCurrentPos.y = LONG(bottom);
+    cf.ptCurrentPos.y = LONG(bottom - float(ghost_h));
     api.set_comp(himc, &cf);
 
     AinoCandidateFormW cd{};
     cd.dwIndex = 0;
     cd.dwStyle = AINO_CFS_CANDIDATEPOS;
     cd.ptCurrentPos.x = LONG(caret_x);
-    cd.ptCurrentPos.y = LONG(bottom + 4.0f);
+    cd.ptCurrentPos.y = LONG(bottom + 2.0f);
     api.set_cand(himc, &cd);
 
     api.rel_ctx(s->hwnd, himc);
+}
+
+// 微软拼音这类 TSF 输入法经 CUAS 转发时，会**自己在进程里**开一个
+// "MSCTFIME Composition" 顶层窗口画组字串。我们已经把同一串画进输入框了，
+// 两个一起出现就是重影 —— 用户截图里"框里框外各一份"就是这个。
+// 这个窗口属于本进程（不一定在 UI 线程），按 pid + 类名找出来藏掉；
+// 候选窗是另一个类（"MSCTFIME UI"），绝不能动 —— 那个我们画不了。
+struct AinoImeHideCtx { DWORD pid; void* st; };
+
+inline BOOL CALLBACK aino_hide_ime_comp_cb(HWND w, LPARAM lp) {
+    DWORD p = 0;
+    GetWindowThreadProcessId(w, &p);
+    if (p != reinterpret_cast<AinoImeHideCtx*>(lp)->pid) return TRUE;
+    wchar_t cls[64];
+    if (!GetClassNameW(w, cls, 64)) return TRUE;
+    if (lstrcmpW(cls, L"MSCTFIME Composition") != 0) return TRUE;
+
+    // ① 先把它变成"全透明的分层窗"。这一步才是防闪烁的关键。
+    //    SW_HIDE 是**状态**操作，可输入法在每次组字更新时会再 ShowWindow 一次 ——
+    //    我们 20 ms 后才压回去，于是"亮一下、藏起来、再亮一下"。
+    //    实测：空闲时它是干净的（240 帧零变化），**每个按键**都会露出一次
+    //    （框下 11x15 的小白块），连打就是用户说的"一直闪烁"。
+    //    分层 + alpha=0 之后窗口**照旧是可见的**（输入法不会再来抢显示），
+    //    只是画不出任何像素；WS_EX_TRANSPARENT 让点击穿过去，别挡住输入框。
+    //    对不可见的窗口也照做：提前上好，等它下次亮出来时已经是透明的。
+    LONG_PTR ex = GetWindowLongPtrW(w, GWL_EXSTYLE);
+    const LONG_PTR want = ex | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE;
+    if (want != ex) SetWindowLongPtrW(w, GWL_EXSTYLE, want);
+    SetLayeredWindowAttributes(w, 0, 0, LWA_ALPHA);   // 幂等，重复调不心疼
+
+    // ② 再藏一次当兜底：万一分层没生效（老主题／输入法重置样式），至少还挡得住。
+    if (IsWindowVisible(w)) ShowWindow(w, SW_HIDE);
+    // ③ 记下它和它的高度，给定位用（见 win_set_ime_pos：候选窗贴着它的底边）。
+    if (auto* st = reinterpret_cast<Win32State*>(reinterpret_cast<AinoImeHideCtx*>(lp)->st))
+        st->ime_ghost = w;
+    RECT gr{};
+    if (GetWindowRect(w, &gr) && gr.bottom > gr.top)
+        if (auto* st = reinterpret_cast<Win32State*>(reinterpret_cast<AinoImeHideCtx*>(lp)->st))
+            st->ime_ghost_h = int(gr.bottom - gr.top);
+    return TRUE;
+}
+
+inline void win_hide_ime_comp_window(Win32State* s) {
+    if (!s || !s->owner) return;
+    if (!s->owner->ui.impl->ime_owner) return;              // 没输入框接管 → 别动系统那份
+    if (s->owner->ui.impl->ime_comp.empty()) return;        // 没在组字 → 别动
+    AinoImeHideCtx ctx{GetCurrentProcessId(), s};
+    EnumWindows(aino_hide_ime_comp_cb, reinterpret_cast<LPARAM>(&ctx));
 }
 
 inline void win_apply_cursor(Win32State* s) {
@@ -6052,6 +6386,59 @@ inline LRESULT CALLBACK win_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
 
+    // ---- IME 组字串（拼音）----
+    // 只靠 WM_CHAR 的话，拼音全在系统那个悬空的组合窗里，输入框看着是空的
+    // （"没有预先填充"）。这里把 GCS_COMPSTR 抓下来存进 ui->ime_comp，由
+    // input / textarea 画在光标处。上屏字符仍然走 WM_CHAR —— 所以这几个 case
+    // 一律 break（交给 DefWindowProc），绝不自己插入 RESULTSTR：两条路都插就是双份。
+    case WM_IME_SETCONTEXT:
+        // 组字串我们自己画在框里了，别让系统再画一个悬在下面。
+        // 候选窗（ISC_SHOWUIFIRSTCANDIDATE 等）不动 —— 那个只能系统画。
+        l &= ~AINO_ISC_SHOWUICOMPOSITIONWINDOW;
+        break;
+
+    case WM_IME_STARTCOMPOSITION:
+        s->owner->ui.impl->ime_comp.clear();
+        s->owner->need_frame = true;
+        break;
+
+    case WM_IME_COMPOSITION: {
+        Ui::Impl* ui = s->owner->ui.impl;
+        const bool commit = (w & AINO_GCS_RESULTSTR) != 0;
+        if (commit) ui->ime_comp.clear();  // 上屏：草稿消失，正文随后由 WM_CHAR 送到
+
+        // ⚠️ 别用 (w & GCS_COMPSTR) 当门槛。微软拼音是 TSF 输入法，经 CUAS 转发
+        // 过来时 w = 0x73 —— 只有 GCS_COMPREADSTR/READATTR/COMPATTR/COMPCLAUSE，
+        // **就是没有 GCS_COMPSTR (0x08) 这一位**，可字确实在（ImmGetCompositionString
+        // 能读到）。照那一位判断的话 ime_comp 永远是空，就是用户报的
+        // "拼音根本没有预先填充输入框"。所以除纯上屏外一律无条件去问 IMM。
+        if (!commit) {
+            static ImmApi api;
+            // ⚠️ 别用 lParam 那个 HIMC。CUAS（TSF 输入法给老式窗口做的 IMM 转发层）
+            // 塞过来的句柄调 ImmGetCompositionString 一律返回 0，可同一个串用
+            // ImmGetContext(hwnd) 拿到的上下文读就有 —— 实测 w=0x73 那条消息里
+            // lParam 是 0x1b8/0x1c00，读出来 0 字节；换成 get_ctx(hwnd) 立刻是 2/6/10/14。
+            HIMC himc = api.ok ? api.get_ctx(s->hwnd) : nullptr;
+            if (!himc) himc = reinterpret_cast<HIMC>(l);
+            LONG bytes = himc ? api.get_str(himc, AINO_GCS_COMPSTR, nullptr, 0) : 0;
+            if (bytes > 0) {
+                std::wstring buf(size_t(bytes) / sizeof(wchar_t) + 1, L'\0');
+                api.get_str(himc, AINO_GCS_COMPSTR, &buf[0], bytes);
+                ui->ime_comp = from_wide(buf.c_str());
+            } else {
+                ui->ime_comp.clear();      // 删光了拼音 / 首次进入组字
+            }
+            if (himc && himc != reinterpret_cast<HIMC>(l)) api.rel_ctx(s->hwnd, himc);
+        }
+        s->owner->need_frame = true;
+        break;
+    }
+
+    case WM_IME_ENDCOMPOSITION:
+        s->owner->ui.impl->ime_comp.clear();
+        s->owner->need_frame = true;
+        break;
+
     case WM_CHAR: {
         uint32_t unit = uint32_t(w);
         if (unit >= 32 || unit == 9) win_append_utf16(s->text_in, unit);
@@ -6113,7 +6500,12 @@ inline LRESULT CALLBACK win_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
     default: break;
     }
-    return DefWindowProcW(h, m, w, l);
+    LRESULT dw = DefWindowProcW(h, m, w, l);
+    // 顺序很关键：系统是在 DefWindowProc 里把组合窗显示出来的，
+    // 藏在它之前等于白藏（下一句就被重新 ShowWindow 了）。
+    if (m == WM_IME_COMPOSITION || m == WM_IME_STARTCOMPOSITION)
+        detail::win_hide_ime_comp_window(s);
+    return dw;
 }
 
 inline void w32_create(Window* self, int w, int h, const std::string& title) {
@@ -6264,6 +6656,14 @@ inline bool Window::poll() {
     MSG msg;
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
         if (msg.message == WM_QUIT) { o->running = false; break; }
+        // 线程计时器（组字期间压输入法浮动组合窗用的）。这种消息 hwnd 为空、
+        // 没有窗口过程可派发，只能在这儿消费。它**故意**不置 need_frame ——
+        // 否则组字时会被这个计时器拖着 50fps 重绘。
+        if (!msg.hwnd && msg.message == WM_TIMER && s->ime_timer
+            && msg.wParam == s->ime_timer) {
+            detail::win_hide_ime_comp_window(s);
+            continue;
+        }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
@@ -6294,6 +6694,22 @@ inline void Window::render() {
     Ui& ui = o->ui;
     ui.begin_frame(float(s->pw) / o->scale, float(s->ph) / o->scale, dt, o->scale);
     if (o->frame_cb_ptr) o->frame_cb_ptr();
+    // 组字期间开一个 20 ms 的低频计时器压住输入法的浮动组合窗。
+    // 不能只靠"每帧压一次"：光标闪烁的 38% 相位不请求重绘，帧会停，
+    // 停住之后输入法再把窗口亮出来就没人压了（实测多行 textarea 上就这么漏的）。
+    // 必须是**线程计时器**（hwnd = nullptr）：窗口计时器的 WM_TIMER 只有在消息泵
+    // 转起来时才被合成，而我们的循环没帧就阻塞在 WaitMessage 里 —— 那种情况下
+    // 它一次都不会来。线程计时器的 WM_TIMER 是**真入队**的，能把 WaitMessage 叫醒，
+    // 在 poll() 里消费（见 Window::poll）。
+    if (o->ui.impl->ime_owner && !o->ui.impl->ime_comp.empty()) {
+        // ⚠️ 线程计时器的 id 是**系统分配**的：SetTimer(nullptr, 0xA1, …) 返回的不一定是
+        // 0xA1（本机实测返回 0x63CD），WM_TIMER 的 wParam 也是那个分配值。所以必须存
+        // 返回值、拿它比对 —— 拿常量去比，计时器一次都命中不了，浮动窗也就一直压不住。
+        if (!s->ime_timer) s->ime_timer = SetTimer(nullptr, detail::AINO_IME_TIMER_ID, 20, nullptr);
+    } else if (s->ime_timer) {
+        KillTimer(nullptr, s->ime_timer);
+        s->ime_timer = 0;
+    }
     ui.set_cursor(ui.cursor());
     uint64_t p1 = prof ? detail::win_ticks_us() : 0;
     ui.end_frame();
@@ -6373,26 +6789,61 @@ inline void Window::close() {
     if (s && s->hwnd) PostMessageW(s->hwnd, WM_NULL, 0, 0);
 }
 
+// 剪贴板是**全系统独占**的资源：别的进程正开着它的时候 OpenClipboard 会失败。
+// 用户按 Ctrl+V 的那一下恰好撞上并不罕见（浏览器、截图工具、输入法都在抢），
+// 一次失败就返回空串会让粘贴"时灵时不灵"。所以重试几次再认输 —— 最多 8ms，
+// 只在按键那一帧发生，肉眼看不到。
+namespace detail {
+inline bool clipboard_open_retry() {
+    for (int i = 0; i < 8; ++i) {
+        if (OpenClipboard(nullptr)) return true;
+        Sleep(1);
+    }
+    return false;
+}
+} // namespace detail
+
 inline void Window::set_clipboard(const std::string& text) {
-    if (!OpenClipboard(nullptr)) return;
+    if (!detail::clipboard_open_retry()) return;
     EmptyClipboard();
-    std::wstring w = detail::to_wide(text);
-    size_t bytes = (w.size() + 1) * sizeof(wchar_t);
-    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
-    if (mem) {
+    const std::wstring w = detail::to_wide(text);
+    const size_t bytes = (w.size() + 1) * sizeof(wchar_t);
+    if (HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes)) {
         void* dst = GlobalLock(mem);
-        if (dst) { memcpy(dst, w.c_str(), bytes); GlobalUnlock(mem); SetClipboardData(CF_UNICODETEXT, mem); }
+        if (!dst) { GlobalFree(mem); CloseClipboard(); return; }
+        memcpy(dst, w.c_str(), bytes);
+        GlobalUnlock(mem);
+        // SetClipboardData 成功后所有权归系统，不能再 GlobalFree；失败则必须自己释放。
+        if (!SetClipboardData(CF_UNICODETEXT, mem)) GlobalFree(mem);
     }
     CloseClipboard();
 }
 
 inline std::string Window::clipboard() const {
     std::string out;
-    if (!OpenClipboard(nullptr)) return out;
-    HANDLE h = GetClipboardData(CF_UNICODETEXT);
-    if (h) {
+    if (!detail::clipboard_open_retry()) return out;
+    if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
         const wchar_t* p = reinterpret_cast<const wchar_t*>(GlobalLock(h));
-        if (p) { out = detail::from_wide(std::wstring(p)); GlobalUnlock(h); }
+        if (p) {
+            // 规范要求 NUL 结尾，但真有程序不给 —— 用 GlobalSize 兜个上限，
+            // 免得 std::wstring(p) 一路读出去踩到未映射页。
+            const size_t cap = GlobalSize(h) / sizeof(wchar_t);
+            size_t n = 0;
+            while (n < cap && p[n]) ++n;
+            out = detail::from_wide(std::wstring(p, n));
+            GlobalUnlock(h);
+        }
+    } else if (HANDLE h8 = GetClipboardData(CF_TEXT)) {
+        // 有些老工具 / 终端只放 CF_TEXT。剪贴板不会自动升级成 CF_UNICODETEXT，
+        // 所以这里得自己取 ANSI 再转（to_wide 会按 CP_ACP 解）。
+        const char* p = reinterpret_cast<const char*>(GlobalLock(h8));
+        if (p) {
+            const size_t cap = GlobalSize(h8);
+            size_t n = 0;
+            while (n < cap && p[n]) ++n;
+            out = detail::from_wide(detail::to_wide(std::string(p, n)));
+            GlobalUnlock(h8);
+        }
     }
     CloseClipboard();
     return out;
