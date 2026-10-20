@@ -2,7 +2,7 @@
 
 单头文件 C++17 桌面 UI 库 —— 立即模式、零第三方依赖、空闲 0.00% CPU。
 
-一个 `aino.hpp`（7714 行 / 354.6 KiB），一个 exe 492 KiB，零 DLL 依赖（只用系统 DLL）。
+一个 `aino.hpp`（7899 行 / 364.6 KiB），一个 exe 493 KiB，零 DLL 依赖（只用系统 DLL）。
 
 ## Preview
 
@@ -81,10 +81,13 @@ cmake --build build --config Release
 
 `win.run(frame_cb)` 就是完整主循环：没事件时阻塞在 `WaitMessage`，帧回调只在需要重绘时被调用 —— 窗口静止时 0 帧 / 0.00% CPU，不是低帧率空转。
 
-平台状态：三个后端都能编译、都能开窗画帧 —— Windows 有像素断言与 CPU 回归，Linux(xvfb) 与 macOS 由 CI 冒烟验证（建窗 + 跑满 20 帧 + 正常退出）。但 Linux/macOS 的**像素、输入、IME、剪贴板**都还没人核对过，细节见 [docs/README.md 的平台支持表](docs/README.md#平台支持)。
+平台状态：三个后端都能编译、能开窗画帧，**也都跑同一套 29 项像素断言**
+（`tools/ci_pixels.cpp` 直接读后备缓冲，只断言与字形无关的几何/颜色/裁剪/阴影性质）。
+Windows 另有 27 项整窗像素断言与空闲 CPU 回归；Linux/macOS 的**输入、IME、剪贴板**
+仍未经真机核对，细节见 [docs/README.md 的平台支持表](docs/README.md#平台支持)。
 
 CI（`.github/workflows/ci.yml`）在 Windows / Linux(xvfb) / macOS 三个 runner 上各跑一遍
-「编译 + 冒烟」，三个都是硬门槛：任何一个后端退步，CI 直接红。
+「编译 + 冒烟 + 像素断言」，三个都是硬门槛：任何一个后端退步，CI 直接红。
 
 ## Project Layout
 
@@ -97,6 +100,7 @@ docs/                文档，01 快速开始 … 11 动画与变换
 screenshots/         预览截图
 tools/               构建、像素断言与回归脚本
 tools/ci_smoke.cpp   CI 冒烟程序：开窗 + 跑满 20 帧就退（三平台共用）
+tools/ci_pixels.cpp  跨平台像素断言：29 项，直接读后备缓冲（三平台共用）
 tools/probe/         数值/像素探针（回归用，不参与发布）
 CMakeLists.txt       构建 gallery 与两个 demo
 ```
