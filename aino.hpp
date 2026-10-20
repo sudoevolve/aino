@@ -881,15 +881,24 @@ namespace icons {
 #elif defined(AINO_PLATFORM_X11)
 #  include <X11/Xlib.h>
 #  include <X11/Xutil.h>
+#  include <X11/cursorfont.h>   // XC_left_ptr / XC_hand2 ...
 #  include <X11/keysym.h>
 #  include <X11/Xatom.h>
 #  include <unistd.h>
 #  include <time.h>
 #elif defined(AINO_PLATFORM_MACOS)
+// MacTypes.h 会往**全局**塞 ::Rect 和 ::Style（QuickDraw 遗产），和 aino::Rect /
+// aino::Style 撞名 —— 用户代码里 `using aino::Rect;` 会变成二义性。包含系统头之前
+// 先把这两个名字改掉，让全局只剩 MacRect / MacStyle（SDL 处理 QuickDraw 也是这招）。
+#  define Rect  MacRect
+#  define Style MacStyle
 #  include <ApplicationServices/ApplicationServices.h>
 #  include <CoreText/CoreText.h>
 #  include <objc/objc.h>
 #  include <objc/message.h>
+#  include <objc/runtime.h>
+#  undef Rect
+#  undef Style
 #  include <unistd.h>
 #  include <time.h>
 #endif
@@ -6902,7 +6911,10 @@ public:
         GC gc = reinterpret_cast<GC>(cv.platform_gc);
         if (!gc) return;
         (void)weight;
-        XSetForeground(d, gc, (unsigned long(c.r) << 16) | (unsigned long(c.g) << 8) | c.b);
+        XSetForeground(d, gc,
+                       (static_cast<unsigned long>(c.r) << 16) |
+                       (static_cast<unsigned long>(c.g) << 8) |
+                       static_cast<unsigned long>(c.b));
         float base_y = y_top + ascent(size, weight);
         if (clip.w >= 0.0f) {
             // Xlib 没有 save/restore，改完要还原
@@ -7046,7 +7058,7 @@ inline void x11_apply_cursor(X11State* s) {
         case Cursor::ResizeV: shape = XC_sb_v_double_arrow; break;
         default:              shape = XC_left_ptr; break;
     }
-    Cursor c = XCreateFontCursor(s->dpy, shape);
+    ::Cursor c = XCreateFontCursor(s->dpy, shape);   // Xlib 的 Cursor，不是 aino::Cursor
     if (c) { XDefineCursor(s->dpy, s->win, c); XFreeCursor(s->dpy, c); }
 }
 
@@ -7312,14 +7324,8 @@ inline std::string Window::clipboard() const { return std::string(); }
 //        文字用 CoreText。同样未经真机验证。
 // =============================================================================
 #if defined(AINO_PLATFORM_MACOS)
-extern "C" {
-    id objc_getClass(const char* name);
-    SEL sel_registerName(const char* name);
-    id objc_msgSend(id self, SEL op, ...);
-    Class objc_allocateClassPair(Class superclass, const char* name, size_t extraBytes);
-    void objc_registerClassPair(Class cls);
-    BOOL class_addMethod(Class cls, SEL name, IMP imp, const char* types);
-}
+// 这些 objc runtime 函数由 <objc/runtime.h> / <objc/message.h> 提供，别再手写声明
+// —— 手写会报 conflicting types。
 
 namespace detail {
 
