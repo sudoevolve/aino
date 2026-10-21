@@ -1,4 +1,4 @@
-﻿# aino 文档
+# aino 文档
 
 > 单头文件跨平台 C++ GUI 库 —— 立即模式、零第三方依赖、事件驱动、空闲 0% CPU。
 
@@ -161,7 +161,7 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 
 | 平台 | 后端 | 状态 |
 |---|---|---|
-| Windows | GDI（`BitBlt` + 自绘 AA 光栅化） | **已验证**（Win11 / MSVC 与 MinGW g++，33 项回归全绿） |
+| Windows | GDI（`BitBlt` + 自绘 AA 光栅化） | **已验证**（Win11 / MSVC 与 MinGW g++，37 项回归全绿） |
 | Linux | X11 + XFontSet 系统字体 | **CI 通过**：编译 + xvfb 开窗跑满 20 帧 + **29 项像素断言** |
 | macOS | Cocoa / CoreText / CoreGraphics | **CI 通过**：编译 + 开窗跑满 20 帧 + **29 项像素断言** |
 
@@ -177,6 +177,11 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 `tools/verify_gallery.py` 那 27 项是在 Windows 真桌面上用 `PrintWindow` 抓窗口，
 抓的是「整窗长什么样」，换个平台就没法比 —— 三个平台的字形光栅完全不同
 （GDI 灰度 AA / Xft / CoreText），同一段字的像素必然对不上。
+
+`tools/verify_shadcn.py` 是同一类（真窗口 + `PrintWindow`），但靶子换成了
+`examples/shadcn_demo.cpp`：它验证的是「那 34px 的菜单栏真的占了位置、下拉真的
+弹在它下方、点完标题行真的跟着变」。这条是 `widget_probe` 补不上的 ——
+离屏探针的 `impl->canvas` 是自己塞的，绕过了 `WM_PAINT`、DPI 缩放和 `BitBlt`。
 
 所以 `ci_pixels.cpp` 只断言**与字形无关**的性质：
 

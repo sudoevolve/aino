@@ -16,6 +16,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 BUILD_DIR = os.path.join(ROOT, "build")
 
+# 默认编 gallery；加 --src / --out 可以编别的单文件示例（回归要顺带编 shadcn_demo）。
+SRC = os.path.join(ROOT, "examples", "gallery.cpp")
+OUT = os.path.join(BUILD_DIR, "aino_gallery.exe")
+_argv = sys.argv[1:]
+for _i, _a in enumerate(_argv):
+    if _a == "--src" and _i + 1 < len(_argv):
+        SRC = _argv[_i + 1]
+        if not os.path.isabs(SRC):
+            SRC = os.path.join(ROOT, SRC)
+    elif _a == "--out" and _i + 1 < len(_argv):
+        OUT = os.path.join(BUILD_DIR, _argv[_i + 1])
+
 
 def try_cmake():
     try:
@@ -32,16 +44,17 @@ def try_cmake():
 
 
 def kill_stale():
-    """上一个回归如果没把 gallery 关干净，exe 被占用 → 链接必失败。
+    """上一个回归如果没把目标关干净，exe 被占用 → 链接必失败。
 
     踩过：第一次跑到 hover 探针偶发 FAIL 就退了，gallery 留在那里，
     下一次构建直接 "Permission denied" —— 看起来像代码坏了，其实是文件锁。
     """
-    try:
-        subprocess.run(["taskkill", "/F", "/IM", "aino_gallery.exe"],
-                       capture_output=True, timeout=15)
-    except Exception:
-        pass
+    for name in ("aino_gallery.exe", os.path.basename(OUT)):
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", name],
+                           capture_output=True, timeout=15)
+        except Exception:
+            pass
 
 
 def ship_runtime_dll(exe, gxx):
@@ -72,8 +85,8 @@ else:
         raise SystemExit("既没有可用的 MSVC + CMake，也找不到 g++ —— 无法构建")
     os.makedirs(BUILD_DIR, exist_ok=True)
     kill_stale()
-    src = os.path.join(ROOT, "examples", "gallery.cpp")
-    out = os.path.join(BUILD_DIR, "aino_gallery.exe")
+    src = SRC
+    out = OUT
 
     # -s：静态链 libstdc++ 会带进整份符号表，strip 掉体积能砍一半。
     common = ["-std=c++17", "-O2", "-mwindows", "-s",

@@ -61,7 +61,7 @@
 #define AINO_VERSION_MAJOR 0
 #define AINO_VERSION_MINOR 3
 #define AINO_VERSION_PATCH 0
-#define AINO_VERSION "0.3.0"
+#define AINO_VERSION "0.3.1"
 
 #include <cstdint>
 #include <cstddef>
@@ -577,6 +577,13 @@ struct Transform {
     Vec2  origin{0.0f, 0.0f};      // 缩放/旋转的中心（逻辑坐标）
 };
 
+// menubar() 的返回值。全关时 menu 与 item 都是 -1，用 valid() 一眼判掉。
+struct MenuPick {
+    int menu = -1;   // 第几个顶级菜单（-1 = 本帧没有选择）
+    int item = -1;   // 该菜单里的第几项
+    bool valid() const { return menu >= 0 && item >= 0; }
+};
+
 // =============================================================================
 //  六、Ui —— 每帧的绘制与组件入口
 // =============================================================================
@@ -714,7 +721,7 @@ public:
     void bars(const std::vector<float>& values, const Rect& box, const Style& st = Style());
 
     // =========================================================================
-    //  对齐 shadcn/ui 的基础控件（0.3.0 补）
+    //  对齐 shadcn/ui 的基础控件（0.3.0 / 0.3.1 补）
     //  命名约定：**能一对一的就用同一个名字**；名字被占用的在这里注明。
     //  `toggle()` 占的是 shadcn 的 Switch，所以 shadcn 的 Toggle 叫
     //  `toggle_button()`；`empty` 让给了 Rect::empty()，所以叫 `empty_state()`。
@@ -764,6 +771,12 @@ public:
     // 下拉菜单：box 是触发按钮，点开后弹列表；选中某项时返回 true 并写入 *clicked_index
     bool menu(const std::string& label, const std::vector<std::string>& items,
               int* clicked_index, const Rect& box, const Style& st = Style());
+    // 菜单栏：横向一排顶级菜单，点开一个之后把鼠标划到隔壁会自动切换
+    // （桌面菜单栏的标准行为，Web 上一般做不到）。labels 与 items 一一对应。
+    // 返回本帧选中的是哪一项，没选到就 MenuPick{}。
+    MenuPick menubar(const std::vector<std::string>& labels,
+                     const std::vector<std::vector<std::string>>& items,
+                     const Rect& box, const Style& st = Style());
     // 模态框：打开时铺满窗口的遮罩 + box 处的面板，返回"本帧是否处于打开态"。
     // 要在遮罩之上画自己的按钮，就紧接着 dialog() 之后画（此时已在遮罩之上）。
     bool dialog(const std::string& title, const std::string& body, bool* open,
@@ -802,6 +815,10 @@ public:
 
     // 布局辅助（立即模式下的轻量自动布局）
     Rect row(float height);            // 在"当前容器"里切一行
+    // Aspect Ratio（shadcn 的 AspectRatio）：按 ratio = 宽/高 从宽度算出高度。
+    // 立即模式里没有"容器组件"，所以它就是一个算矩形的小工具：
+    //   Rect r = Ui::aspect_rect(cell, 16.0f / 9.0f);  ui.fill_rect(r, bg);
+    static Rect aspect_rect(const Rect& box, float ratio);
     Rect column(float width);
     void push_padding(float x, float y);
     void pop_padding();
@@ -3169,6 +3186,13 @@ inline Rect Ui::row(float h) {
     return r;
 }
 
+// ratio = 宽 / 高。ratio <= 0 时原样返回（别把高度算成 inf）。
+inline Rect Ui::aspect_rect(const Rect& box, float ratio) {
+    Rect r = box;
+    if (ratio > 0.0f) r.h = std::floor(box.w / ratio + 0.5f);
+    return r;
+}
+
 inline Rect Ui::column(float w) {
     if (impl->group.empty()) return Rect();
     Rect& g = impl->group.back();
@@ -4013,7 +4037,6 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
     }
 
     // ---------------- 绘制 ----------------
-    detail::Skin sk = detail::make_skin(th, st, Style::Outline, rad);
     const float t_hover = detail::animate_value(impl, id * 31u + 1u, (in.hovered && !focused) ? 1.0f : 0.0f, 18.0f);
     Color bg = !st.bg.is_none() ? st.bg : th.background;
     if (st.disabled && bg.a > 0) bg.a = uint8_t(float(bg.a) * 0.45f);
@@ -5536,6 +5559,165 @@ inline bool Ui::menu(const std::string& label, const std::vector<std::string>& i
     return false;
 }
 
+// 菜单栏。和 menu() 的差别只有一条，但这条恰恰是桌面菜单栏的灵魂：
+// **点开一个之后，鼠标划到隔壁会自动切过去**（Web 上一堆库都做不到）。
+//
+// 实现上靠的顺序很要紧。gate_claim() 登记的是**下一帧**的白名单，所以：
+//   1) 本帧先 interact 所有顶级项（此时闸门还是上一帧的状态）；
+//   2) 再处理点击 / 划动切换，把最终的 open_idx 算出来；
+//   3) 这时才把**整条菜单栏** claim 进去 —— 只有这样下一帧隔壁那几项
+//      才收得到 hover，联动才成立。只 claim 触发器本身的话，鼠标一离开
+//      当前项就被闸门挡住，看起来像"菜单卡住了"。
+inline MenuPick Ui::menubar(const std::vector<std::string>& labels,
+                            const std::vector<std::vector<std::string>>& items,
+                            const Rect& box, const Style& st) {
+    MenuPick pick;
+    const Theme& th = impl->theme;
+    const uint64_t bar_id = detail::make_id("menubar", box);
+    // 顶级项在 claim 之前就 interact 过了，层级号必须在**入口处**取。
+    const uint64_t z_first = impl->seq + 1;
+    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const bool enabled = !st.disabled;
+    const float padx = st.pad_x >= 0.0f ? st.pad_x : 12.0f;
+
+    // flags 里存「打开的是第几个 + 1」，0 表示全关（-1 也要能表示，所以不直接存下标）。
+    int open_idx = int(impl->flags[bar_id]) - 1;
+
+    // --- 底板：默认 Ghost（透明），只留一条底边线，正好当菜单栏用 ---
+    detail::Skin sk = detail::make_skin(th, st, Style::Ghost, rad);
+    if (st.font_weight <= 0) sk.weight = 500;
+    detail::paint_surface(*this, box, sk, 0.0f, 0.0f, st.disabled);
+    draw_line(box.x, box.bottom() - 0.5f, box.right(), box.bottom() - 0.5f, th.border, 1.0f);
+
+    // --- 顶级项排布：文字宽 + 左右各 padx，从左边依次排 ---
+    std::vector<Rect> trg(labels.size());
+    {
+        float x = box.x + 4.0f;
+        for (size_t i = 0; i < labels.size(); ++i) {
+            const float w = text_width(labels[i], fs, 500) + padx * 2.0f;
+            trg[i] = Rect(x, box.y + 2.0f, w, std::max(box.h - 5.0f, 1.0f));
+            x += w;
+        }
+    }
+
+    // --- 1) 顶级项交互 ---
+    std::vector<uint8_t> hov(labels.size(), 0);
+    for (size_t i = 0; i < labels.size(); ++i) {
+        const uint64_t tid = detail::make_id("menubar_item", trg[i], bar_id + i);
+        detail::Interact in = detail::interact(impl, tid, trg[i], enabled);
+        if (in.hovered) { set_cursor(Cursor::Hand); hov[i] = 1; }
+        if (in.clicked) {
+            open_idx = (open_idx == int(i)) ? -1 : int(i);   // 点自己 = 收起
+            repaint();
+        }
+    }
+
+    // --- 2) 划到隔壁自动切（已经有打开的才切，全关时划过去不动） ---
+    if (open_idx >= 0) {
+        for (size_t i = 0; i < labels.size(); ++i) {
+            if (hov[i] && int(i) != open_idx) {
+                open_idx = int(i);
+                repaint();
+                break;
+            }
+        }
+    }
+    impl->flags[bar_id] = open_idx < 0 ? 0.0f : float(open_idx) + 1.0f;
+
+    // --- 顶级项视觉 ---
+    for (size_t i = 0; i < labels.size(); ++i) {
+        const bool act = (int(i) == open_idx);
+        const float t = detail::animate_value(impl, bar_id * 97u + i, (hov[i] || act) ? 1.0f : 0.0f, 20.0f);
+        if (t > 0.02f)
+            fill_rect(trg[i], th.accent.mix(th.foreground.with_alpha(10), t * 0.3f),
+                      std::max(0.0f, rad - 4.0f));
+        Style ts;
+        ts.font_size = fs;
+        ts.font_weight = 500;
+        ts.align = Align::Center;
+        ts.valign = VAlign::Middle;
+        Color fg = sk.fg;
+        if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
+        draw_text(labels[i], trg[i], fg, ts);
+    }
+
+    // --- 3) 整条菜单栏一起 claim：给下一帧的联动放行（见函数头注释） ---
+    if (open_idx >= 0 && enabled) impl->gate_claim(box, z_first);
+
+    // --- 下拉 ---
+    if (open_idx >= 0 && open_idx < int(labels.size()) && open_idx < int(items.size())
+        && !items[size_t(open_idx)].empty()) {
+        const std::vector<std::string>& src = items[size_t(open_idx)];
+        const float item_h = std::max(box.h, 32.0f);
+        float list_w = std::max(trg[size_t(open_idx)].w, 140.0f);
+        for (const auto& it : src) list_w = std::max(list_w, text_width(it, fs, 500) + 34.0f);
+        const float list_h = item_h * float(src.size()) + 8.0f;
+        float lx = trg[size_t(open_idx)].x;
+        if (lx + list_w > width() - 4.0f) lx = std::max(4.0f, width() - 4.0f - list_w);
+        const Rect list(lx, box.bottom() + 3.0f, list_w, list_h);
+
+        impl->gate_claim(list, z_first);
+        impl->gate_claim(trg[size_t(open_idx)], z_first);
+
+        std::vector<Rect>     rects;
+        std::vector<uint64_t> ids;
+        std::vector<uint8_t>  lhov;
+        rects.reserve(src.size());
+        ids.reserve(src.size());
+        lhov.reserve(src.size());
+        for (size_t i = 0; i < src.size(); ++i) {
+            const Rect r(list.x + 4.0f, list.y + 4.0f + item_h * float(i), list.w - 8.0f, item_h);
+            rects.push_back(r);
+            ids.push_back(detail::make_id("menubar_li", r, bar_id + i));
+            lhov.push_back(0);
+        }
+        int chosen = -1;
+        for (size_t i = 0; i < rects.size(); ++i) {
+            detail::Interact ii = detail::interact(impl, ids[i], rects[i], true);
+            if (ii.hovered) { set_cursor(Cursor::Hand); lhov[i] = 1; }
+            if (ii.clicked) chosen = int(i);
+        }
+        // 点菜单栏自己不算"点外面" —— 那是切换/收起，由上面的逻辑管。
+        const bool in_list = list.contains(impl->input.mouse.x, impl->input.mouse.y);
+        const bool in_bar  = box.contains(impl->input.mouse.x, impl->input.mouse.y);
+        const bool closing = (impl->input.pressed[0] || impl->input.pressed[1])
+                          && !in_list && !in_bar;
+
+        std::vector<std::string> litems = src;
+        deferred([this, list, rad, rects, ids, lhov, litems, th, fs]() mutable {
+            drop_shadow(list, rad, 10.0f, Color(0, 0, 0, 34), 3.0f);
+            fill_rect(list, th.popover, rad);
+            stroke_rect(list, th.border, rad, 1.0f);
+            push_clip(list);
+            for (size_t i = 0; i < rects.size(); ++i) {
+                const float t_h = detail::animate_value(impl, ids[i] * 83u + 1u, lhov[i] ? 1.0f : 0.0f, 20.0f);
+                if (t_h > 0.02f)
+                    fill_rect(rects[i], th.accent.mix(th.foreground.with_alpha(10), t_h * 0.3f),
+                              std::max(0.0f, rad - 2.0f));
+                Style its;
+                its.font_size = fs;
+                its.font_weight = 500;
+                its.align = Align::Left;
+                its.valign = VAlign::Middle;
+                draw_text(litems[i], rects[i].inset(10.0f, 0.0f), th.popover_foreground, its);
+            }
+            pop_clip();
+        });
+
+        if (chosen >= 0) {
+            pick.menu = open_idx;
+            pick.item = chosen;
+            impl->flags[bar_id] = 0.0f;
+            repaint();
+        } else if (closing) {
+            impl->flags[bar_id] = 0.0f;
+            repaint();
+        }
+    }
+    return pick;
+}
+
 // 模态框。约定：在帧回调的**末尾**调用；返回 true 表示本帧处于打开态，
 // 想画自己的按钮就紧接着 dialog() 之后画，这样天然落在遮罩之上。
 inline bool Ui::dialog(const std::string& title, const std::string& body, bool* open,
@@ -5641,7 +5823,7 @@ inline void Ui::toast(const std::string& text, const Rect& box, const Style& st)
 }
 
 // =============================================================================
-//  8.16  对齐 shadcn/ui 的基础控件（0.3.0）
+//  8.16  对齐 shadcn/ui 的基础控件（0.3.0 / 0.3.1）
 //
 //  这一节的控件都遵守同一套约定，以后加组件照抄即可：
 //    1) 交互一律走 detail::interact()，动画一律走 detail::animate_value()；

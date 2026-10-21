@@ -624,6 +624,76 @@ static void test_split_pane() {
           "ratio=" + std::to_string(ratio));
 }
 
+// ---------------------------------------------------------------- 15.6 Menubar
+static void test_menubar() {
+    std::printf("[15.6] Menubar\n");
+    Surface s(400, 260);
+    Harness h(&s);
+    Driver d{h.ui, 400, 260};
+    aino::Ui& ui = h.ui;
+
+    const Rect bar(0.0f, 0.0f, 400.0f, 34.0f);
+    const std::vector<std::string> labels = {"文件", "编辑", "视图"};
+    const std::vector<std::vector<std::string>> items = {
+        {"新建", "打开", "保存"},
+        {"撤销", "重做", "粘贴"},
+        {"放大", "缩小"},
+    };
+    aino::MenuPick got;
+    auto draw = [&]() { got = ui.menubar(labels, items, bar); };
+
+    const uint64_t id = aino::detail::make_id("menubar", bar);
+    auto open_of = [&]() { return int(ui.impl->flags[id] + 0.5f) - 1; };
+
+    // 顶级项宽度 = 文字宽 + 左右各 12（与实现一致，纯为了算出点击点）
+    const float fs = ui.theme().font_size;
+    std::vector<float> tx(labels.size());
+    {
+        float x = bar.x + 4.0f;
+        for (size_t i = 0; i < labels.size(); ++i) {
+            tx[i] = x;
+            x += ui.text_width(labels[i], fs, 500) + 24.0f;
+        }
+    }
+
+    d.idle(draw);
+    check(open_of() == -1, "初始全关", "open=" + std::to_string(open_of()));
+
+    d.click(tx[0] + 20.0f, bar.cy(), draw);
+    check(open_of() == 0, "点「文件」→ 展开第 0 个", "open=" + std::to_string(open_of()));
+
+    // 这条是 menubar 与 menu 的唯一区别，也是它值得单独存在的原因
+    d.move(tx[2] + 20.0f, bar.cy(), draw);
+    check(open_of() == 2, "鼠标划到「视图」→ 自动切过去", "open=" + std::to_string(open_of()));
+
+    // 上一帧已把整条菜单栏 + 列表 claim 进去，所以这一帧点得动
+    const float item_h = std::max(bar.h, 32.0f);
+    const float ly0 = bar.bottom() + 3.0f + 4.0f;      // list.y + 4
+    d.click(tx[2] + 70.0f, ly0 + item_h * 1.0f + item_h * 0.5f, draw);
+    check(got.menu == 2 && got.item == 1, "点「视图 → 缩小」拿到 menu=2 item=1",
+          "menu=" + std::to_string(got.menu) + " item=" + std::to_string(got.item));
+    check(open_of() == -1, "选中后自动收起", "open=" + std::to_string(open_of()));
+
+    d.click(tx[0] + 20.0f, bar.cy(), draw);
+    check(open_of() == 0, "可以再打开", "open=" + std::to_string(open_of()));
+    d.click(200.0f, 220.0f, draw);
+    check(open_of() == -1, "点菜单栏外面 → 收起", "open=" + std::to_string(open_of()));
+
+    // 收起之后下一帧不该再挡住页面控件（否则整个窗口就点不动了）
+    check(!ui.impl->gate_next, "收起后闸门不再登记", "");
+}
+
+// ---------------------------------------------------------------- 15.7 Aspect Ratio
+static void test_aspect_rect() {
+    std::printf("[15.7] Aspect Ratio\n");
+    const Rect r16 = aino::Ui::aspect_rect(Rect(0.0f, 0.0f, 160.0f, 0.0f), 16.0f / 9.0f);
+    check(std::fabs(r16.h - 90.0f) < 0.6f, "160 宽 16:9 → 高 90", "h=" + std::to_string(r16.h));
+    const Rect r1 = aino::Ui::aspect_rect(Rect(0.0f, 0.0f, 100.0f, 0.0f), 1.0f);
+    check(std::fabs(r1.h - 100.0f) < 0.6f, "1:1 → 高 == 宽", "h=" + std::to_string(r1.h));
+    const Rect rz = aino::Ui::aspect_rect(Rect(0.0f, 0.0f, 100.0f, 50.0f), 0.0f);
+    check(rz.h == 50.0f, "ratio <= 0 时原样返回（不出 inf）", "h=" + std::to_string(rz.h));
+}
+
 // ---------------------------------------------------------------- 15.5 Hover Card
 static void test_hover_card() {
     std::printf("[15.5] Hover Card\n");
@@ -716,6 +786,8 @@ int main() {
     test_context_menu();
     test_combobox();
     test_split_pane();
+    test_menubar();
+    test_aspect_rect();
     test_hover_card();
     test_no_overflow();
     std::printf("=== 通过 %d 项，失败 %d 项 ===\n", g_pass, g_fail);

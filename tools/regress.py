@@ -1,4 +1,4 @@
-﻿"""aino 一键回归：数值探针 + 光栅化等价性 + 像素断言 + 空闲 CPU。
+"""aino 一键回归：数值探针 + 光栅化等价性 + 像素断言 + 空闲 CPU。
 
 用法：
   python regress.py            # 全跑
@@ -55,6 +55,14 @@ def build():
     return r.returncode == 0, (r.stdout or r.stderr)[-400:]
 
 
+def build_shadcn_demo():
+    """shadcn_demo 也要编 —— 下面 verify_shadcn 要开真窗口点它。"""
+    r = run([PY, os.path.join(HERE, "build.py"),
+             "--src", os.path.join(ROOT, "examples", "shadcn_demo.cpp"),
+             "--out", "aino_shadcn_demo.exe"])
+    return r.returncode == 0, (r.stdout or r.stderr)[-300:]
+
+
 def build_probe(name):
     r = run([PY, os.path.join(HERE, "cl_one.py"), name + ".cpp", name + ".exe",
              "/utf-8", "user32.lib", "gdi32.lib", "msimg32.lib", "imm32.lib"], cwd=PROBE)
@@ -102,6 +110,21 @@ def verify_gallery(extra=()):
         return False, " | ".join(fails)[:160]
     line = [l for l in out.splitlines() if "共" in l and "失败" in l]
     return (r.returncode == 0), (line[0].strip() if line else out.strip()[-80:])
+
+
+def verify_shadcn():
+    """shadcn_demo 的真窗口验证（菜单栏那 34px 到底画没画、点得开不开）。
+
+    widget_probe 走的是离屏画布，绕过了 WM_PAINT / DPI 缩放 / BitBlt ——
+    这条补的正是那些路径。
+    """
+    r = run([PY, os.path.join(HERE, "verify_shadcn.py")])
+    out = (r.stdout or "") + (r.stderr or "")
+    fails = [l.strip() for l in out.splitlines() if "[FAIL]" in l]
+    if fails:
+        return False, " | ".join(fails)[:160]
+    tail = [l for l in out.splitlines() if l.startswith("===")][-1:] or [""]
+    return r.returncode == 0, tail[0][:60]
 
 
 def idle_probe(exe, dur=3.0, click=None, expect_nav=None, want_anim=None, tries=3):
@@ -246,7 +269,7 @@ PROBES = (
     # 0.3.0 新补的 18 个 shadcn 对齐控件。离屏驱动鼠标/键盘，逐条验三件事：
     # 点下去到底改没改变量的值、浮层关不关得掉（且关的时候不穿透）、
     # 绘制有没有跑到 box 外面（空背景上肉眼看不出来，放进卡片就糊到邻居身上）。
-    ("widget_probe",     "通过 65 项，失败 0 项",            "新增控件行为（Toggle/OTP/Combobox/分页/月历/浮层/分割）"),
+    ("widget_probe",     "通过 76 项，失败 0 项",            "新增控件行为（Toggle/OTP/Combobox/分页/月历/浮层/分割/菜单栏）"),
 )
 
 
@@ -259,6 +282,8 @@ def main():
         print("== 编译 ==")
         ok, d = build()
         step("编译 aino_gallery（单目标）", ok, d if not ok else "")
+        ok, d = build_shadcn_demo()
+        step("编译 aino_shadcn_demo", ok, d if not ok else "")
         for n, _, _ in PROBES:
             ok, d = build_probe(n)
             step("编译 " + n, ok, d if not ok else "")
@@ -271,6 +296,10 @@ def main():
     print("\n== 窗口像素断言（PrintWindow，逻辑坐标，含换页与主题）==")
     ok, d = verify_gallery()
     step("gallery 6 页 + 浅深主题", ok, d)
+    # 新控件只在 gallery 之外（gallery 是 0.2.x 的页面，没摆 menubar）。
+    # 这条开真窗口验证：菜单栏占了 34px、下拉弹在它下方、点完标题行跟着变。
+    ok, d = verify_shadcn()
+    step("shadcn_demo 菜单栏（真窗口）", ok, d)
 
     print("\n== 跨平台像素断言（直接读后备缓冲，CI 三平台同跑）==")
     ok, d = ci_pixels()

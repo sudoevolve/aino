@@ -1,8 +1,8 @@
-﻿# aino
+# aino
 
 单头文件 C++17 桌面 UI 库 —— 立即模式、零第三方依赖、空闲 0.00% CPU。
 
-一个 `aino.hpp`（9385 行 / 434.6 KiB），一个 exe 493 KiB，零 DLL 依赖（只用系统 DLL）。
+一个 `aino.hpp`（9567 行 / 443.3 KiB），一个 exe 494 KiB，零 DLL 依赖（只用系统 DLL）。
 
 ## Preview
 
@@ -11,6 +11,7 @@
 | ![概览](screenshots/gallery-1.png) | ![控件](screenshots/gallery-2.png) |
 | ![布局](screenshots/gallery-4.png) | ![动效](screenshots/gallery-6.png) |
 | ![深色](screenshots/gallery-dark.png) | ![浮层](screenshots/gallery-dialog.png) |
+| ![shadcn 控件](screenshots/shadcn-demo.png) | ![浅色](screenshots/gallery-light.png) |
 
 ## Quick Start
 
@@ -96,14 +97,14 @@ aino.hpp             库本体，单文件（全部实现都在这一个头里�
 examples/gallery.cpp 6 页组件画廊（功能最全，也是像素回归的靶子）
 examples/sidebar_demo.cpp 侧边栏切换（100 行，新手第一个 demo）
 examples/zoom_demo.cpp 缩放按钮（Transform 的最小用法）
-examples/shadcn_demo.cpp 18 个新控件摆在一页（每一条都能点）
-docs/                文档，01 快速开始 … 11 动画与变换
+examples/shadcn_demo.cpp 20 个新控件摆在一页（每一条都能点）
+docs/                文档，01 快速开始 … 12 与 shadcn/ui 的对照
 screenshots/         预览截图
 tools/               构建、像素断言与回归脚本
 tools/ci_smoke.cpp   CI 冒烟程序：开窗 + 跑满 20 帧就退（三平台共用）
 tools/ci_pixels.cpp  跨平台像素断言：29 项，直接读后备缓冲（三平台共用）
 tools/probe/         数值/像素探针（回归用，不参与发布）
-CMakeLists.txt       构建 gallery 与两个 demo
+CMakeLists.txt       构建 gallery 与三个 demo
 ```
 
 改完跑一遍 `python tools/regress.py`（编译 + 探针 + 像素断言 + 空闲 CPU），全绿再提交。

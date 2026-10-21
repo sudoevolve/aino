@@ -1,13 +1,13 @@
 ﻿// =============================================================================
-//  aino 示例 —— shadcn/ui 基础控件补齐（0.3.0）
+//  aino 示例 —— shadcn/ui 基础控件补齐（0.3.0 / 0.3.1）
 //
 //  这一页把新补的控件全摆出来，每个都能真点：
 //
 //    表单    Toggle / Toggle Group / Button Group / Input Group / Input OTP
 //            Field / Combobox
 //    展示    Item / Empty / Pagination / Calendar
-//    浮层    Popover / Hover Card / Alert Dialog / Drawer / Context Menu
-//    布局    Split Pane
+//    浮层    Popover / Hover Card / Alert Dialog / Drawer / Context Menu / Menubar
+//    布局    Split Pane / Aspect Ratio
 //
 //  全部状态都是 main() 里那几个普通变量，没有任何隐藏的控件对象。
 //  控件在"点下去那一帧"就把变量改掉，下一帧重画时自然就是新样子 ——
@@ -43,22 +43,45 @@ int main() {
     bool drawer_open = false;              // Drawer
     float split = 0.42f;                   // Split Pane
     int  ctx_click = -1;                   // Context Menu
+    std::string picked = "还没点菜单";      // Menubar
 
     const std::vector<std::string> kLangs = {"C++", "Rust", "Go", "Zig", "Python", "TypeScript", "Swift"};
+    const std::vector<std::string> kMenuLabels = {"文件", "编辑", "视图", "帮助"};
+    const std::vector<std::vector<std::string>> kMenuItems = {
+        {"新建", "打开…", "保存", "另存为…"},
+        {"撤销", "重做", "剪切", "复制", "粘贴"},
+        {"放大", "缩小", "实际大小", "全屏"},
+        {"快捷键", "文档", "关于"},
+    };
 
     win.run([&](aino::Ui& ui) {
         ui.clear(ui.theme().background);
         const float w = ui.width(), h = ui.height();
 
-        auto root = ui.vbox(Rect(0, 0, w, h), 14.0f, 22.0f);
+        // ---------------- 菜单栏：贴窗口顶边 ----------------
+        // 点开一个之后，把鼠标直接划到"编辑"上就会切过去 —— 桌面菜单栏的老规矩。
+        const Rect menu_r(0.0f, 0.0f, w, 34.0f);
+        const aino::MenuPick mp = ui.menubar(kMenuLabels, kMenuItems, menu_r);
+        if (mp.valid())
+            picked = kMenuLabels[size_t(mp.menu)] + " → " + kMenuItems[size_t(mp.menu)][size_t(mp.item)];
+
+        auto root = ui.vbox(Rect(0.0f, 36.0f, w, h - 36.0f), 14.0f, 22.0f);
         const Rect head = root.next(50.0f);
         const Rect body = root.next(std::max(root.remain() - 66.0f, 1.0f));
         const Rect foot = root.fill();
 
         // ---------------- 标题 ----------------
         ui.heading("shadcn 基础控件", Rect(head.x, head.y, head.w, 28.0f));
-        ui.muted_text("0.3.0 补的 18 个控件 · 这一页摆了 16 个，都能点",
+        ui.muted_text("0.3.0 / 0.3.1 补的 20 个 API · 这一页摆了 18 个，都能点 · " + picked,
                       Rect(head.x, head.y + 29.0f, head.w, 18.0f), Style().left().font(13.0f));
+
+        // Aspect Ratio：给宽度，高度按 16:9 自己算出来（立即模式里它就是个 helper）
+        {
+            const Rect card = aino::Ui::aspect_rect(
+                Rect(head.right() - 84.0f, head.y + 1.0f, 84.0f, 0.0f), 16.0f / 9.0f);
+            ui.panel(card, Style().background(ui.theme().muted).corner(6.0f));
+            ui.muted_text("16 : 9", card, Style().center().font(11.0f).muted_text());
+        }
 
         auto cols = ui.hbox(body, 22.0f);
         const Rect L = cols.part(0, 2);

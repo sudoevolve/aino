@@ -76,7 +76,7 @@ ui.toggle_button("粗体", &bold, r);       // ← 这才是 shadcn 的 Toggle
 | Sidebar | `nav_item()` | ⚠️ | 只有条目，没有 Sidebar 容器；`examples/sidebar_demo.cpp` 手搭 |
 | Sheet | `drawer()` | ✅ | `side` 参数控制从哪边出来 |
 | Drawer | `drawer()` | ➕ | 只做淡入，不做位移（见下文「取舍」） |
-| Aspect Ratio | — | ❌ | 没有图片管线，按比例算个 `Rect` 就够，不值得包一层 |
+| Aspect Ratio | `Ui::aspect_rect()` | ➕ | 没有图片管线，所以它就是个算 `Rect` 的 helper（立即模式里本来也不需要容器组件） |
 | Collapsible | `accordion()` | ⚠️ | 传空标题就是纯折叠面板 |
 | Accordion | `accordion()` | ✅ | 每一项一个 `bool*`，多开/互斥由调用方决定 |
 
@@ -115,7 +115,7 @@ ui.toggle_button("粗体", &bold, r);       // ← 这才是 shadcn 的 Toggle
 | Breadcrumb | `breadcrumb()` | ✅ | |
 | Pagination | `pagination()` | ➕ | 槽位数**恒定** 7 个，翻页时位置不动 |
 | Navigation Menu | `nav_item()` + `tabs()` | ⚠️ | 没有带下划线指示器的顶部导航组合件 |
-| Menubar | `menu()` | ⚠️ | 横排几个 `menu()` 就是菜单栏，但没有「打开一个自动关掉另一个」的联动 |
+| Menubar | `menubar()` | ➕ | 横排顶级菜单，**划到隔壁会自动切**（桌面菜单栏的老规矩，Web 上一堆库做不到） |
 | Sidebar（条目） | `nav_item()` | ✅ | 高亮 + 点击 |
 
 ### 浮层
@@ -140,14 +140,30 @@ ui.toggle_button("粗体", &bold, r);       // ← 这才是 shadcn 的 Toggle
 
 ### 数一下
 
-- **一对一 / 近似**：38 项
-- **0.3.0 新补**：17 个控件（18 个函数，`field_height` 是配 `field` 的辅助）
-- **明确没有**：13 项，其中 5 项是聊天场景（Message / Bubble / Attachment / Message Scroller / Marker），
-  其余是 RTL、Form、Carousel、Aspect Ratio、Command、Menubar 联动、Trace、Questionnaire
+按上面表格的行数（个别控件因为跨两类各出现一次，所以行数比 64 项多一点）：
+
+- **✅ 一对一**：31 项
+- **⚠️ 功能有但范围不同**：9 项
+- **➕ 0.3.0 / 0.3.1 新补**：19 项（20 个 API，`field_height` 与 `aspect_rect` 是辅助）
+- **❌ 明确没有**：10 项
+
+那 10 项里，5 项是聊天场景（Message / Bubble / Attachment / Message Scroller / Marker），
+其余是 RTL、Form、Carousel、Command、Trace、Questionnaire。
+
+都补到 19 项了，剩下这几个为什么不再补：
+
+| 没做的 | 为什么 |
+|---|---|
+| Message / Bubble / Attachment / Message Scroller / Marker | 聊天界面不是「基础控件」，是**一整个场景**。塞进基础库会把 434 KiB 撑成什么样先不说，它们还都需要气泡箭头、流式追加、滚动锚定一套自己的规矩 |
+| Command | 它是**模式**不是控件：一个遮罩 + 一个输入框 + 一个过滤列表。用 `dialog()` + `input()` + `menu()` 十行就拼出来了，做成控件反而限制住布局 |
+| Carousel | 要时间轴动画（自动轮播 / 惯性滑动），和「空闲必须 0 帧」的承诺正面冲突 |
+| Form | shadcn 的 `Form` 是 react-hook-form 的胶水层，管的是校验编排。纯 UI 层给不出它，`field()` 已经是这一层能做的全部 |
+| Trace / Questionnaire | AI 场景的专用视图，太专 |
+| RTL | 全部按 LTR 写死。要做 RTL 得先把 `Align` 与 `pad_x` 的左右语义整个反过来，是**一次重写**，不是补一个控件 |
 
 ---
 
-## 三、0.3.0 新补的 18 个 API
+## 三、0.3.0 / 0.3.1 新补的 20 个 API
 
 ### 表单
 
@@ -228,6 +244,17 @@ ui.context_menu(rect, {"标记已读", "归档", "删除"}, &picked);
 // Combobox：输入即过滤
 int idx = 0;
 ui.combobox({"C++", "Rust", "Go"}, &idx, rect);
+
+// Menubar：横向一排顶级菜单，**划到隔壁会自动切**
+std::vector<std::string> labels = {"文件", "编辑", "视图"};
+std::vector<std::vector<std::string>> items = {
+    {"新建", "打开…", "保存"},
+    {"撤销", "重做"},
+    {"放大", "缩小"},
+};
+MenuPick mp = ui.menubar(labels, items, Rect(0, 0, w, 34));
+if (mp.valid())
+    log(labels[mp.menu] + " → " + items[mp.menu][mp.item]);
 ```
 
 ### 布局
@@ -237,6 +264,9 @@ float ratio = 0.42f;
 Rect a, b;
 ui.split_pane(&ratio, box, &a, &b, /*vertical=*/true, /*min_ratio=*/0.2f);
 ui.panel(a);  ui.panel(b);
+
+// Aspect Ratio：给宽度，高度按 16:9 算出来
+const Rect thumb = Ui::aspect_rect(Rect(x, y, 160.0f, 0.0f), 16.0f / 9.0f);   // h = 90
 ```
 
 ---
@@ -263,6 +293,17 @@ shadcn 的 `type="single"` 不允许取消，但桌面端这个更顺手。这�
 `mktime` / `localtime` 走本地时区与夏令时，同一份代码在 UTC 的 CI runner 和
 东八区的机器上会差一天。月历要的是「日历上第几格」，跟时区无关，所以用纯
 整数算（Sakamoto 求星期）。
+
+**Menubar 把整条菜单栏都登记进输入白名单，而不是只登记当前触发器。**
+浮层的闸门默认只放行「自己那几块矩形」，所以鼠标一离开当前顶级项就被挡住 ——
+看起来就是「菜单卡住了，划不过去」。要让联动成立，必须把整条菜单栏一起
+`gate_claim()`。注意 claim 登记的是**下一帧**的白名单，所以顺序是
+「先 interact → 再算最终打开的是第几个 → 最后才 claim」，写反了联动就少一帧，
+表现为划过去要动两下才切。
+
+**Aspect Ratio 不是控件，是 `static` helper。**
+立即模式里没有「容器组件」这回事 —— 没有东西需要被包裹、继承、或维护生命周期。
+一个 `Rect` 进去、一个 `Rect` 出来，就是它的全部语义。
 
 ---
 
