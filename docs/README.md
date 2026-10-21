@@ -23,6 +23,7 @@
 | [09-primitives.md](09-primitives.md) | 图元与度量：`fill_rect` `stroke_rect` `fill_circle` `draw_line` `draw_text` `drop_shadow` `text_width` `text_height` `alert_height` |
 | [10-performance.md](10-performance.md) | 逐组件性能实测（静置 / 连续重绘 / 交互）与归因分析 |
 | [11-motion.md](11-motion.md) | 动画（`tween` / `tween_color` / `fade` / `smooth` / 缓动）与 `Transform`（平移 / 缩放 / 旋转） |
+| [12-shadcn-parity.md](12-shadcn-parity.md) | 与 shadcn/ui 64 个组件的逐条对照：哪些一对一、哪些只是名字不同、哪些没有 |
 
 ---
 

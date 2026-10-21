@@ -59,9 +59,9 @@
 #define AINO_HPP
 
 #define AINO_VERSION_MAJOR 0
-#define AINO_VERSION_MINOR 2
-#define AINO_VERSION_PATCH 9
-#define AINO_VERSION "0.2.9"
+#define AINO_VERSION_MINOR 3
+#define AINO_VERSION_PATCH 0
+#define AINO_VERSION "0.3.0"
 
 #include <cstdint>
 #include <cstddef>
@@ -713,6 +713,51 @@ public:
     void sparkline(const std::vector<float>& values, const Rect& box, const Style& st = Style());
     void bars(const std::vector<float>& values, const Rect& box, const Style& st = Style());
 
+    // =========================================================================
+    //  对齐 shadcn/ui 的基础控件（0.3.0 补）
+    //  命名约定：**能一对一的就用同一个名字**；名字被占用的在这里注明。
+    //  `toggle()` 占的是 shadcn 的 Switch，所以 shadcn 的 Toggle 叫
+    //  `toggle_button()`；`empty` 让给了 Rect::empty()，所以叫 `empty_state()`。
+    // =========================================================================
+
+    // Toggle / Toggle Group：按下态按钮（不是开关！开关是 toggle()）
+    bool toggle_button(const std::string& label, bool* value, const Rect& box, const Style& st = Style());
+    // 单选（*index = -1 表示一个都不选）／多选（*mask 的第 i 位）
+    bool toggle_group(const std::vector<std::string>& items, int* index, const Rect& box, const Style& st = Style());
+    bool toggle_group_multi(const std::vector<std::string>& items, std::uint32_t* mask,
+                            const Rect& box, const Style& st = Style());
+
+    // Button Group：相邻按钮连成一片（首尾圆角、中间共边），各自独立触发
+    bool button_group(const std::vector<std::string>& items, int* clicked_index,
+                      const Rect& box, const Style& st = Style());
+
+    // Input Group：左右挂前缀/后缀（单位、币种、@域名）
+    bool input_group(std::string* value, const std::string& prefix, const std::string& suffix,
+                     const Rect& box, const Style& st = Style());
+    // Input OTP：length 个格子，自动聚焦、只收数字、退格回退、方向键移动
+    bool input_otp(std::string* value, int length, const Rect& box, const Style& st = Style());
+
+    // Field：标签 + 控件槽 + 描述/错误文案。control 拿到的是控件该占的矩形
+    void field(const std::string& label, const std::string& hint, const std::string& error,
+               const Rect& box, const std::function<void(const Rect&)>& control,
+               const Style& st = Style());
+    // Field 的高度估算（和 field() 用同一套数值，避免"算的"和"画的"对不上）
+    float field_height(const std::string& label, const std::string& hint, const std::string& error,
+                       float control_h, const Style& st = Style()) const;
+
+    // Item：一行条目（标题 + 描述 + 尾部文字），整行可点
+    bool item(const std::string& title, const std::string& description, const std::string& trailing,
+              const Rect& box, const Style& st = Style());
+    // Empty：空状态（虚线框 + 标题 + 描述）
+    void empty_state(const std::string& title, const std::string& description,
+                     const Rect& box, const Style& st = Style());
+
+    // Pagination：页码器，自动省略号；返回本帧是否翻页
+    bool pagination(int* page, int total_pages, const Rect& box, const Style& st = Style());
+
+    // Calendar：月历（纯整数日期运算，不依赖 <ctime>，三平台同一结果）
+    bool calendar(int* year, int* month, int* day, const Rect& box, const Style& st = Style());
+
     // --- 浮层类（自己负责盖在其它组件之上）---
     // 悬停提示：鼠标进入 anchor 时在它上/下方弹一个气泡（帧末绘制）
     void tooltip(const Rect& anchor, const std::string& text, const Style& st = Style());
@@ -725,6 +770,32 @@ public:
                 const Rect& box, const Style& st = Style());
     // 轻提示条（通常自己摆在右下角；生命周期由调用方用 bool 控制）
     void toast(const std::string& text, const Rect& box, const Style& st = Style());
+
+    // Popover：点触发器弹任意内容。draw 在**帧末**被调用一次，拿到内容区矩形。
+    // 返回"本帧是否处于打开态"。
+    bool popover(const std::string& label, bool* open, const Rect& box, Vec2 content,
+                 const std::function<void(const Rect&)>& draw, const Style& st = Style());
+    // Hover Card：悬停 anchor 弹任意内容（不点击、不抢焦点）
+    void hover_card(const Rect& anchor, Vec2 content, const std::function<void(const Rect&)>& draw,
+                    const Style& st = Style());
+    // Alert Dialog：带确认/取消的模态框。返回 true 表示本帧点了确认。
+    // 传 Style().destructive() 则确认键是红底（危险操作）。
+    bool alert_dialog(const std::string& title, const std::string& body,
+                      const std::string& confirm, const std::string& cancel,
+                      bool* open, const Rect& box, const Style& st = Style());
+    // Drawer / Sheet：从某一边滑出的面板。side: 0=右 1=左 2=下 3=上
+    bool drawer(const std::string& title, bool* open, int side, const Rect& box,
+                const std::function<void(const Rect&)>& draw, const Style& st = Style());
+    // Context Menu：在 area 内右键弹出（不占布局，弹层在鼠标位置）
+    bool context_menu(const Rect& area, const std::vector<std::string>& items,
+                      int* clicked_index, const Style& st = Style());
+    // Combobox：可搜索的下拉选择（输入即过滤，上下键 + 回车）
+    bool combobox(const std::vector<std::string>& items, int* index,
+                  const Rect& box, const Style& st = Style());
+
+    // Split Pane（shadcn Resizable）：ratio 是第一条分隔线位置（0..1），拖动时更新
+    bool split_pane(float* ratio, const Rect& box, Rect* first, Rect* second,
+                    bool vertical = true, float min_ratio = 0.15f, const Style& st = Style());
 
     // 把绘制推迟到帧末（弹出层用 —— 保证它盖在其它组件之上）
     void deferred(std::function<void()> fn);
@@ -2156,6 +2227,9 @@ struct Ui::Impl {
     std::unordered_map<uint64_t, float> phase;
     // 离散的跨帧状态（如 select 是否展开）
     std::unordered_map<uint64_t, float> flags;
+    // 组件私有的字符串状态（目前只有 combobox 的搜索词用）。
+    // 不主动清理：只有真的输入过才涨，量级是"每用过一次的 combobox 一条"。
+    std::unordered_map<uint64_t, std::string> strings;
 
     // 本帧 interact() 的调用序号。立即模式下"调用顺序 = 绘制顺序 = 层级"，
     // 序号小的先画、在下面，所以它可以直接当 z 序用。每帧归零重数。
@@ -2167,13 +2241,17 @@ struct Ui::Impl {
     // 这里反过来 —— 上一帧登记过的浮层决定本帧谁能接收输入。
     // 为什么用"上一帧"：dialog()/menu() 在帧末才调用，同一帧救不了；
     // 差一帧肉眼看不出来（那一帧用户点的正是遮罩）。
+    // 槽位数：一次只能有 8 个"可交互区"被放行。一个浮层通常占 2~3 个
+    // （触发器 + 面板 + 面板里的按钮），所以这够 popover + dialog + drawer
+    // 同时开着。超出的 claim 会被丢弃 —— 表现为那个区域点不动，不会崩。
+    static constexpr int GATE_SLOTS = 8;
     bool gate_on = false;
     bool gate_next = false;
-    Rect gate_allow[4] = {};
-    uint64_t gate_allow_z[4] = {};    // 该浮层"第一个属于自己的控件"的序号
+    Rect gate_allow[GATE_SLOTS] = {};
+    uint64_t gate_allow_z[GATE_SLOTS] = {};    // 该浮层"第一个属于自己的控件"的序号
     int  gate_allow_n = 0;
-    Rect gate_next_allow[4] = {};
-    uint64_t gate_next_allow_z[4] = {};
+    Rect gate_next_allow[GATE_SLOTS] = {};
+    uint64_t gate_next_allow_z[GATE_SLOTS] = {};
     int  gate_next_allow_n = 0;
 
     // 判定 = 位置 + 层级。两条都要，缺一条就漏：
@@ -2208,7 +2286,7 @@ struct Ui::Impl {
     // z 传**浮层第一个控件的序号**（函数入口处 seq+1），不是登记那一刻的 seq：
     // dialog 的关闭按钮在 claim 之前就 interact 过了，传晚了会把自己也挡住。
     void gate_claim(const Rect& r, uint64_t z) {
-        if (gate_next_allow_n < 4) {
+        if (gate_next_allow_n < GATE_SLOTS) {
             gate_next_allow[gate_next_allow_n] = r;
             gate_next_allow_z[gate_next_allow_n] = z;
             ++gate_next_allow_n;
@@ -5563,7 +5641,1415 @@ inline void Ui::toast(const std::string& text, const Rect& box, const Style& st)
 }
 
 // =============================================================================
-//  8.16  滚动
+//  8.16  对齐 shadcn/ui 的基础控件（0.3.0）
+//
+//  这一节的控件都遵守同一套约定，以后加组件照抄即可：
+//    1) 交互一律走 detail::interact()，动画一律走 detail::animate_value()；
+//    2) 浮层用 deferred() 画到帧末，并在帧内 gate_claim() 登记下一帧的输入白名单；
+//    3) **不做无条件 repaint()** —— 空闲 0% CPU 是这个库的头号承诺，
+//       只有"状态真的变了"才 repaint()；
+//    4) 尺寸全部由传入的 box 推出来，不写死像素。
+// =============================================================================
+
+namespace detail {
+
+// ---- 公历日期（不依赖 <ctime>）----
+// 为什么自己算：<ctime> 的 mktime/localtime 走本地时区与夏令时，同一份代码在
+// UTC 的 CI runner 和东八区的开发机上会差一天。月历要的是"日历上第几格"，
+// 跟时区无关，所以纯整数运算最稳，也最适合三平台断言。
+inline bool leap_year(int y) { return (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0); }
+
+inline int days_in_month(int y, int m) {
+    static const int kDays[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (m < 1) m = 1;
+    if (m > 12) m = 12;
+    return (m == 2 && leap_year(y)) ? 29 : kDays[m - 1];
+}
+
+// 星期几：0 = 周日。Sakamoto 算法。
+inline int weekday_of(int y, int m, int d) {
+    static const int kOff[12] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
+    if (m < 3) y -= 1;
+    const int w = (y + y / 4 - y / 100 + y / 400 + kOff[(m - 1) % 12] + d) % 7;
+    return w < 0 ? w + 7 : w;
+}
+
+// 画虚线矩形（空状态用）。aino 没有 dash 图元，就按段画直线 ——
+// 不要为了一个虚线去加图元：图元每多一个，光栅化就多一条要证明的路径。
+inline void dash_rect(Ui& ui, const Rect& r, const Color& c,
+                      float dash = 6.0f, float gap = 4.0f, float w = 1.0f) {
+    auto hline = [&](float x0, float x1, float y) {
+        for (float x = x0; x < x1; x += dash + gap) {
+            const float xe = std::min(x + dash, x1);
+            if (xe > x) ui.draw_line(x, y, xe, y, c, w);
+        }
+    };
+    auto vline = [&](float y0, float y1, float x) {
+        for (float y = y0; y < y1; y += dash + gap) {
+            const float ye = std::min(y + dash, y1);
+            if (ye > y) ui.draw_line(x, y, x, ye, c, w);
+        }
+    };
+    hline(r.x, r.right(), r.y + w * 0.5f);
+    hline(r.x, r.right(), r.bottom() - w * 0.5f);
+    vline(r.y, r.bottom(), r.x + w * 0.5f);
+    vline(r.y, r.bottom(), r.right() - w * 0.5f);
+}
+
+// 不区分大小写的子串匹配（combobox 过滤用）。只折叠 ASCII：
+// 中文没有大小写，UTF-8 里的非 ASCII 字节原样比较即可。
+inline bool contains_ci(const std::string& hay, const std::string& needle) {
+    if (needle.empty()) return true;
+    if (needle.size() > hay.size()) return false;
+    auto low = [](char c) { return (c >= 'A' && c <= 'Z') ? char(c - 'A' + 'a') : c; };
+    for (size_t i = 0; i + needle.size() <= hay.size(); ++i) {
+        size_t j = 0;
+        for (; j < needle.size(); ++j)
+            if (low(hay[i + j]) != low(needle[j])) break;
+        if (j == needle.size()) return true;
+    }
+    return false;
+}
+
+// 分组控件里"一格"的公共部分：Toggle Group / Button Group 三处共用。
+// 返回 true = 本帧被点击。把视觉收在一处，是为了让三种用法的外观永远一致 ——
+// 复制三份最容易出的问题就是改了一处忘另外两处。
+inline bool group_cell(Ui& ui, Ui::Impl* im, uint64_t id, const Rect& r, const std::string& text,
+                       bool on, float fs, float outer_rad, const Style& st,
+                       const Color& on_bg, const Color& hover_bg, bool divider) {
+    const Theme& th = im->theme;
+    Interact in = interact(im, id, r, !st.disabled);
+    if (in.hovered) ui.set_cursor(Cursor::Hand);
+    if (in.pressed) grab_focus(im, id);
+
+    const float t_on = animate_value(im, id * 101u + 1u, on ? 1.0f : 0.0f, 22.0f);
+    const float t_h  = animate_value(im, id * 101u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
+
+    // 分隔线先画，免得压在选中底上（只在相邻两项之间）
+    if (divider)
+        ui.fill_rect(Rect(r.x, r.y + 5.0f, 1.0f, std::max(r.h - 10.0f, 1.0f)), th.border, 0.0f);
+
+    const Rect inner = r.inset(2.0f, 2.0f);
+    const float ir = std::max(0.0f, outer_rad - 3.0f);
+    if (t_on > 0.01f)
+        ui.fill_rect(inner, on_bg.with_alpha(uint8_t(255.0f * t_on + 0.5f)), ir);
+    else if (t_h > 0.01f)
+        ui.fill_rect(inner, hover_bg.with_alpha(uint8_t(120.0f * t_h + 0.5f)), ir);
+
+    Color fg = on ? th.accent_foreground : th.foreground;
+    if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
+    Style ts;
+    ts.font_size = fs;
+    ts.font_weight = st.font_weight > 0 ? st.font_weight : 500;
+    ts.align = Align::Center;
+    ts.valign = VAlign::Middle;
+    ui.draw_text(text, r, fg, ts);
+
+    if (is_focused(im, id)) paint_focus_ring(ui, r, outer_rad, th.ring);
+    return in.clicked;
+}
+
+} // namespace detail
+
+// -----------------------------------------------------------------------------
+//  Toggle —— 按下态按钮
+//
+//  ⚠ 和 toggle() 不是一回事：toggle() 是开关（shadcn 的 Switch），
+//  这个才是 shadcn 的 Toggle（一个能"按进去"并保持的按钮）。
+//  两个都叫 toggle 是历史原因，改名会破坏所有已有代码，所以在这里新增一个
+//  名字更明确的重载。
+// -----------------------------------------------------------------------------
+inline bool Ui::toggle_button(const std::string& label, bool* value, const Rect& box, const Style& st) {
+    if (!value || box.w <= 0.0f) return false;
+    const Theme& th = impl->theme;
+    const uint64_t id = detail::make_id("toggle_btn", box, detail::hash_string(label.c_str()));
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
+
+    detail::Interact in = detail::interact(impl, id, box, !st.disabled);
+    if (in.hovered) set_cursor(Cursor::Hand);
+    if (in.pressed) detail::grab_focus(impl, id);
+
+    const float t_on = detail::animate_value(impl, id * 97u + 1u, *value ? 1.0f : 0.0f, 22.0f);
+    const float t_h  = detail::animate_value(impl, id * 97u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
+
+    bool changed = false;
+    if (in.clicked) { *value = !*value; changed = true; repaint(); }
+
+    // 底：未选中时只有 hover 会浮出一点点 accent；选中时整块 accent。
+    // 从"完全透明"混过去要用 alpha，不能用 RGB —— 混黑会经过一段脏灰。
+    const float hov = t_h * (1.0f - t_on) * 0.55f;
+    Color bg = st.bg;
+    if (t_on > 0.01f) {
+        bg = (bg.a == 0) ? th.accent.with_alpha(uint8_t(255.0f * t_on + 0.5f)) : bg.mix(th.accent, t_on);
+    } else if (hov > 0.01f) {
+        bg = (bg.a == 0) ? th.accent.with_alpha(uint8_t(255.0f * hov + 0.5f)) : bg.mix(th.accent, hov);
+    }
+    if (bg.a > 0) fill_rect(box, bg, rad);
+    if (st.border_width > 0.0f) stroke_rect(box, th.border, rad, st.border_width);
+
+    Color fg = !st.fg.is_none() ? st.fg : (t_on > 0.5f ? th.accent_foreground : th.foreground);
+    if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
+    Style ts;
+    ts.font_size = fs;
+    ts.font_weight = st.font_weight > 0 ? st.font_weight : 500;
+    ts.align = st.align_set ? st.align : Align::Center;
+    ts.valign = VAlign::Middle;
+    const float pad = st.pad_x >= 0.0f ? st.pad_x : 10.0f;
+    draw_text(label, Rect(box.x + pad, box.y, std::max(box.w - pad * 2.0f, 1.0f), box.h), fg, ts);
+
+    if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, box, rad, th.ring);
+    return changed;
+}
+
+// Toggle Group（单选）。再点一次已选中的项 = 取消选择 ——
+// shadcn 默认不允许取消，但桌面端这么用更顺手，也是这个库唯一偏离 shadcn 的行为。
+inline bool Ui::toggle_group(const std::vector<std::string>& items, int* index,
+                             const Rect& box, const Style& st) {
+    if (!index || items.empty() || box.w <= 0.0f) return false;
+    const Theme& th = impl->theme;
+    const int n = int(items.size());
+    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float iw  = box.w / float(n);
+    const uint64_t base = detail::make_id("toggle_group", box);
+
+    // 整组共享一个外框，这是 shadcn Toggle Group 的视觉：组内各项不各画边框。
+    fill_rect(box, !st.bg.is_none() ? st.bg : th.background, rad);
+    stroke_rect(box, th.border, rad, 1.0f);
+
+    bool changed = false;
+    for (int i = 0; i < n; ++i) {
+        const Rect r(box.x + iw * float(i), box.y, iw, box.h);
+        const uint64_t id = detail::make_id("tg_item", r, base + uint64_t(i));
+        if (detail::group_cell(*this, impl, id, r, items[size_t(i)], *index == i,
+                               fs, rad, st, th.accent, th.accent, i > 0)) {
+            *index = (*index == i) ? -1 : i;
+            changed = true;
+            repaint();
+        }
+    }
+    return changed;
+}
+
+// Toggle Group（多选）：mask 的第 i 位对应第 i 项
+inline bool Ui::toggle_group_multi(const std::vector<std::string>& items, std::uint32_t* mask,
+                                   const Rect& box, const Style& st) {
+    if (!mask || items.empty() || box.w <= 0.0f) return false;
+    const Theme& th = impl->theme;
+    const int n = std::min(int(items.size()), 32);
+    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float iw  = box.w / float(n);
+    const uint64_t base = detail::make_id("toggle_group_m", box);
+
+    fill_rect(box, !st.bg.is_none() ? st.bg : th.background, rad);
+    stroke_rect(box, th.border, rad, 1.0f);
+
+    bool changed = false;
+    for (int i = 0; i < n; ++i) {
+        const Rect r(box.x + iw * float(i), box.y, iw, box.h);
+        const uint64_t id = detail::make_id("tgm_item", r, base + uint64_t(i));
+        const bool on = ((*mask >> i) & 1u) != 0u;
+        if (detail::group_cell(*this, impl, id, r, items[size_t(i)], on,
+                               fs, rad, st, th.accent, th.accent, i > 0)) {
+            *mask ^= (1u << i);
+            changed = true;
+            repaint();
+        }
+    }
+    return changed;
+}
+
+// Button Group：相邻按钮连成一片。和 Toggle Group 的区别是**没有持久选中态** ——
+// 每个按钮都是一次性动作，点了就返回索引。
+inline bool Ui::button_group(const std::vector<std::string>& items, int* clicked_index,
+                             const Rect& box, const Style& st) {
+    if (items.empty() || box.w <= 0.0f) return false;
+    const Theme& th = impl->theme;
+    const int n = int(items.size());
+    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float iw  = box.w / float(n);
+    const uint64_t base = detail::make_id("button_group", box);
+
+    fill_rect(box, !st.bg.is_none() ? st.bg : th.secondary, rad);
+    stroke_rect(box, th.border, rad, 1.0f);
+
+    bool clicked = false;
+    for (int i = 0; i < n; ++i) {
+        const Rect r(box.x + iw * float(i), box.y, iw, box.h);
+        const uint64_t id = detail::make_id("bg_item", r, base + uint64_t(i));
+        // 灰底上不能再用 accent（浅色主题里 secondary 和 accent 是同一个色，
+        // hover 会完全看不出来），改用背景色提亮。
+        if (detail::group_cell(*this, impl, id, r, items[size_t(i)], false,
+                               fs, rad, st, th.accent, th.background, i > 0)) {
+            if (clicked_index) *clicked_index = i;
+            clicked = true;
+            repaint();
+        }
+    }
+    return clicked;
+}
+
+// -----------------------------------------------------------------------------
+//  Input Group —— 输入框左右挂前缀/后缀
+//
+//  做法：自己画外框，中间的 input 传"透明底 + 0 边框"，这样它只负责编辑和
+//  光标，不再画第二层框。input() 里 `bg.a > 0` 与 `border_width > 0` 两个
+//  判断正好让这个组合成立，不需要改 input 的实现。
+// -----------------------------------------------------------------------------
+inline bool Ui::input_group(std::string* value, const std::string& prefix, const std::string& suffix,
+                            const Rect& box, const Style& st) {
+    if (!value || box.w <= 0.0f) return false;
+    const Theme& th = impl->theme;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
+    const float pad = 12.0f;
+
+    // +10 而不是 +4：前缀文字和输入内容之间必须有可见的间隔，
+    // 否则 "¥" 和 "128" 会挤成 "¥128"，看起来像一个数
+    const float pre_w = prefix.empty() ? 0.0f : text_width(prefix, fs, 400) + 10.0f;
+    const float suf_w = suffix.empty() ? 0.0f : text_width(suffix, fs, 400) + 10.0f;
+
+    fill_rect(box, !st.bg.is_none() ? st.bg : th.background, rad);
+    stroke_rect(box, !st.border_color.is_none() ? st.border_color : th.input, rad, 1.0f);
+
+    Style ts;
+    ts.font_size = fs;
+    ts.font_weight = 400;
+    ts.align = Align::Left;
+    ts.valign = VAlign::Middle;
+    if (!prefix.empty())
+        draw_text(prefix, Rect(box.x + pad, box.y, pre_w, box.h), th.muted_foreground, ts);
+    if (!suffix.empty()) {
+        ts.align = Align::Right;
+        draw_text(suffix, Rect(box.right() - pad - suf_w, box.y, suf_w, box.h), th.muted_foreground, ts);
+    }
+
+    const float inner_x = box.x + pad + pre_w;
+    const float inner_r = box.right() - pad - suf_w;
+    const Rect inner(inner_x, box.y, std::max(inner_r - inner_x, 1.0f), box.h);
+
+    Style is;
+    is.background(Color(0, 0, 0, 0));   // alpha=0 → input 内部跳过 fill_rect
+    is.stroke(0.0f, Color::none());     // width=0 → 跳过 stroke_rect
+    is.pad_x = 4.0f;
+    is.font_size = fs;
+    is.disabled = st.disabled;
+
+    const Input& kin = impl->input;
+    const bool outside_press = kin.pressed[0]
+                            && box.contains(kin.mouse.x, kin.mouse.y)
+                            && !inner.contains(kin.mouse.x, kin.mouse.y);
+
+    const bool changed = input(value, inner, is);
+
+    // 前后缀区域也得点得进输入框：整块看起来是一个框，点在"元"上却什么都不发生
+    // 是最容易让人以为"控件坏了"的那种细节。
+    // 必须等 input() 跑完再抢焦点 —— 它内部遇到"按下了但不在自己框内"会主动
+    // 丢掉焦点，先抢会被它丢回去。晚一帧生效，肉眼无感。
+    if (outside_press) {
+        detail::grab_focus(impl, detail::make_id("input", inner));
+        repaint();
+    }
+    return changed;
+}
+
+// -----------------------------------------------------------------------------
+//  Input OTP —— 分格验证码
+//
+//  不复用 input()：那个输入框带着选区、拖选、双击选词、IME、撤销栈一整套，
+//  塞进一个 40×40 的格子既不合适也画不进去。这里只要"数字 + 退格 + 左右键"。
+// -----------------------------------------------------------------------------
+inline bool Ui::input_otp(std::string* value, int length, const Rect& box, const Style& st) {
+    if (!value || length <= 0 || box.w <= 0.0f) return false;
+    if (length > 12) length = 12;
+    const Theme& th = impl->theme;
+    const uint64_t id = detail::make_id("otp", box);
+    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size + 2.0f;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float gap = 8.0f;
+    const float cell = std::max(1.0f, std::min(box.h, (box.w - gap * float(length - 1)) / float(length)));
+    const float total = cell * float(length) + gap * float(length - 1);
+    const float x0 = box.x + (box.w - total) * 0.5f;
+
+    // 当前格存在 flags 里：必须夹住，length 改小以后旧值会越界。
+    float& cur_f = impl->flags[id * 103u + 1u];
+    int cur = detail::clampi(int(cur_f + 0.5f), 0, int(value->size()));
+
+    detail::Interact in = detail::interact(impl, id, box, !st.disabled);
+    bool focused = detail::is_focused(impl, id);
+    if (focused && impl->gate_blocked_here(box)) { detail::drop_focus(impl); focused = false; }
+
+    bool changed = false;
+    if (impl->input.pressed[0] && in.hovered) {
+        detail::grab_focus(impl, id);
+        focused = true;
+    }
+    if (in.hovered) set_cursor(Cursor::IBeam);
+
+    if (focused) {
+        const Input& kin = impl->input;
+        // 只收数字：粘贴 "12a3" 也只吃 1、2、3
+        for (char ch : kin.text_input) {
+            if (ch < '0' || ch > '9') continue;
+            if (cur < int(value->size())) (*value)[size_t(cur)] = ch;
+            else if (cur < length)        value->push_back(ch);
+            else break;
+            ++cur;
+            changed = true;
+        }
+        if (kin.key_pressed[KEY_BACKSPACE] && cur > 0) {
+            --cur;
+            if (cur < int(value->size())) value->erase(size_t(cur), 1);
+            changed = true;
+        }
+        if (kin.key_pressed[KEY_LEFT] && cur > 0) --cur;
+        if (kin.key_pressed[KEY_RIGHT] && cur < int(value->size())) ++cur;
+        if (changed) { repaint(); impl->caret_blink = 0.0f; }
+    }
+    if (cur > int(value->size())) cur = int(value->size());
+    cur_f = float(cur);
+
+    for (int i = 0; i < length; ++i) {
+        const Rect r(x0 + (cell + gap) * float(i), box.y, cell, box.h);
+        const bool active = focused && i == cur;
+        fill_rect(r, !st.bg.is_none() ? st.bg : th.background, rad);
+        stroke_rect(r, active ? th.ring : th.input, rad, active ? 1.6f : 1.0f);
+
+        Color fg = !st.fg.is_none() ? st.fg : th.foreground;
+        if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
+        Style ts;
+        ts.font_size = fs;
+        ts.font_weight = 600;
+        ts.align = Align::Center;
+        ts.valign = VAlign::Middle;
+        if (i < int(value->size())) {
+            draw_text(value->substr(size_t(i), 1), r, fg, ts);
+        } else if (active) {
+            // 空格子里的插入点：一闪一闪太费帧，做成静止的竖线
+            fill_rect(Rect(r.cx() - 0.75f, r.y + r.h * 0.28f, 1.5f, r.h * 0.44f), fg, 0.0f);
+        }
+    }
+    return changed;
+}
+
+// -----------------------------------------------------------------------------
+//  Field —— 表单一行：标签 + 控件 + 说明/错误
+//
+//  高度必须能"先算后排"：field_height() 与 field() 用的是同一组数字，
+//  改一处就必须改另一处（放得近就是为了这个）。
+// -----------------------------------------------------------------------------
+inline float Ui::field_height(const std::string& label, const std::string& hint,
+                              const std::string& error, float control_h, const Style& st) const {
+    const Theme& th = impl->theme;
+    const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
+    float h = control_h;
+    if (!label.empty()) h += line_height(fs + 1.0f) + 6.0f;
+    if (!hint.empty() || !error.empty()) h += line_height(fs - 1.0f) + 6.0f;
+    return h;
+}
+
+inline void Ui::field(const std::string& label, const std::string& hint, const std::string& error,
+                      const Rect& box, const std::function<void(const Rect&)>& control,
+                      const Style& st) {
+    if (box.w <= 0.0f || box.h <= 0.0f) return;
+    const Theme& th = impl->theme;
+    const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
+    const float lh_label = line_height(fs + 1.0f);
+    const float lh_msg   = line_height(fs - 1.0f);
+    const bool has_msg   = !error.empty() || !hint.empty();
+
+    float y = box.y;
+    if (!label.empty()) {
+        Style ls;
+        ls.font_size = fs + 1.0f;
+        ls.font_weight = 500;
+        ls.align = Align::Left;
+        ls.valign = VAlign::Top;
+        Color lc = !st.fg.is_none() ? st.fg : th.foreground;
+        draw_text(label, Rect(box.x, y, box.w, lh_label), lc, ls);
+        y += lh_label + 6.0f;
+    }
+
+    const float ctrl_h = std::max(box.bottom() - y - (has_msg ? lh_msg + 6.0f : 0.0f), 1.0f);
+    if (control) control(Rect(box.x, y, box.w, ctrl_h));
+    y += ctrl_h + 6.0f;
+
+    if (!error.empty()) {
+        Style ms;
+        ms.font_size = fs - 1.0f;
+        ms.font_weight = 400;
+        ms.align = Align::Left;
+        ms.valign = VAlign::Top;
+        draw_text(error, Rect(box.x, y, box.w, lh_msg), th.destructive, ms);
+    } else if (!hint.empty()) {
+        Style ms;
+        ms.font_size = fs - 1.0f;
+        ms.font_weight = 400;
+        ms.align = Align::Left;
+        ms.valign = VAlign::Top;
+        draw_text(hint, Rect(box.x, y, box.w, lh_msg), th.muted_foreground, ms);
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Item —— 一行条目（标题 + 描述 + 尾部文字），整行可点
+// -----------------------------------------------------------------------------
+inline bool Ui::item(const std::string& title, const std::string& description,
+                     const std::string& trailing, const Rect& box, const Style& st) {
+    if (box.w <= 0.0f || box.h <= 0.0f) return false;
+    const Theme& th = impl->theme;
+    const uint64_t id = detail::make_id("item", box, detail::hash_string(title.c_str()));
+    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+
+    detail::Interact in = detail::interact(impl, id, box, !st.disabled);
+    if (in.hovered) set_cursor(Cursor::Hand);
+    if (in.pressed) detail::grab_focus(impl, id);
+    const float t_h = detail::animate_value(impl, id * 107u + 1u, in.hovered ? 1.0f : 0.0f, 18.0f);
+
+    if (t_h > 0.01f)
+        fill_rect(box, th.accent.with_alpha(uint8_t(150.0f * t_h + 0.5f)), rad);
+
+    const float pad = st.pad_x >= 0.0f ? st.pad_x : 12.0f;
+    const float trail_w = trailing.empty() ? 0.0f : text_width(trailing, fs - 1.0f, 400) + 12.0f;
+    const Rect text_box(box.x + pad, box.y, std::max(box.w - pad * 2.0f - trail_w, 1.0f), box.h);
+
+    if (description.empty()) {
+        Style ts;
+        ts.font_size = fs;
+        ts.font_weight = st.font_weight > 0 ? st.font_weight : 500;
+        ts.align = Align::Left;
+        ts.valign = VAlign::Middle;
+        draw_text(title, text_box, !st.fg.is_none() ? st.fg : th.foreground, ts);
+    } else {
+        const float lh1 = line_height(fs);
+        const float lh2 = line_height(fs - 1.0f);
+        const float total = lh1 + 2.0f + lh2;
+        const float y0 = box.cy() - total * 0.5f;
+        Style ts;
+        ts.font_size = fs;
+        ts.font_weight = st.font_weight > 0 ? st.font_weight : 500;
+        ts.align = Align::Left;
+        ts.valign = VAlign::Top;
+        draw_text(title, Rect(text_box.x, y0, text_box.w, lh1), !st.fg.is_none() ? st.fg : th.foreground, ts);
+
+        Style ds;
+        ds.font_size = fs - 1.0f;
+        ds.font_weight = 400;
+        ds.align = Align::Left;
+        ds.valign = VAlign::Top;
+        draw_text(description, Rect(text_box.x, y0 + lh1 + 2.0f, text_box.w, lh2),
+                  th.muted_foreground, ds);
+    }
+
+    if (!trailing.empty()) {
+        Style tr;
+        tr.font_size = fs - 1.0f;
+        tr.font_weight = 400;
+        tr.align = Align::Right;
+        tr.valign = VAlign::Middle;
+        draw_text(trailing, Rect(box.right() - pad - trail_w, box.y, trail_w, box.h),
+                  th.muted_foreground, tr);
+    }
+
+    if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, box, rad, th.ring);
+    return in.clicked;
+}
+
+// -----------------------------------------------------------------------------
+//  Empty —— 空状态：虚线框 + 标题 + 描述
+// -----------------------------------------------------------------------------
+inline void Ui::empty_state(const std::string& title, const std::string& description,
+                            const Rect& box, const Style& st) {
+    if (box.w <= 0.0f || box.h <= 0.0f) return;
+    const Theme& th = impl->theme;
+    const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
+
+    detail::dash_rect(*this, box, th.border, 7.0f, 5.0f, 1.0f);
+
+    const float lh1 = line_height(fs + 1.0f);
+    const float lh2 = description.empty() ? 0.0f : line_height(fs - 1.0f) + 4.0f;
+    const float total = lh1 + lh2;
+    const float y0 = box.cy() - total * 0.5f;
+
+    Style ts;
+    ts.font_size = fs + 1.0f;
+    ts.font_weight = 500;
+    ts.align = Align::Center;
+    ts.valign = VAlign::Top;
+    draw_text(title, Rect(box.x + 16.0f, y0, std::max(box.w - 32.0f, 1.0f), lh1),
+              !st.fg.is_none() ? st.fg : th.foreground, ts);
+
+    if (!description.empty()) {
+        Style ds;
+        ds.font_size = fs - 1.0f;
+        ds.font_weight = 400;
+        ds.align = Align::Center;
+        ds.valign = VAlign::Top;
+        draw_text(description, Rect(box.x + 16.0f, y0 + lh1, std::max(box.w - 32.0f, 1.0f), lh2),
+                  th.muted_foreground, ds);
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Pagination —— 页码器
+//
+//  页数多时的取舍和 shadcn 一样：首尾 + 当前页两侧各一页，中间用省略号。
+//  省略号不是按钮（点了没意义），所以只画不 interact —— 少一个假控件，
+//  也少一处"点了没反应"的疑惑。
+// -----------------------------------------------------------------------------
+inline bool Ui::pagination(int* page, int total_pages, const Rect& box, const Style& st) {
+    if (!page || box.w <= 0.0f) return false;
+    const Theme& th = impl->theme;
+    int total = std::max(total_pages, 1);
+    int cur = detail::clampi(*page, 0, total - 1);
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
+    const uint64_t base = detail::make_id("pagination", box);
+
+    // 槽位编码：-1=上一页 -2=省略号 -3=下一页，>=0 是页码（0 基）。
+    //
+    // **槽位数恒定**（页数 > 7 时固定 7 个）。这一点很关键：如果按"当前页附近
+    // 三个都列出来"的写法，翻页时槽位数会从 8 变 6，整排按钮跟着左右跳 ——
+    // 用户点第二下就会点偏。固定下来以后，翻页只有内容变、位置不动。
+    std::vector<int> slots;
+    slots.push_back(-1);
+    if (total <= 7) {
+        for (int i = 0; i < total; ++i) slots.push_back(i);
+    } else if (cur <= 1) {
+        // 1 2 3 … 末
+        slots.push_back(0); slots.push_back(1); slots.push_back(2);
+        slots.push_back(-2); slots.push_back(total - 1);
+    } else if (cur >= total - 2) {
+        // 首 … 倒数三 倒数二 末
+        slots.push_back(0); slots.push_back(-2);
+        slots.push_back(total - 3); slots.push_back(total - 2); slots.push_back(total - 1);
+    } else {
+        // 首 … 当前 … 末
+        slots.push_back(0); slots.push_back(-2);
+        slots.push_back(cur); slots.push_back(-2); slots.push_back(total - 1);
+    }
+    slots.push_back(-3);
+
+    const int n = int(slots.size());
+    const float sw = std::min(box.h, box.w / float(n));
+    const float x0 = box.x + (box.w - sw * float(n)) * 0.5f;
+
+    bool changed = false;
+    Style ts;
+    ts.font_size = fs;
+    ts.font_weight = 500;
+    ts.align = Align::Center;
+    ts.valign = VAlign::Middle;
+
+    for (int i = 0; i < n; ++i) {
+        const Rect r(x0 + sw * float(i), box.y, sw, box.h);
+        const int s = slots[size_t(i)];
+
+        if (s == -2) {                           // 省略号
+            draw_text("...", r, th.muted_foreground, ts);
+            continue;
+        }
+
+        const uint64_t id = detail::make_id("pg", r, base + uint64_t(i));
+        detail::Interact in = detail::interact(impl, id, r, !st.disabled);
+        if (in.hovered) set_cursor(Cursor::Hand);
+        if (in.pressed) detail::grab_focus(impl, id);
+
+        const bool is_cur = (s >= 0 && s == cur);
+        const float t_h = detail::animate_value(impl, id * 103u + 1u, (in.hovered && !is_cur) ? 1.0f : 0.0f, 20.0f);
+        const Rect inner = r.inset(2.0f, 2.0f);
+        if (is_cur)      fill_rect(inner, th.primary, std::max(0.0f, rad - 3.0f));
+        else if (t_h > 0.01f) fill_rect(inner, th.accent.with_alpha(uint8_t(255.0f * t_h + 0.5f)), std::max(0.0f, rad - 3.0f));
+
+        if (s < 0) {
+            // 上一页 / 下一页：自绘箭头（不依赖字体里有没有 < >）
+            const bool left = (s == -1);
+            const bool enabled = left ? cur > 0 : cur < total - 1;
+            const Color ac = enabled ? th.foreground : th.muted_foreground.with_alpha(110);
+            const float cx = r.cx(), cy = r.cy(), a = fs * 0.22f;
+            // dir = +1 时画出来是"尖朝左"（从右上 → 左中 → 右下）
+            const float dir = left ? 1.0f : -1.0f;
+            draw_line(cx + dir * a, cy - a, cx - dir * a, cy, ac, 1.6f);
+            draw_line(cx - dir * a, cy, cx + dir * a, cy + a, ac, 1.6f);
+            if (in.clicked && enabled) { *page = cur + (left ? -1 : 1); changed = true; repaint(); }
+        } else {
+            char buf[16];
+            std::snprintf(buf, sizeof buf, "%d", s + 1);
+            draw_text(buf, r, is_cur ? th.primary_foreground : th.foreground, ts);
+            if (in.clicked && s != cur) { *page = s; changed = true; repaint(); }
+        }
+
+        if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, inner, std::max(0.0f, rad - 3.0f), th.ring);
+    }
+    return changed;
+}
+
+// -----------------------------------------------------------------------------
+//  Calendar —— 月历
+//
+//  点 < > 翻月（*year / *month 会被改），点日期写 *day，两者都算"变了"。
+//  日期运算全部在 detail:: 里做，不碰 <ctime>：时区/夏令时会让 CI 与本机
+//  差一天，而那是最难查的一类"只在我的机器上错"。
+// -----------------------------------------------------------------------------
+inline bool Ui::calendar(int* year, int* month, int* day, const Rect& box, const Style& st) {
+    if (!year || !month || !day || box.w <= 0.0f || box.h <= 0.0f) return false;
+    const Theme& th = impl->theme;
+    const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+
+    int y = *year, m = detail::clampi(*month, 1, 12);
+    const int dim = detail::days_in_month(y, m);
+    int sel = detail::clampi(*day, 1, dim);
+
+    const float head_h = std::max(fs + 26.0f, 42.0f);
+    const float wk_h   = std::max(fs + 12.0f, 26.0f);
+    const Rect head(box.x, box.y, box.w, head_h);
+    const Rect wkh(box.x, head.bottom(), box.w, wk_h);
+    const float grid_h = std::max(box.bottom() - wkh.bottom(), 1.0f);
+    const float cw = box.w / 7.0f;
+    const float ch = grid_h / 6.0f;
+    const uint64_t base = detail::make_id("calendar", box);
+
+    bool changed = false;
+
+    // ---- 头部：< 2026 年 10 月 > ----
+    const Rect prev_r(head.x + 2.0f, head.y + (head_h - head_h * 0.7f) * 0.5f, head_h * 0.7f, head_h * 0.7f);
+    const Rect next_r(head.right() - head_h * 0.7f - 2.0f, prev_r.y, prev_r.w, prev_r.h);
+    for (int k = 0; k < 2; ++k) {
+        const Rect& r = (k == 0) ? prev_r : next_r;
+        const uint64_t id = detail::make_id("cal_nav", r, base + uint64_t(k));
+        detail::Interact in = detail::interact(impl, id, r, true);
+        if (in.hovered) set_cursor(Cursor::Hand);
+        const float t_h = detail::animate_value(impl, id * 109u + 1u, in.hovered ? 1.0f : 0.0f, 20.0f);
+        if (t_h > 0.01f) fill_rect(r, th.accent.with_alpha(uint8_t(255.0f * t_h + 0.5f)), rad);
+        const float cx = r.cx(), cy = r.cy(), a = fs * 0.2f;
+        const float dir = (k == 0) ? 1.0f : -1.0f;   // +1 = 尖朝左（上个月）
+        draw_line(cx + dir * a, cy - a, cx - dir * a, cy, th.muted_foreground, 1.6f);
+        draw_line(cx - dir * a, cy, cx + dir * a, cy + a, th.muted_foreground, 1.6f);
+        if (in.clicked) {
+            if (k == 0) { if (--m < 1) { m = 12; --y; } }
+            else        { if (++m > 12) { m = 1; ++y; } }
+            sel = std::min(sel, detail::days_in_month(y, m));
+            changed = true;
+            repaint();
+        }
+    }
+
+    char title[64];
+    std::snprintf(title, sizeof title, "%d 年 %d 月", y, m);
+    Style hs;
+    hs.font_size = fs + 1.0f;
+    hs.font_weight = 600;
+    hs.align = Align::Center;
+    hs.valign = VAlign::Middle;
+    draw_text(title, head, th.foreground, hs);
+
+    // ---- 星期表头 ----
+    static const char* kWeek[7] = {"日", "一", "二", "三", "四", "五", "六"};
+    Style ws;
+    ws.font_size = fs - 2.0f;
+    ws.font_weight = 500;
+    ws.align = Align::Center;
+    ws.valign = VAlign::Middle;
+    for (int c = 0; c < 7; ++c) {
+        draw_text(kWeek[c], Rect(box.x + cw * float(c), wkh.y, cw, wk_h), th.muted_foreground, ws);
+    }
+
+    // ---- 日期网格 ----
+    const int wd0 = detail::weekday_of(y, m, 1);
+    const int dim_now = detail::days_in_month(y, m);
+    int d = 1 - wd0;
+    for (int row = 0; row < 6 && d <= dim_now; ++row) {
+        for (int col = 0; col < 7; ++col, ++d) {
+            if (d < 1) continue;
+            if (d > dim_now) break;
+            const Rect r(box.x + cw * float(col), wkh.bottom() + ch * float(row), cw, ch);
+            const Rect inner = r.inset(3.0f, 2.0f);
+            const uint64_t id = detail::make_id("cal_day", r, base + uint64_t(d));
+            detail::Interact in = detail::interact(impl, id, inner, true);
+            if (in.hovered) set_cursor(Cursor::Hand);
+            const bool is_sel = (d == sel);
+            const float t_h = detail::animate_value(impl, id * 113u + 1u, (in.hovered && !is_sel) ? 1.0f : 0.0f, 20.0f);
+            if (is_sel) fill_rect(inner, th.primary, std::max(0.0f, rad - 2.0f));
+            else if (t_h > 0.01f) fill_rect(inner, th.accent.with_alpha(uint8_t(255.0f * t_h + 0.5f)), std::max(0.0f, rad - 2.0f));
+
+            char buf[8];
+            std::snprintf(buf, sizeof buf, "%d", d);
+            Style ds;
+            ds.font_size = fs - 1.0f;
+            ds.font_weight = is_sel ? 600 : 400;
+            ds.align = Align::Center;
+            ds.valign = VAlign::Middle;
+            draw_text(buf, r, is_sel ? th.primary_foreground : th.foreground, ds);
+
+            if (in.clicked) {
+                sel = d;
+                changed = true;
+                repaint();
+            }
+            if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, inner, std::max(0.0f, rad - 2.0f), th.ring);
+        }
+    }
+
+    if (changed) { *year = y; *month = m; *day = sel; }
+    return changed;
+}
+
+// -----------------------------------------------------------------------------
+//  Popover —— 点触发器弹任意内容
+//
+//  draw 在**帧末**被调用（和弹层同一时刻），所以可以在里面直接调 ui.button()、
+//  ui.input() 之类 —— 它们画出来的东西天然盖在所有普通组件之上。
+//  唯一要注意的是：这些控件在帧末才 interact，seq 已经到最大值，所以闸门
+//  一定会放行（面板区域本来就 claim 过，而它们的 z 更大，判定为"在上面"）。
+// -----------------------------------------------------------------------------
+inline bool Ui::popover(const std::string& label, bool* open, const Rect& box,
+                        Vec2 content, const std::function<void(const Rect&)>& draw,
+                        const Style& st) {
+    if (!open || box.w <= 0.0f) return false;
+    const Theme& th = impl->theme;
+    const uint64_t id = detail::make_id("popover", box);
+    // 层级号取入口处的 seq：触发器和面板都从它往后数。
+    const uint64_t z_first = impl->seq + 1;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
+
+    detail::Interact in = detail::interact(impl, id, box, !st.disabled);
+    if (in.hovered) set_cursor(Cursor::Hand);
+    if (in.pressed) detail::grab_focus(impl, id);
+    const float t_h = detail::animate_value(impl, id * 109u + 1u,
+                                            (in.hovered || *open) ? 1.0f : 0.0f, 18.0f);
+
+    // 触发器外观和 menu() 一致 —— 用户不该为"弹列表"和"弹内容"学两套样子。
+    detail::Skin sk = detail::make_skin(th, st, Style::Outline, rad);
+    if (st.font_weight <= 0) sk.weight = 500;
+    detail::paint_surface(*this, box, sk, t_h, 0.0f, st.disabled);
+
+    const float pad = st.pad_x >= 0.0f ? st.pad_x : 12.0f;
+    Style ts;
+    ts.font_size = fs;
+    ts.font_weight = 500;
+    ts.align = Align::Left;
+    ts.valign = VAlign::Middle;
+    Color fg = sk.fg;
+    if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
+    draw_text(label, Rect(box.x + pad, box.y, std::max(box.w - pad * 2.0f - 18.0f, 1.0f), box.h), fg, ts);
+    {
+        const float ccx = box.right() - pad - 5.0f, ccy = box.cy() + 0.5f, s = 3.6f;
+        draw_line(ccx - s, ccy - s * 0.45f, ccx, ccy + s * 0.55f, fg, 1.6f);
+        draw_line(ccx, ccy + s * 0.55f, ccx + s, ccy - s * 0.45f, fg, 1.6f);
+    }
+    if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, box, rad, th.ring);
+
+    if (in.clicked) { *open = !*open; repaint(); }
+    if (!*open) return false;
+
+    // 面板：内容尺寸 + 内边距；下方放不下就翻到上方
+    const float inner_pad = 12.0f;
+    const float pw = std::max(content.x, 1.0f) + inner_pad * 2.0f;
+    const float ph = std::max(content.y, 1.0f) + inner_pad * 2.0f;
+    float px = box.x;
+    float py = box.bottom() + 6.0f;
+    if (py + ph > height() - 6.0f) py = std::max(6.0f, box.y - 6.0f - ph);
+    px = detail::clampf(px, 6.0f, std::max(6.0f, width() - pw - 6.0f));
+    const Rect panel(px, py, pw, ph);
+    const Rect inner = panel.inset(inner_pad, inner_pad);
+
+    impl->gate_claim(box, z_first);
+    impl->gate_claim(panel, z_first);
+
+    // 点面板和触发器以外的地方、或按 Esc → 关闭
+    bool dismiss = false;
+    const Input& kin = impl->input;
+    if (kin.pressed[0] || kin.pressed[1]) {
+        if (!panel.contains(kin.mouse.x, kin.mouse.y) && !box.contains(kin.mouse.x, kin.mouse.y))
+            dismiss = true;
+    }
+    if (kin.key_pressed[KEY_ESC]) dismiss = true;
+
+    deferred([this, panel, inner, rad, draw]() {
+        const Theme& t2 = impl->theme;
+        drop_shadow(panel, rad, 16.0f, Color(0, 0, 0, 40), 5.0f);
+        fill_rect(panel, t2.popover, rad);
+        stroke_rect(panel, t2.border, rad, 1.0f);
+        push_clip(panel);
+        if (draw) draw(inner);          // 内容自己画，可以继续调 ui.* 组件
+        pop_clip();
+    });
+
+    if (dismiss) { *open = false; repaint(); }
+    return true;
+}
+
+// Hover Card —— 悬停弹卡片。和 tooltip 一样不 claim 输入：
+// 它只是"看"的，抢了点击反而会挡住下面的控件。
+inline void Ui::hover_card(const Rect& anchor, Vec2 content,
+                           const std::function<void(const Rect&)>& draw, const Style& st) {
+    if (!draw || content.x <= 0.0f || content.y <= 0.0f) return;
+    const Theme& th = impl->theme;
+    const Input& kin = impl->input;
+    if (!anchor.contains(kin.mouse.x, kin.mouse.y)) return;
+    if (impl->gate_blocked_pointer()) return;
+
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float pad = 12.0f;
+    const float pw = content.x + pad * 2.0f;
+    const float ph = content.y + pad * 2.0f;
+
+    float px = anchor.right() + 8.0f;
+    if (px + pw > width() - 6.0f) px = anchor.x - 8.0f - pw;
+    px = detail::clampf(px, 6.0f, std::max(6.0f, width() - pw - 6.0f));
+    float py = anchor.y;
+    if (py + ph > height() - 6.0f) py = std::max(6.0f, height() - ph - 6.0f);
+
+    const Rect panel(px, py, pw, ph);
+    const Rect inner = panel.inset(pad, pad);
+    deferred([this, panel, inner, rad, draw]() {
+        const Theme& t2 = impl->theme;
+        drop_shadow(panel, rad, 18.0f, Color(0, 0, 0, 44), 6.0f);
+        fill_rect(panel, t2.popover, rad);
+        stroke_rect(panel, t2.border, rad, 1.0f);
+        push_clip(panel);
+        draw(inner);
+        pop_clip();
+    });
+}
+
+// -----------------------------------------------------------------------------
+//  Alert Dialog —— 带确认/取消的模态框
+//
+//  和 dialog() 的差别不只是多了两个按钮：**返回值语义**不同。
+//  dialog() 返回"本帧是否打开"（因为按钮由调用方自己画），
+//  这里返回"本帧是否点了确认" —— 危险操作要的就是这一个布尔。
+// -----------------------------------------------------------------------------
+inline bool Ui::alert_dialog(const std::string& title, const std::string& body,
+                             const std::string& confirm, const std::string& cancel,
+                             bool* open, const Rect& box, const Style& st) {
+    if (!open || !*open) return false;
+    const Theme& th = impl->theme;
+    const uint64_t z_first = impl->seq + 1;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius_lg;
+    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
+    const float pad = st.pad_x >= 0.0f ? st.pad_x : 24.0f;
+    const bool danger = (st.variant == Style::Destructive);
+
+    const Input& kin = impl->input;
+    bool dismiss = false;
+    if (!box.contains(kin.mouse.x, kin.mouse.y) && (kin.pressed[0] || kin.pressed[1])) dismiss = true;
+    if (kin.key_pressed[KEY_ESC]) dismiss = true;
+
+    // 按钮几何先算出来：交互必须在画遮罩之前处理完，否则 hover 效果会被遮罩压掉。
+    const float btn_h = 36.0f;
+    const float btn_pad = 16.0f;
+    const float btn_y = box.bottom() - pad - btn_h;
+    const float ok_w = text_width(confirm, fs, 500) + btn_pad * 2.0f;
+    const float no_w = text_width(cancel, fs, 500) + btn_pad * 2.0f;
+    const float gap = 8.0f;
+    const Rect ok_r(box.right() - pad - ok_w, btn_y, ok_w, btn_h);
+    const Rect no_r(ok_r.x - gap - no_w, btn_y, no_w, btn_h);
+
+    const uint64_t ok_id = detail::make_id("alert_ok", box);
+    const uint64_t no_id = detail::make_id("alert_no", box, 1u);
+    detail::Interact ok_in = detail::interact(impl, ok_id, ok_r, true);
+    detail::Interact no_in = detail::interact(impl, no_id, no_r, true);
+    if (ok_in.hovered || no_in.hovered) set_cursor(Cursor::Hand);
+
+    bool confirmed = false;
+    if (ok_in.clicked) confirmed = true;
+    if (no_in.clicked) dismiss = true;
+
+    const float ok_t = detail::animate_value(impl, ok_id * 127u + 1u, ok_in.hovered ? 1.0f : 0.0f, 20.0f);
+    const float no_t = detail::animate_value(impl, no_id * 127u + 1u, no_in.hovered ? 1.0f : 0.0f, 20.0f);
+
+    // ---- 画 ----
+    fill_rect(Rect(0, 0, width(), height()), Color(0, 0, 0, 110), 0.0f);
+    drop_shadow(box, rad, 22.0f, Color(0, 0, 0, 46), 8.0f);
+    fill_rect(box, !st.bg.is_none() ? st.bg : th.background, rad);
+    stroke_rect(box, th.border, rad, 1.0f);
+
+    push_clip(box);
+    const float title_lh = line_height(fs + 3.0f);
+    Style hs;
+    hs.font_size = fs + 3.0f;
+    hs.font_weight = 600;
+    hs.align = Align::Left;
+    hs.valign = VAlign::Top;
+    hs.wrap = true;
+    draw_text(title, Rect(box.x + pad, box.y + pad, std::max(box.w - pad * 2.0f, 1.0f), title_lh),
+              !st.fg.is_none() ? st.fg : th.foreground, hs);
+
+    if (!body.empty()) {
+        Style bs;
+        bs.font_size = fs;
+        bs.font_weight = 400;
+        bs.align = Align::Left;
+        bs.valign = VAlign::Top;
+        bs.wrap = true;
+        bs.line_gap = 3.0f;
+        draw_text(body, Rect(box.x + pad, box.y + pad + title_lh + 10.0f, box.w - pad * 2.0f,
+                             std::max(btn_y - 12.0f - (box.y + pad + title_lh + 10.0f), 1.0f)),
+                  th.muted_foreground, bs);
+    }
+    pop_clip();
+
+    // 取消（outline）
+    fill_rect(no_r, th.background, rad >= 8.0f ? 8.0f : rad);
+    stroke_rect(no_r, th.border, rad >= 8.0f ? 8.0f : rad, 1.0f);
+    if (no_t > 0.01f)
+        fill_rect(no_r, th.accent.with_alpha(uint8_t(160.0f * no_t + 0.5f)), rad >= 8.0f ? 8.0f : rad);
+
+    // 确认（primary 或 destructive）
+    const Color ok_bg0 = danger ? th.destructive : th.primary;
+    const Color ok_fg  = danger ? th.destructive_foreground : th.primary_foreground;
+    const Color ok_bg  = ok_t > 0.01f ? ok_bg0.mix(th.foreground.with_alpha(ok_bg0.a), ok_t * 0.16f) : ok_bg0;
+    fill_rect(ok_r, ok_bg, rad >= 8.0f ? 8.0f : rad);
+
+    Style bs2;
+    bs2.font_size = fs;
+    bs2.font_weight = 500;
+    bs2.align = Align::Center;
+    bs2.valign = VAlign::Middle;
+    draw_text(cancel, no_r, th.foreground, bs2);
+    draw_text(confirm, ok_r, ok_fg, bs2);
+
+    impl->gate_claim(box, z_first);
+
+    if (confirmed)        { *open = false; repaint(); }
+    else if (dismiss)     { *open = false; repaint(); }
+    return confirmed;
+}
+
+// -----------------------------------------------------------------------------
+//  Drawer / Sheet —— 从某一边滑出的面板
+//
+//  只做**淡入**，不做位移：位移只动画面不动命中（box 里的控件位置是固定的），
+//  滑块滑到一半点按钮会点偏。淡入既保留了"出现"的感觉，又没有这个问题。
+// -----------------------------------------------------------------------------
+inline bool Ui::drawer(const std::string& title, bool* open, int side, const Rect& box,
+                       const std::function<void(const Rect&)>& draw, const Style& st) {
+    if (!open || box.w <= 0.0f || box.h <= 0.0f) return false;
+    if (side < 0 || side > 3) side = 0;
+    const Theme& th = impl->theme;
+    const uint64_t id = detail::make_id("drawer", box, uint64_t(side) + 1u);
+    const uint64_t z_first = impl->seq + 1;
+    const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
+    const float pad = st.pad_x >= 0.0f ? st.pad_x : 20.0f;
+    const float head_h = std::max(fs + 32.0f, 54.0f);
+
+    if (!*open) {
+        // 关掉时把淡入值复位，下次打开才会重新渐显
+        impl->anim[id * 113u + 1u] = 0.0f;
+        return false;
+    }
+
+    // 渐显：0 → 1。没到位之前必须 repaint() 才会继续走 ——
+    // 到位后自然停下，空闲仍是 0 帧。
+    const float t = detail::animate_value(impl, id * 113u + 1u, 1.0f, 14.0f);
+    if (t < 0.995f) repaint();
+
+    const Input& kin = impl->input;
+    bool dismiss = false;
+    if (kin.key_pressed[KEY_ESC]) dismiss = true;
+    if ((kin.pressed[0] || kin.pressed[1]) && !box.contains(kin.mouse.x, kin.mouse.y)) dismiss = true;
+
+    const Rect close_r(box.right() - pad - 22.0f, box.y + (head_h - 22.0f) * 0.5f, 22.0f, 22.0f);
+    const uint64_t cid = detail::make_id("drawer_close", box);
+    detail::Interact cin = detail::interact(impl, cid, close_r, true);
+    if (cin.hovered) set_cursor(Cursor::Hand);
+    if (cin.clicked) dismiss = true;
+    const float ct = detail::animate_value(impl, cid * 131u + 1u, cin.hovered ? 1.0f : 0.0f, 18.0f);
+
+    // 遮罩：alpha 跟着 t 一起进来
+    fill_rect(Rect(0, 0, width(), height()), Color(0, 0, 0, uint8_t(90.0f * t + 0.5f)), 0.0f);
+
+    // 面板：右侧内缘投一道阴影，看起来才是"贴边滑出"的
+    const Color bg = !st.bg.is_none() ? st.bg : th.background;
+    if (side == 0)      drop_shadow(Rect(box.x - 10.0f, box.y, box.w + 10.0f, box.h), 0.0f, 22.0f, Color(0, 0, 0, 40), 0.0f);
+    else if (side == 1) drop_shadow(Rect(box.x, box.y, box.w + 10.0f, box.h), 0.0f, 22.0f, Color(0, 0, 0, 40), 0.0f);
+    else if (side == 2) drop_shadow(Rect(box.x, box.y - 10.0f, box.w, box.h + 10.0f), 0.0f, 22.0f, Color(0, 0, 0, 40), 0.0f);
+    else                drop_shadow(Rect(box.x, box.y, box.w, box.h + 10.0f), 0.0f, 22.0f, Color(0, 0, 0, 40), 0.0f);
+
+    fill_rect(box, bg, 0.0f);
+    // 只有"侧边"那一条画分隔线（贴窗口边的那侧不需要）
+    if (side == 0)      fill_rect(Rect(box.x, box.y, 1.0f, box.h), th.border, 0.0f);
+    else if (side == 1) fill_rect(Rect(box.right() - 1.0f, box.y, 1.0f, box.h), th.border, 0.0f);
+    else if (side == 2) fill_rect(Rect(box.x, box.y, box.w, 1.0f), th.border, 0.0f);
+    else                fill_rect(Rect(box.x, box.bottom() - 1.0f, box.w, 1.0f), th.border, 0.0f);
+
+    Style hs;
+    hs.font_size = fs + 2.0f;
+    hs.font_weight = 600;
+    hs.align = Align::Left;
+    hs.valign = VAlign::Middle;
+    draw_text(title, Rect(box.x + pad, box.y, std::max(box.w - pad * 2.0f - 30.0f, 1.0f), head_h),
+              !st.fg.is_none() ? st.fg : th.foreground, hs);
+
+    if (ct > 0.02f) fill_rect(close_r, th.accent.with_alpha(uint8_t(255.0f * ct + 0.5f)), 6.0f);
+    {
+        const float s = 4.6f;
+        draw_line(close_r.cx() - s, close_r.cy() - s, close_r.cx() + s, close_r.cy() + s, th.muted_foreground, 1.6f);
+        draw_line(close_r.cx() + s, close_r.cy() - s, close_r.cx() - s, close_r.cy() + s, th.muted_foreground, 1.6f);
+    }
+    fill_rect(Rect(box.x, box.y + head_h - 1.0f, box.w, 1.0f), th.border, 0.0f);
+
+    const Rect content(box.x + pad, box.y + head_h + pad * 0.5f,
+                       std::max(box.w - pad * 2.0f, 1.0f),
+                       std::max(box.h - head_h - pad * 0.5f - pad, 1.0f));
+    if (draw) { push_clip(content); draw(content); pop_clip(); }
+
+    impl->gate_claim(box, z_first);
+    if (dismiss) { *open = false; repaint(); }
+    return true;
+}
+
+// -----------------------------------------------------------------------------
+//  Context Menu —— 在 area 内右键弹出
+//
+//  位置记在 flags 里（打开那一刻的鼠标坐标）。为什么不每帧读鼠标：
+//  弹出来以后手一动菜单就会跟着跑，那没法用。
+// -----------------------------------------------------------------------------
+inline bool Ui::context_menu(const Rect& area, const std::vector<std::string>& items,
+                             int* clicked_index, const Style& st) {
+    if (items.empty()) return false;
+    const Theme& th = impl->theme;
+    const uint64_t id = detail::make_id("ctxmenu", area, uint64_t(items.size()));
+    const uint64_t z_first = impl->seq + 1;
+    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float item_h = std::max(fs + 16.0f, 32.0f);
+    const Input& kin = impl->input;
+
+    bool open = impl->flags[id] > 0.5f;
+
+    // 右键：必须真的落在 area 里，而且没被浮层压住
+    if (!open && kin.pressed[1] && area.contains(kin.mouse.x, kin.mouse.y)
+        && !impl->gate_blocked(impl->seq, kin.mouse.x, kin.mouse.y)) {
+        impl->flags[id * 127u + 1u] = kin.mouse.x;
+        impl->flags[id * 127u + 2u] = kin.mouse.y;
+        impl->flags[id] = 1.0f;
+        open = true;
+        repaint();
+    }
+    if (!open) return false;
+
+    float lw = 120.0f;
+    for (const auto& it : items) lw = std::max(lw, text_width(it, fs, 500) + 36.0f);
+    const float lh = item_h * float(items.size()) + 8.0f;
+    float lx = impl->flags[id * 127u + 1u];
+    float ly = impl->flags[id * 127u + 2u];
+    lx = detail::clampf(lx, 4.0f, std::max(4.0f, width() - lw - 4.0f));
+    ly = detail::clampf(ly, 4.0f, std::max(4.0f, height() - lh - 4.0f));
+    const Rect list(lx, ly, lw, lh);
+
+    impl->gate_claim(list, z_first);
+
+    std::vector<Rect> rects;
+    std::vector<uint64_t> ids;
+    std::vector<uint8_t> hov;
+    rects.reserve(items.size());
+    ids.reserve(items.size());
+    hov.reserve(items.size());
+    for (size_t i = 0; i < items.size(); ++i) {
+        const Rect r(list.x + 4.0f, list.y + 4.0f + item_h * float(i), list.w - 8.0f, item_h);
+        rects.push_back(r);
+        ids.push_back(detail::make_id("ctx_item", r, id + uint64_t(i)));
+        hov.push_back(0);
+    }
+
+    int chosen = -1;
+    for (size_t i = 0; i < items.size(); ++i) {
+        detail::Interact ii = detail::interact(impl, ids[i], rects[i], true);
+        if (ii.hovered) { set_cursor(Cursor::Hand); hov[i] = 1; }
+        if (ii.clicked) chosen = int(i);
+    }
+
+    bool close = false;
+    if (chosen >= 0) close = true;
+    if ((kin.pressed[0] || kin.pressed[1]) && !list.contains(kin.mouse.x, kin.mouse.y)) close = true;
+    if (kin.key_pressed[KEY_ESC]) close = true;
+
+    std::vector<std::string> items_copy = items;
+    deferred([this, list, rad, rects, ids, hov, items_copy, th, fs]() mutable {
+        drop_shadow(list, rad, 12.0f, Color(0, 0, 0, 38), 3.0f);
+        fill_rect(list, th.popover, rad);
+        stroke_rect(list, th.border, rad, 1.0f);
+        push_clip(list);
+        for (size_t i = 0; i < rects.size(); ++i) {
+            const float t_h = detail::animate_value(impl, ids[i] * 83u + 1u, hov[i] ? 1.0f : 0.0f, 20.0f);
+            if (t_h > 0.02f)
+                fill_rect(rects[i], th.accent.with_alpha(uint8_t(230.0f * t_h + 0.5f)),
+                          std::max(0.0f, rad - 2.0f));
+            Style its;
+            its.font_size = fs;
+            its.font_weight = 500;
+            its.align = Align::Left;
+            its.valign = VAlign::Middle;
+            draw_text(items_copy[i], rects[i].inset(10.0f, 0.0f), th.popover_foreground, its);
+        }
+        pop_clip();
+    });
+
+    if (close) {
+        impl->flags[id] = 0.0f;
+        repaint();
+    }
+    if (chosen >= 0) {
+        if (clicked_index) *clicked_index = chosen;
+        return true;
+    }
+    return false;
+}
+
+// -----------------------------------------------------------------------------
+//  Combobox —— 可搜索的下拉选择
+//
+//  和 select() 的差别只有一条：能打字过滤。但就是这一条决定了它不能直接
+//  套用 select —— 展开期间要持续接收字符，所以必须真正拿住焦点。
+//
+//  绘制全部丢进 deferred()：列表是浮层，帧内画会被后面调用的组件压住。
+//  交互仍在帧内做完，把"这一帧该长什么样"用值捕获带进 lambda。
+// -----------------------------------------------------------------------------
+inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
+                         const Rect& box, const Style& st) {
+    if (!index || items.empty() || box.w <= 0.0f) return false;
+    const Theme& th = impl->theme;
+    const uint64_t id = detail::make_id("combobox", box);
+    const uint64_t z_first = impl->seq + 1;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
+    const float pad = 12.0f;
+    const float item_h = std::max(fs + 16.0f, 32.0f);
+
+    bool open = impl->flags[id] > 0.5f;
+    std::string& query = impl->strings[id];
+
+    detail::Interact in = detail::interact(impl, id, box, !st.disabled);
+    if (in.hovered) set_cursor(Cursor::Hand);
+    if (in.pressed) detail::grab_focus(impl, id);
+    bool focused = detail::is_focused(impl, id);
+    if (focused && impl->gate_blocked_here(box)) { detail::drop_focus(impl); focused = false; }
+
+    if (in.clicked) {
+        open = !open;
+        impl->flags[id] = open ? 1.0f : 0.0f;
+        if (open) {
+            query.clear();
+            impl->flags[id * 131u + 1u] = float(std::max(*index, 0));
+        }
+        repaint();
+    }
+    const float t_h = detail::animate_value(impl, id * 137u + 1u, (in.hovered || open) ? 1.0f : 0.0f, 18.0f);
+
+    // ---- 触发器 ----
+    fill_rect(box, !st.bg.is_none() ? st.bg : th.background, rad);
+    Color bd = !st.border_color.is_none() ? st.border_color : th.input;
+    if (focused) bd = th.ring;
+    else if (t_h > 0.01f) bd = bd.mix(th.foreground.with_alpha(120), t_h * 0.4f);
+    stroke_rect(box, bd, rad, focused ? 1.4f : 1.0f);
+
+    const bool has_sel = (*index >= 0 && *index < int(items.size()));
+    Color fg = !st.fg.is_none() ? st.fg : (has_sel ? th.foreground : th.muted_foreground);
+    Style ts;
+    ts.font_size = fs;
+    ts.font_weight = 500;
+    ts.align = Align::Left;
+    ts.valign = VAlign::Middle;
+    draw_text(has_sel ? items[size_t(*index)]
+                      : (st.placeholder.empty() ? std::string("选择...") : st.placeholder),
+              Rect(box.x + pad, box.y, std::max(box.w - pad * 2.0f - 18.0f, 1.0f), box.h), fg, ts);
+    {
+        const float ccx = box.right() - pad - 5.0f, ccy = box.cy() + 0.5f, s = 3.6f;
+        draw_line(ccx - s, ccy - s * 0.45f, ccx, ccy + s * 0.55f, th.muted_foreground, 1.6f);
+        draw_line(ccx, ccy + s * 0.55f, ccx + s, ccy - s * 0.45f, th.muted_foreground, 1.6f);
+    }
+
+    if (!open) return false;
+
+    // ---- 键盘：搜索词 / 上下移动 / 回车 / Esc ----
+    if (focused) {
+        const Input& kin = impl->input;
+        if (!kin.text_input.empty()) { query += kin.text_input; repaint(); }
+        if (kin.key_pressed[KEY_BACKSPACE] && !query.empty()) {
+            // 删最后一个 UTF-8 码点（不能直接 pop_back：一个汉字三字节）
+            size_t n = query.size();
+            while (n > 0 && (uint8_t(query[n - 1]) & 0xC0) == 0x80) --n;
+            if (n > 0) --n;
+            query.erase(n);
+            repaint();
+        }
+    }
+
+    // ---- 过滤 ----
+    std::vector<int> vis;
+    vis.reserve(items.size());
+    for (int i = 0; i < int(items.size()); ++i)
+        if (detail::contains_ci(items[size_t(i)], query)) vis.push_back(i);
+
+    const int max_rows = 7;
+    const int rows = std::min(int(vis.size()), max_rows);
+    const float search_h = std::max(fs + 18.0f, 34.0f);
+
+    float& hi_f = impl->flags[id * 131u + 1u];
+    int hi = detail::clampi(int(hi_f + 0.5f), 0, std::max(0, int(vis.size()) - 1));
+
+    bool picked = false, close = false;
+    if (focused) {
+        const Input& kin = impl->input;
+        if (kin.key_pressed[KEY_DOWN] && hi + 1 < int(vis.size())) { ++hi; repaint(); }
+        if (kin.key_pressed[KEY_UP] && hi > 0) { --hi; repaint(); }
+        if (kin.key_pressed[KEY_ENTER] && !vis.empty()) {
+            *index = vis[size_t(hi)];
+            picked = true;
+            close = true;
+        }
+        if (kin.key_pressed[KEY_ESC]) close = true;
+    }
+
+    // ---- 列表几何 ----
+    const float list_h = search_h + 4.0f + item_h * float(std::max(rows, 1)) + 8.0f;
+    float ly = box.bottom() + 4.0f;
+    if (ly + list_h > height() - 4.0f) ly = std::max(4.0f, box.y - 4.0f - list_h);
+    const Rect list(box.x, ly, box.w, list_h);
+    const Rect sr(list.x + 4.0f, list.y + 4.0f, list.w - 8.0f, search_h);
+
+    impl->gate_claim(box, z_first);
+    impl->gate_claim(list, z_first);
+
+    // ---- 逐项交互（帧内），绘制另算 ----
+    int chosen_now = -1;
+    for (int r = 0; r < rows; ++r) {
+        const Rect rr(list.x + 4.0f, sr.bottom() + 4.0f + item_h * float(r), list.w - 8.0f, item_h);
+        const uint64_t iid = detail::make_id("cb_item", rr, id + uint64_t(vis[size_t(r)]));
+        detail::Interact ii = detail::interact(impl, iid, rr, true);
+        if (ii.hovered) { set_cursor(Cursor::Hand); hi = r; }
+        if (ii.clicked) chosen_now = vis[size_t(r)];
+    }
+    hi_f = float(hi);
+
+    if ((impl->input.pressed[0] || impl->input.pressed[1])
+        && !list.contains(impl->input.mouse.x, impl->input.mouse.y)
+        && !box.contains(impl->input.mouse.x, impl->input.mouse.y)) {
+        close = true;
+    }
+
+    // ---- 帧末绘制 ----
+    const Theme th_c = th;
+    std::vector<std::string> items_c = items;
+    std::vector<int> vis_c = vis;
+    const std::string query_c = query;
+    const int hi_c = hi;
+    const int sel_c = *index;
+    deferred([this, list, sr, rad, item_h, fs, th_c, items_c, vis_c, query_c, hi_c, sel_c, rows]() {
+        drop_shadow(list, rad, 12.0f, Color(0, 0, 0, 38), 3.0f);
+        fill_rect(list, th_c.popover, rad);
+        stroke_rect(list, th_c.border, rad, 1.0f);
+        push_clip(list);
+
+        // 搜索框（只是画出来，输入由上面那段代码负责 —— 不套 input()，
+        // 因为 input() 自己会拿一个焦点，和 combobox 的焦点打架）
+        fill_rect(sr, th_c.background, std::max(0.0f, rad - 2.0f));
+        stroke_rect(sr, th_c.input, std::max(0.0f, rad - 2.0f), 1.0f);
+        Style ss;
+        ss.font_size = fs;
+        ss.font_weight = 400;
+        ss.align = Align::Left;
+        ss.valign = VAlign::Middle;
+        draw_text(query_c.empty() ? std::string("搜索...") : query_c, sr.inset(10.0f, 0.0f),
+                  query_c.empty() ? th_c.muted_foreground : th_c.foreground, ss);
+
+        for (int r = 0; r < rows; ++r) {
+            const int ii = vis_c[size_t(r)];
+            const Rect rr(list.x + 4.0f, sr.bottom() + 4.0f + item_h * float(r), list.w - 8.0f, item_h);
+            const bool on  = (sel_c == ii);
+            const bool hot = (r == hi_c);
+            if (hot || on)
+                fill_rect(rr, th_c.accent.with_alpha(hot ? 255 : 150), std::max(0.0f, rad - 2.0f));
+            Style its;
+            its.font_size = fs;
+            its.font_weight = on ? 600 : 400;
+            its.align = Align::Left;
+            its.valign = VAlign::Middle;
+            draw_text(items_c[size_t(ii)], rr.inset(10.0f, 0.0f), th_c.popover_foreground, its);
+        }
+        if (rows == 0) {
+            Style es;
+            es.font_size = fs;
+            es.font_weight = 400;
+            es.align = Align::Left;
+            es.valign = VAlign::Middle;
+            draw_text("无匹配项",
+                      Rect(list.x + 14.0f, sr.bottom() + 4.0f, list.w - 20.0f, item_h),
+                      th_c.muted_foreground, es);
+        }
+        pop_clip();
+    });
+
+    if (chosen_now >= 0) { *index = chosen_now; picked = true; close = true; }
+    if (close) {
+        impl->flags[id] = 0.0f;
+        query.clear();
+        repaint();
+    }
+    return picked;
+}
+
+// -----------------------------------------------------------------------------
+//  Split Pane（shadcn Resizable）—— 可拖拽的分割
+//
+//  拖拽状态放 flags：不能靠 "按下 + 在热区" 判断，因为鼠标一动就离开热区了。
+//  vertical=true 表示分隔条是竖的（左右两块），和参数名的方位一致。
+// -----------------------------------------------------------------------------
+inline bool Ui::split_pane(float* ratio, const Rect& box, Rect* first, Rect* second,
+                           bool vertical, float min_ratio, const Style& st) {
+    if (!ratio || box.w <= 0.0f || box.h <= 0.0f) return false;
+    const Theme& th = impl->theme;
+    const uint64_t id = detail::make_id("split_pane", box, vertical ? 1u : 2u);
+    const float bar = 7.0f;                    // 热区宽度（视觉只有 1px）
+    float r = detail::clampf(*ratio, min_ratio, 1.0f - min_ratio);
+
+    Rect handle;
+    if (vertical) handle = Rect(box.x + box.w * r - bar * 0.5f, box.y, bar, box.h);
+    else          handle = Rect(box.x, box.y + box.h * r - bar * 0.5f, box.w, bar);
+
+    const bool hot = handle.contains(impl->input.mouse.x, impl->input.mouse.y);
+    if (hot) set_cursor(vertical ? Cursor::ResizeH : Cursor::ResizeV);
+
+    bool dragging = impl->flags[id] > 0.5f;
+    if (hot && impl->input.pressed[0]) { impl->flags[id] = 1.0f; dragging = true; }
+    if (dragging && !impl->input.down[0]) { impl->flags[id] = 0.0f; dragging = false; }
+
+    bool changed = false;
+    if (dragging) {
+        const float raw = vertical
+            ? (impl->input.mouse.x - box.x) / std::max(box.w, 1.0f)
+            : (impl->input.mouse.y - box.y) / std::max(box.h, 1.0f);
+        const float nr = detail::clampf(raw, min_ratio, 1.0f - min_ratio);
+        if (std::fabs(nr - *ratio) > 0.0005f) { *ratio = nr; r = nr; changed = true; repaint(); }
+    }
+
+    // 视觉只有 1px，热区是 7px —— 和滚动条同一个取舍：看得见但不抢眼。
+    const Color bc = dragging ? th.ring : (hot ? th.foreground.with_alpha(70) : th.border);
+    if (vertical) fill_rect(Rect(box.x + box.w * r - 0.5f, box.y, 1.0f, box.h), bc, 0.0f);
+    else          fill_rect(Rect(box.x, box.y + box.h * r - 0.5f, box.w, 1.0f), bc, 0.0f);
+
+    if (first) {
+        *first = vertical ? Rect(box.x, box.y, std::max(box.w * r - bar * 0.5f, 0.0f), box.h)
+                          : Rect(box.x, box.y, box.w, std::max(box.h * r - bar * 0.5f, 0.0f));
+    }
+    if (second) {
+        *second = vertical
+            ? Rect(box.x + box.w * r + bar * 0.5f, box.y, std::max(box.w * (1.0f - r) - bar * 0.5f, 0.0f), box.h)
+            : Rect(box.x, box.y + box.h * r + bar * 0.5f, box.w, std::max(box.h * (1.0f - r) - bar * 0.5f, 0.0f));
+    }
+    return changed;
+}
+
+// =============================================================================
+//  8.17  滚动
 //  实现方式是把"视口"翻译成布局语义：压一个负向偏移的 group + 一个裁剪区，
 //  于是内部的 row()/column() 自动吃到那个偏移，不用逐个组件改坐标。
 //

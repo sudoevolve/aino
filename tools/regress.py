@@ -243,6 +243,10 @@ PROBES = (
     # 会开窗、抢前台焦点，并用 ImmSetCompositionStringW 塞一个组字串走真实
     # WM_IME_COMPOSITION 路径 —— 不需要真人打拼音，也能验"拼音画在框里"。
     ("ime_comp_probe",   "[imecomp] verdict: PASS",          "IME 组字串画进输入框（不是只在组合窗）"),
+    # 0.3.0 新补的 18 个 shadcn 对齐控件。离屏驱动鼠标/键盘，逐条验三件事：
+    # 点下去到底改没改变量的值、浮层关不关得掉（且关的时候不穿透）、
+    # 绘制有没有跑到 box 外面（空背景上肉眼看不出来，放进卡片就糊到邻居身上）。
+    ("widget_probe",     "通过 65 项，失败 0 项",            "新增控件行为（Toggle/OTP/Combobox/分页/月历/浮层/分割）"),
 )
 
 

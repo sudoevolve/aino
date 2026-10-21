@@ -2,7 +2,7 @@
 
 单头文件 C++17 桌面 UI 库 —— 立即模式、零第三方依赖、空闲 0.00% CPU。
 
-一个 `aino.hpp`（7899 行 / 364.6 KiB），一个 exe 493 KiB，零 DLL 依赖（只用系统 DLL）。
+一个 `aino.hpp`（9385 行 / 434.6 KiB），一个 exe 493 KiB，零 DLL 依赖（只用系统 DLL）。
 
 ## Preview
 
@@ -96,6 +96,7 @@ aino.hpp             库本体，单文件（全部实现都在这一个头里�
 examples/gallery.cpp 6 页组件画廊（功能最全，也是像素回归的靶子）
 examples/sidebar_demo.cpp 侧边栏切换（100 行，新手第一个 demo）
 examples/zoom_demo.cpp 缩放按钮（Transform 的最小用法）
+examples/shadcn_demo.cpp 18 个新控件摆在一页（每一条都能点）
 docs/                文档，01 快速开始 … 11 动画与变换
 screenshots/         预览截图
 tools/               构建、像素断言与回归脚本
@@ -120,6 +121,7 @@ CMakeLists.txt       构建 gallery 与两个 demo
 - [09 图元与度量](docs/09-primitives.md)
 - [10 逐组件性能实测](docs/10-performance.md)
 - [11 动画与变换](docs/11-motion.md)
+- [12 与 shadcn/ui 的对照](docs/12-shadcn-parity.md)
 - [文档索引](docs/README.md)
 
 ## License
