@@ -483,7 +483,7 @@ ui.slider(&size, 8.0f, 72.0f, col.next(20.0f), aino::Style().background(aino::Co
 
 ---
 
-## 8. `tabs` —— 页签
+## 8. `tabs` —— 页签（下划线式）
 
 ```cpp
 bool tabs(const std::vector<std::string>& labels, int* index, const Rect& box, const Style& st = Style());
@@ -492,41 +492,47 @@ bool tabs(const std::vector<std::string>& labels, int* index, const Rect& box, c
 | 项 | 默认值 |
 |---|---|
 | 返回 | `true` = 选中项变了 |
-| 容器底 | `st.bg` → 否则 `theme.muted` |
-| 容器圆角 | `theme.radius`（8），内部项圆角 `radius - 3` |
-| 内边距 | **3px**（四周） |
-| 选中项底 | `st.border_color` → 否则 `theme.background`（深色主题下自亮 7%） |
+| 容器 | **不铺底色**，只画一条 1px 的底边线（`st.border_color` → `theme.border`） |
+| 选中标记 | 底边上方一条 **2px** 的高亮横线，`st.fg` → `theme.primary` |
 | 选中文字 | `foreground` / 字重 **600** |
 | 未选文字 | `muted_foreground` / 字重 500 |
+| 悬停 | 一层 9% 的前景色（再重就变成胶囊了） |
 
-**生效的属性**：`bg`（容器底）`border_color`（选中项底）`radius` `font_size` `disabled`
+那条横线是**一条**会滑动的线，不是每项各自淡入淡出 —— 后者会出现「两条线同时在」
+的中间帧。
 
 ```cpp
 ui.tabs({"概览", "按钮", "表单"}, &tab, col.next(38.0f));
 ```
 
-各项**等分**容器宽度（`inner.w / labels.size()`），不支持自定义每项宽度。
+各项**等分**容器宽度（`box.w / labels.size()`），不支持自定义每项宽度。
+高度给 38 比较合适：横线占 2px，其余是点击区。
 
 ---
 
-## 9. `segmented` —— 分段控件
+## 9. `segmented` —— 分段控件（胶囊式）
 
 ```cpp
 bool segmented(const std::vector<std::string>& items, int* index, const Rect& box, const Style& st = Style());
 ```
 
+| 项 | 默认值 |
+|---|---|
+| 容器 | `st.bg` → `theme.muted`，圆角 `theme.radius` |
+| 内边距 | **3px**（四周） |
+| 选中项 | 浮起的一块圆角块：`st.border_color` → `theme.background`（深色主题下自亮 7%） |
+
+`segmented` 走的是 `tabs` 的 **Secondary 变体**（凹槽 + 滑块），所以两者看起来不再是
+同一个东西：
+
 ```cpp
-inline bool Ui::segmented(...) { return tabs(items, index, box, st); }
+ui.tabs({"概览", "按钮", "表单"}, &page,  col.next(38.0f));   // 下划线
+ui.segmented({"日", "周", "月"},   &range, col.next(32.0f));  // 胶囊
 ```
 
-**与 `tabs` 完全同构**，实现是同一个函数。区别只在语义：
-
-- `tabs` 切的是「页面」（内容完全不同）
-- `segmented` 选的是「同一个值的不同表达」（日 / 周 / 月）
-
-```cpp
-ui.segmented({"日", "周", "月"}, &range, col.next(34.0f));
-```
+语义区别：`tabs` 切的是「页面」（内容完全不同），`segmented` 选的是「同一个值的不同
+表达」（日 / 周 / 月）。**0.3.3 之前两者是同一个实现**，画出来一模一样 —— 那次是文档
+写了「两套视觉」、代码里根本没做。
 
 ---
 

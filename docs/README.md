@@ -59,7 +59,7 @@
 | 交互 | `toggle` | 开关 | **16.6** |
 | 交互 | `slider` | 滑杆，拖动改值 | **38.6** |
 | 交互 | `tabs` | 页签 | 218 |
-| 交互 | `segmented` | 分段控件（等价 `tabs`） | 213 |
+| 交互 | `segmented` | 分段控件（胶囊；`tabs` 是下划线） | 213 |
 | 交互 | `select` | 下拉选择 | 172 |
 | 交互 | `radio_group` | 单选组 | 215 |
 | 交互 | `stepper` | 数值步进器 `[−] 值 [+]` | 118 |
@@ -161,7 +161,7 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 
 | 平台 | 后端 | 状态 |
 |---|---|---|
-| Windows | GDI（`BitBlt` + 自绘 AA 光栅化） | **已验证**（Win11 / MSVC 与 MinGW g++，39 项回归全绿） |
+| Windows | GDI（`BitBlt` + 自绘 AA 光栅化） | **已验证**（Win11 / MSVC 与 MinGW g++，41 项回归全绿） |
 | Linux | X11 + XFontSet 系统字体 | **CI 通过**：编译 + xvfb 开窗跑满 20 帧 + **29 项像素断言** |
 | macOS | Cocoa / CoreText / CoreGraphics | **CI 通过**：编译 + 开窗跑满 20 帧 + **29 项像素断言** |
 

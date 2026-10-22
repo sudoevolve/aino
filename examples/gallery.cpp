@@ -222,7 +222,7 @@ void draw_overview(Ui& ui, App& a, const Rect& area) {
             // 全部剩余空间，后面的 next(78) 就只剩 0 高，块直接消失。
             const Rect tb(cp.x + 20.0f, cp.bottom() - 20.0f - 78.0f, cp.w - 40.0f, 78.0f);
             ui.fill_rect(tb, ui.theme().primary, ui.theme().radius);
-            ui.label("ainō", tb, Style().center().semi_bold().font(20.0f)
+            ui.label("aino", tb, Style().center().semi_bold().font(20.0f)
                      .color(ui.theme().primary_foreground));
         }
 
@@ -235,10 +235,10 @@ void draw_overview(Ui& ui, App& a, const Rect& area) {
             const std::vector<std::vector<std::string>> rows = {
                 {"第三方依赖", "0"},
                 {"空闲 CPU", "0.00%"},
-                {"指针移动", "30 fps"},
+                {"指针移动", "变化才画"},
                 {"动画", "60 fps"},
                 {"组件", "47 个"},
-                {"回归断言", "39 项"},
+                {"回归断言", "41 项"},
                 {"文字", "系统字体"},
                 {"几何", "自绘 AA"},
                 {"DLL", "仅系统库"},
@@ -1381,7 +1381,7 @@ void draw_nav(Ui& ui, App& a, const Rect& nav) {
 
     // 品牌区。不用 vbox：这里只有两行固定位置，且 pad 会同时吃掉上下留白，
     // 两行在 78px 里会叠在一起。
-    ui.label("ainō", Rect(nav.x + 20.0f, nav.y + 16.0f, nav.w - 40.0f, 26.0f),
+    ui.label("aino", Rect(nav.x + 20.0f, nav.y + 16.0f, nav.w - 40.0f, 26.0f),
              Style().left().semi_bold().font(19.0f));
     ui.muted_text("单头文件 GUI 库 · " + std::string(AINO_VERSION),
                   Rect(nav.x + 20.0f, nav.y + 44.0f, nav.w - 40.0f, 16.0f),
@@ -1684,7 +1684,7 @@ int start_page_from_env() {
 }
 
 int main() {
-    aino::Window win(1180, 760, "ainō components");
+    aino::Window win(1180, 760, "aino components");
     if (!win.ok()) return 1;
     App app;
     app.page = start_page_from_env();

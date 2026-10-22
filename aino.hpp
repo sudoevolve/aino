@@ -60,8 +60,8 @@
 
 #define AINO_VERSION_MAJOR 0
 #define AINO_VERSION_MINOR 3
-#define AINO_VERSION_PATCH 3
-#define AINO_VERSION "0.3.3"
+#define AINO_VERSION_PATCH 4
+#define AINO_VERSION "0.3.4"
 
 #include <cstdint>
 #include <cstddef>
@@ -926,6 +926,19 @@ public:
     // 软件光栅化下，一个"一直在动"的组件会让整窗每帧重画；窗口越大越贵。
     // 把它调到 30 或 20 能近乎线性地砍掉这部分 CPU（代价：动画略顿）。
     void set_anim_fps(float fps);
+
+    // 指针移动时的悬停反馈帧率上限，默认跟着 set_anim_fps（60fps）。
+    //
+    // 注意"帧率"在这里的含义：aino 没有渲染循环，空闲时一帧都不画（0% CPU）。
+    // 只有指针真的移动、而且**悬停目标变了**才会排帧 —— 在同一个按钮上抖鼠标
+    // 是 0 帧，扫过一排条目是满刷新率。所以这个上限平时根本碰不到，只有
+    // "鼠标持续高速划过大量控件"时才会生效。想更省电可以调到 30。
+    void set_move_fps(float fps);
+
+    // 关掉"指针在同一控件内移动就不重绘"的优化。默认开启。
+    // 只有一种应用需要关：帧回调里画了跟着指针跑、又不经过任何控件的东西
+    // （自定义准星、拖影、画板笔迹）。
+    void set_hover_skip(bool on);
 
     // 主循环：事件驱动。有事件就处理，没事件就阻塞在内核等待 —— 空闲 0% CPU。
     // frame 回调只在"需要重绘"时被调用，所以它可以放心地重建整个 UI。
@@ -2258,11 +2271,14 @@ struct Ui::Impl {
 
     // ---- 布局测量模式（见 Ui::begin_measure）----
     // 置位后图元与命中测试都只把 box 并进 measure_acc，不落地。
-    // 少数控件（rating / spinner）绕过 8 个图元直接 raster_*，它们各自在入口
-    // 判 measure_on 后返回 —— 不能靠"把 canvas 摘掉"来兜，那些地方有的不判空。
+    // 两重保险：图元与命中测试在入口判 measure_on；同时 begin_measure 会把
+    // canvas 摘成 null —— 绕过图元直接 raster_* 的控件（rating / spinner /
+    // sparkline 的 area 填充）只要判了空就不会落地。sparkline 当初就是只靠
+    // "每个控件自己记得判 measure_on"漏掉的：它在屏幕左上角留下了一块折线。
     bool measure_on = false;
     bool measure_any = false;
     Rect measure_acc{};
+    Canvas* measure_canvas = nullptr;   // begin_measure 期间暂存的画布
 
     void measure_add(const Rect& r) {
         Rect q = r;
@@ -2288,6 +2304,42 @@ struct Ui::Impl {
     uint64_t hot = 0;             // 本帧鼠标悬停的控件
     uint64_t active = 0;          // 正在被按住的控件
     uint64_t next_hot = 0;
+    // 悬停**位置**：指针移动时决定"要不要重绘"的关键。
+    // 指针在一个控件内部移动，画面一个像素都不会变 —— 那种帧本来就不该画。
+    // 以前每个 WM_MOUSEMOVE 都排一帧，再用 30fps 预算把它们合并（不然一个核心
+    // 吃满）；结果是悬停高亮只有 30fps，扫过一排条目能看见"空帧"闪一下。
+    // 现在按"悬停目标有没有变"来判定：不变就不画，变了就正常 60fps 画。
+    Rect next_hot_rect{};
+    Rect hot_rect{};
+    bool hot_rect_valid = false;
+    // 上一帧所有可交互矩形。指针落在空白处移动时，用它确认"确实没东西可 hover"。
+    std::vector<Rect> hit_rects;
+    std::vector<Rect> hit_rects_next;
+
+    // 指针移到 (x, y) 时，悬停状态会不会变？不会变就不必重绘。
+    // 判定只用**上一帧**的信息（布局每帧基本一致，而且真有变化的那一帧本来
+    // 就会自己排帧）。
+    bool hover_would_change(float x, float y) const {
+        if (active != 0) return true;                 // 拖动中：位置本身就影响画面
+        if (hot_rect_valid) return !hot_rect.contains(x, y);
+        for (const Rect& r : hit_rects)
+            if (r.contains(x, y)) return true;        // 从空白进了某个控件
+        return false;                                 // 空白 → 空白
+    }
+
+    // 有些控件只看指针位置、根本不产生 interact：spinner / skeleton 的悬停动画、
+    // tooltip / hover_card 的锚点、split_pane 的分隔条。它们不登记的话，
+    // "指针移动不重绘"会连它们一起冻住 —— 鼠标压上去转圈也不转。
+    // 登记成"悬停区域"就行：进出这些矩形会排帧，区域内部移动仍然跳过。
+    bool next_region_hit = false;
+    void hover_region(const Rect& r) {
+        if (measure_on || r.w <= 0.0f || r.h <= 0.0f) return;
+        if (hit_rects_next.size() < 4096) hit_rects_next.push_back(r);
+        if (active == 0 && r.contains(input.mouse.x, input.mouse.y)) {
+            next_hot_rect = r;
+            next_region_hit = true;
+        }
+    }
     void* focus = nullptr;        // 当前获得键盘焦点的控件
     uint64_t focus_id = 0;
     bool  focus_consumed = false; // 本帧 Focus 是否已被某控件认领
@@ -2423,6 +2475,20 @@ struct Ui::Impl {
     struct ScrollCtx { uint64_t id = 0; Rect box; float offset = 0.0f; float max_offset = 0.0f; };
     std::vector<ScrollCtx> scroll_stack;
     float last_scroll = 0.0f;    // 最近一个滚动区的偏移（end_scroll 之后 scroll_y() 仍可读）
+
+    // ---- 滚轮归属 ----
+    // 滚轮事件是"整窗一个"，而滚动区可以嵌套（内容区里再放一个列表）。只按
+    // box.contains(mouse) 判定的话，鼠标在内层列表上滚，外层内容区也一起滚 ——
+    // 两个滚动条同时动。这里记下**每一帧所有滚动区的矩形与嵌套深度**，下一帧
+    // 只有"最深且含指针"的那个吃滚轮；第一帧没有记录，退化成老行为（可接受）。
+    struct ScrollRectMemo { Rect box; int depth = 0; };
+    std::vector<ScrollRectMemo> scroll_memo;      // 上一帧的
+    std::vector<ScrollRectMemo> scroll_memo_next; // 本帧正在收集
+    bool deeper_scroll_has_pointer(int my_depth, float x, float y) const {
+        for (const auto& m : scroll_memo)
+            if (m.depth > my_depth && m.box.contains(x, y)) return true;
+        return false;
+    }
     Rect effective_clip = Rect(0, 0, -1, -1);   // 物理像素；w<0 表示不裁
 
     void recompute_clip() {
@@ -2555,6 +2621,15 @@ inline void Ui::begin_frame(float w, float h, float dt, float dpi) {
     impl->defer.clear();
     impl->hot = impl->next_hot;
     impl->next_hot = 0;
+    impl->hot_rect = impl->next_hot_rect;
+    impl->hot_rect_valid = (impl->hot != 0 || impl->next_region_hit) && impl->hot_rect.w > 0.0f;
+    impl->next_hot_rect = Rect{};
+    impl->next_region_hit = false;
+    impl->hit_rects.swap(impl->hit_rects_next);
+    impl->hit_rects_next.clear();
+    // 滚轮归属用的滚动区快照：上一帧收集完的搬到 scroll_memo，本帧重新收集。
+    impl->scroll_memo.swap(impl->scroll_memo_next);
+    impl->scroll_memo_next.clear();
     if (impl->group.empty()) impl->group.push_back(Rect(0, 0, w, h));
     impl->group.resize(1);
     impl->group[0] = Rect(0, 0, w, h);
@@ -2610,9 +2685,15 @@ inline void Ui::begin_measure() {
     impl->measure_on = true;
     impl->measure_any = false;
     impl->measure_acc = Rect{};
+    // 摘掉画布：万一有控件忘了判 measure_on，也不会把真实图形糊到屏幕左上角
+    // （测量跑的是 box 原点的绘制代码，落了地就是一条从 (0,0) 开始的残影）。
+    impl->measure_canvas = impl->canvas;
+    impl->canvas = nullptr;
 }
 inline Rect Ui::end_measure() {
     impl->measure_on = false;
+    impl->canvas = impl->measure_canvas;
+    impl->measure_canvas = nullptr;
     return impl->measure_any ? impl->measure_acc : Rect{};
 }
 inline bool Ui::measuring() const { return impl->measure_on; }
@@ -2657,9 +2738,10 @@ inline Interact interact(Ui::Impl* im, uint64_t id, const Rect& r, bool enabled)
         return res;
     }
     bool inside = enabled && r.contains(in.mouse.x, in.mouse.y);
+    if (enabled && im->hit_rects_next.size() < 4096) im->hit_rects_next.push_back(r);
     if (inside) {
         res.hovered = true;
-        if (im->active == 0) im->next_hot = id;
+        if (im->active == 0) { im->next_hot = id; im->next_hot_rect = r; }
         if (in.pressed[0]) { im->active = id; res.pressed = true; }
     }
     if (im->active == id) {
@@ -4053,6 +4135,7 @@ inline void Ui::skeleton(const Rect& box, const Style& st) {
         // 被浮层盖住时不算悬停，否则遮罩底下那块还在亮暗呼吸 —— 一眼就穿。
         const bool hovered = box.contains(impl->input.mouse.x, impl->input.mouse.y)
                           && !impl->gate_blocked_pointer();
+        impl->hover_region(box);      // 悬停才呼吸：指针移动必须能唤醒它
         float& ph = impl->phase[detail::make_id("skeleton_phase", box)];
         if (hovered) {
             ph += impl->dt * 3.2f;
@@ -4674,24 +4757,50 @@ inline bool Ui::slider(float* value, float min_value, float max_value, const Rec
 }
 
 // -----------------------------------------------------------------------------
-//  tabs —— shadcn 的 TabsList（muted 容器 + 选中项浮起）
+//  tabs —— 两套视觉，同一套索引语义
+//    Style()           → 下划线式（shadcn Tabs）：无容器底色，选中项下面一条
+//                        会滑动的高亮横线，其余项只变文字颜色
+//    Style().secondary()/outline() → 胶囊式（Segmented）：整条是一个凹槽，
+//                        选中项是浮起的一块圆角块
+//  以前 segmented() 直接转调 tabs，两者画出来一模一样，而示例文案还写着
+//  "两套视觉" —— 那是在骗调用方。现在真的分成两套。
 // -----------------------------------------------------------------------------
 inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const Rect& box, const Style& st) {
     if (!index || labels.empty()) return false;
     const Theme& th = impl->theme;
     uint64_t base_id = detail::make_id("tabs", box);
+    const bool pill = (st.variant == Style::Secondary || st.variant == Style::Outline);
     const float rad = st.radius >= 0.0f ? st.radius : th.radius;
     const float inner_rad = std::max(0.0f, rad - 3.0f);
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
 
     bool changed = false;
     Rect container(box.x, box.y, box.w, box.h);
-    Color container_bg = !st.bg.is_none() ? st.bg : th.muted;
-    if (st.disabled) container_bg.a = uint8_t(float(container_bg.a) * 0.45f);
-    fill_rect(container, container_bg, rad);
-
-    Rect inner = container.inset(3.0f, 3.0f);
+    const Rect inner = pill ? container.inset(3.0f, 3.0f) : container;
     const float item_w = inner.w / float(labels.size());
+
+    if (pill) {
+        Color container_bg = !st.bg.is_none() ? st.bg : th.muted;
+        if (st.disabled) container_bg.a = uint8_t(float(container_bg.a) * 0.45f);
+        fill_rect(container, container_bg, rad);
+    } else {
+        // 下划线式：不铺底色，只在底下画一条 1px 的分隔线（shadcn 就是这样）
+        Color line = !st.border_color.is_none() ? st.border_color : th.border;
+        if (st.disabled) line.a = uint8_t(float(line.a) * 0.45f);
+        fill_rect(Rect(box.x, box.bottom() - 1.0f, box.w, 1.0f), line, 0.0f);
+        // 选中横线是**一条**会滑动的线，不是每项各自淡入淡出 —— 后者会让人
+        // 看到"两条线同时在"的中间帧。
+        const uint64_t ind_id = base_id * 47u + 9u;
+        const float pad_x = std::min(item_w * 0.20f, 24.0f);
+        const float ind_w = std::max(item_w - pad_x * 2.0f, 6.0f);
+        const float target_x = inner.x + item_w * float(*index) + pad_x;
+        if (!impl->measure_on && impl->anim.find(ind_id) == impl->anim.end())
+            impl->anim[ind_id] = target_x;                 // 首帧直接就位，别从 0 飞进来
+        const float ind_x = detail::animate_value(impl, ind_id, target_x, 26.0f);
+        Color ic = !st.fg.is_none() ? st.fg : th.primary;
+        if (st.disabled) ic.a = uint8_t(float(ic.a) * 0.45f);
+        fill_rect(Rect(ind_x, box.bottom() - 2.0f, ind_w, 2.0f), ic, 1.0f);
+    }
 
     for (size_t i = 0; i < labels.size(); ++i) {
         Rect item(inner.x + item_w * float(i), inner.y, item_w, inner.h);
@@ -4703,14 +4812,19 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
         const float t_sel = detail::animate_value(impl, id * 47u + 1u, (*index == int(i)) ? 1.0f : 0.0f, 22.0f);
         const float t_hov = detail::animate_value(impl, id * 47u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
-        if (t_sel > 0.02f) {
-            Color sel_bg = !st.border_color.is_none() ? st.border_color : th.background;
-            // 在深色主题里选中项要略亮才看得见
-            if (sel_bg.luminance() < 0.2f) sel_bg = sel_bg.lighten(0.07f);
-            sel_bg.a = uint8_t(float(sel_bg.a) * t_sel);
-            fill_rect(item, sel_bg, inner_rad);
+        if (pill) {
+            if (t_sel > 0.02f) {
+                Color sel_bg = !st.border_color.is_none() ? st.border_color : th.background;
+                // 在深色主题里选中项要略亮才看得见
+                if (sel_bg.luminance() < 0.2f) sel_bg = sel_bg.lighten(0.07f);
+                sel_bg.a = uint8_t(float(sel_bg.a) * t_sel);
+                fill_rect(item, sel_bg, inner_rad);
+            } else if (t_hov > 0.02f) {
+                fill_rect(item, th.foreground.with_alpha(uint8_t(14.0f * t_hov)), inner_rad);
+            }
         } else if (t_hov > 0.02f) {
-            fill_rect(item, th.foreground.with_alpha(uint8_t(14.0f * t_hov)), inner_rad);
+            // 下划线式没有"滑块"，悬停只能靠一层极淡的底：再重就变成胶囊了
+            fill_rect(item, th.foreground.with_alpha(uint8_t(9.0f * t_hov)), th.radius_sm);
         }
 
         Style ts;
@@ -4726,10 +4840,13 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
 }
 
 // -----------------------------------------------------------------------------
-//  segmented —— 与 tabs 同构，语义上用于"选择值"
+//  segmented —— 语义上"选一个值"，视觉固定走胶囊式（凹槽 + 浮起的滑块）
 // -----------------------------------------------------------------------------
 inline bool Ui::segmented(const std::vector<std::string>& items, int* index, const Rect& box, const Style& st) {
-    return tabs(items, index, box, st);
+    // 调用方没点明变体时补成 Secondary；显式传了别的就照它画。
+    Style ps = st;
+    if (ps.variant < 0) ps.variant = Style::Secondary;
+    return tabs(items, index, box, ps);
 }
 
 // -----------------------------------------------------------------------------
@@ -5508,6 +5625,7 @@ inline void Ui::spinner(const Rect& box, const Style& st) {
 
     const bool hovered = box.contains(impl->input.mouse.x, impl->input.mouse.y)
                       && !impl->gate_blocked_pointer();
+    impl->hover_region(box);          // 悬停才转：指针移动必须能唤醒它
     const bool spin = st.animated || hovered;
 
     const float cx = impl->px(box.cx());
@@ -5812,6 +5930,9 @@ inline void Ui::bars(const std::vector<float>& values, const Rect& box, const St
 // 常驻刷新，把空闲 CPU 从 0% 抬起来。
 inline void Ui::tooltip(const Rect& anchor, const std::string& text, const Style& st) {
     if (text.empty() || st.disabled) return;
+    // 锚点不产生 interact，得自己登记成悬停区域，否则指针移上来不会重绘，
+    // 计时器根本没机会开始跑。
+    impl->hover_region(anchor);
 
     // 悬停 0.4 秒才出现。没有这个延时，鼠标划过一排按钮会连环闪 ——
     // 网页端（shadcn 的 delayDuration）同样是几百毫秒起步。
@@ -7085,6 +7206,7 @@ inline void Ui::hover_card(const Rect& anchor, Vec2 content,
     if (!draw || content.x <= 0.0f || content.y <= 0.0f) return;
     const Theme& th = impl->theme;
     const Input& kin = impl->input;
+    impl->hover_region(anchor);       // 同上：锚点不是 interact 控件
     if (!anchor.contains(kin.mouse.x, kin.mouse.y)) return;
     if (impl->gate_blocked_pointer()) return;
 
@@ -7609,6 +7731,7 @@ inline bool Ui::split_pane(float* ratio, const Rect& box, Rect* first, Rect* sec
     else          handle = Rect(box.x, box.y + box.h * r - bar * 0.5f, box.w, bar);
 
     const bool hot = handle.contains(impl->input.mouse.x, impl->input.mouse.y);
+    impl->hover_region(handle);       // 分隔条靠光标形状反馈，得能被"唤醒"
     if (hot) set_cursor(vertical ? Cursor::ResizeH : Cursor::ResizeV);
 
     bool dragging = impl->flags[id] > 0.5f;
@@ -7677,6 +7800,7 @@ inline bool scrollbar_interact(Ui::Impl* ui, const Rect& box, float max_offset, 
     const ScrollbarGeom g = scrollbar_geom(box, offset, max_offset);
     const Input& kin = ui->input;
     const bool on_track = g.track.contains(kin.mouse.x, kin.mouse.y);
+    ui->hover_region(g.track);        // 悬停要变亮，时钟靠帧推进
     if (ui->gate_blocked_pointer()) return on_track;   // 浮层打开时不许动下层滚动条
 
     const uint64_t sid = make_id("scrollbar-grab", box);
@@ -7717,9 +7841,16 @@ inline ScrollScope Ui::scroll(const Rect& box, float content_h) {
 
     float& off = impl->flags[sc.id];
     const Input& kin = impl->input;
+    const int depth = int(impl->scroll_stack.size());
+    impl->scroll_memo_next.push_back(Impl::ScrollRectMemo{box, depth});
     // 测量模式不吃滚轮：同一份绘制代码要跑两遍，吃两次就等于把滚动距离翻倍。
+    //
+    // 嵌套时只让最内层吃：外层滚动区一定也 contains(鼠标)，只按位置判定就会
+    // 出现"滚内层列表，内容区跟着一起滚"。判据用上一帧的滚动区快照（更深且含
+    // 指针 → 本层让路），第一帧没有快照，退化成老行为。
     if (!impl->measure_on && sc.max_offset > 0.0f && box.contains(kin.mouse.x, kin.mouse.y)
         && !impl->gate_blocked_pointer()
+        && !impl->deeper_scroll_has_pointer(depth, kin.mouse.x, kin.mouse.y)
         && std::fabs(kin.wheel) > 0.001f) {
         off = detail::clampf(off - kin.wheel * 44.0f, 0.0f, sc.max_offset);
         repaint();
@@ -7902,11 +8033,16 @@ struct Window::Impl {
     // spinner / 光标闪烁这类常驻动画的 CPU（代价是动画帧率下降）。
     uint32_t anim_budget_ms = 16;
     // 上一帧是不是"只因为指针移动才要重画"的。这类帧单独按 move_budget_ms
-    // 合并（默认 33ms ≈ 30fps）：悬停反馈 30fps 完全够用，而整窗重绘不便宜 ——
-    // 鼠标一抖就 60fps 全窗重画，实测能把一个核心吃到 40%。
-    // 拖动（active != 0）、动画、点击、键盘、重绘请求都不走这个预算。
+    // 合并；拖动（active != 0）、动画、点击、键盘、重绘请求都不走这个预算。
+    //
+    // 现在指针移动本身已经按"悬停目标变没变"过滤过了（见 Impl::hover_would_change），
+    // 能被排出来的帧必然真的会改变画面，所以默认不再额外降频（16ms 与动画同一档）。
+    // 留这个字段是给"极低功耗"场景用的：调到 33/50 就是 30/20fps 的悬停反馈。
     bool move_only = false;
-    uint32_t move_budget_ms = 33;
+    uint32_t move_budget_ms = 16;
+    // 关掉"同一控件内移动不重绘"的优化。只有一种应用需要：
+    // 帧回调里画了跟着指针跑的东西（自定义准星、拖影），又不经过任何控件。
+    bool hover_skip = true;
     // AINO_FRAME_LOG=1 时把每帧渲染耗时打到 stderr，用来定位"谁在吃 CPU"。
     bool frame_log = false;
     uint32_t frame_log_n = 0;
@@ -8014,7 +8150,17 @@ inline void  Window::set_anim_fps(float fps) {
     if (fps > 240.0f) fps = 240.0f;
     impl->anim_budget_ms = uint32_t(1000.0f / fps + 0.5f);
     if (impl->anim_budget_ms < 1) impl->anim_budget_ms = 1;
+    impl->move_budget_ms = impl->anim_budget_ms;
 }
+
+inline void  Window::set_move_fps(float fps) {
+    if (fps < 1.0f) fps = 1.0f;
+    if (fps > 240.0f) fps = 240.0f;
+    impl->move_budget_ms = uint32_t(1000.0f / fps + 0.5f);
+    if (impl->move_budget_ms < 1) impl->move_budget_ms = 1;
+}
+
+inline void  Window::set_hover_skip(bool on) { impl->hover_skip = on; }
 
 #ifdef AINO_PLATFORM_WINDOWS
 // =============================================================================
@@ -8440,8 +8586,18 @@ inline LRESULT CALLBACK win_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
             TrackMouseEvent(&tme);
             s->tracking = true;
         }
+        // 指针在同一个控件内部移动时，画面一个像素都不会变 —— 不排帧。
+        // 只有"悬停目标可能变"才重绘（离开旧控件、或进入某个可交互矩形）。
+        // 这样悬停反馈不再需要 30fps 的合并预算：扫过一排条目是满刷新率的，
+        // 而单纯抖鼠标是 0 帧。自绘内容跟着指针跑的应用可以关掉这个优化
+        // （Window::set_hover_skip(false)）。
+        if (!s->owner->need_frame && s->owner->hover_skip &&
+            !s->owner->ui.impl->hover_would_change(s->mx / s->owner->scale,
+                                                   s->my / s->owner->scale)) {
+            return 0;
+        }
         s->owner->need_frame = true;
-        s->owner->move_only = true;      // 只有指针移动：按 30fps 合并
+        s->owner->move_only = true;      // 只有指针移动触发（预算见 move_budget_ms）
         return 0;
     }
 
@@ -9333,6 +9489,9 @@ inline bool x11_handle(X11State* s, XEvent& e) {
         break;
     case MotionNotify:
         s->mx = float(e.xmotion.x); s->my = float(e.xmotion.y);
+        // 与 Windows 后端同一条规则：悬停目标没变就不排帧。
+        if (!o->need_frame && o->hover_skip &&
+            !o->ui.impl->hover_would_change(s->mx / o->scale, s->my / o->scale)) break;
         o->need_frame = true;
         break;
     case ButtonPress: {
@@ -9784,6 +9943,10 @@ inline void cocoa_mouse_moved(id self, SEL, id ev) {
     CGPoint p = oc_send<CGPoint>(ev, sel_registerName("locationInWindow"));
     s->mx = float(p.x);
     s->my = float(s->ph) - float(p.y);
+    // 与 Windows / X11 同一条规则：悬停目标没变就不排帧。
+    if (!s->owner->need_frame && s->owner->hover_skip &&
+        !s->owner->ui.impl->hover_would_change(s->mx / s->owner->scale,
+                                               s->my / s->owner->scale)) return;
     s->owner->need_frame = true;
 }
 
