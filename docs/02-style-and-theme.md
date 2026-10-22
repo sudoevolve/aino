@@ -60,8 +60,13 @@ struct Rect { float x, y, w, h; };
 | `cut_left(n)` | **切走**左边 n 宽，自身左边界右移、宽度减小，返回切下的那块 |
 | `cut_right(n)` / `cut_top(n)` / `cut_bottom(n)` | 同上，其余三个方向 |
 | `pad(dx, dy)` | 同 `inset`，语义化别名 |
+| `center_y(h)` / `center_x(w)` | 在本盒子里**跨轴居中**一个 h 高 / w 宽的盒子，另一根轴照抄 |
+| `center(w, h)` | 居中一个 w×h 的盒子 |
+| `intersect(other)` | 交集；不相交时宽高都为 0（`empty()` 为真） |
 
-`cut_*` 是手写坐标时最省事的工具（会修改自身），`inset/offset` 是纯函数。
+`cut_*` 是手写坐标时最省事的工具（会修改自身），`inset/offset/center_*` 是纯函数。
+`center_y/center_x` 专治「布局器切出来的盒子比控件大」：hbox 的横切片是整行高，
+往里放一个方形按钮或一行文字时，别再写 `r.y + 17` 这种常量（行高一改就偏）。
 
 ### 1.3 其它枚举
 

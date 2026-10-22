@@ -59,9 +59,9 @@
 #define AINO_HPP
 
 #define AINO_VERSION_MAJOR 0
-#define AINO_VERSION_MINOR 3
-#define AINO_VERSION_PATCH 4
-#define AINO_VERSION "0.3.4"
+#define AINO_VERSION_MINOR 4
+#define AINO_VERSION_PATCH 0
+#define AINO_VERSION "0.4.0"
 
 #include <cstdint>
 #include <cstddef>
@@ -193,6 +193,23 @@ struct Rect {
     }
     Rect inset(float d) const { return Rect(x + d, y + d, w - 2 * d, h - 2 * d); }
     Rect inset(float dx, float dy) const { return Rect(x + dx, y + dy, w - 2 * dx, h - 2 * dy); }
+    // 交集。完全不相交时返回宽高都为 0 的矩形（empty() 为真）。
+    // 裁剪区的交叠、以及"这个控件还剩多少可见"都靠它。
+    Rect intersect(const Rect& o) const {
+        const float x0 = x > o.x ? x : o.x;
+        const float y0 = y > o.y ? y : o.y;
+        const float x1 = right() < o.right() ? right() : o.right();
+        const float y1 = bottom() < o.bottom() ? bottom() : o.bottom();
+        return Rect(x0, y0, x1 > x0 ? x1 - x0 : 0.0f, y1 > y0 ? y1 - y0 : 0.0f);
+    }
+    // 在一个盒子内部做**跨轴居中**：自己不动，把一个 h 高 / w 宽的盒子摆到中间。
+    // 布局器切出来的盒子（hbox 的横切片是整行高、vbox 的是整行宽）通常比里面的
+    // 控件大，写 r.y + 17 这种常量一旦行高一改就和邻居错位 —— 一律走这两个。
+    // 文字不需要它们：Style 的 valign/halign 默认就是 Middle/Center，盒子给足即可。
+    Rect center_y(float h_) const { return Rect(x, y + (h - h_) * 0.5f, w, h_); }
+    Rect center_x(float w_) const { return Rect(x + (w - w_) * 0.5f, y, w_, h); }
+    Rect center(float w_, float h_) const { return Rect(x + (w - w_) * 0.5f, y + (h - h_) * 0.5f, w_, h_); }
+
     Rect offset(float dx, float dy) const { return Rect(x + dx, y + dy, w, h); }
     Rect offset(const Vec2& d) const { return Rect(x + d.x, y + d.y, w, h); }
     Rect expand(float d) const { return inset(-d); }
@@ -903,8 +920,62 @@ public:
 // =============================================================================
 //  七、Window —— 窗口与主循环
 // =============================================================================
+
+// 窗口配置。默认值就是"能直接跑"：1180×760 之外都留空。
+//
+// 为什么用结构体而不是一串重载：窗口可配的东西会一直长（图标、字体、
+// 尺寸约束、是否可缩放、居中），每加一项就多一个构造函数重载不是办法。
+// 结构体 + 指定初始化还能只写想改的那几项：
+//
+//     aino::Window win({ .width = 1180, .height = 760, .title = "aino",
+//                        .icon_path = "app.ico", .min_width = 900 });
+//
+// 指定初始化要 C++20；C++17 下老老实实逐字段赋值，或者用 builder 式的
+// `WindowConfig cfg; cfg.width = ...;`
+struct WindowConfig {
+    int         width  = 1180;
+    int         height = 760;
+    std::string title  = "aino";
+
+    // ---- 图标 ----
+    // Windows 读 .ico（LoadImage 直接认）；macOS 读 .png / .icns 并设成
+    // **应用图标**（macOS 的窗口本身没有标题栏图标这个位置，只能改 Dock）；
+    // X11 目前忽略（_NET_WM_ICON 要自己把 PNG 解成 ARGB，这一版不做）。
+    std::string icon_path;
+
+    // ---- 字体 ----
+    // font_path 是字体**文件**（.ttf / .otf），库会先把它注册进本进程，
+    // 再按文件里 `name` 表写着的家族名排版 —— 所以不用手工填家族名。
+    // 只填 font_family 则使用系统已安装的家族名。两个都填时：先注册文件，
+    // 家族名以文件为准；注册失败才退回 font_family。
+    // X11 忽略 font_path（核心 X 字体没有"加载字体文件"这条路，只能按
+    // 家族名挑已装的 XLFD），此时行为等同只填 font_family。
+    std::string font_path;
+    std::string font_family;            // 空 = 平台默认无衬线
+    std::string font_family_mono;       // 空 = Consolas / 平台等宽
+
+    // ---- 尺寸约束（逻辑像素；0 = 不限制）----
+    // 只填 min 就是"不许拖得比这更小"，两个都不填就是随便拖。
+    int min_width  = 0;
+    int min_height = 0;
+    int max_width  = 0;
+    int max_height = 0;
+
+    // 关掉后去掉可拖拽的边框与最大化按钮（X11 上只能靠 WM 尊重 size hints）。
+    bool resizable = true;
+
+    // 首次显示时居中到当前显示器的工作区（不含任务栏）。
+    bool center = true;
+
+    // 关掉后不对进程声明 DPI 感知，整窗由系统按比例缩放（字会糊，但尺寸
+    // 跟 96 DPI 一致）。这是**进程级**设置，只有第一个窗口说了算。
+    bool high_dpi = true;
+};
+
 class Window {
 public:
+    explicit Window(const WindowConfig& cfg);
+    // 老写法，等价于只填 width / height / title。
     Window(int width, int height, const std::string& title);
     ~Window();
 
@@ -1110,6 +1181,85 @@ inline size_t utf8_byte_offset(const std::string& s, int idx) {
     size_t i = 0; int k = 0;
     while (i < s.size() && k < idx) { uint32_t cp; i += size_t(utf8_decode(s.c_str() + i, &cp)); ++k; }
     return i;
+}
+
+// -----------------------------------------------------------------------------
+//  从字体文件里读家族名（sfnt 的 `name` 表）
+// -----------------------------------------------------------------------------
+// WindowConfig::font_path 只给了文件路径，可 GDI / CoreText 都要**家族名**
+// 才能选字体。三个平台各查一遍太脏，而且 Windows 的 GetFontResourceInfoW
+// 只有 MSVC 的头文件里有声明，mingw 直接编不过。
+//
+// `name` 表是 TrueType / OpenType 的公共部分（.ttf 和 .otf 结构一致），
+// 自己解三十行就够，还跨平台。要的是 nameID=1（家族名），退而求其次 4
+// （全名）；字符串优先取 platformID=3（Windows / UTF-16BE），没有再取
+// platformID=1（Mac Roman，当 Latin-1 处理）。
+inline std::string font_family_from_file(const std::string& path) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return std::string();
+    std::vector<uint8_t> buf;
+    {
+        std::fseek(f, 0, SEEK_END);
+        const long n = std::ftell(f);
+        std::fseek(f, 0, SEEK_SET);
+        // 字体文件最大也就几十 MB，超过 64MB 的认成"不是字体"，别把内存吃光
+        if (n > 0 && n < 64L * 1024 * 1024) {
+            buf.resize(size_t(n));
+            if (std::fread(buf.data(), 1, size_t(n), f) != size_t(n)) buf.clear();
+        }
+    }
+    std::fclose(f);
+    if (buf.size() < 12) return std::string();
+
+    auto u16 = [&](size_t o) -> uint32_t {
+        return o + 2 <= buf.size() ? uint32_t(buf[o]) << 8 | uint32_t(buf[o + 1]) : 0u;
+    };
+    auto u32 = [&](size_t o) -> uint32_t {
+        return o + 4 <= buf.size() ? uint32_t(buf[o]) << 24 | uint32_t(buf[o + 1]) << 16 |
+                                     uint32_t(buf[o + 2]) << 8 | uint32_t(buf[o + 3]) : 0u;
+    };
+
+    // 表目录：numTables 在 4；每条记录 16 字节（tag/checksum/offset/length）
+    const uint32_t num_tables = u16(4);
+    size_t name_off = 0, name_len = 0;
+    for (uint32_t i = 0; i < num_tables && i < 64; ++i) {
+        const size_t rec = 12 + size_t(i) * 16;
+        if (rec + 16 > buf.size()) break;
+        if (buf[rec] == 'n' && buf[rec + 1] == 'a' && buf[rec + 2] == 'm' && buf[rec + 3] == 'e') {
+            name_off = u32(rec + 8);
+            name_len = u32(rec + 12);
+            break;
+        }
+    }
+    if (!name_off || !name_len || name_off + 6 > buf.size()) return std::string();
+
+    const uint32_t count = u16(name_off + 2);
+    const size_t str_base = name_off + u16(name_off + 4);
+    std::string fam_win, full_win, best_mac;
+    for (uint32_t i = 0; i < count && i < 512; ++i) {
+        const size_t rec = name_off + 6 + size_t(i) * 12;
+        if (rec + 12 > buf.size()) break;
+        const uint32_t plat = u16(rec);
+        const uint32_t name_id = u16(rec + 6);
+        const uint32_t len = u16(rec + 8);
+        const size_t off = str_base + u16(rec + 10);
+        if ((name_id != 1 && name_id != 4) || !len || off + len > buf.size()) continue;
+
+        if (plat == 3 && (len & 1u) == 0) {           // UTF-16BE
+            std::string& dst = (name_id == 1) ? fam_win : full_win;
+            if (!dst.empty()) continue;
+            char mb[4];
+            for (uint32_t k = 0; k + 1 < len; k += 2) {
+                const int n = utf8_encode(uint32_t(buf[off + k]) << 8 | uint32_t(buf[off + k + 1]), mb);
+                dst.append(mb, size_t(n));
+            }
+        } else if (plat == 1 && name_id == 1 && best_mac.empty()) {   // Mac Roman ≈ Latin-1
+            best_mac.assign(reinterpret_cast<const char*>(&buf[off]), len);
+        }
+    }
+    if (!fam_win.empty()) return fam_win;          // 家族名优先
+    if (!full_win.empty()) return full_win;
+    return best_mac;
 }
 
 // =============================================================================
@@ -2170,14 +2320,15 @@ using detail::lerpf;
 
 namespace detail {
 // 平台后端的入口在下面才定义，这里先声明（Window 构造函数要用）
+// 参数是完整的 WindowConfig：后端要读图标、字体、最小/最大尺寸、是否可缩放。
 #ifdef AINO_PLATFORM_WINDOWS
-void w32_create(Window* self, int w, int h, const std::string& title);
+void w32_create(Window* self, const WindowConfig& cfg);
 void w32_destroy(Window* self);
 #elif defined(AINO_PLATFORM_X11)
-void x11_create(Window* self, int w, int h, const std::string& title);
+void x11_create(Window* self, const WindowConfig& cfg);
 void x11_destroy(Window* self);
 #elif defined(AINO_PLATFORM_MACOS)
-void cocoa_create(Window* self, int w, int h, const std::string& title);
+void cocoa_create(Window* self, const WindowConfig& cfg);
 void cocoa_destroy(Window* self);
 #endif
 } // namespace detail
@@ -2303,6 +2454,10 @@ struct Ui::Impl {
     // 立即模式交互状态（跨帧存活）
     uint64_t hot = 0;             // 本帧鼠标悬停的控件
     uint64_t active = 0;          // 正在被按住的控件
+    // 本帧的按下已经被谁领走了。一帧里可能有多个控件同时包含指针位置
+    // （叠放的卡片、滚出视口但还压在页脚下面的列表行），而"按下"这个事件
+    // 只属于其中一个 —— 否则一次点击会被画两次、动两个状态。
+    bool press_taken = false;
     uint64_t next_hot = 0;
     // 悬停**位置**：指针移动时决定"要不要重绘"的关键。
     // 指针在一个控件内部移动，画面一个像素都不会变 —— 那种帧本来就不该画。
@@ -2334,9 +2489,12 @@ struct Ui::Impl {
     bool next_region_hit = false;
     void hover_region(const Rect& r) {
         if (measure_on || r.w <= 0.0f || r.h <= 0.0f) return;
-        if (hit_rects_next.size() < 4096) hit_rects_next.push_back(r);
-        if (active == 0 && r.contains(input.mouse.x, input.mouse.y)) {
-            next_hot_rect = r;
+        // 被裁剪掉的控件没有悬停可言 —— 看不见的地方不该因为鼠标划过就排帧。
+        const Rect reg = clip_logic_on ? r.intersect(clip_logic_cur) : r;
+        if (reg.empty()) return;
+        if (hit_rects_next.size() < 4096) hit_rects_next.push_back(reg);
+        if (active == 0 && reg.contains(input.mouse.x, input.mouse.y)) {
+            next_hot_rect = reg;
             next_region_hit = true;
         }
     }
@@ -2471,6 +2629,33 @@ struct Ui::Impl {
     std::vector<Rect> group;
     std::vector<Vec2> pad;
     std::vector<Rect> clips;
+    // 裁剪区的**逻辑坐标**副本。clips 存的是物理矩形（已经过变换与 DPI 缩放），
+    // 而命中测试用的是逻辑坐标，两套对不上，所以并行记一份。
+    //
+    // 为什么命中必须看裁剪：滚动区把内容裁到视口，可是**裁剪只发生在绘制阶段** ——
+    // 列表溢出视口的那些行照样按坐标参与 interact()。gallery 的侧边栏一旦滚到中段，
+    // 页脚（主题按钮）那一片下面就压着十几行看不见的导航项，点按钮会被最下面那行
+    // 抢走：页面莫名切走，按钮一点反应没有。
+    std::vector<Rect> clip_logic;
+    Rect clip_logic_cur;
+    bool clip_logic_on = false;
+
+    void recompute_clip_logic() {
+        if (clip_logic.empty()) { clip_logic_on = false; clip_logic_cur = Rect(); return; }
+        Rect c = clip_logic[0];
+        for (size_t i = 1; i < clip_logic.size(); ++i) {
+            const float x0 = std::max(c.x, clip_logic[i].x);
+            const float y0 = std::max(c.y, clip_logic[i].y);
+            const float x1 = std::min(c.right(), clip_logic[i].right());
+            const float y1 = std::min(c.bottom(), clip_logic[i].bottom());
+            c = Rect(x0, y0, std::max(0.0f, x1 - x0), std::max(0.0f, y1 - y0));
+        }
+        clip_logic_cur = c;
+        clip_logic_on = true;
+    }
+    bool clip_excludes(float x, float y) const {
+        return clip_logic_on && !clip_logic_cur.contains(x, y);
+    }
     // begin_scroll 的嵌套上下文（支持滚动区套滚动区）
     struct ScrollCtx { uint64_t id = 0; Rect box; float offset = 0.0f; float max_offset = 0.0f; };
     std::vector<ScrollCtx> scroll_stack;
@@ -2635,6 +2820,10 @@ inline void Ui::begin_frame(float w, float h, float dt, float dpi) {
     impl->group[0] = Rect(0, 0, w, h);
     impl->pad.resize(1);
     impl->clips.clear();
+    impl->clip_logic.clear();
+    impl->recompute_clip_logic();
+    // 一次按下只能归一个控件。见 detail::interact() 里的用法。
+    impl->press_taken = false;
     impl->recompute_clip();
     impl->cursor = Cursor::Arrow;
 }
@@ -2738,11 +2927,25 @@ inline Interact interact(Ui::Impl* im, uint64_t id, const Rect& r, bool enabled)
         return res;
     }
     bool inside = enabled && r.contains(in.mouse.x, in.mouse.y);
-    if (enabled && im->hit_rects_next.size() < 4096) im->hit_rects_next.push_back(r);
+    // 裁剪区之外的东西**看得见才有资格被点**。滚动列表会把超出视口的行裁掉，
+    // 那些行的矩形仍然落在坐标上（gallery 的页脚下方压着十几行），不判裁剪的话
+    // 它们照样抢 hover / 点击。
+    if (inside && im->clip_excludes(in.mouse.x, in.mouse.y)) inside = false;
+    if (enabled && im->hit_rects_next.size() < 4096) {
+        const Rect reg = im->clip_logic_on ? r.intersect(im->clip_logic_cur) : r;
+        if (!reg.empty()) im->hit_rects_next.push_back(reg);
+    }
     if (inside) {
         res.hovered = true;
         if (im->active == 0) { im->next_hot = id; im->next_hot_rect = r; }
-        if (in.pressed[0]) { im->active = id; res.pressed = true; }
+        // 一帧里可能有多个控件都包含指针（叠放的、或没被裁干净的），但"按下"
+        // 只属于一个控件：谁先画谁先认领。少了这道闸，一次点击会被后面的控件
+        // 重新认领一遍 —— 按下和松开落在同一帧时尤其明显（两个控件各点一次）。
+        if (in.pressed[0] && im->active == 0 && !im->press_taken) {
+            im->active = id;
+            im->press_taken = true;
+            res.pressed = true;
+        }
     }
     if (im->active == id) {
         res.held = in.down[0];
@@ -3538,11 +3741,16 @@ inline void Ui::push_clip(const Rect& r) {
     // 这一点在文档里写明；要精确裁旋转内容就自己用多边形，或者干脆别套裁剪）
     impl->clips.push_back(impl->xf_phys(r));
     impl->recompute_clip();
+    // 命中测试用的那份不跟变换走：Transform 只影响绘制，不影响布局与命中。
+    impl->clip_logic.push_back(r);
+    impl->recompute_clip_logic();
 }
 
 inline void Ui::pop_clip() {
     if (!impl->clips.empty()) impl->clips.pop_back();
     impl->recompute_clip();
+    if (!impl->clip_logic.empty()) impl->clip_logic.pop_back();
+    impl->recompute_clip_logic();
 }
 
 // =============================================================================
@@ -7866,6 +8074,8 @@ inline ScrollScope Ui::scroll(const Rect& box, float content_h) {
 
     impl->scroll_stack.push_back(ctx);
     impl->clips.push_back(impl->phys(box));
+    impl->clip_logic.push_back(box);
+    impl->recompute_clip_logic();
     impl->recompute_clip();
     impl->group.push_back(Rect(box.x, box.y - off, box.w, std::max(content_h, box.h)));
     sc.active = true;
@@ -7940,6 +8150,8 @@ inline void Ui::end_scroll() {
     impl->last_scroll = ctx.offset;
     impl->scroll_stack.pop_back();
     if (!impl->clips.empty()) impl->clips.pop_back();
+    if (!impl->clip_logic.empty()) impl->clip_logic.pop_back();
+    impl->recompute_clip_logic();
     if (impl->group.size() > 1) impl->group.pop_back();
     impl->recompute_clip();
 }
@@ -8022,6 +8234,11 @@ inline void Ui::scroll_to_index(const Rect& box, int index, float item_h, int co
 struct Window::Impl {
     Ui ui;
     Theme theme = Theme::light();
+    // 创建参数。后端（WM_GETMINMAXINFO / XSizeHints / setMinSize:）要回头读它。
+    WindowConfig cfg;
+    // 最小 / 最大尺寸的**物理像素**版本，由后端在创建时算好（含边框）。
+    // WM_GETMINMAXINFO 里只有它、没有逻辑坐标换算的余量可算。
+    int min_pw = 0, min_ph = 0, max_pw = 0, max_ph = 0;
     bool running = true;
     bool need_frame = true;
     // 上一帧的"再要一帧"是组件自己提的（spinner / 光标闪烁 / hover 插值），
@@ -8072,8 +8289,22 @@ inline void win_set_ime_pos(Win32State* s, float caret_x, float top, float botto
 } // namespace detail
 #endif
 
-inline Window::Window(int w, int h, const std::string& title) : impl(new Impl()) {
+inline Window::Window(int w, int h, const std::string& title)
+    : Window(WindowConfig{ w, h, title }) {}
+
+inline Window::Window(const WindowConfig& cfg) : impl(new Impl()) {
+    impl->cfg = cfg;
     impl->theme = Theme::light();
+    // 字体家族名先进主题，再交给后端建文本渲染器 —— 渲染器和主题必须用同一个
+    // 名字，否则"量出来的宽度"和"画出来的字形"会来自两套字体。
+    if (!cfg.font_family.empty())      impl->theme.font_family = cfg.font_family;
+    if (!cfg.font_family_mono.empty()) impl->theme.font_family_mono = cfg.font_family_mono;
+    // 给了字体文件就以文件为准：从 `name` 表里读出家族名再排版。
+    // 读不出来（文件不是字体 / 打不开）就算了，保留 font_family。
+    if (!cfg.font_path.empty()) {
+        const std::string fam = detail::font_family_from_file(cfg.font_path);
+        if (!fam.empty()) impl->theme.font_family = fam;
+    }
     impl->ui.set_theme(impl->theme);
     // 让 Ui 的 repaint() 能叫醒主循环（同时标记"这是组件自请求的帧"）
     impl->ui.impl->request_repaint = [this]() {
@@ -8107,11 +8338,11 @@ inline Window::Window(int w, int h, const std::string& title) : impl(new Impl())
 #endif
 
 #ifdef AINO_PLATFORM_WINDOWS
-    detail::w32_create(this, w, h, title);
+    detail::w32_create(this, impl->cfg);
 #elif defined(AINO_PLATFORM_X11)
-    detail::x11_create(this, w, h, title);
+    detail::x11_create(this, impl->cfg);
 #elif defined(AINO_PLATFORM_MACOS)
-    detail::cocoa_create(this, w, h, title);
+    detail::cocoa_create(this, impl->cfg);
 #endif
 }
 
@@ -8562,6 +8793,20 @@ inline LRESULT CALLBACK win_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
 
+    case WM_GETMINMAXINFO: {
+        // WindowConfig 的 min/max 落地点。不在 CreateWindowEx 里挡：Win32 没有
+        // "创建时就带上尺寸约束"的参数，只有这条消息 —— 拖边框、最大化、程序里
+        // SetWindowPos 都会先问它。0 表示不限制。
+        MINMAXINFO* mm = reinterpret_cast<MINMAXINFO*>(l);
+        if (mm) {
+            if (s->owner->min_pw > 0) mm->ptMinTrackSize.x = s->owner->min_pw;
+            if (s->owner->min_ph > 0) mm->ptMinTrackSize.y = s->owner->min_ph;
+            if (s->owner->max_pw > 0) mm->ptMaxTrackSize.x = s->owner->max_pw;
+            if (s->owner->max_ph > 0) mm->ptMaxTrackSize.y = s->owner->max_ph;
+        }
+        return 0;
+    }
+
     case WM_SIZE: {
         int nw = LOWORD(l), nh = HIWORD(l);
         win_create_backbuffer(s, nw, nh);
@@ -8764,13 +9009,25 @@ inline LRESULT CALLBACK win_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return dw;
 }
 
-inline void w32_create(Window* self, int w, int h, const std::string& title) {
+inline void w32_create(Window* self, const WindowConfig& cfg) {
     Window::Impl* o = self->impl;
-    win_enable_dpi_awareness();
+    const int w = cfg.width > 0 ? cfg.width : 880;
+    const int h = cfg.height > 0 ? cfg.height : 560;
+    // high_dpi=false 时**不声明**DPI 感知，让系统整体缩放（字会糊但尺寸可控）。
+    // 这是进程级开关，第一个窗口说了算 —— 文档里写明。
+    if (cfg.high_dpi) win_enable_dpi_awareness();
 
     Win32State* s = new Win32State();
     s->owner = o;
     o->native = s;
+
+    // 字体文件：先注册进本进程（FR_PRIVATE，不污染别的程序），再按解析出的
+    // 家族名排版。注册失败不致命 —— 家族名解析不到时上面已经退回 font_family。
+    if (!cfg.font_path.empty()) {
+        const std::wstring wp = to_wide(cfg.font_path);
+        if (AddFontResourceExW(wp.c_str(), FR_PRIVATE, nullptr) > 0)
+            SendMessageW(HWND_BROADCAST, WM_FONTCHANGE, 0, 0);
+    }
 
     static bool class_registered = false;
     if (!class_registered) {
@@ -8789,18 +9046,66 @@ inline void w32_create(Window* self, int w, int h, const std::string& title) {
     UINT sys_dpi = win_dpi_of(nullptr);
     o->scale = float(sys_dpi) / 96.0f;
 
-    const DWORD style = WS_OVERLAPPEDWINDOW;
+    // 不可缩放：去掉厚边框与最大化按钮。WS_THICKFRAME 才是"能拖大小"的那个位，
+    // 留着它光去掉 WS_MAXIMIZEBOX 照样能拖。
+    DWORD style = WS_OVERLAPPEDWINDOW;
+    if (!cfg.resizable) style &= ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
+
     RECT rc = {0, 0, LONG(float(w) * o->scale), LONG(float(h) * o->scale)};
     AdjustWindowRectEx(&rc, style, FALSE, 0);
+    const int win_w = rc.right - rc.left, win_h = rc.bottom - rc.top;
 
-    std::wstring wtitle = to_wide(title.empty() ? std::string("aino") : title);
+    // 最小 / 最大：换算成**窗口**尺寸（含边框）存起来，WM_GETMINMAXINFO 直接用。
+    // 注意 AdjustWindowRectEx 对 min 是对称的：把客户区尺寸换成窗口尺寸即可。
+    o->min_pw = o->min_ph = o->max_pw = o->max_ph = 0;
+    if (cfg.min_width > 0 || cfg.min_height > 0) {
+        RECT r2 = {0, 0, LONG(float(cfg.min_width) * o->scale), LONG(float(cfg.min_height) * o->scale)};
+        AdjustWindowRectEx(&r2, style, FALSE, 0);
+        o->min_pw = r2.right - r2.left;
+        o->min_ph = r2.bottom - r2.top;
+    }
+    if (cfg.max_width > 0 || cfg.max_height > 0) {
+        RECT r3 = {0, 0, LONG(float(cfg.max_width) * o->scale), LONG(float(cfg.max_height) * o->scale)};
+        AdjustWindowRectEx(&r3, style, FALSE, 0);
+        o->max_pw = r3.right - r3.left;
+        o->max_ph = r3.bottom - r3.top;
+    }
+
+    int px = CW_USEDEFAULT, py = CW_USEDEFAULT;
+    if (cfg.center) {
+        // 居中到工作区（排除任务栏）。不用屏幕尺寸 —— 任务栏会盖住下边缘。
+        RECT wa = {0, 0, 0, 0};
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+        px = wa.left + ((wa.right - wa.left) - win_w) / 2;
+        py = wa.top + ((wa.bottom - wa.top) - win_h) / 2;
+        if (px < wa.left) px = wa.left;
+        if (py < wa.top) py = wa.top;
+    }
+
+    std::wstring wtitle = to_wide(cfg.title.empty() ? std::string("aino") : cfg.title);
     HWND hwnd = CreateWindowExW(0, L"AinoWindowClass", wtitle.c_str(), style,
-                                CW_USEDEFAULT, CW_USEDEFAULT,
-                                rc.right - rc.left, rc.bottom - rc.top,
+                                px, py, win_w, win_h,
                                 nullptr, nullptr, GetModuleHandleW(nullptr), s);
     if (!hwnd) { delete s; o->native = nullptr; return; }
 
     o->scale = float(win_dpi_of(hwnd)) / 96.0f;
+
+    // 图标：.ico 用 LoadImageW 直接读文件，按大/小两个尺寸各设一次
+    // （只设 ICON_BIG 的话标题栏和 Alt+Tab 里还会是默认图标）。
+    if (!cfg.icon_path.empty()) {
+        const std::wstring wi = to_wide(cfg.icon_path);
+        HICON ib = reinterpret_cast<HICON>(LoadImageW(nullptr, wi.c_str(), IMAGE_ICON,
+                                                      GetSystemMetrics(SM_CXICON),
+                                                      GetSystemMetrics(SM_CYICON),
+                                                      LR_LOADFROMFILE));
+        HICON is = reinterpret_cast<HICON>(LoadImageW(nullptr, wi.c_str(), IMAGE_ICON,
+                                                      GetSystemMetrics(SM_CXSMICON),
+                                                      GetSystemMetrics(SM_CYSMICON),
+                                                      LR_LOADFROMFILE));
+        if (ib) SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(ib));
+        if (is) SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(is));
+        // 句柄交给窗口自己管（DestroyWindow 会释放通过 WM_SETICON 设进去的图标）
+    }
 
     GdiTextRenderer* tr = new GdiTextRenderer();
     tr->init(o->scale, o->theme.font_family, o->theme.font_family_mono);
@@ -9558,8 +9863,10 @@ inline bool x11_handle(X11State* s, XEvent& e) {
     return true;
 }
 
-inline void x11_create(Window* self, int w, int h, const std::string& title) {
+inline void x11_create(Window* self, const WindowConfig& cfg) {
     Window::Impl* o = self->impl;
+    const int w = cfg.width > 0 ? cfg.width : 880;
+    const int h = cfg.height > 0 ? cfg.height : 560;
     X11State* s = new X11State();
     s->owner = o;
     o->native = s;
@@ -9570,9 +9877,13 @@ inline void x11_create(Window* self, int w, int h, const std::string& title) {
 
     int screen = DefaultScreen(s->dpy);
     ::Window root = RootWindow(s->dpy, screen);
-    s->win = XCreateSimpleWindow(s->dpy, root, 0, 0, unsigned(w), unsigned(h), 0,
+    const int scr_w = DisplayWidth(s->dpy, screen);
+    const int scr_h = DisplayHeight(s->dpy, screen);
+    const int wx = cfg.center ? (scr_w - w) / 2 : 0;
+    const int wy = cfg.center ? (scr_h - h) / 2 : 0;
+    s->win = XCreateSimpleWindow(s->dpy, root, wx, wy, unsigned(w), unsigned(h), 0,
                                  BlackPixel(s->dpy, screen), WhitePixel(s->dpy, screen));
-    XStoreName(s->dpy, s->win, title.c_str());
+    XStoreName(s->dpy, s->win, cfg.title.empty() ? "aino" : cfg.title.c_str());
     XSelectInput(s->dpy, s->win,
                  ExposureMask | StructureNotifyMask | PointerMotionMask |
                  ButtonPressMask | ButtonReleaseMask | KeyPressMask | KeyReleaseMask |
@@ -9580,6 +9891,36 @@ inline void x11_create(Window* self, int w, int h, const std::string& title) {
     s->wm_delete = XInternAtom(s->dpy, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(s->dpy, s->win, &s->wm_delete, 1);
     s->gc = XCreateGC(s->dpy, s->win, 0, nullptr);
+
+    // 尺寸约束。X11 没有"不可缩放"这个位，只能把 min 和 max 设成同一个值 ——
+    // 主流 WM 都按这个理解（ICCCM 里没人保证，但这是唯一可移植的做法）。
+    {
+        XSizeHints* hints = XAllocSizeHints();
+        if (hints) {
+            hints->flags = 0;
+            int mnw = cfg.min_width > 0 ? cfg.min_width : 1;
+            int mnh = cfg.min_height > 0 ? cfg.min_height : 1;
+            int mxw = cfg.max_width > 0 ? cfg.max_width : 0;
+            int mxh = cfg.max_height > 0 ? cfg.max_height : 0;
+            if (!cfg.resizable) { mnw = mxw = w; mnh = mxh = h; }
+            if (mnw > 1 || mnh > 1) {
+                hints->flags |= PMinSize;
+                hints->min_width = mnw;
+                hints->min_height = mnh;
+            }
+            if (mxw > 0 || mxh > 0) {
+                hints->flags |= PMaxSize;
+                if (mxw > 0) hints->max_width = mxw;
+                if (mxh > 0) hints->max_height = mxh;
+            }
+            if (hints->flags) XSetWMNormalHints(s->dpy, s->win, hints);
+            XFree(hints);
+        }
+    }
+    // 图标与字体文件在 X11 上不做：_NET_WM_ICON 要自己把 PNG 解成 ARGB，
+    // 而核心 X 字体（XLFD）没有"装一个字体文件进进程"这条路。
+    // 行为：图标忽略；字体只按 cfg.font_family 挑已装的家族（见 CoreTextRenderer
+    // 同款的 init 约定）。
 
     // 输入法：中文输入需要 XIM/XIC
     if (XSetLocaleModifiers("") != nullptr) {
@@ -9990,11 +10331,25 @@ inline void cocoa_key_down(id self, SEL, id ev) {
     (void)ev;
 }
 
-inline void cocoa_create(Window* self, int w, int h, const std::string& title) {
+inline void cocoa_create(Window* self, const WindowConfig& cfg) {
     Window::Impl* o = self->impl;
+    const int w = cfg.width > 0 ? cfg.width : 880;
+    const int h = cfg.height > 0 ? cfg.height : 560;
     CocoaState* s = new CocoaState();
     s->owner = o;
     o->native = s;
+
+    // 字体文件：注册到**进程**作用域（kCTFontManagerScopeProcess = 1），
+    // 只影响本程序，不需要用户装字体。注册失败就还是按家族名走。
+    if (!cfg.font_path.empty()) {
+        CFURLRef furl = CFURLCreateFromFileSystemRepresentation(
+            kCFAllocatorDefault, reinterpret_cast<const UInt8*>(cfg.font_path.c_str()),
+            CFIndex(cfg.font_path.size()), false);
+        if (furl) {
+            CTFontManagerRegisterFontsForURL(furl, (CTFontManagerScope)1, nullptr);
+            CFRelease(furl);
+        }
+    }
 
     Class app_cls = objc_getClass("NSApplication");
     id app = oc_send<id>(app_cls, sel_registerName("sharedApplication"));
@@ -10013,18 +10368,45 @@ inline void cocoa_create(Window* self, int w, int h, const std::string& title) {
     }
 
     CGRect rect = CGRectMake(0, 0, CGFloat(w), CGFloat(h));
+    // styleMask 15 = Titled(1) | Closable(2) | Miniaturizable(4) | Resizable(8)。
+    // 不可缩放就把 Resizable 位拿掉（13）—— 和 Win32 去掉 WS_THICKFRAME 对齐。
+    const unsigned long style_mask = cfg.resizable ? 15ul : 13ul;
     id window = oc_send<id>(oc_send<id>(objc_getClass("NSWindow"), sel_registerName("alloc")),
                             sel_registerName("initWithContentRect:styleMask:backing:defer:"),
-                            rect, (unsigned long)15, (unsigned long)2, (BOOL)NO);
+                            rect, style_mask, (unsigned long)2, (BOOL)NO);
     id view = oc_send<id>(oc_send<id>(view_cls, sel_registerName("alloc")),
                           sel_registerName("initWithFrame:"), rect);
     cocoa_view_map()[reinterpret_cast<void*>(view)] = s;
     oc_send<void>(view, sel_registerName("setWantsLayer:"), (BOOL)YES);
     oc_send<void>(window, sel_registerName("setContentView:"), view);
 
-    CFStringRef t = CFStringCreateWithCString(kCFAllocatorDefault, title.c_str(), kCFStringEncodingUTF8);
+    // 尺寸约束用 content 版本：NSWindow 的 setMinSize: 算的是**窗口**尺寸，
+    // 而我们手里的 min/max 是客户区（= 逻辑像素），用 setContentMinSize: 才对齐。
+    if (cfg.min_width > 0 || cfg.min_height > 0)
+        oc_send<void>(window, sel_registerName("setContentMinSize:"),
+                      CGSizeMake(CGFloat(cfg.min_width > 0 ? cfg.min_width : 1),
+                                 CGFloat(cfg.min_height > 0 ? cfg.min_height : 1)));
+    if (cfg.max_width > 0 || cfg.max_height > 0)
+        oc_send<void>(window, sel_registerName("setContentMaxSize:"),
+                      CGSizeMake(CGFloat(cfg.max_width > 0 ? cfg.max_width : 100000),
+                                 CGFloat(cfg.max_height > 0 ? cfg.max_height : 100000)));
+    if (cfg.center) oc_send<void>(window, sel_registerName("center"));
+
+    CFStringRef t = CFStringCreateWithCString(kCFAllocatorDefault,
+                                              cfg.title.empty() ? "aino" : cfg.title.c_str(),
+                                              kCFStringEncodingUTF8);
     oc_send<void>(window, sel_registerName("setTitle:"), t);
     CFRelease(t);
+
+    // 图标：macOS 的窗口没有标题栏图标位，只能设应用图标（Dock / Cmd+Tab）。
+    if (!cfg.icon_path.empty()) {
+        CFStringRef ip = CFStringCreateWithCString(kCFAllocatorDefault, cfg.icon_path.c_str(),
+                                                   kCFStringEncodingUTF8);
+        id img = oc_send<id>(oc_send<id>(objc_getClass("NSImage"), sel_registerName("alloc")),
+                             sel_registerName("initWithContentsOfFile:"), ip);
+        if (img) oc_send<void>(app, sel_registerName("setApplicationIconImage:"), img);
+        CFRelease(ip);
+    }
 
     oc_send<void>(window, sel_registerName("makeKeyAndOrderFront:"), (id)nullptr);
     oc_send<void>(app, sel_registerName("activateIgnoringOtherApps:"), (BOOL)YES);

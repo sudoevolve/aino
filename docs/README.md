@@ -161,7 +161,7 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 
 | 平台 | 后端 | 状态 |
 |---|---|---|
-| Windows | GDI（`BitBlt` + 自绘 AA 光栅化） | **已验证**（Win11 / MSVC 与 MinGW g++，41 项回归全绿） |
+| Windows | GDI（`BitBlt` + 自绘 AA 光栅化） | **已验证**（Win11 / MSVC 与 MinGW g++，45 项回归全绿） |
 | Linux | X11 + XFontSet 系统字体 | **CI 通过**：编译 + xvfb 开窗跑满 20 帧 + **29 项像素断言** |
 | macOS | Cocoa / CoreText / CoreGraphics | **CI 通过**：编译 + 开窗跑满 20 帧 + **29 项像素断言** |
 

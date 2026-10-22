@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <vector>
 
 using aino::Color;
@@ -151,6 +152,53 @@ Rect cell(Stack& row, float w, float h) {
 // 定义在 kPages 之后（要用它统计），这里先声明，免得整个概览页跟着表往下挪。
 const std::vector<std::pair<const char*, int>>& group_stats();
 
+// -----------------------------------------------------------------------------
+//  把概览页那段代码**原样**跑起来 —— 开一个真正的第二个窗口
+// -----------------------------------------------------------------------------
+// aino 没有全局状态：一个 Window 就是一条消息循环 + 一块后备缓冲。所以"演示
+// 这段代码"最直白的做法就是再起一个线程、再建一个 Window —— 而不是在画廊里
+// 摆一个假框子照着画一遍（那种演示一旦代码改了就跟不上）。
+//
+// 为什么 detach：主窗口关掉时进程就该退出，而在另一个线程里阻塞于 run() 的
+// 窗口没有"从外面叫停"的干净办法。detach 之后进程一退线程跟着没，代价只是
+// 退出时那几个 GDI 句柄不回收 —— 进程都结束了，这不叫泄漏。
+//
+// 反过来，用户自己关掉演示窗口时线程会正常走完 run() 并析构 Window，句柄回收。
+void open_quickstart_window() {
+    std::thread([] {
+        // 这里刻意用 WindowConfig 而不是三参数构造：演示一下新加的配置项
+        // （最小尺寸、居中）。标题里的版本号顺便当个"这窗口是谁开的"标记。
+        aino::WindowConfig cfg;
+        cfg.width      = 460;
+        cfg.height     = 320;
+        cfg.title      = "aino 最小示例 · " AINO_VERSION;
+        cfg.min_width  = 380;
+        cfg.min_height = 260;
+        cfg.center     = true;
+
+        aino::Window win(cfg);
+        if (!win.ok()) return;
+
+        std::string email;
+        bool notify = true;
+        int  saved  = 0;
+
+        win.run([&](Ui& ui) {
+            ui.clear(ui.theme().background);
+            ui.panel(Rect(0.0f, 0.0f, ui.width(), ui.height()));
+            auto c = ui.vbox(Rect(0.0f, 0.0f, ui.width(), ui.height()), 10.0f, 20.0f);
+            ui.heading("设置", c.next(34.0f));
+            ui.separator(c.next(1.0f));
+            ui.input(&email, c.next(36.0f));
+            ui.checkbox(&notify, "邮件通知", c.next(22.0f));
+            if (ui.button("保存", c.next(36.0f), Style().primary())) ++saved;
+            ui.muted_text(email.empty() ? std::string("输入邮箱后点保存")
+                                        : "已保存 " + std::to_string(saved) + " 次：" + email,
+                          c.next(20.0f), Style().left().font(11.5f));
+        });
+    }).detach();
+}
+
 void draw_overview(Ui& ui, App& a, const Rect& area) {
     // 栅格是两级的：左边一半放介绍 + 完整可编译的 Quick Start，右边一半再切成
     // 分类索引与实测表。早期是三等分，左栏只有 240px 宽，代码示例 32 个字符就得
@@ -193,6 +241,15 @@ void draw_overview(Ui& ui, App& a, const Rect& area) {
             "}";
         ui.code_block(code, c.next(ui.code_block_height(code, Style().font(11.5f))),
                       Style().font(11.5f));
+        // 代码不是用来读的，是用来跑的：点一下开一个真窗口。
+        c.skip(4.0f);
+        {
+            Stack row = c.hbox(34.0f);
+            if (ui.button("在新窗口运行这段代码", row.part(0, 2), Style().outline()))
+                open_quickstart_window();
+            ui.muted_text("独立窗口 · 独立消息循环", row.part(1, 2),
+                          Style().right().font(11.5f));
+        }
     }
 
     {
@@ -238,7 +295,7 @@ void draw_overview(Ui& ui, App& a, const Rect& area) {
                 {"指针移动", "变化才画"},
                 {"动画", "60 fps"},
                 {"组件", "47 个"},
-                {"回归断言", "41 项"},
+                {"回归断言", "45 项"},
                 {"文字", "系统字体"},
                 {"几何", "自绘 AA"},
                 {"DLL", "仅系统库"},
@@ -1394,12 +1451,15 @@ void draw_nav(Ui& ui, App& a, const Rect& nav) {
     {
         Stack f = ui.hbox(Rect(foot.x + 16.0f, foot.y, foot.w - 32.0f, foot_h), 10.0f);
         const Rect tb = f.next(34.0f);
-        if (ui.icon_button("", Rect(tb.x, tb.y + 9.0f, 34.0f, 34.0f), Style().outline()))
+        // hbox 切出来的横切片是**整行高**（52），而按钮是 34×34 的正方形。
+        // 用 center_y 在行里居中，别写 tb.y + 9 —— 行高一改就和右边的字错位。
+        const Rect ib = tb.center_y(34.0f);
+        if (ui.icon_button("", ib, Style().outline()))
             a.dark = !a.dark;
         // 太阳 / 月亮自绘：字体里的这两个符号在部分系统缺字形，会显示成方块
         {
             const Color ic = th.foreground;
-            const float bx = tb.x + 17.0f, by = tb.y + 26.0f;
+            const float bx = ib.cx(), by = ib.cy();
             if (a.dark) {
                 ui.fill_circle(bx, by, 5.0f, ic);
                 for (int k = 0; k < 8; ++k) {
@@ -1412,9 +1472,8 @@ void draw_nav(Ui& ui, App& a, const Rect& nav) {
                 ui.fill_crescent(bx + 0.8f, by, 7.6f, bx + 4.4f, by - 2.6f, 8.2f, ic);
             }
         }
-        const Rect lr = f.rest();
-        ui.muted_text(a.dark ? "深色" : "浅色", Rect(lr.x, lr.y + 17.0f, lr.w, 18.0f),
-                      Style().left().font(11.5f));
+        // 同理：文字盒子直接给整行，垂直居中交给 Style 的 valign。
+        ui.muted_text(a.dark ? "深色" : "浅色", f.rest(), Style().left().font(11.5f));
     }
 
     // 列表
@@ -1435,8 +1494,11 @@ void draw_nav(Ui& ui, App& a, const Rect& nav) {
                 // 组头只是折叠开关，立刻交还焦点。
                 ui.set_focus(nullptr);
             }
+            // 文字的盒子就是整行：Style 的 valign 默认就是 Middle，所以它会
+            // 自动落到行中心，和右边那个手工算中心点的折叠三角对齐。
+            // 别再写 y + 12 这种固定偏移 —— 行高一改就偏，而且和三角不在一条线上。
             ui.muted_text(kPages[i].group,
-                          Rect(gh.x + 20.0f, gh.y + 12.0f, gh.w - 52.0f, 16.0f),
+                          Rect(gh.x + 20.0f, gh.y, gh.w - 52.0f, gh.h),
                           Style().left().font(10.5f));
             // 折叠标记：展开时朝下，折叠时朝右（两条线拼的尖角，不依赖字形）
             {

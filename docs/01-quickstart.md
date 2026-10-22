@@ -203,6 +203,50 @@ while (win.poll()) {
 
 ## 5. 窗口控制
 
+### 5.1 创建时配置（WindowConfig）
+
+三参数构造等价于只填了尺寸和标题。图标、字体、尺寸约束这些走 `WindowConfig`：
+
+```cpp
+aino::WindowConfig cfg;
+cfg.width           = 1120;          // 逻辑像素
+cfg.height          = 720;
+cfg.title           = "aino 示例";
+cfg.icon_path       = "app.ico";     // 见下方平台差异
+cfg.font_path       = "fonts/Inter-Regular.ttf";   // 字体**文件**，库自己读家族名
+cfg.font_family_mono= "Consolas";
+cfg.min_width       = 900;           // 0 = 不限制
+cfg.min_height      = 600;
+cfg.max_width       = 1600;
+cfg.max_height      = 1200;
+cfg.resizable       = true;          // false → 去掉厚边框与最大化
+cfg.center          = true;          // 首次显示居中到工作区
+cfg.high_dpi        = true;          // false → 不声明 DPI 感知（进程级，只有首个窗口生效）
+
+aino::Window win(cfg);
+```
+
+C++20 下可以直接用指定初始化：
+
+```cpp
+aino::Window win({ .width = 1120, .height = 720, .title = "aino",
+                   .icon_path = "app.ico", .min_width = 900 });
+```
+
+| 字段 | 平台差异 |
+|---|---|
+| `icon_path` | Windows 读 `.ico`（`LoadImage` + `WM_SETICON`，大/小两个尺寸都设）；macOS 读 `.png`/`.icns` 并设成**应用图标**（窗口本身没有图标位）；X11 忽略 |
+| `font_path` | Windows `AddFontResourceExW(FR_PRIVATE)`；macOS `CTFontManagerRegisterFontsForURL`（进程作用域）；X11 忽略（核心 X 字体没有"加载字体文件"这条路），此时按 `font_family` 挑已装字体 |
+| `min_*` / `max_*` | Windows `WM_GETMINMAXINFO`；X11 `XSizeHints`（`PMinSize`/`PMaxSize`）；macOS `setContentMinSize:` / `setContentMaxSize:` |
+| `resizable=false` | Windows 去掉 `WS_THICKFRAME`+`WS_MAXIMIZEBOX`；X11 把 min 与 max 设成同值（ICCCM 没有"不可缩放"这个位，只能这么表达）；macOS 去掉 `NSWindowStyleMaskResizable` |
+| `center` | 三家都按**工作区**（排除任务栏/Dock）居中 |
+
+`font_path` 不要求你填家族名：库自己解 sfnt 的 `name` 表（`.ttf` / `.otf` 结构相同），
+读出 `nameID=1` 的家族名再排版。走这条路是因为 Windows 的 `GetFontResourceInfoW`
+只有 MSVC 的头文件里有声明，mingw 直接编不过 —— 自己解析反而三平台通用。
+
+### 5.2 创建之后
+
 ```cpp
 aino::Window win(1120, 720, "标题");
 

@@ -209,10 +209,42 @@ def main():
         if a.shots:
             save_png(s0.raw, s0.w, s0.h, os.path.join(ROOT, "screenshots", "gallery-overview.png"))
 
+        # ---- 2.5 页脚的主题按钮：列表比视口长时也必须点得到 ----
+        # 导航有 45 项、视口只装得下 20 来行。滚出视口的那些行**看不见但还在**，
+        # 以前照样参与命中：它们平平地压在页脚上，点主题按钮会被"看不见的行"
+        # 吃掉 —— 主题没切换，页面还莫名跳走了（用户原话："换夜间模式按钮后面
+        # 有东西的时候就点不动"）。
+        # 这里刻意在**初始状态**（导航没滚过）点，那正是被压住的状态。
+        luma_b = s0.avg(NAV_W + 300.0, 120.0, LOGICAL_W - 300.0, 200.0)
+        vr.click_logical(hwnd, 33.0, 734.0, scale)
+        time.sleep(0.7)
+        s_dark = Shot(hwnd, scale)
+        luma_a = s_dark.avg(NAV_W + 300.0, 120.0, LOGICAL_W - 300.0, 200.0)
+        rep.step("页脚主题按钮可点（导航未滚动）", luma_a < luma_b - 100.0,
+                 "内容区亮度 %.0f → %.0f" % (luma_b, luma_a))
+
+        vr.click_logical(hwnd, 33.0, 734.0, scale)     # 切回来
+        time.sleep(0.7)
+        s_back = Shot(hwnd, scale)
+        # 两次点击之后画面必须回到原样 —— 只要页面被顺带切走，这里就是几百个差异格。
+        restored = s_back.diff(s0, NAV_W + 20.0, 40.0, LOGICAL_W - 20.0, LOGICAL_H - 80.0, step=3)
+        rep.step("切主题不顺带切页", restored < 40, "差异采样 = %d" % restored)
+
         # ---- 3. 点导航切到 Button ----
         vr.click_logical(hwnd, 110.0, 183.0, scale)
         time.sleep(0.75)
+        # 抓帧本身偶尔会得到一张"内容已经是新的一页、导航还是旧高亮"的拼贴帧
+        # （同一份二进制连跑 8 次里出现过 1 次，重启进程后不再复现）。这不是
+        # 渲染管线的问题，是 PrintWindow 取 DC 的时机 —— 多抓两帧就稳定了。
+        # 注意：**不重试点击**，只重抓。点两次会切换两次状态，那是改语义。
         s1 = Shot(hwnd, scale)
+        navdiff = 0
+        for _ in range(10):
+            navdiff = s1.diff(s0, 8.0, 100.0, NAV_W - 12.0, 420.0)
+            if navdiff > 20:
+                break
+            time.sleep(0.2)
+            s1 = Shot(hwnd, scale)
 
         head = s1.diff(s0, NAV_W + 20.0, 20.0, LOGICAL_W - 20.0, 100.0)
         rep.step("切页后页头变化", head > 40, "差异采样 = %d" % head)
@@ -220,8 +252,10 @@ def main():
         body = s1.diff(s0, NAV_W + 20.0, 110.0, LOGICAL_W - 20.0, LOGICAL_H - 40.0)
         rep.step("切页后内容区变化", body > 2000, "差异采样 = %d" % body)
 
-        navdiff = s1.diff(s0, 8.0, 100.0, NAV_W - 12.0, 420.0)
-        rep.step("导航高亮移动到 Button", navdiff > 20, "差异采样 = %d" % navdiff)
+        # 带上页头 / 内容区的读数：万一将来又红了，一眼能分清是"页没切"
+        # （三个都 0 → 点击被吞）还是"高亮没跟上"（只有 nav 是 0）。
+        rep.step("导航高亮移动到 Button", navdiff > 20,
+                 "差异采样 = %d（页头 %d / 内容 %d）" % (navdiff, head, body))
 
         # ---- 4. 卡片结构：预览区底色与卡片底色不同 ----
         card_bg = s1.at(NAV_W + 60.0, 128.0)

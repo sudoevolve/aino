@@ -252,20 +252,15 @@ def layout_probe():
     return ok, detail
 
 
-def move_probe(exe=GALLERY, dur=3.0, limit=32.0):
-    """指针持续移动时的 CPU（占**单核**百分比）。
+def _move_once(exe, dur, mode="nav"):
+    """跑一次指针移动，返回 (单核百分比, 移动次数, 实际秒数)。
 
-    这段以前是"抖一下鼠标就整窗 60fps 重绘"，实测把一整个核心吃满
-    （99.9% 单核 / 全机 6.25%）。后来按 30fps 合并降到 17~23%，但那是靠
-    降帧率换的，看得见。现在换成"悬停目标没变就不重绘"：画圈时只有跨过
-    控件边界才排帧，实测 6.8~12% 单核（全机 0.4~0.75%），而且悬停反馈
-    是满刷新率的。
-    判据 32% 单核 = 16 核机器上的 2%，正好是"交互时全机占用 <2%"那条线。
+    mode="nav"  在左侧导航里上下扫 —— 每跨过一行就换悬停目标，最坏情况
+    mode="row"  在**同一行内部**抖 —— 悬停目标不变，理想情况下一帧都不该出
     """
     import psutil
     import ctypes
     import ctypes.wintypes as wt
-    import math
     sys.path.insert(0, HERE)
     import verify_render as vr
 
@@ -274,40 +269,90 @@ def move_probe(exe=GALLERY, dur=3.0, limit=32.0):
         time.sleep(2.5)                       # 预热：字体初始化 + 首帧
         hwnd = vr.find_window_by_pid(p.pid, 5.0)
         if not hwnd:
-            return False, "窗口没找到"
+            return None, 0, 0.0
         vr.user32.SetForegroundWindow(hwnd)
         rc = wt.RECT()
         vr.user32.GetClientRect(hwnd, ctypes.byref(rc))
         pt = wt.POINT(0, 0)
         vr.user32.ClientToScreen(hwnd, ctypes.byref(pt))
-        cx = pt.x + rc.right // 2
-        cy = pt.y + rc.bottom // 2
+        sc = rc.right / 1180.0
+        nav_x = pt.x + int(110 * sc)
 
         proc = psutil.Process(p.pid)
         c0 = proc.cpu_times(); t0 = time.time()
         end = t0 + dur
         i = 0
-        # 在左侧导航里上下扫：那里每一行都是可交互的 nav_item，跨过边界就要重绘，
-        # 是最坏情况（真会改变画面）。以前在窗口空白处画圈，那区域一个控件都没有，
-        # 现在会被"悬停没变就不画"优化成 0 帧 —— 量出来 0.0%，等于没测。
-        nav_x = pt.x + int(110 * (rc.right / 1180.0))
-        top = pt.y + int(120 * (rc.right / 1180.0))
-        bot = pt.y + int(700 * (rc.right / 1180.0))
-        while time.time() < end:
-            t = (i % 120) / 120.0
-            y = int(top + (bot - top) * (t if t < 0.5 else 1.0 - t) * 2.0)
-            vr.user32.SetCursorPos(nav_x, y)
-            i += 1
-            time.sleep(0.004)                 # ~200 次/秒的移动
+        if mode == "nav":
+            # 为什么必须在导航里扫：内容区大片空白一个控件都没有，"悬停没变就不画"
+            # 会把那种轨迹优化成 0 帧（量出来 0.0%，等于没测）。
+            top = pt.y + int(120 * sc)
+            bot = pt.y + int(700 * sc)
+            while time.time() < end:
+                t = (i % 120) / 120.0
+                vr.user32.SetCursorPos(nav_x, int(top + (bot - top) * (t if t < 0.5 else 1.0 - t) * 2.0))
+                i += 1
+                time.sleep(0.004)
+        else:
+            # 在某一行**内部**抖：y 只在小范围里动，始终不出这一行
+            cy = pt.y + int(183 * sc)         # 导航第 3 项（Button）的中心
+            span = int(4 * sc)
+            while time.time() < end:
+                vr.user32.SetCursorPos(nav_x, int(cy + (span if (i // 4) % 2 else -span)))
+                i += 1
+                time.sleep(0.004)
         dt = time.time() - t0
         c1 = proc.cpu_times()
         pct = ((c1.user + c1.system) - (c0.user + c0.system)) / dt * 100.0
-        return pct <= limit, "%d 次移动 %.1fs 内  单核 %.1f%%（上限 %.0f%%）" % (i, dt, pct, limit)
+        return pct, i, dt
     finally:
         try:
             p.terminate(); p.wait(timeout=5)
         except Exception:
             p.kill()
+
+
+def _best(exe, dur, mode, tries):
+    """同一轨迹跑 tries 次，取最小的那个 CPU 读数（噪声只会往上加）。"""
+    best, note = None, ""
+    for _ in range(max(1, tries)):
+        pct, i, dt = _move_once(exe, dur, mode)
+        if pct is None:
+            return None, "窗口没找到"
+        note = "%d 次移动 %.1fs" % (i, dt)
+        if best is None or pct < best:
+            best = pct
+    return best, note
+
+
+def move_probe(exe=GALLERY, dur=3.0, limit=60.0, tries=2, ratio_min=4.0):
+    """指针持续移动时的 CPU —— 用**同一个进程里的两次采样做比值**来判定。
+
+    这段以前是"抖一下鼠标就整窗 60fps 重绘"，实测把一整个核心吃满
+    （99.9% 单核）。现在的设计是"悬停目标没变就不排帧"。要钉的就是这条：
+      A = 在导航里上下扫（每跨一行就换悬停目标，真该画）
+      B = 在**同一行内部**抖（悬停目标不变，应该一帧都不出）
+
+    **为什么用 A/B 比值而不是绝对 CPU 百分比**：绝对值的噪声根本压不住。
+    这个指标是"进程 CPU 时间 / 墙钟时间"，而 GDI 的 BitBlt 要过 DWM，
+    机器上任何别的活儿都会把 system 那半边搅大。同一份二进制在同一台机器上
+    实测能读出 23% / 37% / 51%，取三次最小也还在抖 —— 那种断言只会变成
+    "看机器当时闲不闲"的彩票。而 A 和 B 处在同一次运行、同一台机器上，
+    负载对两边的作用一样，比值就把这部分约掉了。
+
+      · 过滤生效：B ≈ 0.0~1%（一帧都不画），A ≈ 20~50% → 比值几十
+      · 过滤失效：B 也变成满速重绘，B ≈ A → 比值 ~1
+    判据：A / max(B, 0.35) ≥ 4，并且 A 本身不超过 60%（兜住"整体慢得离谱"）。
+    """
+    a, note_a = _best(exe, dur, "nav", tries)
+    if a is None:
+        return False, "窗口没找到"
+    b, note_b = _best(exe, dur, "row", tries)
+    if b is None:
+        return False, "窗口没找到"
+    ratio = a / max(b, 0.35)
+    ok = (ratio >= ratio_min) and (a <= limit)
+    return ok, "%s 扫导航 单核 %.1f%% / 同一行内抖 %.1f%% = %.0f×（要求 ≥%.0f×，上限 %.0f%%）" % (
+        note_a, a, b, ratio, ratio_min, limit)
 
 
 PROBES = (
@@ -355,6 +400,15 @@ PROBES = (
     # 漏掉一个直连 raster_poly 的控件，屏幕上就会留下从 (0,0) 起的一块残影
     # （Chart 页左上角贴着一块折线，就是这么来的）。顺带钉住嵌套滚动区的滚轮归属。
     ("measure_probe",    "通过 9 项，失败 0 项",             "测量模式不落像素 + 嵌套滚动归属"),
+    # 点击归属。两件事都出过真 bug：
+    #   · 滚动区把内容裁到视口，可**裁剪只发生在绘制阶段** —— 滚出视口的导航行
+    #     照样参与命中，压在侧边栏页脚的主题按钮下面，点一下就把页面切走；
+    #   · 一帧里多个控件都包含指针时，按下被最后一个无条件认领，一次点击动两份状态。
+    ("click_probe",      "通过 11 项，失败 0 项",             "点击归属（裁剪外不吃点击 / 一次按下只归一个）"),
+    # WindowConfig：字体文件 → 家族名（自己解 sfnt 的 name 表，不依赖 MSVC 专有 API）、
+    # 最小/最大尺寸真的被系统夹住、首次显示居中、resizable=false 去掉厚边框。
+    # 这几项像素断言看不出来（是窗口管理器的行为），只能问系统。
+    ("cfg_probe",        "通过 16 项，失败 0 项",             "WindowConfig（字体名/尺寸约束/居中/可缩放）"),
 )
 
 

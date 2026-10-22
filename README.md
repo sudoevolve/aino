@@ -2,7 +2,7 @@
 
 单头文件 C++17 桌面 UI 库 —— 立即模式、零第三方依赖、空闲 0.00% CPU。
 
-一个 `aino.hpp`（9865 行 / 456.1 KiB），一个 exe 612 KiB，零 DLL 依赖（只用系统 DLL）。
+一个 `aino.hpp`（10537 行 / 494.9 KiB），一个 exe 640 KiB，零 DLL 依赖（只用系统 DLL）。
 
 ## Preview
 
@@ -78,12 +78,16 @@ cmake --build build --config Release
 ./build/aino_gallery.exe
 ```
 
+概览页那段 Quick Start 代码可以直接点「在新窗口运行这段代码」：它会真的再开一个
+`aino::Window`（另一个线程、另一条消息循环、另一块后备缓冲），不是照着画的假框子 ——
+顺便演示 `WindowConfig` 的最小尺寸与居中。
+
 `win.run(frame_cb)` 就是完整主循环：没事件时阻塞在 `WaitMessage`，帧回调只在需要重绘时被调用 —— 窗口静止时 0 帧 / 0.00% CPU，不是低帧率空转。
 
 平台状态：三个后端都能编译、能开窗画帧，**也都跑同一套 29 项像素断言**
 （`tools/ci_pixels.cpp` 直接读后备缓冲，只断言与字形无关的几何/颜色/裁剪/阴影性质）。
-Windows 另有 41 项回归（离屏行为探针 76 + 83 + 80 + 36 条断言、15 项整窗断言、
-卡片布局自检、测量不落像素、空闲 CPU、交互 CPU）；
+Windows 另有 45 项回归（离屏行为探针 76 + 83 + 80 + 36 + 16 + 11 条断言、17 项整窗断言、
+卡片布局自检、测量不落像素、点击归属、窗口配置、空闲 CPU、交互 CPU 比值）；
 Linux/macOS 的**输入、IME、剪贴板**仍未经真机核对，细节见
 [docs/README.md 的平台支持表](docs/README.md#平台支持)。
 
