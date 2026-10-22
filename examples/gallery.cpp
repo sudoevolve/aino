@@ -144,15 +144,16 @@ Rect cell(Stack& row, float w, float h) {
 //  概览页 —— 不是组件，是索引，所以不走 Demo 表
 // =============================================================================
 void draw_overview(Ui& ui, App& a, const Rect& area) {
+    // 栅格是两级的：左边一半放介绍 + 完整可编译的 Quick Start，右边一半再切成
+    // 分类索引与实测表。早期是三等分，左栏只有 240px 宽，代码示例 32 个字符就得
+    // 断行，卡片下半截还会空出一大块 —— 两栏才能同时装下文字和代码。
     auto cols = ui.hbox(area, 18.0f);
 
     {
-        const Rect cp = cols.part(0, 3);
+        const Rect cp = cols.part(0, 2);
         ui.panel(cp);
         Stack c = ui.vbox(cp, 9.0f, 20.0f);
         ui.subheading("a 单头文件 GUI 库", c.next(26.0f), Style().left());
-        ui.muted_text("ainō · " + std::string(AINO_VERSION), c.next(18.0f),
-                      Style().left().font(12.0f));
         ui.separator(c.next(1.0f));
         ui.label("立即模式：每帧重建界面，控件在按下那一帧直接改变量。", c.next(20.0f),
                  Style().left().font(12.5f));
@@ -161,56 +162,76 @@ void draw_overview(Ui& ui, App& a, const Rect& area) {
         ui.label("单文件：include 一个 .hpp，静态链接后无第三方依赖。", c.next(20.0f),
                  Style().left().font(12.5f));
         c.skip(6.0f);
-        ui.code_block("#define AINO_IMPLEMENTATION\n"
-                      "#include \"aino.hpp\"\n"
-                      "\n"
-                      "aino::Window win(960, 640, \"hello\");\n"
-                      "win.run([](aino::Ui& ui) {\n"
-                      "    ui.clear(ui.theme().background);\n"
-                      "    ui.label(\"hello\", Rect(20, 20, 200, 24));\n"
-                      "});",
-                      c.fill(), Style().font(11.5f));
+        const char* code =
+            "#define AINO_IMPLEMENTATION\n"
+            "#include \"aino.hpp\"\n"
+            "#include <string>\n"
+            "\n"
+            "int main() {\n"
+            "    aino::Window win(880, 560, \"aino\");\n"
+            "    if (!win.ok()) return 1;\n"
+            "\n"
+            "    std::string email;\n"
+            "    bool notify = true;\n"
+            "\n"
+            "    win.run([&](aino::Ui& ui) {\n"
+            "        ui.panel({24, 24, 400, 240});\n"
+            "        auto c = ui.vbox({24, 24, 400, 240}, 10, 18);\n"
+            "        ui.heading(\"设置\", c.next(34));\n"
+            "        ui.input(&email, c.next(36));\n"
+            "        ui.checkbox(&notify, \"邮件通知\", c.next(22));\n"
+            "        ui.button(\"保存\", c.next(36), Style().primary());\n"
+            "    });\n"
+            "}";
+        ui.code_block(code, c.next(ui.code_block_height(code, Style().font(11.5f))),
+                      Style().font(11.5f));
     }
 
     {
-        const Rect cp = cols.part(1, 3);
-        ui.panel(cp);
-        Stack c = ui.vbox(cp, 8.0f, 20.0f);
-        ui.subheading("分类", c.next(26.0f), Style().left());
-        const std::pair<const char*, int> groups[] = {
-            {"基础", 5}, {"表单", 15}, {"数据展示", 9}, {"浮层", 11}, {"布局", 6}, {"图形与动效", 3},
-        };
-        for (auto& g : groups) {
-            Stack r = c.hbox(26.0f);
-            ui.label(g.first, r.part(0, 2), Style().left().font(12.5f));
-            ui.muted_text(std::to_string(g.second) + " 页", r.part(1, 2),
-                          Style().right().font(12.0f));
+        const Rect right = cols.part(1, 2);
+        auto sub = ui.hbox(right, 18.0f);
+
+        {
+            const Rect cp = sub.part(0, 2);
+            ui.panel(cp);
+            Stack c = ui.vbox(cp, 8.0f, 20.0f);
+            ui.subheading("分类", c.next(26.0f), Style().left());
+            const std::pair<const char*, int> groups[] = {
+                {"基础", 5}, {"表单", 15}, {"数据展示", 9},
+                {"浮层", 11}, {"布局", 6}, {"图形与动效", 3},
+            };
+            for (auto& g : groups) {
+                Stack r = c.hbox(26.0f);
+                ui.label(g.first, r.part(0, 2), Style().left().font(12.5f));
+                ui.muted_text(std::to_string(g.second) + " 页", r.part(1, 2),
+                              Style().right().font(12.0f));
+            }
+            c.skip(4.0f);
+            ui.muted_text("左侧导航按分类分组，点条目切换页面。", c.next(18.0f),
+                          Style().left().font(11.5f));
+            ui.muted_text("示例可直接操作，源码在预览右侧。", c.next(18.0f),
+                          Style().left().font(11.5f));
+            const Rect tb = c.next(78.0f);
+            ui.fill_rect(tb, ui.theme().primary, ui.theme().radius);
+            ui.label("ainō", tb, Style().center().semi_bold().font(20.0f)
+                     .color(ui.theme().primary_foreground));
         }
-        c.skip(4.0f);
-        ui.muted_text("左侧导航按分类分组，点条目切换页面。", c.next(18.0f),
-                      Style().left().font(11.5f));
-        ui.muted_text("每页的示例都可以直接操作，源码在示例右侧。", c.next(18.0f),
-                      Style().left().font(11.5f));
-        const Rect tb = c.next(96.0f);
-        ui.fill_rect(tb, ui.theme().primary, ui.theme().radius);
-        ui.label("ainō", tb, Style().center().semi_bold().font(22.0f)
-                 .color(ui.theme().primary_foreground));
-    }
 
-    {
-        const Rect cp = cols.part(2, 3);
-        ui.panel(cp);
-        Stack c = ui.vbox(cp, 8.0f, 20.0f);
-        ui.subheading("实测", c.next(26.0f), Style().left());
-        const std::vector<std::string> h = {"指标", "值"};
-        const std::vector<std::vector<std::string>> rows = {
-            {"第三方依赖", "0"},
-            {"空闲 CPU", "0.00%"},
-            {"文字", "系统字体引擎"},
-            {"几何", "自绘 AA"},
-            {"DLL", "仅系统库"},
-        };
-        ui.table(h, rows, c.fill(), Style().font(12.0f));
+        {
+            const Rect cp = sub.part(1, 2);
+            ui.panel(cp);
+            Stack c = ui.vbox(cp, 8.0f, 20.0f);
+            ui.subheading("实测", c.next(26.0f), Style().left());
+            const std::vector<std::string> h = {"指标", "值"};
+            const std::vector<std::vector<std::string>> rows = {
+                {"第三方依赖", "0"},
+                {"空闲 CPU", "0.00%"},
+                {"文字", "系统字体"},
+                {"几何", "自绘 AA"},
+                {"DLL", "仅系统库"},
+            };
+            ui.table(h, rows, c.fill(), Style().font(12.0f));
+        }
     }
     (void)a;
 }
