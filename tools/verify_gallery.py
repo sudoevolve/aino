@@ -45,6 +45,24 @@ def close(c1, c2, tol=6):
     return all(abs(a - b) <= tol for a, b in zip(c1[:3], c2[:3]))
 
 
+def ink_span(s, x0, y0, x1, y1, thr=200):
+    """区域内"有暗像素"的纵向跨度（逻辑坐标）。只看哪几行有墨，不看字形。"""
+    first = last = None
+    ly = y0
+    while ly < y1:
+        lx = x0
+        while lx < x1:
+            c = s.at(lx, ly)
+            if (c[0] + c[1] + c[2]) / 3 < thr:
+                if first is None:
+                    first = ly
+                last = ly
+                break
+            lx += 1
+        ly += 1
+    return first, last
+
+
 class Report:
     def __init__(self):
         self.results = []
@@ -229,6 +247,21 @@ def main():
         # 两次点击之后画面必须回到原样 —— 只要页面被顺带切走，这里就是几百个差异格。
         restored = s_back.diff(s0, NAV_W + 20.0, 40.0, LOGICAL_W - 20.0, LOGICAL_H - 80.0, step=3)
         rep.step("切主题不顺带切页", restored < 40, "差异采样 = %d" % restored)
+
+        # ---- 2.6 组头文字必须和折叠三角在同一条中线上 ----
+        # 用户原话："折叠选单文本为什么没居中，不允许再出现这类问题"。根因是把文字
+        # 盒子写成 16 高再手算 y + 12 —— 行高 30 里整体偏上。现在盒子给整行，靠
+        # Style 的 valign 居中。这里量"墨迹中线 vs 行中线"，行高或偏移一改就红。
+        GY = 138.0                              # 「基础」组头：78 品牌 + 30 + 30
+        gy_c = GY + 15.0                        # 行中线
+        t0, t1 = ink_span(s0, 20.0, GY, 60.0, GY + 30.0)      # 文字
+        c0, c1 = ink_span(s0, 196.0, GY, 226.0, GY + 30.0)    # 折叠三角
+        mid_t = (t0 + t1) * 0.5
+        mid_c = (c0 + c1) * 0.5
+        # 文字墨迹天然不对称（有的字没下伸部），所以给 ±3 的容差；旧的 y + 12 偏 5px。
+        rep.step("组头文字与折叠三角同中线",
+                 abs(mid_t - mid_c) <= 2.0 and abs(mid_t - gy_c) <= 3.0,
+                 "文字中线 %.1f / 三角中线 %.1f / 行中线 %.1f" % (mid_t, mid_c, gy_c))
 
         # ---- 3. 点导航切到 Button ----
         vr.click_logical(hwnd, 110.0, 183.0, scale)
