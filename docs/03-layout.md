@@ -139,6 +139,30 @@ const float h = ui.alert_height(title, desc, 380.0f, st);
 ui.alert(title, desc, col.next(h), st);
 ```
 
+### 一整个面板的高度：`begin_measure` / `end_measure`
+
+单个文本能量，一整个「标题 + 表单 + 按钮」的块就没法一个个量了。
+这时用测量模式：把那段绘制代码**空跑一遍**，它把碰到的所有盒子并成一个外接矩形。
+
+```cpp
+ui.begin_measure();
+draw_my_panel(ui, app, aino::Rect(x, y, w, 0.0f));   // 高度先给 0
+const aino::Rect used = ui.end_measure();            // 内容实际占到的大小
+ui.panel(aino::Rect(x, y, w, used.h));               // 用真实高度再画一遍
+draw_my_panel(ui, app, aino::Rect(x, y, w, used.h));
+```
+
+测量模式下：图元只记账不落像素、命中测试一律返回"没碰"、`deferred()`
+不入队、`repaint()` 不排帧、动画不推进。所以空跑一遍没有副作用，代价只是
+那段布局代码每帧多跑一次（不碰光栅化，通常几十微秒）。
+
+滚动区里量到的只有**视口内**的部分 —— 内嵌长列表天生超出视口，不能算进
+外层高度，否则一张卡片会被撑成几千像素。
+
+gallery 的每张示例卡片就是这么做高度的：`preview_h` 只是下限，
+运行时取 `max(声明, 实测)`，所以"内容爬出卡片下边框"这一类维护灾难不会发生。
+`AINO_LAYOUT_REPORT=<路径>` 会把 45 页全部量一遍写成报告，回归里有一条断言盯着它。
+
 ---
 
 ## 4. 滚动

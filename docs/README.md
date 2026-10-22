@@ -161,7 +161,7 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 
 | 平台 | 后端 | 状态 |
 |---|---|---|
-| Windows | GDI（`BitBlt` + 自绘 AA 光栅化） | **已验证**（Win11 / MSVC 与 MinGW g++，37 项回归全绿） |
+| Windows | GDI（`BitBlt` + 自绘 AA 光栅化） | **已验证**（Win11 / MSVC 与 MinGW g++，39 项回归全绿） |
 | Linux | X11 + XFontSet 系统字体 | **CI 通过**：编译 + xvfb 开窗跑满 20 帧 + **29 项像素断言** |
 | macOS | Cocoa / CoreText / CoreGraphics | **CI 通过**：编译 + 开窗跑满 20 帧 + **29 项像素断言** |
 
@@ -197,6 +197,20 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 
 代价是它**证明不了**「字形排得对不对」——那仍然要人眼在真机上看。
 Windows 侧另有 15 项整窗断言兜这一层。
+
+### gallery 自己的两条工具钩子
+
+gallery 是唯一同时用到全部控件的程序，所以它另外挂了两个只在跑工具时才生效的开关：
+
+| 环境变量 | 作用 | 谁在用 |
+|---|---|---|
+| `AINO_LAYOUT_REPORT=<路径>` | 首帧把每一页每一条示例在**测量模式**下空跑一遍，写出「声明高度 / 实测高度 / 差值」，末尾一行 `# over=0 under=N total=M` | `regress.py` 的「卡片高度够」一项 |
+| `AINO_START_PAGE=<序号或名字>` | 直接开在指定页 | `tools/shot_pages.py` 逐页截图 |
+
+`over=0` 的含义是「没有任何一条示例的内容超出它自己的卡片下边框」。这条断言之所以
+能成立，是因为卡片高度不再是手填的数字，而是 `max(声明高度, 实测高度)` —— 见
+[03 布局](03-layout.md) 的 `begin_measure` / `end_measure`。`shot_pages.py` 不属于回归：
+它只落图，判断仍然靠人眼，因为「好不好看」没有像素判据。
 
 ### 两个非 Windows 后端的真实现状
 

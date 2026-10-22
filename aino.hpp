@@ -60,8 +60,8 @@
 
 #define AINO_VERSION_MAJOR 0
 #define AINO_VERSION_MINOR 3
-#define AINO_VERSION_PATCH 2
-#define AINO_VERSION "0.3.2"
+#define AINO_VERSION_PATCH 3
+#define AINO_VERSION "0.3.3"
 
 #include <cstdint>
 #include <cstddef>
@@ -608,6 +608,19 @@ public:
 
     // 请求下一帧再重绘一次（动画用）。默认事件驱动，静止时不重绘。
     void repaint();
+
+    // ---- 布局测量 ----
+    // 进入后所有图元与命中测试只记账、不落地（不画、不响应、不排帧）。
+    // 立即模式没有隐式自动高度，而卡片 / 面板往往要在**画之前**知道内容多高，
+    // 于是用同一份绘制代码先空跑一遍量出外接矩形：
+    //     ui.begin_measure();
+    //     d.draw(ui, a, box);            // 拿到任意 box 都能量
+    //     const float need = ui.end_measure().h;
+    //     // 再用 max(声明高度, need) 画真正的卡片
+    // 代价是这段绘制代码每帧跑两遍（测量那遍不碰像素），换来高度不再靠手填。
+    void begin_measure();
+    Rect end_measure();
+    bool measuring() const;
     // 声明"接下来 N 秒内持续动画"，让主循环从阻塞模式切到连续帧模式
     void set_animating(bool on);
     bool animating() const;
@@ -2243,6 +2256,34 @@ struct Ui::Impl {
     Canvas* canvas = nullptr;
     TextRenderer* text = nullptr;
 
+    // ---- 布局测量模式（见 Ui::begin_measure）----
+    // 置位后图元与命中测试都只把 box 并进 measure_acc，不落地。
+    // 少数控件（rating / spinner）绕过 8 个图元直接 raster_*，它们各自在入口
+    // 判 measure_on 后返回 —— 不能靠"把 canvas 摘掉"来兜，那些地方有的不判空。
+    bool measure_on = false;
+    bool measure_any = false;
+    Rect measure_acc{};
+
+    void measure_add(const Rect& r) {
+        Rect q = r;
+        // 滚动区里的内容只算**视口内**的部分：内层列表画了 20 行、视口只有 164px，
+        // 全算进来会把卡片撑成 600px（滚动区的内容天生超出，这正是它存在的理由）。
+        if (!scroll_stack.empty()) {
+            const Rect& cb = scroll_stack.back().box;
+            const float x0 = std::max(q.x, cb.x), y0 = std::max(q.y, cb.y);
+            const float x1 = std::min(q.right(), cb.right()), y1 = std::min(q.bottom(), cb.bottom());
+            if (x1 <= x0 || y1 <= y0) return;
+            q = Rect(x0, y0, x1 - x0, y1 - y0);
+        }
+        if (q.w <= 0.0f && q.h <= 0.0f) return;
+        if (!measure_any) { measure_acc = q; measure_any = true; return; }
+        const float ax0 = std::min(measure_acc.x, q.x);
+        const float ay0 = std::min(measure_acc.y, q.y);
+        const float ax1 = std::max(measure_acc.right(), q.right());
+        const float ay1 = std::max(measure_acc.bottom(), q.bottom());
+        measure_acc = Rect(ax0, ay0, ax1 - ax0, ay1 - ay0);
+    }
+
     // 立即模式交互状态（跨帧存活）
     uint64_t hot = 0;             // 本帧鼠标悬停的控件
     uint64_t active = 0;          // 正在被按住的控件
@@ -2542,7 +2583,11 @@ inline void Ui::end_frame() {
     in.mouse_prev = in.mouse;
 }
 
-inline void Ui::deferred(std::function<void()> fn) { impl->defer.push_back(std::move(fn)); }
+// 测量模式下浮层不入队：测量跑的是同一份绘制代码，弹层会被登记两遍。
+inline void Ui::deferred(std::function<void()> fn) {
+    if (impl->measure_on) return;
+    impl->defer.push_back(std::move(fn));
+}
 
 inline const Input& Ui::input() const { return impl->input; }
 inline const Theme& Ui::theme() const { return impl->theme; }
@@ -2552,13 +2597,25 @@ inline float Ui::width() const { return impl->width; }
 inline float Ui::height() const { return impl->height; }
 inline float Ui::time() const { return impl->clock; }
 inline float Ui::frame_dt() const { return impl->dt; }
-inline void  Ui::repaint() { if (impl->request_repaint) impl->request_repaint(); }
+// 测量阶段不排帧：它是"为了算出高度而跑一遍布局"，跑完这一帧本来就还要真画。
+inline void  Ui::repaint() { if (impl->measure_on) return; if (impl->request_repaint) impl->request_repaint(); }
 inline void  Ui::set_animating(bool on) { impl->animating = on; if (on) repaint(); }
 inline bool  Ui::animating() const { return impl->animating; }
-inline void  Ui::set_cursor(Cursor c) { impl->cursor = c; }
+inline void  Ui::set_cursor(Cursor c) { if (impl->measure_on) return; impl->cursor = c; }
 inline Cursor Ui::cursor() const { return impl->cursor; }
 inline void* Ui::focused_id() const { return impl->focus; }
 inline void  Ui::set_focus(void* id) { impl->focus = id; if (id) impl->caret_blink = 0.0f; }
+
+inline void Ui::begin_measure() {
+    impl->measure_on = true;
+    impl->measure_any = false;
+    impl->measure_acc = Rect{};
+}
+inline Rect Ui::end_measure() {
+    impl->measure_on = false;
+    return impl->measure_any ? impl->measure_acc : Rect{};
+}
+inline bool Ui::measuring() const { return impl->measure_on; }
 
 // -----------------------------------------------------------------------------
 //  hover 等状态的帧间插值（eui-neo 的 visualState 思路，这里做成通用小工具）
@@ -2566,6 +2623,8 @@ inline void  Ui::set_focus(void* id) { impl->focus = id; if (id) impl->caret_bli
 namespace detail {
 inline float animate_value(Ui::Impl* im, uint64_t id, float target, float speed = 14.0f) {
     float& cur = im->anim[id];
+    // 测量模式不推进动画：绘制代码每帧要跑两遍，推两次等于动画快一倍。
+    if (im->measure_on) return cur;
     float d = target - cur;
     if (std::fabs(d) < 0.0015f) {
         if (cur != target) { cur = target; if (im->request_repaint) im->request_repaint(); }
@@ -2586,6 +2645,9 @@ struct Interact {
 
 inline Interact interact(Ui::Impl* im, uint64_t id, const Rect& r, bool enabled) {
     Interact res;
+    // 测量模式只记账：不碰 hot/active/gate，也不产生 hover/click。
+    // 否则每帧跑一遍测量就会把交互状态搅乱（按钮可能在测量阶段"被点"）。
+    if (im->measure_on) { im->measure_add(r); return res; }
     const Input& in = im->input;
     const uint64_t z = ++im->seq;      // 先取序号：它同时是"我在第几层"
     // 浮层打开时，遮罩上的鼠标不属于任何下层控件；被浮层盖住的控件同样不算。
@@ -2650,10 +2712,12 @@ inline void rrect_poly(const Ui::Impl* im, const Rect& r, float radius, std::vec
 //  8.6  图元
 // =============================================================================
 inline void Ui::clear(const Color& c) {
+    if (impl->measure_on) return;
     if (impl->canvas) impl->canvas->clear(c);
 }
 
 inline void Ui::fill_rect(const Rect& r, const Color& c, float radius) {
+    if (impl->measure_on) { if (c.a != 0 && !r.empty()) impl->measure_add(r); return; }
     if (!impl->canvas || c.a == 0 || r.empty()) return;
     // 有旋转 → 多边形（raster_rrect 只吃轴对齐矩形）
     if (impl->xf_rotated()) {
@@ -2699,6 +2763,7 @@ inline void Ui::fill_rect(const Rect& r, const Color& c, float radius) {
 }
 
 inline void Ui::stroke_rect(const Rect& r, const Color& c, float radius, float width) {
+    if (impl->measure_on) { if (c.a != 0 && !r.empty()) impl->measure_add(r); return; }
     if (!impl->canvas || c.a == 0 || r.empty()) return;
     const float w = std::max(impl->xf_len(width), 0.6f);
     if (impl->xf_rotated()) {
@@ -2722,6 +2787,11 @@ inline void Ui::stroke_rect(const Rect& r, const Color& c, float radius, float w
 }
 
 inline void Ui::fill_circle(float cx, float cy, float radius, const Color& c) {
+    if (impl->measure_on) {
+        if (c.a != 0 && radius > 0.0f)
+            impl->measure_add(Rect(cx - radius, cy - radius, radius * 2.0f, radius * 2.0f));
+        return;
+    }
     if (!impl->canvas || c.a == 0) return;
     const Vec2 p = impl->xf_map(cx, cy);
     detail::raster_circle(*impl->canvas, p.x, p.y, impl->xf_len(radius), c);
@@ -2729,6 +2799,16 @@ inline void Ui::fill_circle(float cx, float cy, float radius, const Color& c) {
 
 inline void Ui::fill_crescent(float cx, float cy, float radius,
                               float cut_cx, float cut_cy, float cut_radius, const Color& c) {
+    if (impl->measure_on) {
+        if (c.a != 0 && radius > 0.0f) {
+            const float x0 = std::min(cx - radius, cut_cx - cut_radius);
+            const float y0 = std::min(cy - radius, cut_cy - cut_radius);
+            const float x1 = std::max(cx + radius, cut_cx + cut_radius);
+            const float y1 = std::max(cy + radius, cut_cy + cut_radius);
+            impl->measure_add(Rect(x0, y0, x1 - x0, y1 - y0));
+        }
+        return;
+    }
     if (!impl->canvas || c.a == 0) return;
     const Vec2 p = impl->xf_map(cx, cy);
     const Vec2 q = impl->xf_map(cut_cx, cut_cy);
@@ -2737,6 +2817,15 @@ inline void Ui::fill_crescent(float cx, float cy, float radius,
 }
 
 inline void Ui::draw_line(float x0, float y0, float x1, float y1, const Color& c, float width) {
+    if (impl->measure_on) {
+        if (c.a != 0) {
+            const float hw = std::max(width, 1.0f) * 0.5f;
+            impl->measure_add(Rect(std::min(x0, x1) - hw, std::min(y0, y1) - hw,
+                                   std::fabs(x1 - x0) + hw * 2.0f,
+                                   std::fabs(y1 - y0) + hw * 2.0f));
+        }
+        return;
+    }
     if (!impl->canvas || c.a == 0) return;
     const Vec2 a = impl->xf_map(x0, y0);
     const Vec2 b = impl->xf_map(x1, y1);
@@ -2744,6 +2833,11 @@ inline void Ui::draw_line(float x0, float y0, float x1, float y1, const Color& c
 }
 
 inline void Ui::drop_shadow(const Rect& r, float radius, float blur, const Color& c, float dy) {
+    if (impl->measure_on) {
+        if (c.a != 0) impl->measure_add(Rect(r.x - blur, r.y - blur + dy,
+                                             r.w + blur * 2.0f, r.h + blur * 2.0f));
+        return;
+    }
     if (!impl->canvas || c.a == 0) return;
     // 阴影走的是距离场，只吃轴对齐矩形。旋转时用包围盒 —— 形状不再是"跟着转"，
     // 但至少不会凭空消失（这一点在文档里写明了）。
@@ -2762,6 +2856,7 @@ inline float Ui::tween(uint64_t id, float target, float duration, Easing e) {
         tw.t = duration; tw.dur = duration; tw.e = e;
         return target;
     }
+    if (impl->measure_on) return impl->tween_now(tw);    // 测量不推进时间轴
     if (target != tw.to) {
         // 从**当前显示值**重新起跑：目标中途改变不会跳变
         tw.from = impl->tween_now(tw);
@@ -2787,6 +2882,15 @@ inline Color Ui::tween_color(uint64_t id, const Color& target, float duration, E
         ct.init = true; ct.from = target; ct.to = target;
         ct.t = duration; ct.dur = duration; ct.e = e;
         return target;
+    }
+    // 测量模式：只读当前插值结果，不改状态（同 tween）
+    if (impl->measure_on) {
+        const float k0 = ct.dur > 0.0001f ? clampf(ct.t / ct.dur, 0.0f, 1.0f) : 1.0f;
+        const float e0 = (ct.e ? ct.e : easing::out_cubic)(k0);
+        return Color(uint8_t(float(ct.from.r) + (float(ct.to.r) - float(ct.from.r)) * e0),
+                     uint8_t(float(ct.from.g) + (float(ct.to.g) - float(ct.from.g)) * e0),
+                     uint8_t(float(ct.from.b) + (float(ct.to.b) - float(ct.from.b)) * e0),
+                     uint8_t(float(ct.from.a) + (float(ct.to.a) - float(ct.from.a)) * e0));
     }
     if (target.r != ct.to.r || target.g != ct.to.g || target.b != ct.to.b || target.a != ct.to.a) {
         const float k = ct.dur > 0.0001f ? clampf(ct.t / ct.dur, 0.0f, 1.0f) : 1.0f;
@@ -3074,6 +3178,7 @@ inline const std::vector<std::string>& wrap_layout(Ui::Impl* im, const std::stri
 } // namespace detail
 
 inline void Ui::draw_text(const std::string& text, const Rect& box, const Color& c, const Style& st) {
+    if (impl->measure_on) { if (c.a != 0) impl->measure_add(box); return; }
     if (!impl->canvas || !impl->text || text.empty() || c.a == 0) return;
     const float tscale = impl->xf_scale();
     const float fs = st.font_size > 0.0f ? st.font_size : impl->theme.font_size;
@@ -3816,6 +3921,9 @@ inline float Ui::code_block_height(const std::string& code, const Style& st) con
 }
 
 inline void Ui::code_block(const std::string& code, const Rect& box, const Style& st) {
+    // 代码块自己画文字（走 TextRenderer 的 mono 通道，不经过 draw_text），
+    // 所以测量模式要在这里单独拦一道，否则测量阶段会真把字画到屏幕上。
+    if (impl->measure_on) { impl->measure_add(box); return; }
     if (!impl->canvas || !impl->text) return;
     const Theme& th = impl->theme;
 
@@ -5298,6 +5406,9 @@ inline bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
 // -----------------------------------------------------------------------------
 inline bool Ui::rating(int* value, int max_stars, const Rect& box, const Style& st) {
     if (!value || max_stars <= 0 || max_stars > 32) return false;
+    // 星形是直接 raster_poly 到画布的，不经过图元函数 —— 测量模式必须自己拦一道，
+    // 否则"先量高度"那趟会在屏幕左上角画出一排真星星。
+    if (impl->measure_on) { impl->measure_add(box); return false; }
     const Theme& th = impl->theme;
     uint64_t base = detail::make_id("rating", box);
     const float gap = 4.0f;
@@ -5388,6 +5499,8 @@ inline void Ui::spinner(const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
     const float d = std::min(box.w, box.h);
     if (d <= 6.0f) return;
+    // 同 rating：底环与拖尾环直接 raster_arc / raster_ring_tail 到画布
+    if (impl->measure_on) { impl->measure_add(box); return; }
 
     Color track = !st.border_color.is_none() ? st.border_color : th.muted;
     Color arc   = !st.bg.is_none() ? st.bg : th.primary;
@@ -7593,6 +7706,8 @@ inline bool scrollbar_interact(Ui::Impl* ui, const Rect& box, float max_offset, 
 } // namespace detail
 
 inline ScrollScope Ui::scroll(const Rect& box, float content_h) {
+    // 测量模式：滚动区按**视口**占高度（内容多高跟布局无关，那是滚动条的事）
+    if (impl->measure_on) impl->measure_add(box);
     ScrollScope sc;
     sc.ui         = this;
     sc.id         = detail::make_id("scroll", box);
@@ -7602,7 +7717,8 @@ inline ScrollScope Ui::scroll(const Rect& box, float content_h) {
 
     float& off = impl->flags[sc.id];
     const Input& kin = impl->input;
-    if (sc.max_offset > 0.0f && box.contains(kin.mouse.x, kin.mouse.y)
+    // 测量模式不吃滚轮：同一份绘制代码要跑两遍，吃两次就等于把滚动距离翻倍。
+    if (!impl->measure_on && sc.max_offset > 0.0f && box.contains(kin.mouse.x, kin.mouse.y)
         && !impl->gate_blocked_pointer()
         && std::fabs(kin.wheel) > 0.001f) {
         off = detail::clampf(off - kin.wheel * 44.0f, 0.0f, sc.max_offset);
@@ -7726,7 +7842,8 @@ inline int Ui::scroll_visible(const Rect& box, int count, float item_h, int* fir
 
     float& off = impl->flags[id];
     const Input& kin = impl->input;
-    if (max_off > 0.0f && box.contains(kin.mouse.x, kin.mouse.y)
+    // 同上：测量模式不吃滚轮（否则测一遍 + 画一遍 = 滚两格）。
+    if (!impl->measure_on && max_off > 0.0f && box.contains(kin.mouse.x, kin.mouse.y)
         && !impl->gate_blocked_pointer()
         && std::fabs(kin.wheel) > 0.001f) {
         off = detail::clampf(off - kin.wheel * 44.0f, 0.0f, max_off);
@@ -7784,6 +7901,12 @@ struct Window::Impl {
     // 连续动画的重绘预算（毫秒/帧）。默认 16ms ≈ 60fps；调大可显著降低
     // spinner / 光标闪烁这类常驻动画的 CPU（代价是动画帧率下降）。
     uint32_t anim_budget_ms = 16;
+    // 上一帧是不是"只因为指针移动才要重画"的。这类帧单独按 move_budget_ms
+    // 合并（默认 33ms ≈ 30fps）：悬停反馈 30fps 完全够用，而整窗重绘不便宜 ——
+    // 鼠标一抖就 60fps 全窗重画，实测能把一个核心吃到 40%。
+    // 拖动（active != 0）、动画、点击、键盘、重绘请求都不走这个预算。
+    bool move_only = false;
+    uint32_t move_budget_ms = 33;
     // AINO_FRAME_LOG=1 时把每帧渲染耗时打到 stderr，用来定位"谁在吃 CPU"。
     bool frame_log = false;
     uint32_t frame_log_n = 0;
@@ -8318,6 +8441,7 @@ inline LRESULT CALLBACK win_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
             s->tracking = true;
         }
         s->owner->need_frame = true;
+        s->owner->move_only = true;      // 只有指针移动：按 30fps 合并
         return 0;
     }
 
@@ -8619,6 +8743,8 @@ inline void win_frame_log(Window::Impl* o, uint64_t render_us) {
             double(o->t_end) / n / 1000.0, double(o->t_present) / n / 1000.0);
         o->frame_log_n = 0; o->frame_log_sum = 0; o->frame_log_worst = 0;
         o->t_feed = o->t_cb = o->t_end = o->t_present = 0;
+        // 必须 flush：重定向到文件时 stderr 是全缓冲，进程被 kill 掉就一行都看不到
+        std::fflush(stderr);
     }
 }
 
@@ -8723,11 +8849,16 @@ inline void Window::run(const std::function<void(Ui&)>& frame) {
             const uint64_t t0 = detail::win_ticks_us();
             render();
             const uint64_t el_us = detail::win_ticks_us() - t0;
-            if (anim || o->self_repaint) {
-                if (o->frame_log) detail::win_frame_log(o, el_us);
-                const uint64_t budget_us = uint64_t(o->anim_budget_ms) * 1000u;
-                if (el_us < budget_us) Sleep(DWORD((budget_us - el_us + 999) / 1000));
-            }
+            // 帧日志覆盖所有帧，不只连续动画：鼠标驱动的那一帧往往才是大头。
+            if (o->frame_log) detail::win_frame_log(o, el_us);
+            // 指针移动触发的帧用更长的预算合并；拖动/动画仍按 60fps。
+            const uint32_t budget_ms =
+                (o->move_only && o->ui.impl->active == 0)
+                    ? std::max(o->anim_budget_ms, o->move_budget_ms)
+                    : o->anim_budget_ms;
+            o->move_only = false;      // 下一帧的触发源重新判定
+            const uint64_t budget_us = uint64_t(budget_ms) * 1000u;
+            if (el_us < budget_us) Sleep(DWORD((budget_us - el_us + 999) / 1000));
         } else {
             // 没有待办 → 阻塞在内核里等消息。这就是空闲 0% CPU 的来源。
             WaitMessage();
@@ -9390,11 +9521,10 @@ inline void Window::run(const std::function<void(Ui&)>& frame) {
             o->self_repaint = false;
             const uint64_t t0 = detail::x11_ticks_ms();
             render();
-            // 连续动画节流到 anim_fps（默认 60fps），并减去本帧渲染耗时。
-            if (anim || o->self_repaint) {
-                const uint64_t el = detail::x11_ticks_ms() - t0;
-                if (el < o->anim_budget_ms) usleep(useconds_t((o->anim_budget_ms - el) * 1000));
-            }
+            // 所有帧统一节流到 anim_fps（默认 60fps），不只连续动画：
+            // 鼠标每动一次 X 就投一个 MotionNotify，不封顶就被输入频率牵着走。
+            const uint64_t el = detail::x11_ticks_ms() - t0;
+            if (el < o->anim_budget_ms) usleep(useconds_t((o->anim_budget_ms - el) * 1000));
         } else {
             // 阻塞等事件（XNextEvent 会睡在内核里）
             XEvent e;
@@ -9824,16 +9954,13 @@ inline void Window::run(const std::function<void(Ui&)>& frame) {
             timespec t0{}; clock_gettime(CLOCK_MONOTONIC, &t0);
             const uint64_t s0 = uint64_t(t0.tv_sec) * 1000000u + uint64_t(t0.tv_nsec / 1000);
             render();
-            // 常驻动画节流到 anim_fps（同 Windows/X11），空闲则让出 CPU。
-            if (anim || o->self_repaint) {
-                timespec t1{}; clock_gettime(CLOCK_MONOTONIC, &t1);
-                const uint64_t s1 = uint64_t(t1.tv_sec) * 1000000u + uint64_t(t1.tv_nsec / 1000);
-                const uint64_t el_us = s1 - s0;
-                const uint64_t budget_us = uint64_t(o->anim_budget_ms) * 1000u;
-                if (el_us < budget_us) usleep(useconds_t(budget_us - el_us));
-            } else {
-                usleep(2000);   // 静态帧：小睡一下，别空转
-            }
+            // 所有帧统一节流到 anim_fps（同 Windows/X11）：鼠标每动一次就是
+            // 一个事件，不封顶就被输入频率牵着走。
+            timespec t1{}; clock_gettime(CLOCK_MONOTONIC, &t1);
+            const uint64_t s1 = uint64_t(t1.tv_sec) * 1000000u + uint64_t(t1.tv_nsec / 1000);
+            const uint64_t el_us = s1 - s0;
+            const uint64_t budget_us = uint64_t(o->anim_budget_ms) * 1000u;
+            if (el_us < budget_us) usleep(useconds_t(budget_us - el_us));
         } else {
             usleep(2000);
         }

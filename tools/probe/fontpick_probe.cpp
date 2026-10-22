@@ -1,4 +1,4 @@
-// 把 default_ui_font_family() 选中的字面名打出来 —— 别靠看字形猜。
+﻿// 把 default_ui_font_family() 选中的字面名打出来 —— 别靠看字形猜。
 #define AINO_IMPLEMENTATION
 #include "../../aino.hpp"
 #include <cstdio>

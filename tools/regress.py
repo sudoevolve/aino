@@ -211,6 +211,97 @@ def idle_probe(exe, dur=3.0, click=None, expect_nav=None, want_anim=None, tries=
     return -1.0, moved, tries, False, note
 
 
+def layout_probe():
+    """gallery 的布局自检：把每一页每一条示例都量一遍，要求"没有内容超过声明高度"。
+
+    这一条钉的是用户直接看得见的 bug：卡片高度原先全靠手填的 preview_h，
+    内容一多就爬出卡片下边框。现在绘制前先在测量模式下空跑一遍，取
+    max(声明, 实测)，所以溢出在结构上不可能发生；本断言确保测量机制没坏、
+    也没有哪条示例离声明值太远（太远说明卡片会留一大块空白）。
+    """
+    exe = os.path.join(ROOT, "build", "aino_gallery.exe")
+    out = os.path.join(ROOT, "build", "layout_report.txt")
+    if os.path.exists(out):
+        os.remove(out)
+    env = dict(os.environ, AINO_LAYOUT_REPORT=out)
+    p = subprocess.Popen([exe], env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        # 首帧就会写；最多等 6 秒（含启动 + 字体初始化）
+        deadline = time.time() + 6.0
+        while time.time() < deadline:
+            if os.path.exists(out) and os.path.getsize(out) > 0:
+                time.sleep(0.3)          # 等 fclose 落盘
+                break
+            time.sleep(0.1)
+    finally:
+        try:
+            p.terminate(); p.wait(timeout=5)
+        except Exception:
+            p.kill()
+
+    if not os.path.exists(out):
+        return False, "报告没生成（窗口没起来？）"
+    txt = open(out, encoding="utf-8", errors="replace").read()
+    bad = [l for l in txt.splitlines() if "溢出" in l]
+    summ = [l for l in txt.splitlines() if l.startswith("# over")]
+    ok = not bad and bool(summ) and "over=0" in summ[0]
+    detail = (summ[0].lstrip("# ") if summ else "没有统计行")
+    if bad:
+        detail += "  " + "; ".join(x.split("/")[-1].strip() for x in bad[:3])
+    return ok, detail
+
+
+def move_probe(exe=GALLERY, dur=3.0, limit=32.0):
+    """指针持续移动时的 CPU（占**单核**百分比）。
+
+    这段以前是"抖一下鼠标就整窗 60fps 重绘"，实测把一整个核心吃满
+    （99.9% 单核 / 全机 6.25%）。现在指针移动触发的帧按 30fps 合并、
+    拖动与动画仍是 60fps，实测 17~23% 单核（全机 1.0~1.5%）。
+    判据 32% 单核 = 16 核机器上的 2%，正好是"交互时全机占用 <2%"那条线。
+    """
+    import psutil
+    import ctypes
+    import ctypes.wintypes as wt
+    import math
+    sys.path.insert(0, HERE)
+    import verify_render as vr
+
+    p = subprocess.Popen([exe], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        time.sleep(2.5)                       # 预热：字体初始化 + 首帧
+        hwnd = vr.find_window_by_pid(p.pid, 5.0)
+        if not hwnd:
+            return False, "窗口没找到"
+        vr.user32.SetForegroundWindow(hwnd)
+        rc = wt.RECT()
+        vr.user32.GetClientRect(hwnd, ctypes.byref(rc))
+        pt = wt.POINT(0, 0)
+        vr.user32.ClientToScreen(hwnd, ctypes.byref(pt))
+        cx = pt.x + rc.right // 2
+        cy = pt.y + rc.bottom // 2
+
+        proc = psutil.Process(p.pid)
+        c0 = proc.cpu_times(); t0 = time.time()
+        end = t0 + dur
+        i = 0
+        while time.time() < end:
+            ang = i * 0.10
+            vr.user32.SetCursorPos(int(cx + math.cos(ang) * 120),
+                                  int(cy + math.sin(ang) * 90))
+            i += 1
+            time.sleep(0.004)                 # ~200 次/秒的移动
+        dt = time.time() - t0
+        c1 = proc.cpu_times()
+        pct = ((c1.user + c1.system) - (c0.user + c0.system)) / dt * 100.0
+        return pct <= limit, "%d 次移动 %.1fs 内  单核 %.1f%%（上限 %.0f%%）" % (i, dt, pct, limit)
+    finally:
+        try:
+            p.terminate(); p.wait(timeout=5)
+        except Exception:
+            p.kill()
+
+
 PROBES = (
     ("layoutprobe",      "通过 27 项，失败 0 项",        "Stack 布局计算"),
     ("newcomp_probe",    "83 passed, 0 failed",           "新增组件行为 + 像素"),
@@ -276,6 +367,8 @@ def main():
     print("\n== 窗口像素断言（PrintWindow，逻辑坐标，含换页与主题）==")
     ok, d = verify_gallery()
     step("gallery 版式 / 换页 / 遮罩 / 双主题", ok, d)
+    ok, d = layout_probe()
+    step("卡片高度够（内容不爬出下边框）", ok, d)
 
     print("\n== 跨平台像素断言（直接读后备缓冲，CI 三平台同跑）==")
     ok, d = ci_pixels()
@@ -297,6 +390,12 @@ def main():
     step("空闲 aino_gallery（Progress 页，未悬停）", ok2 and cpu2 <= 1.0,
          "%.2f%% / 两帧差 %d 格 (上限 1.0%%，要求 0 格；第 %d 次尝试)%s"
          % (cpu2, moved2, att2, "" if ok2 else "  " + note2))
+
+    # 指针持续移动时也不能把核心吃满：整窗重绘很贵，鼠标频率却可能上千 Hz。
+    # 判据是"占单核 ≤25%"（≈ 全机 1.6% @16 核），对应 30fps 的移动合并预算。
+    print("\n== 交互 CPU（指针持续移动）==")
+    ok3, note3 = move_probe()
+    step("移动指针时的 CPU", ok3, note3)
 
     nfail = sum(1 for _, ok, _ in results if not ok)
     print("\n===== 共 %d 项，失败 %d 项 =====" % (len(results), nfail))

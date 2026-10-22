@@ -1,4 +1,4 @@
-#define AINO_IMPLEMENTATION
+﻿#define AINO_IMPLEMENTATION
 #include "../../aino.hpp"
 #include <cstdio>
 #include <vector>

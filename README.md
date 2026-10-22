@@ -82,7 +82,8 @@ cmake --build build --config Release
 
 平台状态：三个后端都能编译、能开窗画帧，**也都跑同一套 29 项像素断言**
 （`tools/ci_pixels.cpp` 直接读后备缓冲，只断言与字形无关的几何/颜色/裁剪/阴影性质）。
-Windows 另有 37 项回归（离屏行为探针 76 + 83 + 80 + 36 条断言、15 项整窗断言、空闲 CPU）；
+Windows 另有 39 项回归（离屏行为探针 76 + 83 + 80 + 36 条断言、15 项整窗断言、
+卡片布局自检、空闲 CPU、交互 CPU）；
 Linux/macOS 的**输入、IME、剪贴板**仍未经真机核对，细节见
 [docs/README.md 的平台支持表](docs/README.md#平台支持)。
 
@@ -99,6 +100,8 @@ examples/zoom_demo.cpp 缩放按钮（Transform 的最小用法）
 docs/                文档，01 快速开始 … 12 与 shadcn/ui 的对照
 screenshots/         预览截图
 tools/               构建、像素断言与回归脚本
+tools/regress.py     全量回归（编译 + 探针 + 像素断言 + 布局自检 + 空闲/交互 CPU）
+tools/shot_pages.py  逐页截整窗图（改完版式先看一眼，不算回归）
 tools/ci_smoke.cpp   CI 冒烟程序：开窗 + 跑满 20 帧就退（三平台共用）
 tools/ci_pixels.cpp  跨平台像素断言：29 项，直接读后备缓冲（三平台共用）
 tools/probe/         数值/像素探针（回归用，不参与发布）

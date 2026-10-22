@@ -1,4 +1,4 @@
-// 验证「spinner / skeleton 只在鼠标悬停时动」。
+﻿// 验证「spinner / skeleton 只在鼠标悬停时动」。
 //
 // 做法：窗口里放一个 spinner 和一个 skeleton(.animate())，程序在三个 1.5s 窗口里
 // 数**帧数**（frame 回调被调用的次数 = 真正发生了重绘的次数）：

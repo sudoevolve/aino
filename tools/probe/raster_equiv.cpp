@@ -1,4 +1,4 @@
-// 光栅化等价性测试：把优化后的 raster_rrect / raster_rrect_stroke / clear
+﻿// 光栅化等价性测试：把优化后的 raster_rrect / raster_rrect_stroke / clear
 // 与"朴素参考实现"（逐像素 4 倍子采样，就是优化前的算法）逐像素比对。
 //
 // 这是优化这类代码唯一靠谱的验证方式 —— 不看图，直接把新旧算法的输出

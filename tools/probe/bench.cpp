@@ -1,4 +1,4 @@
-// 光栅化基准：把"文字 vs 形状 vs 图形"的开销分开量。
+﻿// 光栅化基准：把"文字 vs 形状 vs 图形"的开销分开量。
 // 一直 repaint()，靠 AINO_FRAME_LOG 每 120 帧打印一次分段耗时。
 // 用法：bench.exe <mode>
 #define AINO_IMPLEMENTATION

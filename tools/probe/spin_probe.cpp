@@ -1,4 +1,4 @@
-// spinner 拖尾环（raster_ring_tail）的像素断言。
+﻿// spinner 拖尾环（raster_ring_tail）的像素断言。
 //
 // 要证明的是"转一圈不会断"：
 //   1) 整圈 720 个角度采样，每一处都有弧的着色（没有"缺口"）；

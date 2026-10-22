@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -75,6 +76,10 @@ struct App {
 
     int scroll_cmd = 0;   // 0 空闲 / 1 回顶 / 2 到底
     int jump = 0;         // 虚拟列表跳到底部
+
+    // 导航里被折叠的分组（第 i 位 = 第 i 组）。默认全展开：45 项按组铺开，
+    // 想缩短列表就点组头。位掩码而不是 vector<bool>，因为要能一眼看出"全开"。
+    std::uint32_t nav_closed = 0;
 };
 
 // =============================================================================
@@ -143,6 +148,9 @@ Rect cell(Stack& row, float w, float h) {
 // =============================================================================
 //  概览页 —— 不是组件，是索引，所以不走 Demo 表
 // =============================================================================
+// 定义在 kPages 之后（要用它统计），这里先声明，免得整个概览页跟着表往下挪。
+const std::vector<std::pair<const char*, int>>& group_stats();
+
 void draw_overview(Ui& ui, App& a, const Rect& area) {
     // 栅格是两级的：左边一半放介绍 + 完整可编译的 Quick Start，右边一半再切成
     // 分类索引与实测表。早期是三等分，左栏只有 240px 宽，代码示例 32 个字符就得
@@ -196,22 +204,23 @@ void draw_overview(Ui& ui, App& a, const Rect& area) {
             ui.panel(cp);
             Stack c = ui.vbox(cp, 8.0f, 20.0f);
             ui.subheading("分类", c.next(26.0f), Style().left());
-            const std::pair<const char*, int> groups[] = {
-                {"基础", 5}, {"表单", 15}, {"数据展示", 9},
-                {"浮层", 11}, {"布局", 6}, {"图形与动效", 3},
-            };
-            for (auto& g : groups) {
+            // 从 kPages 现算，不手写数字：加页之后统计自动跟上
+            const auto& gs = group_stats();
+            for (size_t gi = 1; gi < gs.size(); ++gi) {
                 Stack r = c.hbox(26.0f);
-                ui.label(g.first, r.part(0, 2), Style().left().font(12.5f));
-                ui.muted_text(std::to_string(g.second) + " 页", r.part(1, 2),
+                ui.label(gs[gi].first, r.part(0, 2), Style().left().font(12.5f));
+                ui.muted_text(std::to_string(gs[gi].second) + " 页", r.part(1, 2),
                               Style().right().font(12.0f));
             }
             c.skip(4.0f);
-            ui.muted_text("左侧导航按分类分组，点条目切换页面。", c.next(18.0f),
+            // 这两行要短：右半边的卡片只有 ~176px 可用，长一句就被裁在边框上。
+            ui.muted_text("左侧导航按分类分组。", c.next(18.0f),
                           Style().left().font(11.5f));
-            ui.muted_text("示例可直接操作，源码在预览右侧。", c.next(18.0f),
+            ui.muted_text("示例可操作，源码在右。", c.next(18.0f),
                           Style().left().font(11.5f));
-            const Rect tb = c.next(78.0f);
+            // 品牌块贴在卡片底部。不用 c.fill() 把它顶下去 —— fill() 会吃掉
+            // 全部剩余空间，后面的 next(78) 就只剩 0 高，块直接消失。
+            const Rect tb(cp.x + 20.0f, cp.bottom() - 20.0f - 78.0f, cp.w - 40.0f, 78.0f);
             ui.fill_rect(tb, ui.theme().primary, ui.theme().radius);
             ui.label("ainō", tb, Style().center().semi_bold().font(20.0f)
                      .color(ui.theme().primary_foreground));
@@ -226,6 +235,10 @@ void draw_overview(Ui& ui, App& a, const Rect& area) {
             const std::vector<std::vector<std::string>> rows = {
                 {"第三方依赖", "0"},
                 {"空闲 CPU", "0.00%"},
+                {"指针移动", "30 fps"},
+                {"动画", "60 fps"},
+                {"组件", "47 个"},
+                {"回归断言", "39 项"},
                 {"文字", "系统字体"},
                 {"几何", "自绘 AA"},
                 {"DLL", "仅系统库"},
@@ -877,7 +890,7 @@ ui.badge("Outline", r.next(70.0f), out);)cpp",
 ui.muted_text("+", r.next(10.0f), Style().center());
 ui.kbd("K", r.next_text("K", 18.0f, 11.0f, 500));
 ui.separator(c.next(1.0f));)cpp",
-     96.0f, d_kbd_sep},
+     82.0f, d_kbd_sep},
 };
 
 const Demo kAvatar[] = {
@@ -894,7 +907,7 @@ const Demo kProgress[] = {
 ui.progress(0.92f, c.next(8.0f));
 ui.skeleton(r.next(120.0f));
 ui.spinner(r.next(28.0f));)cpp",
-     116.0f, d_progress},
+     88.0f, d_progress},
 };
 
 const Demo kInput[] = {
@@ -931,7 +944,7 @@ ui.checkbox(&a.autosave, "自动保存", c.next(22.0f));)cpp",
 const Demo kSwitch[] = {
     {"开关", "toggle() 是 Switch；toggle_button() 是按下态按钮",
      R"cpp(ui.toggle(&a.wifi, Rect(r.right() - 44.0f, r.y, 44.0f, 26.0f));)cpp",
-     100.0f, d_switch},
+     98.0f, d_switch},
 };
 
 const Demo kRadio[] = {
@@ -950,14 +963,14 @@ const Demo kSelect[] = {
     {"下拉选择", "列表帧末绘制；点外部或 Esc 关闭",
      R"cpp(ui.select({"免费版", "专业版", "企业版"}, &a.plan,
           c.next(38.0f), Style().hint("选择套餐"));)cpp",
-     92.0f, d_select},
+     74.0f, d_select},
 };
 
 const Demo kCombobox[] = {
     {"可搜索下拉", "展开后键入即过滤，↑↓ 移动，回车确认",
      R"cpp(ui.combobox({"C++", "Rust", "Go", "Zig", "Python"},
              &a.combo, c.next(38.0f));)cpp",
-     92.0f, d_combobox},
+     74.0f, d_combobox},
 };
 
 const Demo kToggle[] = {
@@ -965,7 +978,7 @@ const Demo kToggle[] = {
      R"cpp(ui.toggle_button("粗体", &a.bold, r.next(84.0f));
 ui.toggle_button("斜体", &a.italic, r.next(84.0f));
 ui.toggle_group({"日", "周", "月"}, &a.tg, c.next(34.0f));)cpp",
-     120.0f, d_toggle},
+     118.0f, d_toggle},
 };
 
 const Demo kButtonGroup[] = {
@@ -988,13 +1001,13 @@ const Demo kField[] = {
 ui.field("邮箱", "用于接收通知", "", c.next(h), [&](const Rect& r) {
     ui.input(&a.email, r, Style().hint("you@example.com"));
 });)cpp",
-     248.0f, d_field},
+     200.0f, d_field},
 };
 
 const Demo kCalendar[] = {
     {"月历", "纯整数日期算法，不依赖 ctime，跨时区一致",
      R"cpp(ui.calendar(&a.cy, &a.cm, &a.cd, box);)cpp",
-     222.0f, d_calendar},
+     206.0f, d_calendar},
 };
 
 const Demo kTabs[] = {
@@ -1021,7 +1034,7 @@ ui.item("张伟", "zhangwei@example.com", "管理员", c.next(50.0f));)cpp",
 const Demo kEmpty[] = {
     {"空状态", "虚线框内居中排版，标题与描述分层",
      R"cpp(ui.empty_state("还没有通知", "有新消息时会出现在这里", box);)cpp",
-     110.0f, d_empty},
+     112.0f, d_empty},
 };
 
 const Demo kPagination[] = {
@@ -1034,14 +1047,14 @@ const Demo kAccordion[] = {
     {"折叠面板", "展开区域由调用方绘制，控件只负责标题行",
      R"cpp(ui.accordion("渲染管线", &a.acc1, c.next(40.0f));
 if (a.acc1) ui.muted_text("...", c.next(20.0f));)cpp",
-     140.0f, d_accordion},
+     114.0f, d_accordion},
 };
 
 const Demo kAlert[] = {
     {"提示条", "正文按宽度折行；高度由 alert_height 量出",
      R"cpp(float h = ui.alert_height(title, desc, w);
 ui.alert(title, desc, c.next(h));)cpp",
-     180.0f, d_alert},
+     154.0f, d_alert},
 };
 
 const Demo kBreadcrumb[] = {
@@ -1054,7 +1067,7 @@ const Demo kChart[] = {
     {"折线与柱状", "数值数组直接传入，负值向下画",
      R"cpp(ui.sparkline(wave, c.next(72.0f));
 ui.bars(bars, c.next(72.0f));)cpp",
-     170.0f, d_chart},
+     162.0f, d_chart},
 };
 
 const Demo kMenu[] = {
@@ -1063,7 +1076,7 @@ const Demo kMenu[] = {
                  Rect(box.x, box.y, 132.0f, 36.0f), Style().outline())) {
     a.last = items[a.menu_pick];
 })cpp",
-     96.0f, d_menu},
+     72.0f, d_menu},
 };
 
 const Demo kMenubar[] = {
@@ -1072,14 +1085,14 @@ const Demo kMenubar[] = {
 if (mp.valid()) {
     a.picked = labels[mp.menu] + " -> " + items[mp.menu][mp.item];
 })cpp",
-     110.0f, d_menubar},
+     68.0f, d_menubar},
 };
 
 const Demo kPopover[] = {
     {"浮出面板", "锚点与内容尺寸都由调用方给，点外部关闭",
      R"cpp(ui.popover("排序", &a.pop, anchor, Vec2(190.0f, 104.0f),
            [&](const Rect& c) { ui.item("按名称", "", "", c); });)cpp",
-     96.0f, d_popover},
+     72.0f, d_popover},
 };
 
 const Demo kHoverCard[] = {
@@ -1087,7 +1100,7 @@ const Demo kHoverCard[] = {
      R"cpp(ui.hover_card(anchor, Vec2(220.0f, 84.0f), [&](const Rect& c) {
     ui.label("张伟", Rect(c.x, c.y, c.w, 20.0f));
 });)cpp",
-     100.0f, d_hover_card},
+     60.0f, d_hover_card},
 };
 
 const Demo kDialog[] = {
@@ -1097,11 +1110,11 @@ const Demo kDialog[] = {
                            d.w - 44.0f, 36.0f), 10.0f);
     if (ui.button("取消", b.part(0, 2), Style().outline())) a.dlg = false;
 })cpp",
-     96.0f, d_dialog},
+     72.0f, d_dialog},
     {"确认弹层", "带语义色按钮的双按钮版本，返回值表示用户已确认",
      R"cpp(ui.alert_dialog("删除这个文件？", body, "删除", "取消",
                 &a.confirm, rect, Style().destructive());)cpp",
-     96.0f, d_alert_dialog},
+     72.0f, d_alert_dialog},
 };
 
 const Demo kDrawer[] = {
@@ -1109,21 +1122,21 @@ const Demo kDrawer[] = {
      R"cpp(ui.drawer("详情", &a.drawer, 0, rect, [&](const Rect& c) {
     ui.label("详情面板", c);
 });)cpp",
-     96.0f, d_drawer},
+     72.0f, d_drawer},
 };
 
 const Demo kToast[] = {
     {"轻提示", "右下角，2.4 秒后自行消失；期间由窗口驱动重绘",
      R"cpp(a.toast_msg = "操作已完成";
 a.toast_left = 2.4f;   // 由 composeOverlayLayer 绘制)cpp",
-     96.0f, d_toast},
+     72.0f, d_toast},
 };
 
 const Demo kTooltip[] = {
     {"悬停提示", "任意矩形都能当锚点；移开即消失",
      R"cpp(ui.tooltip(btn_rect, "tooltip 在悬停后出现");
 ui.tooltip(badge_rect, "任意矩形都能作为锚点");)cpp",
-     100.0f, d_tooltip},
+     44.0f, d_tooltip},
 };
 
 const Demo kContextMenu[] = {
@@ -1141,7 +1154,7 @@ ui.button("2/3", r.part(1, 3), Style().outline());
 Stack b = c.hbox(36.0f, 10.0f);
 ui.button("保存并关闭", b.next_text("保存并关闭", 34.0f),
           Style().primary());)cpp",
-     210.0f, d_layout},
+     156.0f, d_layout},
 };
 
 const Demo kScroll[] = {
@@ -1206,7 +1219,7 @@ t.origin = Vec2(r.cx(), r.cy());
 ui.push_transform(t);
 ui.panel(r);
 ui.pop_transform();)cpp",
-     108.0f, d_transform},
+     98.0f, d_transform},
 };
 
 const Demo kTween[] = {
@@ -1214,7 +1227,7 @@ const Demo kTween[] = {
      R"cpp(float k = ui.tween(id, a.motion ? 1.0f : 0.0f,
                       0.7f, aino::easing::out_cubic);
 t.rotate = -12.0f + 24.0f * k;)cpp",
-     150.0f, d_tween},
+     142.0f, d_tween},
 };
 
 #define COUNT(a) int(sizeof(a) / sizeof((a)[0]))
@@ -1251,7 +1264,7 @@ const Page kPages[] = {
      kToggle, COUNT(kToggle)},
     {"表单", "Button Group", "相邻按钮共享边框，支持多选。", "Button Group",
      kButtonGroup, COUNT(kButtonGroup)},
-    {"表单", "Stepper", "数值步进与星级评分。", "— / Rating",
+    {"表单", "Stepper", "数值步进与星级评分。", "—",
      kStepper, COUNT(kStepper)},
     {"表单", "Form Field", "标签、说明、错误的纵向组合。", "Field",
      kField, COUNT(kField)},
@@ -1313,6 +1326,34 @@ const Page kPages[] = {
 
 const int kPageCount = COUNT(kPages);
 
+// 每个分组有几页。概览页的"分类"卡读它 —— 以前是手写数字，加页之后必然对不上
+// （写着 5 页，实际 4 页）。定义放在这里是因为要用 kPages，先声明在概览页之前。
+const std::vector<std::pair<const char*, int>>& group_stats() {
+    static const std::vector<std::pair<const char*, int>> v = [] {
+        std::vector<std::pair<const char*, int>> r;
+        for (int i = 0; i < kPageCount; ++i) {
+            const char* g = kPages[i].group;
+            if (r.empty() || std::string(r.back().first) != g) r.push_back({g, 1});
+            else ++r.back().second;
+        }
+        return r;
+    }();
+    return v;
+}
+
+// 每页属于第几个分组（0 起）。分组在 kPages 里是连续排列的，所以扫一遍就够；
+// 导航的分组折叠靠它把"这一页在哪个组"换算成位掩码下标。
+const std::vector<int> kPageGroup = [] {
+    std::vector<int> v(size_t(kPageCount), 0);
+    int g = 0;
+    for (int i = 1; i < kPageCount; ++i) {
+        if (std::string(kPages[i].group) != std::string(kPages[i - 1].group)) ++g;
+        v[size_t(i)] = g;
+    }
+    return v;
+}();
+const int kGroupCount = kPageGroup.empty() ? 0 : kPageGroup.back() + 1;
+
 // =============================================================================
 //  导航
 // =============================================================================
@@ -1321,11 +1362,14 @@ constexpr float kNavItemH = 30.0f;
 constexpr float kNavGroupH = 30.0f;
 constexpr float kHeaderH = 92.0f;
 
-float nav_content_height() {
+// 折叠状态下的列表高度也要算准：滚动条的 max_offset 直接用它，
+// 少算了下半截就滚不到，多算了就是一片空白。
+float nav_content_height(const App& a) {
     float h = 0.0f;
     for (int i = 0; i < kPageCount; ++i) {
-        if (i == 0 || std::string(kPages[i].group) != kPages[i - 1].group) h += kNavGroupH;
-        h += kNavItemH;
+        if (i == 0 || std::string(kPages[i].group) != std::string(kPages[i - 1].group))
+            h += kNavGroupH;
+        if (!(a.nav_closed & (1u << unsigned(kPageGroup[size_t(i)])))) h += kNavItemH;
     }
     return h + 8.0f;
 }
@@ -1375,14 +1419,39 @@ void draw_nav(Ui& ui, App& a, const Rect& nav) {
 
     // 列表
     const Rect list(nav.x, 78.0f, nav.w, nav.bottom() - foot_h - 78.0f);
-    auto sc = ui.scroll(list, nav_content_height());
+    auto sc = ui.scroll(list, nav_content_height(a));
     (void)sc;
     for (int i = 0; i < kPageCount; ++i) {
-        if (i == 0 || std::string(kPages[i].group) != kPages[i - 1].group) {
+        const int gi = kPageGroup[size_t(i)];
+        const bool open = !(a.nav_closed & (1u << unsigned(gi)));
+        if (i == 0 || std::string(kPages[i].group) != std::string(kPages[i - 1].group)) {
             const Rect gh = ui.row(kNavGroupH);
-            ui.muted_text(kPages[i].group, Rect(gh.x + 20.0f, gh.y + 12.0f, gh.w - 32.0f, 16.0f),
+            // 组头本身就是折叠开关。用空的 ghost 按钮占位 —— 它不画文字，
+            // 只在悬停时给一层底色，点击热区就是整行。
+            // 折叠不改变当前页：导航收起不等于离开这一页（和编辑器折叠目录一样）。
+            if (ui.button("", Rect(gh.x + 10.0f, gh.y, gh.w - 20.0f, gh.h), Style().ghost())) {
+                a.nav_closed ^= (1u << unsigned(gi));
+                // 按钮点完会拿到键盘焦点，焦点环留在行上像"这行被选中了"。
+                // 组头只是折叠开关，立刻交还焦点。
+                ui.set_focus(nullptr);
+            }
+            ui.muted_text(kPages[i].group,
+                          Rect(gh.x + 20.0f, gh.y + 12.0f, gh.w - 52.0f, 16.0f),
                           Style().left().font(10.5f));
+            // 折叠标记：展开时朝下，折叠时朝右（两条线拼的尖角，不依赖字形）
+            {
+                const float cx = gh.right() - 26.0f, cy = gh.y + gh.h * 0.5f;
+                const Color cc = th.muted_foreground;
+                if (open) {
+                    ui.draw_line(cx - 4.0f, cy - 2.0f, cx, cy + 2.0f, cc, 1.4f);
+                    ui.draw_line(cx, cy + 2.0f, cx + 4.0f, cy - 2.0f, cc, 1.4f);
+                } else {
+                    ui.draw_line(cx - 2.0f, cy - 4.0f, cx + 2.0f, cy, cc, 1.4f);
+                    ui.draw_line(cx + 2.0f, cy, cx - 2.0f, cy + 4.0f, cc, 1.4f);
+                }
+            }
         }
+        if (!open) continue;
         const Rect r = ui.row(kNavItemH);
         const bool active = (a.page == i);
         if (ui.nav_item(kPages[i].name, active, Rect(r.x + 10.0f, r.y, r.w - 20.0f, r.h))) {
@@ -1394,50 +1463,80 @@ void draw_nav(Ui& ui, App& a, const Rect& nav) {
 // =============================================================================
 //  内容区
 // =============================================================================
-// 一页的总高度：逐张卡片累加。滚动条要它，所以必须和实际绘制用同一套算术。
-float page_content_height(Ui& ui, const Page& p) {
-    if (p.n == 0) return 0.0f;
-    float h = 0.0f;
-    for (int i = 0; i < p.n; ++i) {
-        const float code_h = ui.code_block_height(p.demos[i].code, Style().font(11.5f));
-        h += std::max(p.demos[i].preview_h, code_h) + 56.0f + 18.0f;
-    }
-    return h + 8.0f;
+struct CardGeom {
+    float pad = 14.0f;
+    float title_h = 30.0f;
+    float code_w = 0.0f;
+    float body_w = 0.0f;
+    float preview_w = 0.0f;
+    float inner_h = 0.0f;    // 交给示例函数的内容盒高度
+    float body_h = 0.0f;     // 预览底板（= 内容盒 + 上下各 16 的留白）
+};
+
+// 预览底板的上下留白。
+constexpr float kPlatePadY = 16.0f;
+
+// 交给示例函数的**内容盒**宽度：预览底板再内缩 20px（左右各 20，共 40）。
+// 测量和绘制都必须用这一个函数，否则量出来的高度和画出来的不一样。
+float preview_inner_w(float card_w) {
+    const float code_w = std::max(card_w * 0.42f, 280.0f);
+    const float body_w = card_w - 28.0f;
+    return body_w - code_w - 12.0f - 40.0f;
 }
 
-void draw_demo_card(Ui& ui, App& a, const Demo& d, const Rect& card) {
-    const aino::Theme& th = ui.theme();
-    const float pad = 14.0f;
-    const float title_h = 30.0f;
-
-    const float code_w = std::max(card.w * 0.42f, 280.0f);
-    const float body_w = card.w - 2.0f * pad;
-    const float preview_w = body_w - code_w - 12.0f;
+// 卡片几何。need_h 是内容实测高度，和 preview_h（示例的声明高度）取大：
+// 声明值只当"最小高度"，内容比它高就自动长高。
+CardGeom card_geom(Ui& ui, const Demo& d, float card_w, float need_h) {
+    CardGeom g;
+    g.code_w    = std::max(card_w * 0.42f, 280.0f);
+    g.body_w    = card_w - 2.0f * g.pad;
+    g.preview_w = g.body_w - g.code_w - 12.0f;
     const float code_h = ui.code_block_height(d.code, Style().font(11.5f));
-    const float body_h = std::max(d.preview_h, code_h);
+    g.inner_h = std::max(d.preview_h, need_h);
+    // 底板必须比内容高 2*kPlatePadY：内容盒是从底板内缩 kPlatePadY 开始的，
+    // 之前这里少算了这道留白，结果每条示例都往下溢 16px、压到标题条上。
+    g.body_h = std::max(g.inner_h + 2.0f * kPlatePadY, code_h);
+    return g;
+}
+
+// 内容实测高度：让示例在测量模式下空跑一遍（不落像素、不响应、不排帧）。
+// 以前卡片高度全靠手填的 preview_h，45 页 × 每页若干示例里总有几条写小了，
+// 结果就是内容爬出卡片下边框。现在声明值只是下限，高度永远够。
+float demo_need_h(Ui& ui, App& a, const Demo& d, float inner_w) {
+    ui.begin_measure();
+    d.draw(ui, a, Rect(0.0f, 0.0f, inner_w, d.preview_h));
+    const aino::Rect used = ui.end_measure();
+    return std::max(used.h, 0.0f);
+}
+
+void draw_demo_card(Ui& ui, App& a, const Demo& d, const Rect& card, const CardGeom& g) {
+    const aino::Theme& th = ui.theme();
+    const float pad = g.pad;
+    const float body_h = g.body_h;
 
     ui.panel(card, Style().background(th.card).corner(th.radius_lg));
 
-    const Rect body(card.x + pad, card.y + pad, body_w, body_h);
-    const Rect pre(body.x, body.y, preview_w, body_h);
+    const Rect body(card.x + pad, card.y + pad, g.body_w, body_h);
+    const Rect pre(body.x, body.y, g.preview_w, body_h);
     // 代码块背景拉到与预览区等高：左预览右源码，两条边对齐才像文档站
-    const Rect cod(body.right() - code_w, body.y, code_w, body_h);
+    const Rect cod(body.right() - g.code_w, body.y, g.code_w, body_h);
 
-    // 预览：底板 + 内缩后的内容盒。内容盒高度固定为 preview_h，并在 body_h 里居中，
-    // 这样示例函数不用自己算垂直位置。
+    // 预览：底板 + 内缩后的内容盒。内容盒从底板内缩 kPlatePadY 开始、高度是
+    // inner_h（声明高度与实测高度取大）；底板多出来的部分上下均分。
     const Rect plate(pre.x, pre.y, pre.w, body_h);
-    const Rect content(plate.x + 20.0f, plate.y + 16.0f + (body_h - d.preview_h) * 0.5f,
-                       plate.w - 40.0f, d.preview_h);
+    const Rect content(plate.x + 20.0f,
+                       plate.y + kPlatePadY + (body_h - 2.0f * kPlatePadY - g.inner_h) * 0.5f,
+                       plate.w - 40.0f, g.inner_h);
     ui.fill_rect(plate, th.muted.mix(th.background, 0.12f), th.radius);
     d.draw(ui, a, content);
 
     ui.code_block(d.code, cod, Style().font(11.5f));
 
     // 标题条：名称在左，技术要点在右
-    const Rect bar(card.x + pad, card.y + pad + body_h + 10.0f, body_w, title_h);
-    ui.label(d.name, Rect(bar.x, bar.y, bar.w * 0.4f, title_h),
+    const Rect bar(card.x + pad, card.y + pad + body_h + 10.0f, g.body_w, g.title_h);
+    ui.label(d.name, Rect(bar.x, bar.y, bar.w * 0.4f, g.title_h),
              Style().left().semi_bold().font(12.5f));
-    ui.muted_text(d.note, Rect(bar.x + bar.w * 0.4f, bar.y, bar.w * 0.6f, title_h),
+    ui.muted_text(d.note, Rect(bar.x + bar.w * 0.4f, bar.y, bar.w * 0.6f, g.title_h),
                   Style().right().font(11.0f));
 }
 
@@ -1473,15 +1572,27 @@ void draw_page(Ui& ui, App& a, const Rect& area) {
         return;
     }
 
-    const float total = page_content_height(ui, p);
+    // 先量高度，再定滚动范围与卡片尺寸。测量必须在 scroll 之外做：scroll 会给
+    // 绘制加裁剪和偏移，测量时套上那层就量不到内容的真实高度了。
+    const float card_w = content.w;
+    const float inner_w = preview_inner_w(card_w);
+    std::vector<float> need(size_t(p.n), 0.0f);
+    std::vector<CardGeom> geo(size_t(p.n));
+    float total = 8.0f;
+    for (int i = 0; i < p.n; ++i) {
+        need[size_t(i)] = demo_need_h(ui, a, p.demos[i], inner_w);
+        geo[size_t(i)] = card_geom(ui, p.demos[i], card_w, need[size_t(i)]);
+        total += geo[size_t(i)].body_h + 56.0f + 18.0f;
+    }
+
     {
         auto sc = ui.scroll(content, total);
         (void)sc;
         for (int i = 0; i < p.n; ++i) {
-            const float code_h = ui.code_block_height(p.demos[i].code, Style().font(11.5f));
-            const float card_h = std::max(p.demos[i].preview_h, code_h) + 56.0f;
-            const Rect row = ui.row(card_h + 18.0f);
-            draw_demo_card(ui, a, p.demos[i], Rect(row.x, row.y, row.w, card_h));
+            const CardGeom& g = geo[size_t(i)];
+            const Rect row = ui.row(g.body_h + 56.0f + 18.0f);
+            draw_demo_card(ui, a, p.demos[i],
+                           Rect(row.x, row.y, row.w, g.body_h + 56.0f), g);
         }
     }
     // 模态浮层必须在 scroll 作用域**结束之后**画：滚动作用域持有一个裁剪区，
@@ -1502,6 +1613,43 @@ void draw_overlays(Ui& ui, App& a) {
 }
 
 // =============================================================================
+//  布局自检
+// =============================================================================
+// 把每一页每一条示例都量一遍，挑出"声明高度不符"的：need > declared 意味着
+// 换回手填高度就会爬出卡片下边框；need < declared 只是底部多留白。
+// 只在 AINO_LAYOUT_REPORT=<路径> 时跑一次，平时零开销。
+void dump_layout_report(Ui& ui, App& a, float card_w) {
+    const char* path = std::getenv("AINO_LAYOUT_REPORT");
+    if (!path || !*path) return;
+    std::FILE* f = std::fopen(path, "w");
+    if (!f) return;
+    const float inner_w = preview_inner_w(card_w);
+    int over = 0, under = 0, total = 0;
+    // 1.5px 容差：描边压在盒边界上时会往外占半个像素，不算溢出。
+    const float tol = 1.5f;
+    std::fprintf(f, "# aino gallery 布局报告  inner_w=%.1f\n", double(inner_w));
+    std::fprintf(f, "# page/demo  declared  measured  delta\n");
+    for (int i = 0; i < kPageCount; ++i) {
+        const Page& p = kPages[i];
+        for (int k = 0; k < p.n; ++k) {
+            const Demo& d = p.demos[k];
+            const float need = demo_need_h(ui, a, d, inner_w);
+            const float delta = need - d.preview_h;
+            ++total;
+            if (delta > tol) ++over;
+            if (delta < -0.5f) ++under;
+            std::fprintf(f, "%-14s / %-22s %7.1f %9.1f %+8.1f%s\n",
+                         p.name, d.name, double(d.preview_h), double(need), double(delta),
+                         delta > tol ? "  <-- 溢出" : "");
+        }
+    }
+    // total 是**示例条数**，不是页数 —— 之前这里写的是 kPageCount，页数和条数
+    // 只差一个数，看着不显眼，对账的时候会以为少统计了。
+    std::fprintf(f, "# over=%d under=%d total=%d\n", over, under, total);
+    std::fclose(f);
+}
+
+// =============================================================================
 //  main
 // =============================================================================
 void build_ui(Ui& ui, App& a) {
@@ -1515,17 +1663,39 @@ void build_ui(Ui& ui, App& a) {
     }
 
     draw_nav(ui, a, Rect(0.0f, 0.0f, kNavW, ui.height()));
-    draw_page(ui, a, Rect(kNavW + 28.0f, 24.0f, ui.width() - kNavW - 56.0f,
-                          std::max(ui.height() - 48.0f, 1.0f)));
+    const Rect area(kNavW + 28.0f, 24.0f, ui.width() - kNavW - 56.0f,
+                    std::max(ui.height() - 48.0f, 1.0f));
+    draw_page(ui, a, area);
     draw_overlays(ui, a);
 }
 
 } // namespace
 
+// 工具用的起始页：AINO_START_PAGE=<序号|名字>。截图 / 冒烟脚本要逐页拍，
+// 靠点导航得先算滚动偏移和分组折叠状态，太容易跟着版式一起坏。
+int start_page_from_env() {
+    const char* sp = std::getenv("AINO_START_PAGE");
+    if (!sp || !*sp) return 0;
+    if (const int n = std::atoi(sp); n > 0 && n < kPageCount) return n;
+    for (int i = 0; i < kPageCount; ++i) {
+        if (std::string(kPages[i].name) == sp) return i;
+    }
+    return 0;
+}
+
 int main() {
     aino::Window win(1180, 760, "ainō components");
     if (!win.ok()) return 1;
     App app;
-    win.run([&](Ui& ui) { build_ui(ui, app); });
+    app.page = start_page_from_env();
+    bool dumped = false;
+    win.run([&](Ui& ui) {
+        if (!dumped) {
+            dumped = true;
+            // 首帧量一次：此时字体引擎已就绪，量出来的宽度才是真宽度
+            dump_layout_report(ui, app, ui.width() - kNavW - 56.0f);
+        }
+        build_ui(ui, app);
+    });
     return 0;
 }
