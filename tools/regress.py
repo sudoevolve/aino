@@ -55,14 +55,6 @@ def build():
     return r.returncode == 0, (r.stdout or r.stderr)[-400:]
 
 
-def build_shadcn_demo():
-    """shadcn_demo 也要编 —— 下面 verify_shadcn 要开真窗口点它。"""
-    r = run([PY, os.path.join(HERE, "build.py"),
-             "--src", os.path.join(ROOT, "examples", "shadcn_demo.cpp"),
-             "--out", "aino_shadcn_demo.exe"])
-    return r.returncode == 0, (r.stdout or r.stderr)[-300:]
-
-
 def build_probe(name):
     r = run([PY, os.path.join(HERE, "cl_one.py"), name + ".cpp", name + ".exe",
              "/utf-8", "user32.lib", "gdi32.lib", "msimg32.lib", "imm32.lib"], cwd=PROBE)
@@ -110,21 +102,6 @@ def verify_gallery(extra=()):
         return False, " | ".join(fails)[:160]
     line = [l for l in out.splitlines() if "共" in l and "失败" in l]
     return (r.returncode == 0), (line[0].strip() if line else out.strip()[-80:])
-
-
-def verify_shadcn():
-    """shadcn_demo 的真窗口验证（菜单栏那 34px 到底画没画、点得开不开）。
-
-    widget_probe 走的是离屏画布，绕过了 WM_PAINT / DPI 缩放 / BitBlt ——
-    这条补的正是那些路径。
-    """
-    r = run([PY, os.path.join(HERE, "verify_shadcn.py")])
-    out = (r.stdout or "") + (r.stderr or "")
-    fails = [l.strip() for l in out.splitlines() if "[FAIL]" in l]
-    if fails:
-        return False, " | ".join(fails)[:160]
-    tail = [l for l in out.splitlines() if l.startswith("===")][-1:] or [""]
-    return r.returncode == 0, tail[0][:60]
 
 
 def idle_probe(exe, dur=3.0, click=None, expect_nav=None, want_anim=None, tries=3):
@@ -236,7 +213,7 @@ def idle_probe(exe, dur=3.0, click=None, expect_nav=None, want_anim=None, tries=
 
 PROBES = (
     ("layoutprobe",      "通过 27 项，失败 0 项",        "Stack 布局计算"),
-    ("newcomp_probe",    "80 passed, 0 failed",           "新增组件行为 + 像素"),
+    ("newcomp_probe",    "83 passed, 0 failed",           "新增组件行为 + 像素"),
     ("raster_equiv",     "通过 1602 项，失败 0 项",        "光栅化 vs 参考实现"),
     ("shadow_text_probe", "通过 24 项，失败 0 项",         "阴影衰减 + 文本换行/裁剪/量高"),
     ("arc_probe",        "通过 10 项，失败 0 项",          "圆弧无接缝 + 渐变 + 端帽"),
@@ -254,7 +231,7 @@ PROBES = (
     ("resize_probe",     "通过 19 项，失败 0 项",           "缩放后缓冲一致（无黑帧/无拉伸）"),
     # 离屏驱动 impl->input，验证 dialog/menu/select 打开时遮罩上的点击、
     # hover、滚轮都不会落到下层控件（"弹窗能点到后面的"那个 bug）。
-    ("overlay_probe",    "通过 35 项，失败 0 项",           "浮层不穿透（点击/hover/光标/滚轮/键盘/层级）"),
+    ("overlay_probe",    "通过 36 项，失败 0 项",           "浮层不穿透（点击/hover/光标/滚轮/键盘/层级）"),
     # 离屏驱动 Ctrl+C/X/V。A 组**不绑** set_clipboard / get_clipboard ——
     # 修复前这里调空 std::function 抛 bad_function_call，进程直接 exit 132
     # （用户报的"按 Ctrl+C 闪退"）。C 组真读写系统剪贴板，跑完还原；
@@ -269,7 +246,12 @@ PROBES = (
     # 0.3.0 新补的 18 个 shadcn 对齐控件。离屏驱动鼠标/键盘，逐条验三件事：
     # 点下去到底改没改变量的值、浮层关不关得掉（且关的时候不穿透）、
     # 绘制有没有跑到 box 外面（空背景上肉眼看不出来，放进卡片就糊到邻居身上）。
-    ("widget_probe",     "通过 76 项，失败 0 项",            "新增控件行为（Toggle/OTP/Combobox/分页/月历/浮层/分割/菜单栏）"),
+    ("widget_probe",     "通过 76 项，失败 0 项",            "0.3.x 新控件行为（Toggle/OTP/Combobox/分页/月历/浮层/分割/菜单栏）"),
+    # 存量控件的交互。之前这批一条交互断言都没有：只有"画出来了"的像素断言，
+    # 点下去改不改值、能不能取消、失焦后键盘还进不进得去，全靠人眼。
+    # 覆盖：按钮/图标按钮/输入框编辑/多行输入/复选框/开关/滑块/标签页/分段/
+    # 下拉/单选/步进/评分/折叠/菜单/对话框/提示/导航项/滚动/闸门与裁剪/退化输入。
+    ("interaction_probe", "通过 80 项，失败 0 项",           "存量控件交互（编辑/拖动/弹层/滚动/退化输入）"),
 )
 
 
@@ -282,8 +264,6 @@ def main():
         print("== 编译 ==")
         ok, d = build()
         step("编译 aino_gallery（单目标）", ok, d if not ok else "")
-        ok, d = build_shadcn_demo()
-        step("编译 aino_shadcn_demo", ok, d if not ok else "")
         for n, _, _ in PROBES:
             ok, d = build_probe(n)
             step("编译 " + n, ok, d if not ok else "")
@@ -295,11 +275,7 @@ def main():
 
     print("\n== 窗口像素断言（PrintWindow，逻辑坐标，含换页与主题）==")
     ok, d = verify_gallery()
-    step("gallery 6 页 + 浅深主题", ok, d)
-    # 新控件只在 gallery 之外（gallery 是 0.2.x 的页面，没摆 menubar）。
-    # 这条开真窗口验证：菜单栏占了 34px、下拉弹在它下方、点完标题行跟着变。
-    ok, d = verify_shadcn()
-    step("shadcn_demo 菜单栏（真窗口）", ok, d)
+    step("gallery 版式 / 换页 / 遮罩 / 双主题", ok, d)
 
     print("\n== 跨平台像素断言（直接读后备缓冲，CI 三平台同跑）==")
     ok, d = ci_pixels()
@@ -317,8 +293,8 @@ def main():
     # 0 帧 / ≤1%。这条以前是宽松的 55%（那时它们无条件 repaint），现在收紧成和概览页
     # 同一条硬指标 —— 常驻动画从"设计内开销"降级为"必须显式点名"。
     cpu2, moved2, att2, ok2, note2 = idle_probe(
-        GALLERY, click=(100, 230), expect_nav=3, want_anim=False)
-    step("空闲 aino_gallery（展示页，未悬停）", ok2 and cpu2 <= 1.0,
+        GALLERY, click=(100, 273), want_anim=False)
+    step("空闲 aino_gallery（Progress 页，未悬停）", ok2 and cpu2 <= 1.0,
          "%.2f%% / 两帧差 %d 格 (上限 1.0%%，要求 0 格；第 %d 次尝试)%s"
          % (cpu2, moved2, att2, "" if ok2 else "  " + note2))
 

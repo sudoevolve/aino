@@ -359,9 +359,18 @@ static void test_hover_side_effects() {
     const uint64_t spin_id = aino::detail::make_id("spinner_phase", spin_r);
 
     // 基线：没浮层时，悬停会出 tooltip、spinner 会转
+    // tooltip 有 0.4 s 悬停延时，所以要先把时钟推过门槛再断言。指针位置跨帧
+    // 保留（begin_frame 不动 Input），d.idle 不会把它丢掉。
     d.begin(tip_anchor.cx(), tip_anchor.cy());
     draw();
-    check(!ui.impl->defer.empty(), "无浮层时悬停出 tooltip");
+    check(ui.impl->defer.empty(), "悬停第一帧不出 tooltip（0.4 s 延时）");
+    d.end();
+
+    for (int i = 0; i < 30; ++i) d.idle(draw);          // 0.50 s
+
+    d.begin(tip_anchor.cx(), tip_anchor.cy());
+    draw();
+    check(!ui.impl->defer.empty(), "悬停超过 0.4 s 出 tooltip");
     d.end();
 
     d.begin(spin_r.cx(), spin_r.cy());

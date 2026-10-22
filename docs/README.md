@@ -174,14 +174,14 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 
 ### 跨平台像素断言怎么做到「同一个标准、三种字形」
 
-`tools/verify_gallery.py` 那 27 项是在 Windows 真桌面上用 `PrintWindow` 抓窗口，
+`tools/verify_gallery.py` 那 15 项是在 Windows 真桌面上用 `PrintWindow` 抓窗口，
 抓的是「整窗长什么样」，换个平台就没法比 —— 三个平台的字形光栅完全不同
 （GDI 灰度 AA / Xft / CoreText），同一段字的像素必然对不上。
 
-`tools/verify_shadcn.py` 是同一类（真窗口 + `PrintWindow`），但靶子换成了
-`examples/shadcn_demo.cpp`：它验证的是「那 34px 的菜单栏真的占了位置、下拉真的
-弹在它下方、点完标题行真的跟着变」。这条是 `widget_probe` 补不上的 ——
-离屏探针的 `impl->canvas` 是自己塞的，绕过了 `WM_PAINT`、DPI 缩放和 `BitBlt`。
+它补的是离屏探针补不上的那一层：探针的 `impl->canvas` 是自己塞的，绕过了
+`WM_PAINT`、DPI 缩放和 `BitBlt`。所以这 15 项验的是「导航右侧真有一条 1px 分界线、
+换页之后页头真的换了字、对话框的遮罩真的连左侧导航一起压暗、Esc 之后遮罩真的撤掉」
+—— 这些只有真窗口能验。
 
 所以 `ci_pixels.cpp` 只断言**与字形无关**的性质：
 
@@ -196,7 +196,7 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 | 纯 clear 后整块缓冲 130 点采样全 == 背景色 | stride 算错、新缓冲没清零（「缩放变黑」） |
 
 代价是它**证明不了**「字形排得对不对」——那仍然要人眼在真机上看。
-Windows 侧另有 27 项整窗断言兜这一层。
+Windows 侧另有 15 项整窗断言兜这一层。
 
 ### 两个非 Windows 后端的真实现状
 

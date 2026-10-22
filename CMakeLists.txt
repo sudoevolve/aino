@@ -86,11 +86,9 @@ function(aino_add_demo name)
     endif()
 endfunction()
 
-# 只有一个目标：侧边栏分页画廊。
-# 它取代了原来的三个可执行文件（三栏画廊 main.cpp / 布局演示 layout.cpp /
-# 组件总览 components.cpp）—— 分页比三个 exe 更好用：同一套 AppState 跨页共享，
-# 而且浮层能天然盖在所有页之上，不会出现"三个窗口各画各的"。
+# 三个目标：画廊（功能最全，也是回归靶子）+ 两个最小 demo（新手照着读）。
+# 画廊取代了更早的 main.cpp / layout.cpp / components.cpp 三个 exe —— 分页比
+# 多个窗口好用：同一套 AppState 跨页共享，浮层也天然盖在所有页之上。
 aino_add_demo(aino_gallery examples/gallery.cpp)
 aino_add_demo(aino_sidebar_demo examples/sidebar_demo.cpp)
 aino_add_demo(aino_zoom_demo examples/zoom_demo.cpp)
-aino_add_demo(aino_shadcn_demo examples/shadcn_demo.cpp)

@@ -16,7 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 BUILD_DIR = os.path.join(ROOT, "build")
 
-# 默认编 gallery；加 --src / --out 可以编别的单文件示例（回归要顺带编 shadcn_demo）。
+# 默认编 gallery；加 --src / --out 可以编别的单文件示例（回归用它单独编 gallery）。
 SRC = os.path.join(ROOT, "examples", "gallery.cpp")
 OUT = os.path.join(BUILD_DIR, "aino_gallery.exe")
 _argv = sys.argv[1:]

@@ -294,18 +294,39 @@ int main() {
     }
 
     // -------------------------------------------------------------------------
-    std::printf("[T8] tooltip 只在鼠标进入 anchor 时登记\n");
+    // 悬停 0.4 s 才出浮层（对齐网页端 delayDuration）。划过一排按钮时如果
+    // 立即弹出，鼠标扫过去会一路连环闪，所以这里断言三件事：延时内不登记、
+    // 延时内主动请求重绘（否则静止不动就永远等不到）、越界后才登记。
+    std::printf("[T8] tooltip 悬停延时\n");
     {
         Harness h;
+        int repaints = 0;
+        h.ui.impl->request_repaint = [&repaints]() { ++repaints; };
         const Rect anchor(50, 50, 80, 30);
+        auto tip = [&]() { h.ui.tooltip(anchor, "hi"); return h.ui.impl->defer.size(); };
+
         h.at(10, 10);
-        h.begin(); h.ui.tooltip(anchor, "hi"); const size_t n_out = h.ui.impl->defer.size(); h.end();
+        h.begin(); const size_t n_out = tip(); h.end();
         check(n_out == 0, "鼠标在外 → 不登记弹层");
+
         h.at(90, 65);
-        h.begin(); h.ui.tooltip(anchor, "hi"); const size_t n_in = h.ui.impl->defer.size(); h.end();
-        check(n_in == 1, "鼠标在内 → 登记 1 个弹层");
+        h.begin(); repaints = 0; const size_t n_first = tip(); h.end();
+        check(n_first == 0, "刚进入的第一帧不登记（延时未到）");
+        check(repaints == 1, "延时窗口内请求重绘，时钟才会往前走");
+
+        // 30 帧 × 1/60 s = 0.50 s，越过 0.40 s 门槛
+        for (int i = 0; i < 30; ++i) { h.begin(); tip(); h.end(); }
+        h.begin(); const size_t n_in = tip(); h.end();
+        check(n_in == 1, "悬停超过 0.4 s → 登记 1 个弹层");
+
+        // 鼠标离开要重新计时：回来那一帧不能立刻就弹
+        h.at(10, 10);
+        h.begin(); tip(); h.end();
         h.at(90, 65);
-        h.begin(); h.ui.tooltip(anchor, ""); const size_t n_empty = h.ui.impl->defer.size(); h.end();
+        h.begin(); const size_t n_again = tip(); h.end();
+        check(n_again == 0, "离开再回来 → 重新计时");
+
+        h.begin(); const size_t n_empty = (h.ui.tooltip(anchor, ""), h.ui.impl->defer.size()); h.end();
         check(n_empty == 0, "空文本不登记");
     }
 

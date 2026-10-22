@@ -675,6 +675,10 @@ public:
     void subheading(const std::string& text, const Rect& box, const Style& st = Style());
     void muted_text(const std::string& text, const Rect& box, const Style& st = Style());
     void code_text(const std::string& text, const Rect& box, const Style& st = Style());
+    // 只读代码块：等宽字体、行号、C++ 语法着色。**不滚动**，超出行数的部分被裁掉，
+    // 所以调用方应当用 code_block_height() 算高度，而不是给个固定值。
+    void  code_block(const std::string& code, const Rect& box, const Style& st = Style());
+    float code_block_height(const std::string& code, const Style& st = Style()) const;
 
     // 容器类
     void panel(const Rect& box, const Style& st = Style());          // 卡片 / 面板
@@ -1815,6 +1819,18 @@ struct TextRenderer {
     // x / y_top 已是物理像素；y_top 是行盒顶部；clip 为物理像素裁剪区（w<0 表示不裁）
     virtual void  draw(Canvas& cv, const std::string& utf8, float x, float y_top,
                        float pixel_size, int weight, const Color& c, const Rect& clip) = 0;
+    // 等宽变体：代码块靠它按列对齐。后端未实现时退化为比例字体 ——
+    // 字形仍然正确，只是列不对齐，比缺字好。
+    virtual float measure_mono(const std::string& utf8, float pixel_size, int weight) {
+        return measure(utf8, pixel_size, weight);
+    }
+    virtual float ascent_mono(float pixel_size, int weight) {
+        return ascent(pixel_size, weight);
+    }
+    virtual void  draw_mono(Canvas& cv, const std::string& utf8, float x, float y_top,
+                            float pixel_size, int weight, const Color& c, const Rect& clip) {
+        draw(cv, utf8, x, y_top, pixel_size, weight, c, clip);
+    }
     // 旋转文字：(cx, cy) 是**行盒中心**（物理像素），degrees 顺时针为正。
     // 默认实现退化成不旋转的 draw() —— 其它后端没实现旋转时至少不会缺字，
     // 只是位置会落在中心左上角那半边。GDI 后端用 lfEscapement 原生旋转。
@@ -1941,15 +1957,21 @@ public:
     }
 
     float measure(const std::string& utf8, float size, int weight) override {
+        return measure_impl(utf8, size, weight, false);
+    }
+    float measure_mono(const std::string& utf8, float size, int weight) override {
+        return measure_impl(utf8, size, weight, true);
+    }
+    float measure_impl(const std::string& utf8, float size, int weight, bool mono) {
         if (utf8.empty()) return 0.0f;
         // 同一帧里同一段文字会被反复测量（居中/右对齐/省略号试排），跨帧更是
         // 完全重复。缓存掉这次 GDI 往返，命中率接近 100%。
-        const uint64_t fk = font_key(size, weight);
+        const uint64_t fk = font_key(size, weight, 0, mono);
         const uint64_t h = hash_key(fk, utf8);
         auto it = measure_cache_.find(h);
         if (it != measure_cache_.end() && it->second.first == utf8)
             return it->second.second;
-        HFONT f = font(size, weight);
+        HFONT f = font(size, weight, 0, mono);
         HGDIOBJ old = SelectObject(metric_dc_, f);
         std::wstring& w = wide_scratch();
         to_wide_into(utf8, w);
@@ -1961,20 +1983,22 @@ public:
         return float(sz.cx);
     }
 
-    float ascent(float size, int weight) override {
+    float ascent(float size, int weight) override { return ascent_impl(size, weight, false); }
+    float ascent_mono(float size, int weight) override { return ascent_impl(size, weight, true); }
+    float ascent_impl(float size, int weight, bool mono) {
         TEXTMETRICW tm{};
-        HFONT f = font(size, weight);
+        HFONT f = font(size, weight, 0, mono);
         HGDIOBJ old = SelectObject(metric_dc_, f);
         GetTextMetricsW(metric_dc_, &tm);
         SelectObject(metric_dc_, old);
         return float(tm.tmAscent);
     }
     float line_height(float size, int weight) override {
-        const uint64_t fk = font_key(size, weight);
+        const uint64_t fk = font_key(size, weight, 0, false);
         auto it = lh_cache_.find(fk);
         if (it != lh_cache_.end()) return it->second;
         TEXTMETRICW tm{};
-        HFONT f = font(size, weight);
+        HFONT f = font(size, weight, 0, false);
         HGDIOBJ old = SelectObject(metric_dc_, f);
         GetTextMetricsW(metric_dc_, &tm);
         SelectObject(metric_dc_, old);
@@ -1985,10 +2009,18 @@ public:
 
     void draw(Canvas& cv, const std::string& utf8, float x, float y_top,
               float size, int weight, const Color& c, const Rect& clip) override {
+        draw_impl(cv, utf8, x, y_top, size, weight, c, clip, false);
+    }
+    void draw_mono(Canvas& cv, const std::string& utf8, float x, float y_top,
+                   float size, int weight, const Color& c, const Rect& clip) override {
+        draw_impl(cv, utf8, x, y_top, size, weight, c, clip, true);
+    }
+    void draw_impl(Canvas& cv, const std::string& utf8, float x, float y_top,
+                   float size, int weight, const Color& c, const Rect& clip, bool mono) {
         if (utf8.empty()) return;
         HDC dc = reinterpret_cast<HDC>(cv.platform_dc);
         if (!dc) return;
-        HFONT f = font(size, weight);
+        HFONT f = font(size, weight, 0, mono);
         HGDIOBJ old_font = SelectObject(dc, f);
         int old_mode = SetBkMode(dc, TRANSPARENT);
         COLORREF old_color = SetTextColor(dc, RGB(c.r, c.g, c.b));
@@ -2058,15 +2090,16 @@ private:
         for (uint8_t ch : s) { h ^= ch; h *= 1099511628211ull; }
         return h;
     }
-    uint64_t font_key(float size, int weight, int esc10 = 0) const {
+    uint64_t font_key(float size, int weight, int esc10 = 0, bool mono = false) const {
         int q = int(size * 4.0f + 0.5f);
         if (q < 4) q = 4;
         return (uint64_t(uint32_t(q)) << 32)
              | (uint64_t(uint32_t(esc10 & 0xFFF)) << 16)      // 旋转角度（1/10 度）
+             | (mono ? (uint64_t(1) << 28) : uint64_t(0))     // 等宽标记（28..31 空着）
              | uint32_t(weight < 0 ? 400 : weight);
     }
-    HFONT font(float size, int weight, int esc10 = 0) {
-        const uint64_t key = font_key(size, weight, esc10);
+    HFONT font(float size, int weight, int esc10 = 0, bool mono = false) {
+        const uint64_t key = font_key(size, weight, esc10, mono);
         auto it = fonts_.find(key);
         if (it != fonts_.end()) return it->second;
         int px = int(std::floor(float(int32_t(key >> 32)) / 4.0f + 0.5f));
@@ -2079,7 +2112,8 @@ private:
                                // 8.7% 的像素带明显橙蓝彩边，比系统的 ClearType 脏得多。
                                // 纯灰度反而干净。
                                ANTIALIASED_QUALITY,
-                               DEFAULT_PITCH | FF_DONTCARE, to_wide(family_).c_str());
+                               mono ? (FIXED_PITCH | FF_MODERN) : (DEFAULT_PITCH | FF_DONTCARE),
+                               to_wide(mono ? mono_ : family_).c_str());
         fonts_[key] = hf;
         return hf;
     }
@@ -3596,6 +3630,256 @@ inline void Ui::code_text(const std::string& text, const Rect& box, const Style&
 }
 
 // =============================================================================
+//  8.9.1  代码块（只读）
+//
+//  画廊、文档站这类程序要展示源码，所以这里带一个最小词法器：拆行 → 每行切段
+//  → 逐段着色。切段不只是为了颜色，同色相邻字符合并后，一行十几次 GDI 调用
+//  能压到三五次。
+//
+//  不做完整语法解析：代码块是给人看的，颜色只用来帮眼睛分块，认错一个标识符
+//  的类别不会有什么后果。字符串/注释/数字这三类是必须正确的，其余尽力。
+// =============================================================================
+namespace detail {
+
+enum class TokKind { Text, Keyword, Type, String, Comment, Number };
+
+struct CodeSeg {
+    TokKind kind = TokKind::Text;
+    std::string text;
+};
+
+struct CodeColors {
+    Color plain, keyword, type, str, comment, number, gutter;
+};
+
+// 两套色板按背景亮度选。跟着主题走而不是跟着 style 走 —— 调用方通常只想说
+// "用当前主题的代码块"，不想每次自己配七个颜色。
+inline const CodeColors& code_colors(const Theme& th) {
+    static const CodeColors kLight = {
+        Color(0x24, 0x28, 0x2e),   // plain
+        Color(0x82, 0x50, 0xdf),   // keyword
+        Color(0x0b, 0x63, 0xa8),   // type
+        Color(0x0a, 0x7d, 0x32),   // string
+        Color(0x8a, 0x91, 0x9c),   // comment
+        Color(0xb4, 0x53, 0x09),   // number
+        Color(0x9a, 0xa1, 0xac),   // gutter
+    };
+    static const CodeColors kDark = {
+        Color(0xe6, 0xed, 0xf3),
+        Color(0xd2, 0xa8, 0xff),
+        Color(0x79, 0xc0, 0xff),
+        Color(0x7e, 0xe7, 0x87),
+        Color(0x8b, 0x94, 0x9e),
+        Color(0xff, 0xab, 0x70),
+        Color(0x6a, 0x73, 0x7d),
+    };
+    const int luma = (th.background.r * 299 + th.background.g * 587 + th.background.b * 114) / 1000;
+    return luma > 128 ? kLight : kDark;
+}
+
+inline bool tok_ident_start(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+inline bool tok_ident(char c) {
+    return tok_ident_start(c) || (c >= '0' && c <= '9');
+}
+inline bool tok_digit(char c) { return c >= '0' && c <= '9'; }
+
+inline bool tok_in(const char* const* tab, size_t n, const std::string& w) {
+    for (size_t i = 0; i < n; ++i) if (w == tab[i]) return true;
+    return false;
+}
+
+inline bool tok_is_keyword(const std::string& w) {
+    static const char* const kTab[] = {
+        "bool", "int", "float", "double", "char", "void", "auto", "const", "constexpr",
+        "static", "inline", "virtual", "override", "struct", "class", "enum", "namespace",
+        "using", "return", "if", "else", "for", "while", "switch", "case", "default",
+        "break", "continue", "true", "false", "nullptr", "new", "delete", "public",
+        "private", "protected", "template", "typename", "sizeof", "explicit", "operator",
+        "this", "extern", "union", "friend",
+    };
+    return tok_in(kTab, sizeof(kTab) / sizeof(kTab[0]), w);
+}
+
+inline bool tok_is_type(const std::string& w) {
+    static const char* const kTab[] = {
+        "std", "string", "vector", "function", "array", "pair", "map", "size_t",
+        "uint32_t", "uint64_t", "int32_t", "aino",
+        "Ui", "Style", "Rect", "Stack", "Color", "Vec2", "Transform", "Window",
+        "Input", "Theme", "Canvas", "Easing", "Align", "VAlign", "Cursor", "MenuPick",
+    };
+    return tok_in(kTab, sizeof(kTab) / sizeof(kTab[0]), w);
+}
+
+// 把一行切成同色段。相邻且同类会并进上一段（push 里做）。
+inline void code_lex(const std::string& s, std::vector<CodeSeg>& out) {
+    out.clear();
+    const size_t n = s.size();
+    size_t i = 0;
+
+    auto push = [&](TokKind k, size_t a, size_t b) {
+        if (b <= a) return;
+        if (!out.empty() && out.back().kind == k) {
+            out.back().text.append(s, a, b - a);
+        } else {
+            out.push_back(CodeSeg{k, s.substr(a, b - a)});
+        }
+    };
+
+    while (i < n) {
+        const char c = s[i];
+
+        // 行注释：整行剩余部分一个颜色
+        if (c == '/' && i + 1 < n && s[i + 1] == '/') {
+            push(TokKind::Comment, i, n);
+            break;
+        }
+
+        // 字符串 / 字符字面量：只认转义，不认跨行（示例代码里没有裸换行串）
+        if (c == '"' || c == '\'') {
+            const char q = c;
+            size_t j = i + 1;
+            while (j < n) {
+                if (s[j] == '\\' && j + 1 < n) { j += 2; continue; }
+                if (s[j] == q) { ++j; break; }
+                ++j;
+            }
+            push(TokKind::String, i, j);
+            i = j;
+            continue;
+        }
+
+        // 数字：0xFF / 3.14f / 1e7 一起吃掉（后缀字母靠 tok_ident 一并吞下）
+        if (tok_digit(c)) {
+            size_t j = i;
+            while (j < n && (tok_ident(s[j]) || s[j] == '.')) ++j;
+            push(TokKind::Number, i, j);
+            i = j;
+            continue;
+        }
+
+        if (tok_ident_start(c)) {
+            size_t j = i;
+            while (j < n && tok_ident(s[j])) ++j;
+            const std::string w = s.substr(i, j - i);
+            push(tok_is_keyword(w) ? TokKind::Keyword
+                 : tok_is_type(w) ? TokKind::Type
+                 : TokKind::Text, i, j);
+            i = j;
+            continue;
+        }
+
+        // 标点与空白：连续吃掉，避免每个括号都单独成段
+        size_t j = i + 1;
+        while (j < n && !tok_ident_start(s[j]) && !tok_digit(s[j])
+               && s[j] != '"' && s[j] != '\''
+               && !(s[j] == '/' && j + 1 < n && s[j + 1] == '/')) ++j;
+        push(TokKind::Text, i, j);
+        i = j;
+    }
+}
+
+inline int code_line_count(const std::string& code) {
+    if (code.empty()) return 0;
+    int n = 1;
+    for (char c : code) if (c == '\n') ++n;
+    // 末尾带换行时最后那个空行不占位
+    if (code.back() == '\n') --n;
+    return n;
+}
+
+inline std::string code_line_at(const std::string& code, int index) {
+    int cur = 0;
+    size_t a = 0;
+    for (size_t i = 0; i <= code.size(); ++i) {
+        if (i == code.size() || code[i] == '\n') {
+            if (cur == index) {
+                size_t b = i;
+                if (b > a && code[b - 1] == '\r') --b;
+                return code.substr(a, b - a);
+            }
+            ++cur;
+            a = i + 1;
+            if (i == code.size()) break;
+        }
+    }
+    return std::string();
+}
+
+} // namespace detail
+
+inline float Ui::code_block_height(const std::string& code, const Style& st) const {
+    const float fs = st.font_size > 0.0f ? st.font_size : 12.5f;
+    const float lh = std::max(fs * 1.62f, 15.0f);
+    return 10.0f + lh * float(detail::code_line_count(code)) + 10.0f;
+}
+
+inline void Ui::code_block(const std::string& code, const Rect& box, const Style& st) {
+    if (!impl->canvas || !impl->text) return;
+    const Theme& th = impl->theme;
+
+    const float fs   = st.font_size > 0.0f ? st.font_size : 12.5f;
+    const float lh   = std::max(fs * 1.62f, 15.0f);
+    const float rad  = st.radius >= 0.0f ? st.radius : th.radius;
+    const Color bg   = !st.bg.is_none() ? st.bg : th.muted.mix(th.background, 0.3f);
+    const detail::CodeColors& cc = detail::code_colors(th);
+
+    fill_rect(box, bg, rad);
+    stroke_rect(box, th.border, rad, 1.0f);
+
+    const int total = detail::code_line_count(code);
+    if (total <= 0) return;
+
+    // 行号列宽按最大行号量，右侧留 10px 间隙
+    const float pfs   = impl->px(fs);
+    const float pfs_s = impl->px(fs - 1.0f);
+    const std::string max_num = std::to_string(total);
+    const float num_w = impl->text->measure_mono(max_num, pfs_s, 400) / impl->scale + 10.0f;
+    const float gpad  = 12.0f;
+    const float text_x0 = box.x + gpad + num_w;
+
+    // 行号列与代码之间一条竖线，比给行号区单独铺底色更容易跟圆角相处
+    const float sep_x = std::floor(text_x0 - 6.0f) + 0.5f;
+    fill_rect(Rect(sep_x, box.y + 1.0f, 1.0f, box.h - 2.0f), th.border, 0.0f);
+
+    // 文本基线：行距减掉字高后居中留白，避免所有行都贴着格子顶边
+    const float dy = (lh - fs * 1.22f) * 0.5f;
+    const int cap = int((box.h - 12.0f) / lh);
+
+    const Rect clip = impl->effective_clip;
+    std::vector<detail::CodeSeg> segs;
+
+    for (int i = 0; i < total && i < cap; ++i) {
+        const float ly = box.y + 6.0f + lh * float(i) + dy;
+
+        const std::string num = std::to_string(i + 1);
+        const float nw = impl->text->measure_mono(num, pfs_s, 400) / impl->scale;
+        impl->text->draw_mono(*impl->canvas, num,
+                              impl->px(box.x + gpad + num_w - 10.0f - nw), impl->px(ly),
+                              pfs_s, 400, cc.gutter, clip);
+
+        detail::code_lex(detail::code_line_at(code, i), segs);
+        float x = text_x0;
+        for (const detail::CodeSeg& sg : segs) {
+            Color c = cc.plain;
+            switch (sg.kind) {
+                case detail::TokKind::Keyword: c = cc.keyword; break;
+                case detail::TokKind::Type:    c = cc.type;    break;
+                case detail::TokKind::String:  c = cc.str;     break;
+                case detail::TokKind::Comment: c = cc.comment; break;
+                case detail::TokKind::Number:  c = cc.number;  break;
+                default: break;
+            }
+            if (x >= box.right() - 4.0f) break;      // 长行右侧直接断，不折行
+            impl->text->draw_mono(*impl->canvas, sg.text, impl->px(x), impl->px(ly),
+                                  pfs, 400, c, clip);
+            x += impl->text->measure_mono(sg.text, pfs, 400) / impl->scale;
+        }
+    }
+}
+
+// =============================================================================
 //  8.10  容器类组件
 // =============================================================================
 inline void Ui::panel(const Rect& box, const Style& st) {
@@ -4359,6 +4643,9 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
 
     bool changed = false;
     if (in.clicked) { open = !open; impl->flags[id] = open ? 1.0f : 0.0f; }
+    // Esc 关闭列表。网页端的 Select 支持，桌面端更必须有 —— 否则打开之后
+    // 只能靠点外部来收，键盘用户没有出路。
+    if (open && impl->input.key_pressed[KEY_ESC]) { open = false; impl->flags[id] = 0.0f; }
 
     const float t_hover = detail::animate_value(impl, id * 53u + 1u, (in.hovered || open) ? 1.0f : 0.0f, 18.0f);
 
@@ -5407,15 +5694,26 @@ inline void Ui::bars(const std::vector<float>& values, const Rect& box, const St
 //  8.15  浮层类
 // =============================================================================
 
-// 悬停提示：只在鼠标进入 anchor 时登记一次帧末绘制。
-// 注意这里刻意不调 repaint() —— 悬停期间鼠标每动一下窗口本来就会重画，
-// 常驻要帧会把空闲 CPU 从 0% 抬起来。
+// 悬停提示。点击态与普通控件一致，但显示条件多一条：指针停留满 0.4 秒。
+// 只在这段计时窗口内请求重绘，弹出之后不再要帧 —— 否则指针压着不动也会
+// 常驻刷新，把空闲 CPU 从 0% 抬起来。
 inline void Ui::tooltip(const Rect& anchor, const std::string& text, const Style& st) {
     if (text.empty() || st.disabled) return;
+
+    // 悬停 0.4 秒才出现。没有这个延时，鼠标划过一排按钮会连环闪 ——
+    // 网页端（shadcn 的 delayDuration）同样是几百毫秒起步。
+    const uint64_t tid = detail::make_id("tip", anchor, uint64_t(text.size() * 131u + 7u));
+    float& since = impl->flags[tid * 7u + 5u];
     const Input& kin = impl->input;
-    if (!anchor.contains(kin.mouse.x, kin.mouse.y)) return;
-    // 锚点被浮层压住时不出提示：悬停类行为同样属于"穿透"。
-    if (impl->gate_blocked_pointer()) return;
+    if (!anchor.contains(kin.mouse.x, kin.mouse.y) || impl->gate_blocked_pointer()) {
+        since = 0.0f;                 // 离开即重新计时，回来要再等一次
+        return;
+    }
+    if (since <= 0.0f) since = impl->clock;
+    if (impl->clock - since < 0.40f) {
+        repaint();                    // 计时靠帧推进；显示之后就不再请求
+        return;
+    }
 
     const Theme& th = impl->theme;
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size - 1.0f;

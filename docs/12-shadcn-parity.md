@@ -154,7 +154,7 @@ ui.toggle_button("粗体", &bold, r);       // ← 这才是 shadcn 的 Toggle
 
 | 没做的 | 为什么 |
 |---|---|
-| Message / Bubble / Attachment / Message Scroller / Marker | 聊天界面不是「基础控件」，是**一整个场景**。塞进基础库会把 434 KiB 撑成什么样先不说，它们还都需要气泡箭头、流式追加、滚动锚定一套自己的规矩 |
+| Message / Bubble / Attachment / Message Scroller / Marker | 聊天界面不是「基础控件」，是**一整个场景**。塞进基础库会把 456 KiB 撑成什么样先不说，它们还都需要气泡箭头、流式追加、滚动锚定一套自己的规矩 |
 | Command | 它是**模式**不是控件：一个遮罩 + 一个输入框 + 一个过滤列表。用 `dialog()` + `input()` + `menu()` 十行就拼出来了，做成控件反而限制住布局 |
 | Carousel | 要时间轴动画（自动轮播 / 惯性滑动），和「空闲必须 0 帧」的承诺正面冲突 |
 | Form | shadcn 的 `Form` 是 react-hook-form 的胶水层，管的是校验编排。纯 UI 层给不出它，`field()` 已经是这一层能做的全部 |
@@ -164,6 +164,9 @@ ui.toggle_button("粗体", &bold, r);       // ← 这才是 shadcn 的 Toggle
 ---
 
 ## 三、0.3.0 / 0.3.1 新补的 20 个 API
+
+下面每一段在 `examples/gallery.cpp` 里都有对应的示例页：左侧是可点的预览，
+右侧就是生成它的源码，直接照着抄。
 
 ### 表单
 
