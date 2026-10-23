@@ -1095,6 +1095,7 @@ namespace icons {
 #  include <X11/keysym.h>
 #  include <X11/Xatom.h>
 #  include <unistd.h>
+#  include <cerrno>       // XOpenDisplay 失败时要报 errno（EAGAIN=11 是"现在别连"）
 // 文字渲染：FreeType + fontconfig（运行时 dlopen），核心 XLFD 字体兜底。
 //
 // 为什么不能用核心 X 字体：它只有 **1bit 点阵字体**（xfonts-base 里的 6x13 /
@@ -10577,6 +10578,20 @@ inline void x11_create(Window* self, const WindowConfig& cfg) {
 
     setlocale(LC_ALL, "");
     s->dpy = XOpenDisplay(nullptr);
+    if (!s->dpy) {
+        // 上一次 XCloseDisplay 之后服务器可能还在收尾，紧接着的 connect 会拿到
+        // EAGAIN（11）—— 不是"连不上"，是"现在别连"。0.4.7 把兜底链的扫描缩短
+        // 之后，连续建窗口的间隔从几十毫秒掉到几毫秒，CI 上就撞出来了：
+        // ci_pixels 的第四个窗口（S4）稳定 XOpenDisplay 返回 NULL、errno=11。
+        // 重试几次，别在这里判死刑 —— 真实桌面上换分辨率/重建窗口也会走这条路。
+        for (int i = 0; i < 8 && !s->dpy; ++i) {
+            usleep(25000);
+            s->dpy = XOpenDisplay(nullptr);
+            if (x11_trace_on())
+                x11_trace("XOpenDisplay retry %d -> %p errno=%d", i + 1,
+                          reinterpret_cast<void*>(s->dpy), errno);
+        }
+    }
     if (!s->dpy) { delete s; o->native = nullptr; return; }
 
     int screen = DefaultScreen(s->dpy);
