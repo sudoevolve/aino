@@ -60,8 +60,8 @@
 
 #define AINO_VERSION_MAJOR 0
 #define AINO_VERSION_MINOR 4
-#define AINO_VERSION_PATCH 2
-#define AINO_VERSION "0.4.2"
+#define AINO_VERSION_PATCH 3
+#define AINO_VERSION "0.4.3"
 
 #include <cstdint>
 #include <cstddef>
@@ -4750,9 +4750,17 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
 
     // ---------------- 绘制 ----------------
     const float t_hover = detail::animate_value(impl, id * 31u + 1u, (in.hovered && !focused) ? 1.0f : 0.0f, 18.0f);
+    // 内层铺不铺底，不能只看 bg 的 alpha：Color::none() 和 Color(0,0,0,0) 的
+    // is_none() 都是真（它只判 a==0），"没传背景"和"显式要透明"分不出来。于是
+    // 传了透明底时会回退成 th.background，在 inner（整高）上铺一层白 —— 把调用方
+    // 自己画的外框从**中间**吃掉，只剩前后缀那两小段。input_group 就中过这个：
+    // 用户看到的是"两个输入框中间那条横线没了"。
+    //
+    // 判据：border_width == 0 且没给 bg = 调用方在说"外壳我自己画，你别画"。
     Color bg = !st.bg.is_none() ? st.bg : th.background;
+    const bool bare = st.border_width == 0.0f && st.bg.is_none();
     if (st.disabled && bg.a > 0) bg.a = uint8_t(float(bg.a) * 0.45f);
-    if (bg.a > 0) fill_rect(box, bg, rad);
+    if (bg.a > 0 && !bare) fill_rect(box, bg, rad);
     Color bd = !st.border_color.is_none() ? st.border_color : th.input;
     if (focused) bd = th.ring;
     else if (t_hover > 0.01f) bd = bd.mix(th.foreground.with_alpha(120), t_hover * 0.4f);
@@ -6909,6 +6917,20 @@ inline bool Ui::input_group(std::string* value, const std::string& prefix, const
     if (outside_press) {
         detail::grab_focus(impl, detail::make_id("input", inner));
         repaint();
+    }
+
+    // 聚焦后补一道 ring。外框在此前已经按 th.input 画好了，可单个 input() 聚焦时
+    // 边框会变 th.ring —— 这里把边框揽过来自己画，就得把这件事一并做掉，否则点进框里
+    // 完全看不出光标落在哪一个（两个框上下排着时尤其无从判断）。
+    //
+    // 画法**照抄 input()**：边框换成 th.ring 并加粗 0.4，再叠一层 paint_focus_ring
+    // （expand 1.5 / 55% alpha / 2px）。早先只画一根 1.4px 纯黑描边，比旁边真正的
+    // input() 重一大截，看着像"这个框报错了"。
+    //
+    // 必须画在 input() 之后：它内部会 push_clip(inner) 并在里面铺绘制，先画的边框会被压掉。
+    if (detail::is_focused(impl, detail::make_id("input", inner))) {
+        stroke_rect(box, th.ring, rad, 1.4f);
+        detail::paint_focus_ring(*this, box, rad, th.ring);
     }
     return changed;
 }

@@ -258,6 +258,29 @@ static void test_input_group() {
     const Rect box(20.0f, 20.0f, 240.0f, 36.0f);
     auto draw = [&]() { ui.input_group(&v, "¥", "元", box); };
 
+    // 外框四条边必须**完整**。曾经 input() 会把"显式传的透明底"当成"没传"，
+    // 在 inner（整高）上铺一层 th.background —— 上下两条边的中间段被这层白底吃掉，
+    // 只剩前后缀那两小段。用户看到的是"两个上下排列的输入框中间那条横线没了"。
+    //
+    // 判据是"边框处比框内白底更暗"，不能只判"够暗"：Surface 里 box 以上的
+    // canvas 是未初始化的 (0,0,0,0)，扫到那里会把断言骗成通过。
+    d.idle(draw);
+    {
+        auto darkest = [&](float y0, float y1) {
+            float d = 1.0f;
+            for (float y = y0; y <= y1; y += 0.5f)
+                d = std::min(d, s.at(box.cx(), y).luminance());
+            return d;
+        };
+        const float inner_luma = s.at(box.cx(), box.y + 4.0f).luminance();
+        const float top = darkest(box.y + 0.5f, box.y + 1.5f);
+        const float bot = darkest(box.bottom() - 1.5f, box.bottom() - 0.5f);
+        check(top + 0.02f < inner_luma, "外框上边在中线处完整",
+              "edge=" + std::to_string(top) + " inner=" + std::to_string(inner_luma));
+        check(bot + 0.02f < inner_luma, "外框下边在中线处完整",
+              "edge=" + std::to_string(bot) + " inner=" + std::to_string(inner_luma));
+    }
+
     d.click(box.cx(), box.cy(), draw);      // 聚焦
     d.type("128", draw);
     check(v == "128", "能输入（前缀后缀不挡字符）", "v=" + v);
