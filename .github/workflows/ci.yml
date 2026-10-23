@@ -105,9 +105,15 @@ jobs:
           AINO_X11_TRACE: "1"
         run: |
           set +e
-          xvfb-run -a ./ci_pixels 2> pixels_trace.txt
+          # -e 把 **Xvfb 自己的**错误接到文件里。默认它丢进 /dev/null，于是
+          # 「XOpenDisplay 返回 ECONNRESET」这种"服务器中途没了"的现场永远是瞎的。
+          xvfb-run -a -e xvfb_err.log ./ci_pixels > pixels_out.txt 2> pixels_trace.txt
           rc=$?
-          if [ $rc -ne 0 ]; then echo "--- trace ---"; cat pixels_trace.txt; fi
+          cat pixels_out.txt
+          if [ $rc -ne 0 ]; then
+            echo "--- Xvfb ---"; cat xvfb_err.log
+            echo "--- trace（末 60 行）---"; tail -60 pixels_trace.txt
+          fi
           exit $rc
 
       # 兜底链自检：把链砍到 4 条（DejaVu Sans 的那几个 style 正好占满），
