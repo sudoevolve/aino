@@ -9569,8 +9569,11 @@ struct FtSlotLite {
     FtBitmapLite bitmap;
     int bitmap_left, bitmap_top;
 };
-// FT_Size_Metrics + FT_SizeRec 的前缀
+// FT_SizeRec 的前缀。注意它以 **FT_Face face 开头** —— 漏了这 8 个字节，
+// 后面读到的 metrics 全部错位（14px 的字量出 asc=448，整行文字被推到画布外，
+// 一个墨点都不剩）。踩过一次，记在这里。
 struct FtSizeLite {
+    void* face;
     void* generic_data;
     void (*generic_finalizer)(void*);
     struct {
@@ -9933,6 +9936,11 @@ private:
             f.asc  = int((sz->metrics.ascender + 63) >> 6);
             f.desc = int((-sz->metrics.descender + 63) >> 6);
         }
+        // 范围校验：一行字再高也不会超过 2em。越界说明 metrics 读错了（结构体
+        // 错位时就是 448 这种数），直接退回 hhea 的 ascender/descender。
+        const int em = int(px * 2.0 + 0.5);
+        if (f.asc <= 0 || f.asc > em) f.asc = 0;
+        if (f.desc < 0 || f.desc > em) f.desc = 0;
         if (fr->units_per_EM) {
             if (f.asc <= 0)  f.asc  = int(px * double(fr->ascender) / double(fr->units_per_EM) + 0.5);
             if (f.desc <= 0) f.desc = int(px * double(-fr->descender) / double(fr->units_per_EM) + 0.5);
@@ -10693,7 +10701,13 @@ public:
         if (!line) return;
 
         CGContextSaveGState(ctx);
-        if (clip.w >= 0.0f) CGContextClipToRect(ctx, CGRectMake(clip.x, clip.y, clip.w, clip.h));
+        // 裁剪矩形必须镜像 y：这个 CGContext 是 CGBitmapContextCreate 出来的、
+        // 原点在**左下**，而 clip 是"从顶上往下量"的逻辑坐标（和 px 缓冲一致）。
+        // 不镜像的话裁剪带会落到垂直对称的位置上 —— 上方的字被切一半，靠下的字
+        // 整块被裁掉，看起来就是"只有第一行文字画出来了"。
+        if (clip.w >= 0.0f)
+            CGContextClipToRect(ctx, CGRectMake(clip.x, CGFloat(cv.h) - clip.bottom(),
+                                                clip.w, clip.h));
         // CoreGraphics 原点在左下角，需要翻转
         CGContextSetTextMatrix(ctx, CGAffineTransformIdentity);
         CGContextTranslateCTM(ctx, 0.0, CGFloat(cv.h));
