@@ -38,6 +38,21 @@ struct Color { uint8_t r, g, b, a; };
 > 会被当作「没设置」，组件会回落到主题默认色。要表达「透明」请用主题色配
 > `scaled_alpha(0.0f)` 之外的明确手段，或直接接受主题默认。
 
+> **坑（会闪）**：`mix()` 连 **alpha 一起**插值。所以**淡入一个颜色**时不要拿
+> `Color::none()` 当起点：
+>
+> ```cpp
+> // ✗ t=0.5 得到 (122,122,122, a=128)，光栅器 blend 完比背景还暗 —— 闪一下深灰
+> Color bad = Color::none().mix(accent, t);
+> // ✓ RGB 保持 accent，只推 alpha
+> Color good = accent.with_alpha(uint8_t(255.0f * t));
+> ```
+>
+> 这不是理论问题：`state_fill()` 以前就是这么写的，导致所有 ghost / outline 控件
+> 每次悬停都先闪一下深灰再回到 accent（`hover_fade_probe` 钉住中间帧亮度）。
+> 同理，别把 `with_alpha(10)` 之类**当混合权重**传进 `mix()` —— 那是在改 alpha，
+> 不是"压 10% 暗"。
+
 ### 1.2 `Rect`
 
 ```cpp

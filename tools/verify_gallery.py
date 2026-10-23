@@ -266,17 +266,19 @@ def main():
         # ---- 3. 点导航切到 Button ----
         vr.click_logical(hwnd, 110.0, 183.0, scale)
         time.sleep(0.75)
-        # 抓帧本身偶尔会得到一张"内容已经是新的一页、导航还是旧高亮"的拼贴帧
-        # （同一份二进制连跑 8 次里出现过 1 次，重启进程后不再复现）。这不是
-        # 渲染管线的问题，是 PrintWindow 取 DC 的时机 —— 多抓两帧就稳定了。
+        # 抓帧偶尔会得到一张"内容已经是新的一页、导航还是旧高亮"的拼贴帧。
+        # 根因不是抓帧时机：点导航改的是**后面才画**的内容区状态，而导航行本身
+        # 这一帧早就画完了 —— 状态改完没人再排帧，这帧错位画面就挂在屏幕上
+        # （用户看到的是"页面换了、高亮卡住"）。现在 interact() 返回 pressed /
+        # clicked 时会补一次 request_repaint，这里仍留着"多抓几帧"兜底。
         # 注意：**不重试点击**，只重抓。点两次会切换两次状态，那是改语义。
         s1 = Shot(hwnd, scale)
         navdiff = 0
-        for _ in range(10):
+        for _ in range(6):
             navdiff = s1.diff(s0, 8.0, 100.0, NAV_W - 12.0, 420.0)
             if navdiff > 20:
                 break
-            time.sleep(0.2)
+            time.sleep(0.15)
             s1 = Shot(hwnd, scale)
 
         head = s1.diff(s0, NAV_W + 20.0, 20.0, LOGICAL_W - 20.0, 100.0)

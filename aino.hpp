@@ -60,8 +60,8 @@
 
 #define AINO_VERSION_MAJOR 0
 #define AINO_VERSION_MINOR 4
-#define AINO_VERSION_PATCH 0
-#define AINO_VERSION "0.4.0"
+#define AINO_VERSION_PATCH 1
+#define AINO_VERSION "0.4.1"
 
 #include <cstdint>
 #include <cstddef>
@@ -2954,13 +2954,41 @@ inline Interact interact(Ui::Impl* im, uint64_t id, const Rect& r, bool enabled)
             im->active = 0;
         }
     }
+    // 按下 / 点击都会改应用状态，而改出来的状态可能影响**这一帧早就画完**的控件：
+    // gallery 就是这样 —— 导航行画在前面，点它时把页面切了，于是这一帧是"旧高亮 +
+    // 新内容"的拼接。不补排一帧，用户得等下一次鼠标移动才看见高亮跟上，看起来像
+    // "点了没反应/高亮卡住"。按下就要补，因为有些控件按下即改状态。
+    if (res.pressed || res.clicked) {
+        if (im->request_repaint) im->request_repaint();
+    }
     return res;
 }
 
 // 把已解析的交互态换算成"该用哪个颜色画"
-inline Color state_fill(const Color& base, const Color& hover, const Color& press, float t_hover, float t_press) {
-    Color c = base.mix(hover, t_hover);
-    c = c.mix(press, t_press);
+//
+// 底色**全透明**时（Ghost / Outline / Link，base 就是 Color::none()）不能直接
+// `base.mix(hover, t)`：none 是 (0,0,0,0)，`mix` 会把 RGB 和 alpha **一起**从黑色
+// 拉上来 —— t=0.5 时拿到 (122,122,122, a=128)，光栅器 blend 完是 185，比背景(249)
+// 和终态(244)都暗。于是每次悬停都先"闪一下深灰"再回到几乎看不见的 accent，
+// 用户看到的就是"hover 莫名其妙地闪"，而且只有带 hover 淡入的控件（按钮 / 图标
+// 按钮 / 分段选择器）有这毛病，没有淡入的静态表格没有。
+//
+// 这类底色要的是"淡入一个颜色"，不是"从黑色渐变到该颜色"：RGB 始终取目标色，
+// 只推进 alpha，中间帧交给光栅器去 blend。真正该动 alpha 的地方只有这里。
+inline Color state_fill(const Color& base, const Color& hover, const Color& press,
+                        float t_hover, float t_press) {
+    const float th = clampf(t_hover, 0.0f, 1.0f);
+    const float tp = clampf(t_press, 0.0f, 1.0f);
+    if (base.a == 0) {
+        // 按下层压在 hover 层之上：颜色按 press 的权重走，但不透明度是
+        // 两层叠加 1-(1-th)(1-tp)，**不能**让 alpha 跟着 mix 掉下去。
+        Color c = tp > 0.0f ? hover.mix(press, tp) : hover;
+        const float a = 1.0f - (1.0f - th) * (1.0f - tp);
+        c.a = uint8_t(clampf(float(c.a) * a, 0.0f, 255.0f) + 0.5f);
+        return c;
+    }
+    Color c = base.mix(hover, th);
+    c = c.mix(press, tp);
     return c;
 }
 
