@@ -57,7 +57,7 @@ cl /std:c++17 /utf-8 /EHsc /O2 /MT main.cpp user32.lib gdi32.lib
 g++ -std=c++17 -O2 -mwindows -s -static main.cpp -o app.exe -lgdi32 -luser32
 
 # GCC / X11
-g++ -std=c++17 -O2 main.cpp -o app $(pkg-config --cflags --libs xft) -lX11
+g++ -std=c++17 -O2 main.cpp -o app -lX11 -ldl
 ```
 
 `-static` 要求工具链的静态运行时完整：CLion 自带的那套 MinGW 15.2.0 链接不过

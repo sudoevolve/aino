@@ -264,8 +264,9 @@ gallery 是唯一同时用到全部控件的程序，所以它另外挂了两个
   HiDPI、中文（裸 runner 没有中文字体，汉字会缺字）。
   **文字渲染已改为 Xft**（0.4.4）：核心 XLFD 字体只有 1bit 点阵、没有 12/13/14 这种
   连续字号，Ubuntu 桌面上请求 13px 会被服务端拿 12px 位图缩放上去 —— 中文挑全角点阵、
-  拉丁字距被拉成等宽、字重完全拉不开，整屏像马赛克。装了 `libxft-dev` 就自动编进
-  Xft（FreeType 灰度抗锯齿 + 任意字号 + 真粗体），`__has_include` 探测不到则退回点阵。
+  拉丁字距被拉成等宽、字重完全拉不开，整屏像马赛克。Xft 走 **运行时 `dlopen("libXft.so.2")`**
+  + `dlsym`，不依赖 `libxft-dev`、不依赖 `-lXft`（普通 Ubuntu 桌面只有运行时包，让用户
+  去装开发包等于没修）；加载不到才退回点阵。
   `ci_pixels` 里那条「文字框里有几档灰度」的断言就是钉这件事的：1 档 = 点阵，≥4 档才
   算抗锯齿。
   再遇到文字问题时开 `AINO_X11_TRACE=1`：会把每个字体候选、体检宽度、Xft 字体指针、
@@ -283,10 +284,8 @@ gallery 是唯一同时用到全部控件的程序，所以它另外挂了两个
   直接返回空串、以及「`CGImage` 交给 `drawRect:` 之后上屏是否正确」没人核对
   （像素断言读的是 CGContext 的缓冲，在 `drawRect:` 的上游）。
 
-链接依赖：Windows 只需 `user32` + `gdi32`；Linux 是 `-lX11` 加上
-`$(pkg-config --cflags --libs xft)`（`Xft.h` 里要 `#include <ft2build.h>`，它在
-`/usr/include/freetype2` 子目录，手写 `-lXft` 编不过）；只在装了 `libxft-dev` 时可用，
-不装也能编、文字退回 1bit 点阵；
+链接依赖：Windows 只需 `user32` + `gdi32`；Linux 是 `-lX11 -ldl`（libXft 走运行时
+`dlopen`，不要开发包、也不要 `-lXft`）；
 macOS 只需 `-framework Cocoa -framework CoreText -framework CoreGraphics`。
 
 ---

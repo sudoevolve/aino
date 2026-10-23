@@ -27,7 +27,7 @@
 //  环境变量 AINO_PIX_BMP=1 时把最后一个场景打成 ci_frame.bmp（CI 里当 artifact 看）
 //
 //  作者：sudoevolve <sudoevolve@gmail.com>
-//  编译：g++ -std=c++17 -O2 ci_pixels.cpp -o ci_pixels $(pkg-config --cflags --libs xft) -lX11
+//  编译：g++ -std=c++17 -O2 ci_pixels.cpp -o ci_pixels -lX11 -ldl
 //        clang++ -std=c++17 -O2 ci_pixels.cpp -o ci_pixels \
 //                -framework Cocoa -framework CoreText -framework CoreGraphics
 // =============================================================================
@@ -477,15 +477,16 @@ static bool scene_primitives() {
         // 那个回归 —— 后端悄悄退回 XFontSet 时，上面那条墨迹断言照样绿。
         const int levels = text_gray_levels(shot, Rect(20.0f, 170.0f, 120.0f, 24.0f), bg);
         char buf[192];
-#if defined(AINO_HAVE_XFT)
+#if defined(AINO_PLATFORM_X11)
         std::snprintf(buf, sizeof buf,
-                      "文字框里有 %d 档灰度；1 档 = 纯 1bit 点阵，≥4 才说明走了灰度抗锯齿",
+                      "文字框里有 %d 档灰度；1 档 = 纯 1bit 点阵，≥4 才说明走了灰度抗锯齿"
+                      "（Xft 是运行时 dlopen 的，系统里没 libXft.so.2 就会退回点阵）",
                       levels);
-        want_true(levels >= 4, "S2 文字是灰度抗锯齿渲染（Xft 生效）", buf);
+        want_true(levels >= 4, "S2 文字是灰度抗锯齿渲染（Xft 运行时加载成功）", buf);
 #else
         std::snprintf(buf, sizeof buf,
-                      "未编入 Xft（缺 libxft-dev），文字是 1bit 点阵：%d 档灰度属预期", levels);
-        want_true(levels >= 1, "S2 文字灰度档位（未编入 Xft，只验有墨）", buf);
+                      "非 X11 平台：文字框里有 %d 档灰度", levels);
+        want_true(levels >= 1, "S2 文字灰度档位", buf);
 #endif
     }
     {

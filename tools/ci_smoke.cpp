@@ -12,7 +12,7 @@
 //  返回：0 = 正常跑满 20 帧；2 = 窗口创建失败；3 = 帧循环没跑满
 //
 //  作者：sudoevolve <sudoevolve@gmail.com>
-//  编译：g++ -std=c++17 -O2 ci_smoke.cpp -o ci_smoke $(pkg-config --cflags --libs xft) -lX11
+//  编译：g++ -std=c++17 -O2 ci_smoke.cpp -o ci_smoke -lX11 -ldl
 //        clang++ -std=c++17 -O2 ci_smoke.cpp -o ci_smoke \
 //                -framework Cocoa -framework CoreText -framework CoreGraphics
 // =============================================================================

@@ -60,8 +60,8 @@
 
 #define AINO_VERSION_MAJOR 0
 #define AINO_VERSION_MINOR 4
-#define AINO_VERSION_PATCH 4
-#define AINO_VERSION "0.4.4"
+#define AINO_VERSION_PATCH 5
+#define AINO_VERSION "0.4.5"
 
 #include <cstdint>
 #include <cstddef>
@@ -1081,17 +1081,12 @@ namespace icons {
 // 8x13 那几套），既没有抗锯齿，也没有 12/13/14 这种连续字号 —— 请求 13px 时
 // 服务端会把 12px 的位图放大到 13px，中文更是直接挑一套全角点阵。结果就是
 // "每一个字都在抖、字距莫名其妙、标题和正文一样细"。
-// Xft 走 FreeType，灰度抗锯齿 + 任意字号 + 真正的字重，和 Windows/macOS 观感一致。
 //
-// 装了 libxft-dev 就自动编进来（__has_include 探测头文件）；没装则整段消失，
-// 退回原来的 XFontSet 路径 —— 编得过、跑得起来，只是字形依旧是点阵。
-// 编译命令相应要加 -lXft（见 docs/01-quickstart.md）。
-#  if defined(__has_include)
-#    if __has_include(<X11/Xft/Xft.h>)
-#      define AINO_HAVE_XFT 1
-#      include <X11/Xft/Xft.h>
-#    endif
-#  endif
+// **不用 #include <X11/Xft/Xft.h>、也不用 -lXft**：那个头在 libxft-dev 里，而
+// 普通 Ubuntu 桌面只装运行时包 libxft2（GTK / Electron / 几乎所有 X 客户端都
+// 依赖它，一定在）。要求用户先装开发包才看得见正常字，等于没修。
+// 这里改为 dlopen("libXft.so.2") + dlsym 拿符号，见下方 XftApi。
+#  include <dlfcn.h>
 #  include <time.h>
 #elif defined(AINO_PLATFORM_MACOS)
 // MacTypes.h 会往**全局**塞 ::Rect 和 ::Style（QuickDraw 遗产），和 aino::Rect /
@@ -9502,13 +9497,6 @@ inline std::string Window::clipboard() const {
 // =============================================================================
 #if defined(AINO_PLATFORM_X11)
 
-// 有 Xft 就用 Xft（灰度抗锯齿 + 真字重 + 任意字号），没有就退回核心 XLFD 点阵。
-#if defined(AINO_HAVE_XFT)
-#  define AINO_XFT_ON 1
-#else
-#  define AINO_XFT_ON 0
-#endif
-
 namespace detail {
 
 // 诊断开关：AINO_X11_TRACE=1 时把 X11 文本路径的每一步打到 stderr。
@@ -9530,27 +9518,95 @@ inline void x11_trace(const char* fmt, ...) {
     va_end(ap);
 }
 
+// -----------------------------------------------------------------------------
+//  Xft 的运行时绑定（dlopen，不需要 libxft-dev、不需要 -lXft）
+//
+//  libXft 的 soname 在 Debian/Ubuntu/Fedora 都是 libXft.so.2，普通桌面一定有；
+//  找不到（极简容器 / 没有 X Render）就静默退回核心 XLFD 点阵字体，不报错、不崩。
+//
+//  下面三个 struct 是 XRender / Xft 公开结构体的 ABI 镜像，布局自 Xft 1.0 起没变过：
+//    XGlyphInfo  = {unsigned short w,h; short x,y,xOff,yOff}
+//    XRenderColor= {unsigned short r,g,b,a}
+//    XftFont     = {int ascent, descent, height, max_advance_width, ...}
+//  只读 XftFont 的前三个 int，其余（charset/pattern）一律当不透明内存。
+//  XftColor 干脆用一段字节缓冲 —— 只把它传给 Xft 自己的函数，从不读字段。
+// -----------------------------------------------------------------------------
+struct XftGlyphInfo {
+    unsigned short width, height;
+    short x, y;
+    short xOff, yOff;
+};
+struct XftRenderColor {
+    unsigned short red, green, blue, alpha;
+};
+struct XftFontMetrics {
+    int ascent, descent, height, max_advance_width;
+};
+
+struct XftApi {
+    void* lib = nullptr;
+    void* (*open_name)(Display*, int, const char*) = nullptr;
+    void  (*close_font)(Display*, void*) = nullptr;
+    void  (*extents)(Display*, void*, const unsigned char*, int, XftGlyphInfo*) = nullptr;
+    void* (*draw_create)(Display*, Drawable, Visual*, Colormap) = nullptr;
+    void  (*draw_destroy)(void*) = nullptr;
+    void  (*draw_string)(void*, const void*, void*, int, int, const unsigned char*, int) = nullptr;
+    int   (*color_alloc)(Display*, Visual*, Colormap, const XftRenderColor*, void*) = nullptr;
+    void  (*color_free)(Display*, Visual*, Colormap, void*) = nullptr;
+
+    bool load() {
+        if (lib) return true;
+        const char* names[] = { "libXft.so.2", "libXft.so", nullptr };
+        const char* loaded = nullptr;
+        for (int i = 0; names[i]; ++i) {
+            lib = dlopen(names[i], RTLD_LAZY);
+            if (lib) { loaded = names[i]; break; }
+        }
+        if (!lib) {
+            const char* e = dlerror();
+            x11_trace("xft: dlopen failed: %s", e ? e : "?");
+            return false;
+        }
+        open_name    = reinterpret_cast<decltype(open_name)>(dlsym(lib, "XftFontOpenName"));
+        close_font   = reinterpret_cast<decltype(close_font)>(dlsym(lib, "XftFontClose"));
+        extents      = reinterpret_cast<decltype(extents)>(dlsym(lib, "XftTextExtentsUtf8"));
+        draw_create  = reinterpret_cast<decltype(draw_create)>(dlsym(lib, "XftDrawCreate"));
+        draw_destroy = reinterpret_cast<decltype(draw_destroy)>(dlsym(lib, "XftDrawDestroy"));
+        draw_string  = reinterpret_cast<decltype(draw_string)>(dlsym(lib, "XftDrawStringUtf8"));
+        color_alloc  = reinterpret_cast<decltype(color_alloc)>(dlsym(lib, "XftColorAllocValue"));
+        color_free   = reinterpret_cast<decltype(color_free)>(dlsym(lib, "XftColorFree"));
+        if (!open_name || !close_font || !extents || !draw_create || !draw_destroy
+            || !draw_string || !color_alloc || !color_free) {
+            x11_trace("xft: dlsym incomplete, fallback to core fonts");
+            dlclose(lib);
+            lib = nullptr;
+            return false;
+        }
+        x11_trace("xft: loaded %s -> %p", loaded ? loaded : "?", lib);
+        return true;
+    }
+};
+
+// 进程内只加载一次（多个窗口共用同一个 libXft 句柄）
+inline XftApi& xft_api() {
+    static XftApi api;
+    static const bool once = api.load();
+    (void)once;
+    return api;
+}
+
 class X11TextRenderer : public TextRenderer {
 public:
     void init(float, const std::string& family, const std::string& mono) override {
-        dpy_ = XOpenDisplay(nullptr);
+        // 注意：这里**不**开 Display。Xft 的 Visual / Colormap / XftColor 都绑定在
+        // 某条连接上，而窗口用的是自己那条连接 —— 两条连接里的 Colormap XID 不通用，
+        // 混用会拿到一个"看起来没问题但画不出东西"的 color。所以等 set_drawable()
+        // 拿到窗口的连接再初始化，见 xft_init_color()。
         // 两套名字：Xft 按 fontconfig 家族名匹配（"sans"），核心字体按 XLFD 通配（"*"）。
         family_     = family.empty() ? std::string("*") : family;
         xft_sans_   = family.empty() ? std::string("sans") : family;
         xft_mono_   = mono.empty() ? std::string("monospace") : mono;
-#if defined(AINO_HAVE_XFT)
-        if (dpy_) {
-            const int scr = DefaultScreen(dpy_);
-            xft_vis_  = DefaultVisual(dpy_, scr);
-            xft_cmap_ = DefaultColormap(dpy_, scr);
-            XRenderColor white = { 0xffff, 0xffff, 0xffff, 0xffff };
-            if (XftColorAllocValue(dpy_, xft_vis_, xft_cmap_, &white, &xft_white_))
-                xft_color_ok_ = true;
-            x11_trace("xft: render=%d visual=%p cmap=%lu", XftDefaultHasRender(dpy_),
-                      (void*)xft_vis_, (unsigned long)xft_cmap_);
-        }
-#endif
-        x11_trace("text init: dpy=%p family=%s xft=%d", (void*)dpy_, family.c_str(), AINO_XFT_ON);
+        x11_trace("text init: family=%s xft_lib=%d", family.c_str(), xft_api().lib ? 1 : 0);
     }
     void release() override {
         x11_trace("text release: dpy=%p sets=%zu", (void*)dpy_, sets_.size());
@@ -9570,15 +9626,13 @@ public:
     }
     float measure(const std::string& utf8, float size, int weight) override {
         if (utf8.empty()) return 0.0f;
-#if defined(AINO_HAVE_XFT)
         if (const Face* fc = xft_face(size, weight, false)) {
-            XGlyphInfo ext{};
-            XftTextExtentsUtf8(dpy_, fc->font,
-                               reinterpret_cast<const FcChar8*>(utf8.data()),
-                               int(utf8.size()), &ext);
-            if (ext.xOff > 0.0f) return float(ext.xOff);
+            XftGlyphInfo ext{};
+            xft_api().extents(dpy_, fc->font,
+                              reinterpret_cast<const unsigned char*>(utf8.data()),
+                              int(utf8.size()), &ext);
+            if (ext.xOff > 0) return float(ext.xOff);
         }
-#endif
         XFontSet fs = fontset(size);
         if (!fs) return float(utf8.size()) * size * 0.55f;
         XRectangle ink{}, logical{};
@@ -9589,9 +9643,7 @@ public:
         return float(logical.width);
     }
     float ascent(float size, int weight) override {
-#if defined(AINO_HAVE_XFT)
         if (const Face* fc = xft_face(size, weight, false)) return float(fc->asc);
-#endif
         XFontSet fs = fontset(size);
         if (!fs) return size * 0.8f;
         XFontSetExtents* e = XExtentsOfFontSet(fs);
@@ -9599,10 +9651,8 @@ public:
         return float(-e->max_logical_extent.y);
     }
     float line_height(float size, int weight) override {
-#if defined(AINO_HAVE_XFT)
         if (const Face* fc = xft_face(size, weight, false))
             return float(fc->asc + fc->desc);
-#endif
         XFontSet fs = fontset(size);
         if (!fs) return size * 1.4f;
         XFontSetExtents* e = XExtentsOfFontSet(fs);
@@ -9613,21 +9663,17 @@ public:
     // fontconfig 的 monospace（DejaVu Sans Mono / Noto Sans Mono）。
     float measure_mono(const std::string& utf8, float size, int weight) override {
         if (utf8.empty()) return 0.0f;
-#if defined(AINO_HAVE_XFT)
         if (const Face* fc = xft_face(size, weight, true)) {
-            XGlyphInfo ext{};
-            XftTextExtentsUtf8(dpy_, fc->font,
-                               reinterpret_cast<const FcChar8*>(utf8.data()),
-                               int(utf8.size()), &ext);
-            if (ext.xOff > 0.0f) return float(ext.xOff);
+            XftGlyphInfo ext{};
+            xft_api().extents(dpy_, fc->font,
+                              reinterpret_cast<const unsigned char*>(utf8.data()),
+                              int(utf8.size()), &ext);
+            if (ext.xOff > 0) return float(ext.xOff);
         }
-#endif
         return measure(utf8, size, weight);
     }
     float ascent_mono(float size, int weight) override {
-#if defined(AINO_HAVE_XFT)
         if (const Face* fc = xft_face(size, weight, true)) return float(fc->asc);
-#endif
         return ascent(size, weight);
     }
     // ---------------------------------------------------------------------
@@ -9649,17 +9695,13 @@ public:
     void draw(Canvas& cv, const std::string& utf8, float x, float y_top,
               float size, int weight, const Color& c, const Rect& clip) override {
         if (!dpy_ || utf8.empty()) return;
-#if defined(AINO_HAVE_XFT)
         if (xft_draw(cv, utf8, x, y_top, size, weight, c, clip, false)) return;
-#endif
         core_draw(cv, utf8, x, y_top, size, weight, c, clip);
     }
     void draw_mono(Canvas& cv, const std::string& utf8, float x, float y_top,
                    float size, int weight, const Color& c, const Rect& clip) override {
         if (!dpy_ || utf8.empty()) return;
-#if defined(AINO_HAVE_XFT)
         if (xft_draw(cv, utf8, x, y_top, size, weight, c, clip, true)) return;
-#endif
         core_draw(cv, utf8, x, y_top, size, weight, c, clip);
     }
 
@@ -9723,10 +9765,10 @@ public:
     void set_drawable(Display* d, Drawable target, GC) {
         dpy_ = d;
         target_ = target;      // 只用来给 Pixmap 定位屏幕，不再直接往上画
+        xft_init_color();
     }
 
 private:
-#if defined(AINO_HAVE_XFT)
     // -----------------------------------------------------------------------
     //  Xft 路径：FreeType 灰度抗锯齿，和 Windows / macOS 观感一致。
     //
@@ -9737,10 +9779,26 @@ private:
     //  只是拷贝量从 1 字节/像素涨到 4 字节）。
     // -----------------------------------------------------------------------
     struct Face {
-        XftFont* font = nullptr;
+        void* font = nullptr;      // XftFont*（不开 Xft 头文件，所以是 void*）
         int asc  = 0;
         int desc = 0;
     };
+
+    // 在**窗口那条连接**上初始化 Xft 的 Visual / Colormap / 白色 XftColor。
+    // 必须等 set_drawable() 拿到窗口的 Display 之后再做：Colormap 是个 XID，
+    // 在另一条连接上拿到的同一个数字指向的是别的东西。
+    void xft_init_color() {
+        XftApi& api = xft_api();
+        if (!dpy_ || !api.lib || xft_vis_) return;
+        const int scr = DefaultScreen(dpy_);
+        xft_vis_  = DefaultVisual(dpy_, scr);
+        xft_cmap_ = DefaultColormap(dpy_, scr);
+        const XftRenderColor white = { 0xffff, 0xffff, 0xffff, 0xffff };
+        if (api.color_alloc(dpy_, xft_vis_, xft_cmap_, &white, xft_color_))
+            xft_color_ok_ = true;
+        x11_trace("xft: init visual=%p cmap=%lu color_ok=%d",
+                  (void*)xft_vis_, (unsigned long)xft_cmap_, xft_color_ok_ ? 1 : 0);
+    }
 
     // 取（字号, 字重, 是否等宽）对应的字体，顺带定死它的升降部。
     //
@@ -9749,7 +9807,8 @@ private:
     // 1.16em）画出来的 —— 照主字体的 ascent 摆基线，中文顶部就会被行盒裁掉一截。
     // 拿一个汉字实测 ink，把超出部分补进 asc/desc，基线就稳了。只做一次，按字号缓存。
     const Face* xft_face(float size, int weight, bool mono) {
-        if (!dpy_ || size <= 0.0f) return nullptr;
+        if (!dpy_ || size <= 0.0f || !xft_color_ok_) return nullptr;
+        XftApi& api = xft_api();
         const int q  = int(size * 2.0f + 0.5f);        // 0.5px 量化，与核心路径一致
         const int wq = weight >= 650 ? 700 : (weight >= 550 ? 600 : (weight <= 350 ? 300 : 400));
         const int key = (mono ? 100000000 : 0) + q * 1000 + wq;
@@ -9767,22 +9826,23 @@ private:
         std::snprintf(name, sizeof(name),
                       "%s:pixelsize=%.2f:weight=%s:antialias=true:rgba=none",
                       mono ? xft_mono_.c_str() : xft_sans_.c_str(), pxs, wn);
-        XftFont* f = XftFontOpenName(dpy_, scr, name);
+        void* f = api.open_name(dpy_, scr, name);
         if (!f && !mono) {
             // 用户给的家族名可能在 Linux 上不存在（例如 Windows 专属的
             // "Microsoft YaHei UI"）。fontconfig 一般会自动代换，真空手而归
             // 就显式退到 sans —— 绝不能因为名字不对就让整段文字消失。
             std::snprintf(name, sizeof(name),
                           "sans:pixelsize=%.2f:weight=%s:antialias=true:rgba=none", pxs, wn);
-            f = XftFontOpenName(dpy_, scr, name);
+            f = api.open_name(dpy_, scr, name);
         }
         Face fc;
         fc.font = f;
         if (f) {
-            fc.asc  = f->ascent;
-            fc.desc = f->descent;
-            XGlyphInfo g{};
-            XftTextExtentsUtf8(dpy_, f, reinterpret_cast<const FcChar8*>("\xe5\x9b\xbd"), 3, &g);
+            const XftFontMetrics* fm = static_cast<const XftFontMetrics*>(f);
+            fc.asc  = fm->ascent;
+            fc.desc = fm->descent;
+            XftGlyphInfo g{};
+            api.extents(dpy_, f, reinterpret_cast<const unsigned char*>("\xe5\x9b\xbd"), 3, &g);
             if (g.height > 0) {
                 const int top = -int(g.y);
                 const int bot = int(g.y) + int(g.height);
@@ -9791,7 +9851,7 @@ private:
             }
         }
         if (x11_trace_on())
-            x11_trace("xft font \"%s\" -> %p asc=%d desc=%d", name, (void*)f, fc.asc, fc.desc);
+            x11_trace("xft font \"%s\" -> %p asc=%d desc=%d", name, f, fc.asc, fc.desc);
         Face& slot = faces_[key];
         slot = fc;
         return slot.font ? &slot : nullptr;
@@ -9800,7 +9860,7 @@ private:
     // 卸掉 scratch pixmap / GC / XftDraw（不改字体缓存）。
     void xft_teardown() {
         if (!dpy_) return;
-        if (xft_draw_) { XftDrawDestroy(xft_draw_); xft_draw_ = nullptr; }
+        if (xft_draw_) { xft_api().draw_destroy(xft_draw_); xft_draw_ = nullptr; }
         if (xft_gc_)   { XFreeGC(dpy_, xft_gc_);     xft_gc_   = nullptr; }
         if (xft_pm_)   { XFreePixmap(dpy_, xft_pm_); xft_pm_   = 0; }
         xft_pw_ = xft_ph_ = 0;
@@ -9818,7 +9878,7 @@ private:
         xft_pm_ = XCreatePixmap(dpy_, target_, unsigned(nw), unsigned(nh), unsigned(depth));
         if (!xft_pm_) return false;
         xft_gc_   = XCreateGC(dpy_, xft_pm_, 0, nullptr);
-        xft_draw_ = XftDrawCreate(dpy_, xft_pm_, xft_vis_, xft_cmap_);
+        xft_draw_ = xft_api().draw_create(dpy_, xft_pm_, xft_vis_, xft_cmap_);
         if (!xft_gc_ || !xft_draw_) { xft_teardown(); return false; }
         xft_pw_ = nw;
         xft_ph_ = nh;
@@ -9830,10 +9890,11 @@ private:
         if (!xft_color_ok_) return false;
         const Face* fc = xft_face(size, weight, mono);
         if (!fc) return false;
+        XftApi& api = xft_api();
 
-        XGlyphInfo ext{};
-        XftTextExtentsUtf8(dpy_, fc->font, reinterpret_cast<const FcChar8*>(s.data()),
-                           int(s.size()), &ext);
+        XftGlyphInfo ext{};
+        api.extents(dpy_, fc->font, reinterpret_cast<const unsigned char*>(s.data()),
+                    int(s.size()), &ext);
         const int tw = int(ext.xOff) + 2;
         const int th = fc->asc + fc->desc + 2;
         // 量不出宽度（全是零宽字符）就当画完了，别退回点阵 —— 否则同一行里
@@ -9843,8 +9904,9 @@ private:
 
         XSetForeground(dpy_, xft_gc_, 0);
         XFillRectangle(dpy_, xft_pm_, xft_gc_, 0, 0, unsigned(tw), unsigned(th));
-        XftDrawStringUtf8(xft_draw_, &xft_white_, fc->font, 1, 1 + fc->asc,
-                          reinterpret_cast<const FcChar8*>(s.data()), int(s.size()));
+        api.draw_string(xft_draw_, xft_color_, fc->font, 1, 1 + fc->asc,
+                        reinterpret_cast<const unsigned char*>(s.data()), int(s.size()));
+
         XImage* im = XGetImage(dpy_, xft_pm_, 0, 0, unsigned(tw), unsigned(th),
                                AllPlanes, ZPixmap);
         if (!im) return false;
@@ -9887,19 +9949,20 @@ private:
         XDestroyImage(im);
         return true;
     }
-#endif // AINO_HAVE_XFT
 
     void x11_release_xft() {
-#if defined(AINO_HAVE_XFT)
+        XftApi& api = xft_api();
         xft_teardown();
-        for (auto& kv : faces_) if (kv.second.font) XftFontClose(dpy_, kv.second.font);
-        faces_.clear();
-        if (xft_color_ok_) {
-            XftColorFree(dpy_, xft_vis_, xft_cmap_, &xft_white_);
-            xft_color_ok_ = false;
+        if (dpy_ && api.lib) {
+            for (auto& kv : faces_) if (kv.second.font) api.close_font(dpy_, kv.second.font);
+            if (xft_color_ok_) {
+                api.color_free(dpy_, xft_vis_, xft_cmap_, xft_color_);
+                xft_color_ok_ = false;
+            }
         }
-#endif
+        faces_.clear();
     }
+
 
     // GC 的深度必须与被画 drawable 的深度一致，所以往 1bit Pixmap 上画不能复用
     // 窗口那份 24bit 的 GC。这里常驻一个 1×1 的 1bit pixmap 专门用来建那个 GC。
@@ -9990,17 +10053,17 @@ private:
     std::string xft_sans_;     // Xft 的 fontconfig 家族名（空 = "sans"）
     std::string xft_mono_;
     std::unordered_map<int, XFontSet> sets_;
-#if defined(AINO_HAVE_XFT)
+    // Xft 侧。xft_color_ 是 XftColor 的存储（约 32 字节，这里给 64 对齐缓冲，
+    // 只传给 libXft 自己的函数，从不读字段 —— 所以不用知道它的确切布局）。
     Visual*   xft_vis_ = nullptr;
     Colormap  xft_cmap_ = 0;
-    XftColor  xft_white_{};
+    alignas(16) unsigned char xft_color_[64] = {};
     bool      xft_color_ok_ = false;
     Pixmap    xft_pm_ = 0;
     GC        xft_gc_ = nullptr;
-    XftDraw*  xft_draw_ = nullptr;
+    void*     xft_draw_ = nullptr;
     int       xft_pw_ = 0, xft_ph_ = 0;
     std::unordered_map<int, Face> faces_;
-#endif
 };
 
 struct X11State {
