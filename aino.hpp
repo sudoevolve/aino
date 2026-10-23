@@ -9986,7 +9986,15 @@ private:
             // 0x4 = FT_LOAD_RENDER：加载后直接光栅化成灰度位图。
             // 渲染目标是 normal（灰度），不是 LCD 子像素 —— 这里是拿覆盖率
             // 当 alpha 逐像素 blend，子像素会把彩色边缘算进去。
-            if (gi && ft.load_glyph(face, gi, 0x4) == 0) {
+            const int lerr = gi ? ft.load_glyph(face, gi, 0x4) : -1;
+            if (x11_trace_on()) {
+                FtSlotLite* sl = gi ? static_cast<FtSlotLite*>(static_cast<FtFaceLite*>(face)->glyph) : nullptr;
+                x11_trace("  glyph U+%04lX face=%d gidx=%u load=%d slot=%p bm=%ux%u mode=%d adv=%ld",
+                          cp, hit, gi, lerr, (void*)sl,
+                          sl ? sl->bitmap.width : 0u, sl ? sl->bitmap.rows : 0u,
+                          sl ? int(sl->bitmap.pixel_mode) : -1, sl ? sl->advance.x : 0L);
+            }
+            if (lerr == 0) {
                 FtSlotLite* slot = static_cast<FtSlotLite*>(static_cast<FtFaceLite*>(face)->glyph);
                 if (slot) {
                     g.adv = int(slot->advance.x);
@@ -10066,6 +10074,9 @@ private:
             }
             pen += g.adv;
         }
+        if (x11_trace_on())
+            x11_trace("  ft_draw \"%s\" size=%.1f weight=%d asc=%d baseline=%d x=%.1f",
+                      s.c_str(), size, weight, f->asc, baseline, x);
         return true;
     }
 

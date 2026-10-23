@@ -91,7 +91,10 @@ jobs:
       - name: 像素断言（32 项，xvfb 虚拟屏）
         env:
           AINO_PIX_BMP: "1"
-        run: xvfb-run -a ./ci_pixels
+          AINO_X11_TRACE: "1"
+        run: |
+          set -o pipefail
+          xvfb-run -a ./ci_pixels 2>&1 | tail -300
 
       # 布局自检：gallery 首帧会把全部 45 页量一遍，写出 `# over=N under=M total=K`。
       # over 必须为 0 —— 这正是 Windows 上 `tools/regress.py` 卡的那条。

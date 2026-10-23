@@ -34,25 +34,31 @@ aino 是**单个头文件**，没有构建系统、没有第三方库、没有�
 要求 **C++17**（用到 `std::function`、`std::string_view` 为可选、结构化绑定）
 和 **`std::uint8_t` 等定宽类型**。
 
-### Linux 上的文字：Xft 是**运行时**加载的
+### Linux 上的文字：freetype / fontconfig 都是**运行时**加载的
 
-aino **不需要** `libxft-dev`、**不需要** `-lXft`，编译命令里也不用 `pkg-config` ——
-运行时 `dlopen("libXft.so.2")` 取符号就行。普通桌面（GNOME / KDE / 任何装了 GTK 或
-Electron 的机器）本来就带着这个库，所以你在 Ubuntu 上编译完直接跑就有抗锯齿。
+aino **不需要** `libfreetype-dev`、`libfontconfig-dev`，编译命令里也**不需要**
+`-lfreetype -lfontconfig` —— 运行时 `dlopen("libfreetype.so.6")` /
+`dlopen("libfontconfig.so.1")` 取符号就行。这两个库在普通桌面（GNOME / KDE / 任何装了
+GTK、Qt 或 Electron 的机器）上必然存在，所以 Ubuntu 上编译完直接跑就有灰度抗锯齿和中文。
 
 `-ldl` 是唯一的额外依赖：glibc 2.34 之前 `dlopen` 在 libdl 里，之后并进了 libc。
 新系统上不加也能链接，加上无害，所以默认写上。
 
-**如果系统里真的没有 libXft.so.2**（极简容器 / 没有 X Render 扩展），后端会静默退回
-核心 X 的 1bit 点阵字体 —— 没有抗锯齿、请求 13px 时服务端拿 12px 位图缩放上去、中文挑
-全角点阵、粗体跟正文一样细，整屏像马赛克。装一个运行时包即可：
+**如果系统里真的没有这两个库**（极简容器），后端会静默退回核心 X 的 1bit 点阵字体 ——
+没有抗锯齿、请求 13px 时服务端拿 12px 位图缩放上去、中文挑全角点阵、粗体跟正文一样细，
+整屏像马赛克。装运行时包即可：
 
 ```bash
-sudo apt install libxft2      # Debian / Ubuntu（注意不是 libxft-dev）
+sudo apt install libfreetype6 libfontconfig1 fonts-noto-cjk   # Debian / Ubuntu
 ```
 
-实时诊断：`AINO_X11_TRACE=1 ./app` 会打出 `xft: loaded libXft.so.2 -> 0x...`、
-每个字号的 `XftFontOpenName` 结果、升降部高度、以及每次绘制的 pixmap 里有多少墨点。
+`fonts-noto-cjk` 是中文的来源：fontconfig 用 `FcFontSort` 给出的兜底链逐字符找字体，
+西文落在 DejaVu Sans、汉字落在 Noto Sans CJK。**桌面版 Ubuntu 默认就装了它**；
+只装 DejaVu 的极简环境里，汉字会直接画不出来（不是显示成方块，是真的没有墨）。
+
+实时诊断：`AINO_X11_TRACE=1 ./app` 会打出 `freetype: loaded ...`、
+每个字号的 `font "...": 13.0px w=400 -> /usr/share/fonts/...`（命中哪个文件、
+asc/desc、兜底链长度），以及字形缓存未命中时的光栅化。
 
 ### 分发：怎么做到「只有一个 exe，不带 DLL」
 

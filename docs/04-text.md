@@ -272,19 +272,22 @@ float h = ui.text_height(long_doc, 700.0f, aino::Style().wrap_text());
 |---|---|---|---|---|
 | Windows | GDI | Segoe UI（中文经字体链接落到微软雅黑） | 灰度 AA | 真字面；缺字面时 GDI 合成加粗 |
 | macOS | CoreText | 系统 UI 字体（SF） | 有 | 真字面 |
-| Linux | Xft（FreeType + fontconfig） | `sans` → 系统的 Noto Sans / DejaVu Sans，CJK 由 fontconfig 自动 fallback | 灰度 AA | fontconfig 按 `weight` 匹配字面 |
+| Linux | FreeType + fontconfig（都是运行时 `dlopen`） | 主字体 `sans` → DejaVu Sans；缺字时沿 `FcFontSort` 的兜底链找到 Noto Sans CJK | 灰度 AA | fontconfig 按 `weight` 匹配字面 |
 
-Linux 上有两个坑，都写在代码注释里：
+Linux 上有三个坑，都写在代码注释里：
 
-1. **Xft 是运行时 `dlopen` 的，不要开发包**。系统里有 `libXft.so.2`（普通桌面必然有，
-   GTK / Electron 都依赖它）就是灰度抗锯齿；编译期既不需要 `libxft-dev` 也不需要
-   `-lXft`（详见 [01 快速开始](01-quickstart.md)）。只有极简容器 / 没有 X Render 时
-   才会退回核心 X 的 XLFD 点阵字体（`xfonts-base` 里那几套 6x13）：覆盖率只有 0/1，
-   而且点阵字体没有 12/13/14 这种连续字号 —— 请求 13px 时服务端会拿 12px 位图缩放
-   上去，汉字挑全角点阵、拉丁字距被拉成等宽、粗体跟正文一样细，整屏像马赛克。
-   `ci_pixels` 里那条「文字框里有几档灰度」就是钉这件事的（1 档 = 点阵，≥4 档才算抗锯齿）。
-2. **基线要按 CJK 兜底**。`XftFont::ascent` 只是主字体（DejaVu Sans ≈ 0.93em）的，
-   而汉字是 fontconfig 现场 fallback 到 Noto Sans CJK（≈ 1.16em）画的。照主字体的
-   ascent 摆基线，中文顶部会被行盒裁掉一截；按字符串逐个量又会让同一行的基线忽高忽低。
-   所以 `X11TextRenderer` 拿一个「国」实测 ink，把超出部分补进 asc/desc，再按字号缓存 ——
-   同一字号的所有文本共用一条基线。
+1. **字形在客户端光栅化，不走 X server**。`XftDrawString` / `Xutf8DrawString` 是把字画到
+   **服务端 drawable** 上的，而 aino 每一帧都是先在客户端缓冲里画完、帧末 `XPutImage`
+   整块覆盖 —— 直接画会被盖掉；改成画进 Pixmap 再 `XGetImage` 取回又要每次绘制一次
+   同步往返，一帧几百段文字就是几百次往返，交互直接卡死。所以走 FreeType：字形在进程内
+   光栅化成灰度位图，`blend` 进缓冲，X 一次都不碰。
+2. **中文靠 fontconfig 的逐字符兜底**。默认 `sans` 是 DejaVu Sans，它**没有汉字**；
+   Xft 只认单个字体、不做 fallback，用它画中文就是满屏 `.notdef` 豆腐方块。
+   这里用 `FcFontSort` 拿到排好序的整张字体表，逐字符找第一个覆盖该码位的字体
+   （西文几乎都命中主字体，汉字落到 Noto Sans CJK）。`ci_pixels` 里那条
+   「有墨的行里有没有一行在中间三分之一列有墨」就是钉这件事的 —— 豆腐方块是空心矩形，
+   中间列除了上下两条边什么都没有。
+3. **基线只按主字体的 metrics**。汉字 ink 本来就在 em 框内（上缘约 0.88em < DejaVu 的
+   0.93em），拿「国」的 ink 去撑 asc 反而会把 19px 的字算成 24px 的 asc，行高 30 > 26px
+   的盒子，`VAlign::Middle` 居中后整行上移 2px、顶部被裁。踩过这个坑：
+   侧边栏那个 `aino` 词标看起来像被切了一刀。
