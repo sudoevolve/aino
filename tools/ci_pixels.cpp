@@ -710,6 +710,44 @@ static bool scene_cjk_fallback() {
     return true;
 }
 
+// =============================================================================
+//  场景 5（只有 Windows 考）：混合编码字面量仍须解得出中文
+//
+//  MSVC 没加 /utf-8 时，字面量按系统 ANSI 代码页编。串里只要有一个"ANSI 里也
+//  有单字节表示"的字符（"·" U+00B7 最典型），编译结果就是**混合编码**：中文
+//  留 UTF-8 字节、那个字符变单字节。整串既不合法 UTF-8 也不是纯 ANSI。
+//  老的 to_wide 在严格判定失败后整串回退 CP_ACP，每个 UTF-8 字节都被解成一个
+//  西欧字母 —— "最小"显示成 "æœ€å°" —— 用户的症状正是「小窗口标题乱、界面里的
+//  中文却好好的」（界面那些串里没有 ACP 能表示的字符，仍是合法 UTF-8）。
+//  这里直接把这种混合串喂给 to_wide：中文必须原样出来。
+// =============================================================================
+static bool scene_mixed_literal() {
+#if !defined(AINO_PLATFORM_WINDOWS)
+    return true;        // to_wide 是 Windows 专有路径，别的平台没有可考的
+#else
+    std::string s = "\xE6\x9C\x80\xE5\xB0\x8F";   // "最小" 的 UTF-8 字节
+    s.push_back(char(0xB7));                      // 被编译器转成单字节的 "·"
+    s += " 0.4.7";
+    const std::wstring w = aino::detail::to_wide(s);
+    char buf[192];
+    std::snprintf(buf, sizeof buf, "解出 %zu 个字符，首个码位 U+%04X（期望 U+6700）",
+                  w.size(), w.empty() ? 0u : unsigned(w[0]));
+    want_true(w.size() >= 2 && w[0] == wchar_t(0x6700) && w[1] == wchar_t(0x5C0F),
+              "S5 混合编码串里的中文没被当成西欧字母", buf);
+
+    // 再考一次**真的字面量**。这条在"没加 /utf-8"的 MSVC 下才会暴露问题：
+    // 串里那个 "·" 会被编成单字节，中文留 UTF-8 字节 —— 正好是用户遇到的那种
+    // 混合编码。pragma execution_character_set 生效（或者 to_wide 兜住）才对。
+    const std::string lit = "最小 · 示例";
+    const std::wstring wl = aino::detail::to_wide(lit);
+    std::snprintf(buf, sizeof buf, "字面量解出 %zu 个字符，首码位 U+%04X",
+                  wl.size(), wl.empty() ? 0u : unsigned(wl[0]));
+    want_true(wl.size() >= 2 && wl[0] == wchar_t(0x6700) && wl[1] == wchar_t(0x5C0F),
+              "S5 编译期字面量按 UTF-8 处理（/utf-8 或 pragma 生效）", buf);
+    return true;
+#endif
+}
+
 int main() {
     std::printf("=== aino ci_pixels ===\n");
 
@@ -717,6 +755,7 @@ int main() {
     if (!scene_primitives())  return 2;
     if (!scene_dark())        return 2;
     if (!scene_cjk_fallback()) return 2;
+    if (!scene_mixed_literal()) return 2;
 
     std::printf("=== %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

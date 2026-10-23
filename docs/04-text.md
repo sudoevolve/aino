@@ -274,8 +274,38 @@ float h = ui.text_height(long_doc, 700.0f, aino::Style().wrap_text());
 | macOS | CoreText | 系统 UI 字体（SF） | 有 | 真字面 |
 | Linux | FreeType + fontconfig（都是运行时 `dlopen`） | 主字体 `sans` → DejaVu Sans；缺字时沿 `FcFontSort` 的兜底链找到 Noto Sans CJK | 灰度 AA | fontconfig 按 `weight` 匹配字面 |
 
-Linux 上有四个坑，都写在代码注释里：
+### 字面量编码：一个「·」就能让整片中文变成乱码
 
+三个平台内部都按 UTF-8 处理字符串（`std::string` 里存的就是 UTF-8 字节）。风险在
+**C++ 窄字面量**：MSVC 不加 `/utf-8` 时按系统 ANSI 代码页编码。
+
+单独一个 GBK 中文串还能靠 `to_wide()` 的「严格 UTF-8 失败就回退 `CP_ACP`」救回来，
+但**混合编码**救不了：串里只要有一个「ANSI 里也有单字节表示」的字符，它被编成
+单字节、中文留着 UTF-8 字节 —— 整串既不合法 UTF-8，也不是纯 ANSI。
+
+`"·"`（U+00B7）就是最典型的触发器，它在 1252 和 936 里都是单字节：
+
+| 字面量 | 编译后 | `to_wide` |
+|---|---|---|
+| `"中文示例"` | 纯 UTF-8（ACP 表示不了的字符原样保留） | 严格解码通过 ✓ |
+| `"最小示例 · 0.4.7"` | 中文留 UTF-8，「·」变 `0xB7` | 严格失败 → 整串按 ACP 重解 → `æœ€å°ç¤ºä¾‹` ✗ |
+
+症状很好认：**窗口标题乱码、界面里的中文却是好的** —— 界面那些串里没有 ACP 能
+表示的字符，整串仍是合法 UTF-8，严格解码能过。
+
+两道防线：
+
+1. 本头文件开头有 `#pragma execution_character_set("utf-8")`（MSVC），等价于
+   `/utf-8` 的执行字符集那一半。include 在本头文件之后的字面量都按 UTF-8 编。
+2. `to_wide()` 的回退改成「按 UTF-8 无校验再解一遍、数替换符」：坏字节很少
+   （混合串里只有被转换的那一两个字符）就保留 UTF-8 的结果；只有整串几乎全是
+   坏字节（真 GBK）才回退 `CP_ACP`。
+
+`ci_pixels` 的 S5 场景把两条都钉住：一条喂人工构造的混合串，一条直接考编译期
+字面量 `"最小 · 示例"`。CI 里除了正常的 `/utf-8` 编译，还会**不带 `/utf-8` 再编
+一遍**跑同一套断言 —— 那正是用户手编时的状态。
+
+Linux 上有四个坑，都写在代码注释里：
 1. **字形在客户端光栅化，不走 X server**。`XftDrawString` / `Xutf8DrawString` 是把字画到
    **服务端 drawable** 上的，而 aino 每一帧都是先在客户端缓冲里画完、帧末 `XPutImage`
    整块覆盖 —— 直接画会被盖掉；改成画进 Pixmap 再 `XGetImage` 取回又要每次绘制一次

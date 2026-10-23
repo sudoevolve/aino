@@ -47,9 +47,14 @@
 //       代码页(GBK)去读源码 —— 否则中文注释的多字节序列会吃掉落单字节，把后面
 //       的代码"吞掉"，报出一堆莫名其妙的"uint8_t 缺少类型说明符"。
 //       若你的工具链会剥掉 BOM，请加 /utf-8。
-//    2) 字面量编码：没有 /utf-8 时，你自己代码里的中文字面量会被编成 GBK，
-//       而库内部按 UTF-8 解。to_wide() 对此做了兼容（严格 UTF-8 解码失败则
-//       回退 CP_ACP），所以加不加 /utf-8 都能正确显示中文。
+//    2) 字面量编码：没有 /utf-8 时，你自己代码里的中文字面量会被编成系统 ANSI
+//       代码页。单独一个字面量还能靠 to_wide() 的"严格 UTF-8 失败就回退 ACP"
+//       救回来，但**混合编码**救不了：串里只要有一个 ACP 里有单字节表示的字符
+//       （"·" U+00B7 最典型），那个字符被转成单字节、中文留 UTF-8 字节，整串
+//       既不合法 UTF-8 也不是纯 ANSI。所以本文件头部加了
+//       `#pragma execution_character_set("utf-8")`（MSVC），等价于 /utf-8 的
+//       执行字符集部分 —— 只要你 include 了本头文件，你自己写在后面的字面量
+//       也会被按 UTF-8 编。其它编译单元仍然应该加 /utf-8。
 //
 //  作者: sudoevolve <sudoevolve@gmail.com>
 //  许可: Apache-2.0（见仓库根 LICENSE）
@@ -57,6 +62,21 @@
 
 #ifndef AINO_HPP
 #define AINO_HPP
+
+// 让 MSVC 把**本编译单元**里的窄字面量一律按 UTF-8 编，等价于 /utf-8 的执行
+// 字符集那一半。这不是锦上添花：
+//   不加的话，字面量按系统 ANSI 代码页编码。只要串里混进一个"ANSI 里有单字节
+//   表示"的字符，字面量就成了**混合编码** —— 中文保留 UTF-8 字节，那个字符变成
+//   单字节。于是它不再是合法 UTF-8，to_wide 的严格解码判定失败、回退 CP_ACP
+//   整串重解，整片中文变成 "æœ€å°ç¤ºä¾‹"（看着像字，其实是垃圾）。
+//   "·"（U+00B7）是最典型的触发器：它在 1252 和 936 里都有单字节表示。
+//   症状也好认：窗口标题乱、界面里的中文却是好的 —— 因为界面那些串里没有 ACP
+//   能表示的字符，整串仍是合法 UTF-8。
+// pragma 必须出现在字面量之前。本头文件被包含在用户源码顶部，所以用户写在
+// 后面的字面量也被覆盖；用户自己的其它编译单元仍应加 /utf-8。
+#if defined(_MSC_VER)
+#  pragma execution_character_set("utf-8")
+#endif
 
 #define AINO_VERSION_MAJOR 0
 #define AINO_VERSION_MINOR 4
@@ -2046,21 +2066,42 @@ struct TextRenderer {
 inline void to_wide_into(const std::string& s, std::wstring& out) {
     out.clear();
     if (s.empty()) return;
-    // 库内部一律按 UTF-8 处理，但 MSVC 在没有 /utf-8 时会把源码里的中文字面量
-    // 编成系统 ANSI（简中机器上是 GBK）。那种字节序列不是合法 UTF-8，严格模式
-    // 会直接失败 —— 于是回退到 CP_ACP 再试一次。
-    // 这样"加不加 /utf-8 都能正确显示"，是 drop-in 的前提；
-    // 代价只是一次失败探测，命中 UTF-8 时完全不走回退分支。
-    UINT cp = CP_UTF8;
+    // 库内部一律按 UTF-8 处理。严格模式失败说明串里真有非法字节，但"非法"有
+    // 两种完全不同的来源，处理方式相反：
+    //   (a) 整串是系统 ANSI（用户没加 /utf-8 编的 exe）→ 按 CP_ACP 解才对；
+    //   (b) 串是**混合**的：中文字符留了 UTF-8 字节，而个别"ANSI 里也有单字节
+    //       表示"的字符（"·" U+00B7 最典型）被编译器转成了单字节。这种串按
+    //       CP_ACP 整串重解，每个 UTF-8 字节都变成一个西欧字母 —— "最小示例"
+    //       显示成 "æœ€å°ç¤ºä¾‹"，比乱码还难认（0.4.7 前就是这么栽的）。
+    // 判据：按 UTF-8 无校验再解一遍，数替换符。混合串里坏字节只有被转换的那一
+    // 两个字符，而真 GBK 串几乎每个汉字都坏 —— 比例差一个数量级。
     int need = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
                                    s.c_str(), int(s.size()), nullptr, 0);
     if (need <= 0) {
-        cp = CP_ACP;
-        need = MultiByteToWideChar(cp, 0, s.c_str(), int(s.size()), nullptr, 0);
+        const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), int(s.size()), nullptr, 0);
+        if (n > 0) {
+            // 注意别写 `std::vector<wchar_t> tmp(size_t(n));` —— 那是个函数声明
+            // （most vexing parse），不是构造一个 vector。
+            std::vector<wchar_t> tmp;
+            tmp.resize(size_t(n));
+            const int got = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), int(s.size()),
+                                                tmp.data(), n);
+            int bad = 0;
+            for (int i = 0; i < got; ++i)
+                if (tmp[size_t(i)] == wchar_t(0xFFFD)) ++bad;
+            if (got > 0 && bad * 4 <= got) {     // 少量坏字节 → 本来就是 UTF-8
+                out.assign(tmp.data(), size_t(got));
+                return;
+            }
+        }
+        need = MultiByteToWideChar(CP_ACP, 0, s.c_str(), int(s.size()), nullptr, 0);
         if (need <= 0) return;
+        out.resize(size_t(need));
+        MultiByteToWideChar(CP_ACP, 0, s.c_str(), int(s.size()), &out[0], need);
+        return;
     }
     out.resize(size_t(need));
-    MultiByteToWideChar(cp, 0, s.c_str(), int(s.size()), &out[0], need);
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), int(s.size()), &out[0], need);
 }
 
 inline std::wstring to_wide(const std::string& s) {

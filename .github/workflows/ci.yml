@@ -40,10 +40,21 @@ jobs:
       - name: 冒烟（跑满 20 帧）
         run: .\ci_smoke.exe
 
-      - name: 像素断言（34 项）
+      - name: 像素断言（36 项）
         env:
           AINO_PIX_BMP: "1"
         run: .\ci_pixels.exe
+
+      # 不带 /utf-8 再编一遍，跑同一套断言。
+      # 这是用户手编时最常见的状态（cl 直接编、忘了 /utf-8），也是「中文标题变成
+      # ä¸­æ–‡」的现场：字面量按系统 ANSI 代码页编，串里只要有 "·"(U+00B7) 这种
+      # ACP 里有单字节表示的字符，整串就成了混合编码。头文件里的
+      # #pragma execution_character_set("utf-8") 就是为这个加的 —— 这条能证明它
+      # 真的生效（S5 的两条断言会直接考字面量本身）。
+      - name: 不带 /utf-8 编译（模拟用户手编）
+        run: |
+          cl /nologo /std:c++17 /EHsc /O2 /MT tools\ci_pixels.cpp user32.lib gdi32.lib /Fe:ci_pixels_noutf8.exe
+          .\ci_pixels_noutf8.exe
 
       - name: 失败时保留抓到的帧
         if: failure()
@@ -88,7 +99,7 @@ jobs:
       - name: 冒烟（xvfb 虚拟屏，跑满 20 帧）
         run: xvfb-run -a ./ci_smoke
 
-      - name: 像素断言（34 项，xvfb 虚拟屏）
+      - name: 像素断言（36 项，xvfb 虚拟屏）
         env:
           AINO_PIX_BMP: "1"
           AINO_X11_TRACE: "1"
@@ -163,7 +174,7 @@ jobs:
       - name: 冒烟（runner 没有交互桌面，能开窗就算过）
         run: ./ci_smoke
 
-      - name: 像素断言（34 项）
+      - name: 像素断言（36 项）
         env:
           AINO_PIX_BMP: "1"
         run: ./ci_pixels
