@@ -10583,16 +10583,30 @@ inline void x11_create(Window* self, const WindowConfig& cfg) {
         // EAGAIN（11）—— 不是"连不上"，是"现在别连"。0.4.7 把兜底链的扫描缩短
         // 之后，连续建窗口的间隔从几十毫秒掉到几毫秒，CI 上就撞出来了：
         // ci_pixels 的第四个窗口（S4）稳定 XOpenDisplay 返回 NULL、errno=11。
-        // 重试几次，别在这里判死刑 —— 真实桌面上换分辨率/重建窗口也会走这条路。
-        for (int i = 0; i < 8 && !s->dpy; ++i) {
-            usleep(25000);
+        // 退避重试，别在这里判死刑 —— 真实桌面上重建窗口也会走这条路。
+        // 递增间隔（25/50/75…封顶 250ms），累计约 1.4s：真连不上时这个等待毫无
+        // 代价（本来就什么都做不了），能救回来的情况都救回来了。
+        for (int i = 0; i < 10 && !s->dpy; ++i) {
+            int ms = 25 * (i + 1);
+            if (ms > 250) ms = 250;
+            usleep(useconds_t(ms) * 1000);
             s->dpy = XOpenDisplay(nullptr);
             if (x11_trace_on())
                 x11_trace("XOpenDisplay retry %d -> %p errno=%d", i + 1,
                           reinterpret_cast<void*>(s->dpy), errno);
         }
     }
-    if (!s->dpy) { delete s; o->native = nullptr; return; }
+    if (!s->dpy) {
+        // 无条件打一行：CI 上"窗口创建失败"后面什么都没有，光靠退出码根本猜不到
+        // 是 DISPLAY 没设、Xvfb 挂了、还是服务器在重建（0.4.7 前后为这个查了两轮）。
+        const char* d = std::getenv("DISPLAY");
+        std::fprintf(stderr, "[aino] XOpenDisplay 失败（10 次重试后仍失败）DISPLAY=%s errno=%d\n",
+                     d ? d : "(null)", errno);
+        std::fflush(stderr);
+        delete s;
+        o->native = nullptr;
+        return;
+    }
 
     int screen = DefaultScreen(s->dpy);
     ::Window root = RootWindow(s->dpy, screen);
