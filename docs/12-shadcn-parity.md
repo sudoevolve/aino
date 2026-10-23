@@ -4,7 +4,9 @@
 控件高度 36px、圆角 8px 都是）。但 shadcn 是 React 组件库，它的一部分组件在
 立即模式的 C++ 库里没有对应物 —— 有些是**不该有**，有些是**还没做**。
 
-这一页按 2026-10 的官方组件清单（64 项）逐条对一遍，说清楚三种情况：
+这一页按 2026-10 的官方组件清单逐条对一遍（当时是 64 项，之后 shadcn 又补了
+Button Group / Input Group / Input OTP / Field / Item / Empty / Kbd / Spinner / Code Block
+几项，都已经收进下表），说清楚三种情况：
 
 - **一对一** —— 名字和行为都能对上，可以直接照 shadcn 的用法写；
 - **名字不同** —— 功能有，但名字被别的东西占了（下面单独解释）；
@@ -84,8 +86,9 @@ ui.toggle_button("粗体", &bold, r);       // ← 这才是 shadcn 的 Toggle
 
 | shadcn | aino | 状态 | 说明 |
 |---|---|---|---|
+| Alert | `alert()` | ✅ | 标题 + 正文折行，三个变体；高度用 `alert_height()` |
 | Avatar | `avatar()` | ✅ | 取首字，没有图片版本 |
-| Badge | `badge()` | ✅ | |
+| Badge | `badge()` | ✅ | 走 `button` 的同一张皮肤表：Default / Secondary / Outline / Destructive 四变体 |
 | Kbd | `kbd()` | ✅ | |
 | Label | `label()` | ✅ | |
 | Typography | `heading()` `subheading()` `label()` `muted_text()` `code_text()` | ✅ | 拆成五个函数而不是一个 `Typography` 组件树 |
@@ -97,7 +100,7 @@ ui.toggle_button("粗体", &bold, r);       // ← 这才是 shadcn 的 Toggle
 | Empty | `empty_state()` | ➕ | 虚线框 + 标题 + 描述 |
 | Item | `item()` | ➕ | 标题 + 描述 + 尾部文字，整行可点 |
 | Chart | `sparkline()` / `bars()` | ⚠️ | 只有折线和柱状，没有坐标轴/图例/tooltip |
-| Code Block | `code_text()` | ⚠️ | 单段等宽文本，没有行号与复制按钮 |
+| Code Block | `code_block()` | ✅ | 等宽字体 + 行号 + C++ 词法着色；**不滚动不折行**，高度用 `code_block_height()`。行内的 `code_text()` 只是「带灰底的小号文本」 |
 | Carousel | — | ❌ | 没做 |
 | Marker | — | ❌ | 没做 |
 | Questionnaire | — | ❌ | 没做 |
@@ -136,25 +139,30 @@ ui.toggle_button("粗体", &bold, r);       // ← 这才是 shadcn 的 Toggle
 
 | shadcn | aino | 状态 | 说明 |
 |---|---|---|---|
+| Command | — | ❌ | 它是**模式**不是控件：遮罩 + 输入框 + 过滤列表，用 `dialog()` + `input()` + `menu()` 就能拼，见下文「取舍」 |
 | Direction（RTL） | — | ❌ | 全部按 LTR 写死。要做 RTL 得先把 `Align`/`pad_x` 的左右语义反过来 |
 
 ### 数一下
 
-按上面表格的行数（个别控件因为跨两类各出现一次，所以行数比 64 项多一点）：
+按上面表格的行数（**实测 71 行**，不是估的）：
 
-- **✅ 一对一**：31 项
-- **⚠️ 功能有但范围不同**：9 项
+- **✅ 一对一**：33 项
+- **⚠️ 功能有但范围不同**：8 项
 - **➕ 0.3.0 / 0.3.1 新补**：19 项（20 个 API，`field_height` 与 `aspect_rect` 是辅助）
-- **❌ 明确没有**：10 项
+- **❌ 明确没有**：11 项
 
-那 10 项里，5 项是聊天场景（Message / Bubble / Attachment / Message Scroller / Marker），
+行数比「64 项」多，是三处叠加的结果：`Sidebar` 在「布局」与「导航」两组各出现一次；
+`Stepper` 与 `Rating` 是本地扩展（shadcn 没有对应物）；其余是 shadcn 后来才补、已经收进
+上表的几项。**数字以表格行数为准** —— 清单版本之间会变。
+
+那 11 项里，5 项是聊天场景（Message / Bubble / Attachment / Message Scroller / Marker），
 其余是 RTL、Form、Carousel、Command、Trace、Questionnaire。
 
 都补到 19 项了，剩下这几个为什么不再补：
 
 | 没做的 | 为什么 |
 |---|---|
-| Message / Bubble / Attachment / Message Scroller / Marker | 聊天界面不是「基础控件」，是**一整个场景**。塞进基础库会把 456 KiB 撑成什么样先不说，它们还都需要气泡箭头、流式追加、滚动锚定一套自己的规矩 |
+| Message / Bubble / Attachment / Message Scroller / Marker | 聊天界面不是「基础控件」，是**一整个场景**。塞进基础库会把 500 KiB 撑成什么样先不说，它们还都需要气泡箭头、流式追加、滚动锚定一套自己的规矩 |
 | Command | 它是**模式**不是控件：一个遮罩 + 一个输入框 + 一个过滤列表。用 `dialog()` + `input()` + `menu()` 十行就拼出来了，做成控件反而限制住布局 |
 | Carousel | 要时间轴动画（自动轮播 / 惯性滑动），和「空闲必须 0 帧」的承诺正面冲突 |
 | Form | shadcn 的 `Form` 是 react-hook-form 的胶水层，管的是校验编排。纯 UI 层给不出它，`field()` 已经是这一层能做的全部 |

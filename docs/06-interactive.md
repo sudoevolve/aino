@@ -759,3 +759,175 @@ void composeForm(aino::Ui& ui, AppState& s, const aino::Rect& area) {
     if (ui.button("保存", c.fill(), aino::Style().primary())) s.save();
 }
 ```
+
+---
+
+## 16. 0.3.0 新增的表单控件
+
+这一节的九个组件都是照着 shadcn/ui 补的。它们和前面那些的差别不在机制 ——
+`interact()` / `animate_value()` / 焦点环 / 点击补排帧全都一样，只是语义更专用。
+共用的事实先说在这里，后面不再重复：
+
+- 尺寸全从 `box` 推，**没有一个组件有「默认宽度」**；高度靠调用方给（`field` 例外，它有
+  `field_height()`）；
+- 圆角默认 `theme.radius_sm`，字号默认 `theme.font_size`，两者都能用 `Style` 覆盖；
+- 都吃 `Style().disabled()`，禁用态靠把前景 alpha 乘 0.45 表示，不另配颜色；
+- 返回 `true` 一律表示**持久值变了**（不是"被点了一下"）。
+
+### 16.1 `toggle_button` —— 按下态按钮
+
+```cpp
+bool bold = true;
+ui.toggle_button("粗体", &bold, {x, y, 88, 32});
+```
+
+**它不是开关**。开关是 `toggle()`（shadcn 的 Switch）。这个是按下会"陷进去"的按钮
+（shadcn 的 Toggle），典型用途是工具栏上的 B / I / U。
+
+| 项 | 行为 |
+|---|---|
+| 点击 | `*value = !*value`，返回 true |
+| 选中底 | `theme.accent`，**按 `t_on` 推 alpha** |
+| 悬停底 | 未选中时才浮出来，强度只有 55% |
+| 前景 | 选中用 `accent_foreground`，否则 `foreground` |
+| 内边距 | `st.pad_x`，否则 10px |
+| 动画 | 选中 22 / 悬停 18（`animate_value` 速率） |
+
+> 它的底色是从"完全透明"淡进去的，所以实现里写的是
+> `th.accent.with_alpha(255 * t_on)` 而不是 `Color::none().mix(accent, t)`。
+> 后者会把 RGB 和 alpha 一起从黑拉上来，中间帧比两端都暗 —— 就是 0.4.1 修的那个
+> "hover 闪一下深灰"。自己写同类控件时照抄前一种写法。
+
+### 16.2 `toggle_group` —— 单选组
+
+```cpp
+int seg = 1;                          // -1 = 一个都不选
+ui.toggle_group({"日", "周", "月"}, &seg, {x, y, 240, 32});
+```
+
+- 各项**等分 `box.w`**，整组共享一个外框（组内不各画边框），底是 `theme.background`；
+- **再点已选中的项 = 取消选择**（`*index` 回到 -1）。这是全库唯一一处刻意偏离 shadcn
+  的行为 —— shadcn 的 `type="single"` 不允许取消，桌面端这么做更顺手；
+- 初始化就写 `-1` 才表示"没选"，写 0 是"选了第一项"。
+
+### 16.3 `toggle_group_multi` —— 多选组
+
+```cpp
+std::uint32_t mask = 0b101;           // 第 i 位对应第 i 项
+ui.toggle_group_multi({"粗", "斜", "下划线"}, &mask, {x, y, 300, 32});
+```
+
+`mask` 的第 i 位就是第 i 项，点击即 `^=` 翻转。**最多 32 项**（`uint32_t` 的位宽），
+超出部分直接不画。用位掩码而不是 `std::vector<bool>` 是为了让调用方把它直接塞进自己的
+状态结构体里，不用管生命周期。
+
+### 16.4 `button_group` —— 连成一片的按钮
+
+```cpp
+int hit = -1;
+if (ui.button_group({"复制", "粘贴", "剪切"}, &hit, {x, y, 260, 32}))
+    do_action(hit);
+```
+
+和 `toggle_group` 长得像，差别是**没有持久选中态**：每个按钮都是一次性动作，
+点了只写 `*clicked_index` 并返回 true。
+
+底是 `theme.secondary`，而悬停高亮用的是 `theme.background` —— 不是 `accent`。原因很实在：
+浅色主题里 `secondary` 和 `accent` 是同一个色，用 `accent` 做悬停会完全看不出来。
+
+### 16.5 `input_group` —— 带前后缀的输入框
+
+```cpp
+std::string amount = "128";
+ui.input_group(&amount, "¥", "元", {x, y, 200, 36});
+```
+
+实现方式是「自己画外框 + 中间那个 `input()` 传透明底、0 边框」，所以 `input()` 的选区、
+拖选、撤销栈、IME 全都还在，只是它不再画第二层框。三个细节：
+
+- 前缀与输入内容之间留 **10px**，不是 4px。写 4 的时候 `¥` 和 `128` 会挤成 `¥128`；
+- **点前后缀区域也会聚焦输入框**。看着是一个框，点在"元"上却没反应，是最容易被当成
+  "控件坏了"的那种细节。抢焦点必须等 `input()` 跑完再抢 —— 它内部遇到"按下了但不在
+  自己框内"会主动丢焦点，先抢会被它丢回去（晚一帧生效，肉眼无感）；
+- **聚焦时外框变 `theme.ring`**。外框既然是自己画的，`input()` 那套聚焦变色就得自己补，
+  否则两个框上下排着时，点进去根本看不出光标落在哪一个。画法要和 `input()` 对齐
+  （边框换 `ring` 并加粗 0.4，再叠一层 `paint_focus_ring` 的 55% 外环）—— 只画一根深色
+  描边的话，同一个页面上 `input()` 和 `input_group` 的焦点态轻重不一，看着像后者报错了。
+
+> **坑：`Color(0,0,0,0)` 表达不了「别画底」。** `Color::is_none()` 只判 `a == 0`，
+> 所以"显式要透明"和"根本没传"在 `Style` 里长得一模一样。`input()` 拿到 a=0 会回退成
+> `theme.background`，在传进去的矩形上**按整高**铺一层白 —— 如果外壳是调用方先画的，
+> 这层白就把外框的**上下两条边从中间吃掉**，只剩前后缀那两小段。表现是"两个上下排列的
+> 输入框中间那条横线不见了"（0.4.3 修的）。
+>
+> 现在 `input()` 里有一条约定：**`border_width == 0` 且没给 `bg` = "外壳我自己画"**，
+> 那时它不铺内层底。自己写同类组合控件时按这个约定传，或者干脆**把外框放到 `input()`
+> 之后画**（谁最后画谁在上面）。`tools/probe/widget_probe.cpp` 的 `[4] Input Group`
+> 用两条像素断言钉住「边框中线处必须比框内更暗」。
+
+### 16.6 `input_otp` —— 分格验证码
+
+```cpp
+std::string code;
+if (ui.input_otp(&code, 6, {x, y, 320, 48})) verify(code);
+```
+
+| 项 | 行为 |
+|---|---|
+| 格子数 | `length`，**上限 12**（超出截断） |
+| 格子尺寸 | `min(box.h, (box.w - 8×间隙) / length)`，整排水平居中 |
+| 输入 | **只收数字** —— 粘 "12a3" 也只吃 1、2、3 |
+| 退格 | 光标退一格并删掉该格 |
+| ← / → | 移动当前格 |
+| 当前格 | 描边换成 `theme.ring`、1.6px；空格子显示**静止**竖线（闪烁太费帧） |
+
+它**不复用 `input()`**：那个输入框带选区、拖选、双击选词、IME、撤销栈一整套，
+塞进一个 40×40 的格子既不合适也画不进去。
+
+### 16.7 `field` —— 表单一行
+
+```cpp
+const float h = ui.field_height("邮箱", "不会公开", "", 36.0f);
+ui.field("邮箱", "不会公开", "", {x, y, w, h}, [&](const aino::Rect& r) {
+    ui.input(&mail, r);
+});
+```
+
+结构是「标签 → 控件槽 → 说明/错误」，槽由回调画（`field` 只给矩形，不猜你要放什么）。
+
+| 段 | 高度 | 字号 / 字重 |
+|---|---|---|
+| 标签（`label` 非空时） | `line_height(fs + 1)` + 6 | `fs + 1` / 500 |
+| 控件槽 | 剩下的全给它（至少 1px） | 由回调决定 |
+| 说明或错误（二者有其一） | `line_height(fs - 1)` + 6 | `fs - 1` / 400 |
+
+**`error` 优先于 `hint`**：两个都传只画 error，色用 `theme.destructive`；hint 用
+`theme.muted_foreground`。`field_height()` 与 `field()` 用的是同一组数字，改一处必须改另一处
+（源码里就挨着放，就是为了这个）。
+
+### 16.8 `combobox` —— 可搜索的下拉
+
+```cpp
+int idx = 0;
+ui.combobox({"C++", "Rust", "Go"}, &idx, {x, y, 220, 36});
+```
+
+输入即过滤、↑↓ 移动、回车确认、Esc 收起。
+
+> **它里面的搜索框不是 `input()`。** `input()` 自己会拿一个焦点，两个控件抢焦点会互相
+> 把对方踢掉。所以那个框只是画出来的样子，字符处理全在 `combobox` 内部。
+
+### 16.9 `calendar` —— 月历
+
+```cpp
+int y = 2026, m = 10, d = 22;
+if (ui.calendar(&y, &m, &d, {x, y, 260, 240})) reload(y, m, d);
+```
+
+- **点日期、点翻月箭头都算"变了"**，返回 true 时三个值已经写好；
+- 月分越界自动进位（12 月 → 次年 1 月），选中的日会夹到新月份的天数内；
+- 网格固定 **6 行 × 7 列**，周日开头；表头高度 `max(fs + 26, 42)`、星期行
+  `max(fs + 12, 26)`，剩下全给格子，所以 `box.h` 给多少都能排得下；
+- 日期运算全部是**纯整数**（`detail::weekday_of` 走 Sakamoto 求星期，`days_in_month` 自己算），
+  **不碰 `<ctime>`**：`mktime` / `localtime` 带本地时区与夏令时，同一份代码在 UTC 的 CI runner
+  和东八区的机器上会差一天，而那是最难查的一类「只在我的机器上错」。

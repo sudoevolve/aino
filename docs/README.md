@@ -14,25 +14,25 @@
 |---|---|
 | [01-quickstart.md](01-quickstart.md) | 接入方式、编译命令、Hello World、主循环模型 |
 | [02-style-and-theme.md](02-style-and-theme.md) | `Style` 全部字段与链式方法、`Theme` 全部 token、`Color`/`Rect` 全部方法 |
-| [03-layout.md](03-layout.md) | `Stack` 布局器（`vbox`/`hbox`/`next`/`fill`/`part`）与滚动容器 |
-| [04-text.md](04-text.md) | 文本类：`label` `heading` `subheading` `muted_text` `code_text` |
+| [03-layout.md](03-layout.md) | `Stack` 布局器（`vbox`/`hbox`/`next`/`fill`/`part`）、滚动容器、`split_pane` 可拖动分栏 |
+| [04-text.md](04-text.md) | 文本类：`label` `heading` `subheading` `muted_text` `code_text` `code_block` |
 | [05-containers.md](05-containers.md) | 容器类：`panel` `card` `separator` `badge` `progress` `skeleton` |
-| [06-interactive.md](06-interactive.md) | 交互类：`button` `icon_button` `nav_item` `input` `checkbox` `toggle` `slider` `tabs` `segmented` `select` `radio_group` `stepper` `textarea` `rating` |
-| [07-display.md](07-display.md) | 展示类：`avatar` `spinner` `alert` `breadcrumb` `kbd` `accordion` `table` `sparkline` `bars` |
-| [08-overlays.md](08-overlays.md) | 浮层类：`tooltip` `menu` `dialog` `toast` |
+| [06-interactive.md](06-interactive.md) | 交互类：`button` `icon_button` `nav_item` `input` `checkbox` `toggle` `slider` `tabs` `segmented` `select` `radio_group` `stepper` `textarea` `rating`；§16 另补 `toggle_button` `toggle_group` `toggle_group_multi` `button_group` `input_group` `input_otp` `field` `combobox` `calendar` |
+| [07-display.md](07-display.md) | 展示类：`avatar` `spinner` `alert` `breadcrumb` `kbd` `accordion` `table` `sparkline` `bars`；§11 另补 `item` `empty_state` `pagination` |
+| [08-overlays.md](08-overlays.md) | 浮层类：`tooltip` `menu` `dialog` `toast`；§5 另补 `popover` `hover_card` `alert_dialog` `drawer` `context_menu` `menubar` |
 | [09-primitives.md](09-primitives.md) | 图元与度量：`fill_rect` `stroke_rect` `fill_circle` `draw_line` `draw_text` `drop_shadow` `text_width` `text_height` `alert_height` |
-| [10-performance.md](10-performance.md) | 逐组件性能实测（静置 / 连续重绘 / 交互）与归因分析 |
+| [10-performance.md](10-performance.md) | 逐组件性能实测（静置 / 连续重绘 / 交互）与归因分析；§3 开头写明覆盖范围 |
 | [11-motion.md](11-motion.md) | 动画（`tween` / `tween_color` / `fade` / `smooth` / 缓动）与 `Transform`（平移 / 缩放 / 旋转） |
-| [12-shadcn-parity.md](12-shadcn-parity.md) | 与 shadcn/ui 64 个组件的逐条对照：哪些一对一、哪些只是名字不同、哪些没有 |
+| [12-shadcn-parity.md](12-shadcn-parity.md) | 与 shadcn/ui 的逐条对照（71 行）：哪些一对一、哪些只是名字不同、哪些没有 |
 
 ---
 
 ## 组件速查
 
-**38 个组件 + 6 个图元**，按用途分五组。下表只列「一个有名字的组件」，
-同一组件的参数组合不重复列（性能台架另测了 `empty` / `text_wrap` /
-`skeleton_anim` / `button_full` 这 4 个变体，所以 [10-performance.md](10-performance.md)
-的表是 47 行）。
+**58 个组件 + 6 个图元**。下面的表列的是**有实测绘制耗时**的 38 个（0.3.0 之前就有的那批），
+同一组件的参数组合不重复列 —— 性能台架另测了 `empty` / `text_wrap` / `skeleton_anim` /
+`button_full` 这 4 个变体，所以 [10-performance.md](10-performance.md) 的表是 47 行。
+0.3.0 新增的 20 个在[下一张表](#030-新增的-20-个组件)，它们还没有单独的耗时数字。
 **「绘制 µs」列是实测的单帧组件绘制耗时**（460×300 逻辑窗口 / DPI 1.5，
 详见 [10-performance.md](10-performance.md)）。
 
@@ -89,6 +89,35 @@
 > 与 `toast` 同量级 —— 测试脚本无法用 `PostMessage` 伪造持续悬停，
 > 原因见 [10-performance.md](10-performance.md) 第 6.1 节。
 
+### 0.3.0 新增的 20 个组件
+
+这一批是照着 shadcn/ui 补的，**没有进性能台架**（所以没有耗时列），但每个都有专门章节。
+名字被占用的那三个（`Switch` / `Toggle` / `Empty`）在
+[12-shadcn-parity.md](12-shadcn-parity.md) 开头单独解释过。
+
+| 分组 | 组件 | 一句话 | 章节 |
+|---|---|---|---|
+| 文本 | `code_block` | 等宽 + 行号 + C++ 着色；不滚动不折行 | [04 §6](04-text.md) |
+| 交互 | `toggle_button` | 按下态按钮（shadcn 的 Toggle，**不是开关**） | [06 §16.1](06-interactive.md) |
+| 交互 | `toggle_group` | 单选组，再点可取消 | [06 §16.2](06-interactive.md) |
+| 交互 | `toggle_group_multi` | 多选组，`uint32_t` 位掩码（最多 32 项） | [06 §16.3](06-interactive.md) |
+| 交互 | `button_group` | 连成一片的按钮，无持久选中态 | [06 §16.4](06-interactive.md) |
+| 交互 | `input_group` | 带前后缀的输入框（`¥` / `元`） | [06 §16.5](06-interactive.md) |
+| 交互 | `input_otp` | 分格验证码，只收数字 | [06 §16.6](06-interactive.md) |
+| 交互 | `field` | 标签 + 控件槽 + 说明/错误，配 `field_height()` | [06 §16.7](06-interactive.md) |
+| 交互 | `combobox` | 可搜索的下拉（输入即过滤） | [06 §16.8](06-interactive.md) |
+| 交互 | `calendar` | 月历，纯整数日期运算 | [06 §16.9](06-interactive.md) |
+| 展示 | `item` | 标题 + 描述 + 尾部，整行可点 | [07 §11.1](07-display.md) |
+| 展示 | `empty_state` | 虚线框 + 标题 + 描述 | [07 §11.2](07-display.md) |
+| 展示 | `pagination` | 页码器，槽位数恒定 7 个 | [07 §11.3](07-display.md) |
+| 浮层 | `popover` | 点触发器弹任意内容，内容可交互 | [08 §5.1](08-overlays.md) |
+| 浮层 | `hover_card` | 悬停出卡片，不抢点击 | [08 §5.2](08-overlays.md) |
+| 浮层 | `alert_dialog` | 内建确认/取消，返回"点没点确认" | [08 §5.3](08-overlays.md) |
+| 浮层 | `drawer` | 四边滑出，**只淡入不移位** | [08 §5.4](08-overlays.md) |
+| 浮层 | `context_menu` | 区域内右键菜单 | [08 §5.5](08-overlays.md) |
+| 浮层 | `menubar` | 横排菜单栏，划到隔壁自动切 | [08 §5.6](08-overlays.md) |
+| 布局 | `split_pane` | 可拖动两栏，视觉 1px / 热区 7px | [03 §8](03-layout.md) |
+
 ---
 
 ## 三条贯穿全库的约定
@@ -113,6 +142,16 @@ bool tabs(...);            // true = 选中项变了
 | `accordion` | 展开态变了 |
 | `menu` | 选中了某一项（同时写入 `*clicked_index`） |
 | `dialog` | 当前是否处于打开态（不是"刚刚关闭"） |
+| `item` `button_group` | 本帧被点击（`button_group` 同时写入 `*clicked_index`） |
+| `toggle_button` `toggle_group` `toggle_group_multi` | 值变了 |
+| `combobox` `calendar` `pagination` | 选中索引 / 日期 / 页码变了 |
+| `alert_dialog` | **本帧是否点了确认**（不是"是否打开"） |
+| `context_menu` | 选中了某一项（同时写入 `*clicked_index`） |
+| `popover` | 当前是否处于打开态 |
+| `drawer` | 当前是否处于打开态（点"关闭"那一帧仍然是 true） |
+| `menubar` | 选中了哪个顶级菜单的哪一项（`MenuPick`，没选到就 `valid()` 为假） |
+| `split_pane` | 分隔线位置变了（拖动中每帧都可能是 true） |
+| `field` `empty_state` `code_block` `hover_card` `toast` `tooltip` | 无返回值 |
 
 所以不要写 `if (ui.input(&email)) { 重新校验(); }` 之外的东西 ——
 它每敲一个字都会返回 true，这是设计如此。
@@ -152,7 +191,7 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 | 给 `spinner` 或 `skeleton` 写 `Style().animate()` | 两者默认**只在鼠标悬停时**动；`animate()` 是"无条件常驻"的显式出口，非必要别写 |
 | `input` / `textarea` 处于聚焦态 | 光标闪烁天生要帧，这是设计内开销；调 `set_anim_fps` 可降 |
 
-实测：**47 个组件全部**在静置 3 秒内 **0 帧 / 0.00% CPU**（`spinner`、`skeleton`
+实测：**台架上 47 项（46 个组件 + 空基线）全部**在静置 3 秒内 **0 帧 / 0.00% CPU**（`spinner`、`skeleton`
 也不例外）。只有聚焦的输入框和显式 `.animate()` 的组件会持续要帧。
 
 ---
@@ -174,12 +213,12 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 
 ### 跨平台像素断言怎么做到「同一个标准、三种字形」
 
-`tools/verify_gallery.py` 那 15 项是在 Windows 真桌面上用 `PrintWindow` 抓窗口，
+`tools/verify_gallery.py` 那 18 项是在 Windows 真桌面上用 `PrintWindow` 抓窗口，
 抓的是「整窗长什么样」，换个平台就没法比 —— 三个平台的字形光栅完全不同
 （GDI 灰度 AA / Xft / CoreText），同一段字的像素必然对不上。
 
 它补的是离屏探针补不上的那一层：探针的 `impl->canvas` 是自己塞的，绕过了
-`WM_PAINT`、DPI 缩放和 `BitBlt`。所以这 15 项验的是「导航右侧真有一条 1px 分界线、
+`WM_PAINT`、DPI 缩放和 `BitBlt`。所以这 18 项验的是「导航右侧真有一条 1px 分界线、
 换页之后页头真的换了字、对话框的遮罩真的连左侧导航一起压暗、Esc 之后遮罩真的撤掉」
 —— 这些只有真窗口能验。
 
@@ -196,7 +235,7 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 | 纯 clear 后整块缓冲 130 点采样全 == 背景色 | stride 算错、新缓冲没清零（「缩放变黑」） |
 
 代价是它**证明不了**「字形排得对不对」——那仍然要人眼在真机上看。
-Windows 侧另有 15 项整窗断言兜这一层。
+Windows 侧另有 18 项整窗断言兜这一层。
 
 ### gallery 自己的两条工具钩子
 

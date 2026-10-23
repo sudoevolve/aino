@@ -343,4 +343,35 @@ void composePage(aino::Ui& ui, AppState& s) {
 }
 ```
 
-这一页**没有一个手算坐标**。`gallery.cpp` 的 6 页全部是这种写法。
+这一页**没有一个手算坐标**。`gallery.cpp` 的 45 页全部是这种写法。
+
+---
+
+## 8. `split_pane` —— 可拖动的两栏
+
+```cpp
+float ratio = 0.42f;
+aino::Rect a, b;
+if (ui.split_pane(&ratio, area, &a, &b, /*vertical=*/true, /*min_ratio=*/0.2f)) relayout();
+ui.panel(a);
+ui.panel(b);
+```
+
+`ratio` 是分隔线的位置（0..1），拖动时由库写回。`first` / `second` 是**算出来的两块矩形** ——
+它不接管绘制，你想在里面放什么就放什么。
+
+| 参数 | 含义 |
+|---|---|
+| `vertical` | true = 竖着分（左右两栏、分隔线竖直）；false = 上下两栏 |
+| `min_ratio` | 两侧各自最少占比，默认 0.15。`ratio` 会被夹在 `[min_ratio, 1 - min_ratio]` |
+| 返回 | 本帧 `ratio` 是否变了（拖动中每帧都可能 true） |
+
+两个矩形之间**让出了 7px 的缝**（`bar`），所以两块内容不会贴着分隔线。
+
+> **视觉 1px、热区 7px。** 分隔线只画 1px，但命中区给到 7px —— 和滚动条同一个取舍：
+> 1px 是画给人看的，不是能拖得中的尺寸。鼠标移上去会变成 `ResizeH` / `ResizeV` 光标。
+> 它靠 `impl->hover_region(handle)` 登记，**不登记的话指针停在分隔线上不动时框架不重绘，
+> 光标形状不会变**（看起来像"拖不动"）。
+
+拖动用的是「按下那一刻记一个 flag，直到松开」，不是"每帧比较鼠标是否按下" ——
+鼠标拖出窗口再松手也能正确结束拖动。

@@ -97,13 +97,23 @@ ui.separator({300, 24, 1, 200});         // 宽 1、高 200 → 竖线
 
 | 项 | 默认值 |
 |---|---|
-| 底 | `st.bg` → 否则 `theme.secondary` |
-| 前景 | `st.fg` → 否则 `theme.secondary_foreground` |
+| **变体** | 默认 `Style::Default`（`primary` 底 + `primary_foreground` 字） |
+| 底 | 按变体；`st.bg` 显式覆盖 |
+| 前景 | 按变体；`st.fg` 显式覆盖 |
 | 圆角 | `st.radius` → 否则 **999**（胶囊） |
 | 字号 | `st.font_size` → 否则 `theme.font_size - 3`（11） |
 | 字重 | `st.font_weight` → 否则 **500** |
 | 对齐 | 固定居中（水平 + 垂直） |
-| 描边 | 仅 `border_width > 0` 且 `border_color` 非 none |
+| 描边 | `Style::Outline` 自带 1px `border`；其余变体默认不描边 |
+
+四个变体和 `button` 用的是**同一张皮肤表**（`detail::make_skin`），所以配色一定对得上：
+
+| 变体 | 底 | 字 |
+|---|---|---|
+| `Style::Default` | `primary`（黑） | `primary_foreground` |
+| `Style::Secondary` | `secondary`（浅灰） | `secondary_foreground` |
+| `Style::Outline` | 透明 + 1px `border` | `foreground` |
+| `Style::Destructive` | `destructive`（红） | `destructive_foreground` |
 
 **生效的 Style 属性**：
 `bg` `fg` `border_color` `border_width` `radius` `font_size` `font_weight`
@@ -114,6 +124,11 @@ ui.badge("已验证", r.next(62.0f), aino::Style().background(aino::Color::hex(0
                                         .color(aino::Color::hex(0xFFFFFF)));
 ui.badge("失败", r.next(52.0f), aino::Style().destructive());
 ```
+
+> **默认变体是 Default（黑底），不是 Secondary。** 这一点以前是错的：实现里把
+> `bg` / `fg` 硬编码成 `secondary`，`make_skin` 算出来的配色只被取了字重 —— 于是
+> "Default 和 Secondary" 画出来一模一样，文档上写着四种变体、实际只有两种视觉。
+> 现在四个变体都走皮肤表。
 
 > `badge` 的宽度**不会自适应文字**。它按你给的 `box` 画，文字超宽会被裁。
 > 要包住文字：`rect.w = ui.text_width(text, 11.0f, 500) + 20.0f`。

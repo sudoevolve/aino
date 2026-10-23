@@ -28,7 +28,7 @@ void bars      (const std::vector<float>& values, const Rect& box, const Style& 
 | 字号 | `st.font_size` → 否则 `d * 0.42`（随直径缩放） |
 | 字重 | 600（固定） |
 | 前景 | `st.fg` → 否则按底色亮度自动选 `muted_foreground` / `primary_foreground` |
-| 描边 | **默认 0**，只有 `border_width > 0` 且 `border_color` 非 none 才画 |
+| 描边 | **默认 1px `theme.border`**；`st.border_width` 可改粗细（写 0 关掉），`st.border_color` 改色 |
 
 **生效的属性**：`bg` `fg` `border_color` `border_width` `font_size` `disabled`
 
@@ -41,6 +41,12 @@ ui.avatar("李",   {24, 24, 48, 48}, aino::Style().stroke(2, aino::Color::hex(0x
 ```
 
 `box` 不是正方形时按**最小边**取直径并居中，所以传 `{24,24,48,40}` 也不会变椭圆。
+
+> **为什么默认要描边**：圆底是 `theme.muted`，而浅色主题里 `muted` 和 `secondary` /
+> `accent` 是同一个 `#F4F4F5`。只要它落在一个浅灰容器上（卡片、`panel()`、任何铺了
+> `muted` 的面板），圆就和背景同色 —— 画面上只剩一个孤零零的字，看着像"头像没做出来"。
+> 1px 描边是唯一在任何底色上都能立住的线索。要纯色块（比如底下本来就有照片），
+> 传 `Style().stroke(0.0f)` 关掉。
 
 ---
 
@@ -356,3 +362,62 @@ void metricRow(aino::Ui& ui, const aino::Rect& area, const std::vector<float>& t
 
 `bars` 承担"趋势"、`heading` 承担"数值"、`badge` 承担"变化率"——
 三种不同的信息密度用三种组件分开，比塞进一个表格可读得多。
+
+---
+
+## 11. 0.3.0 新增的展示组件
+
+### 11.1 `item` —— 一行条目
+
+```cpp
+// 标题 + 描述 + 尾部文字（尾部可以留空）
+if (ui.item("张伟", "zhangwei@example.com", "管理员", {x, y, w, 52}))
+    open_detail();
+```
+
+| 项 | 行为 |
+|---|---|
+| 整行 | 可点（`interact` 覆盖整个 `box`），返回 true 表示本帧被点击 |
+| 悬停 | `theme.accent` 铺一层，**alpha 只看淡入值**（最高 150） |
+| 内边距 | `st.pad_x`，否则 12px |
+| 一行 / 两行 | `description` 为空 → 单行（`fs` / 500）；否则标题 `fs` / 500 + 描述 `fs-1` / 400，两行整体在 `box` 里垂直居中，行间 2px |
+| 尾部文字 | 右对齐、`fs-1`、`muted_foreground`，宽度按实测 + 12 |
+
+它的高度完全由 `box.h` 决定 —— 两行模式需要约 `line_height(fs) + 2 + line_height(fs-1)`，
+给少了会挤。常用的 52px 就是按 14px 字号算的。
+
+### 11.2 `empty_state` —— 空状态
+
+```cpp
+ui.empty_state("还没有通知", "有事时会出现在这里", {x, y, w, 160});
+```
+
+虚线框（`dash_rect`，实线段 7 / 空隙 5 / 1px）+ 标题 + 描述，全部水平居中：
+
+| 段 | 字号 / 字重 | 颜色 |
+|---|---|---|
+| 标题 | `fs + 1` / 500 | `st.fg` → 否则 `foreground` |
+| 描述 | `fs - 1` / 400 | `muted_foreground` |
+
+左右各留 16px 不画字。`description` 可以留空，那时只有标题。它**没有交互**，
+所以不需要 `*` 参数，也不返回值。
+
+### 11.3 `pagination` —— 页码器
+
+```cpp
+int page = 0;
+if (ui.pagination(&page, 20, {x, y, 360, 36})) reload(page);
+```
+
+| 项 | 行为 |
+|---|---|
+| 槽位数 | **恒定 7 个**（`总页数 > 7` 时） |
+| 布局 | 首 · … · 当前 · … · 末（靠近两端时自动改成「1 2 3 … 末」或「首 … 倒数三 二 末」） |
+| 槽宽 | `min(box.h, box.w / 槽位数)`，整排水平居中 |
+| 当前页 | `theme.primary` 底 + `primary_foreground` 字 |
+| 省略号 | **只画不 `interact`** —— 点了没意义，就不做成假控件 |
+| 上下页箭头 | 两条 `draw_line` 自绘，不依赖字体里有没有 `<` `>` |
+| 返回 | 本帧是否翻页（`*page` 已写好） |
+
+> 槽位数之所以恒定，是因为早期版本按"当前页附近三页"排：翻页时槽位数会从 8 变 6，
+> 整排按钮跟着左右跳，用户点第二下就点偏。固定成 7 个之后，翻页只有内容变、位置不动。

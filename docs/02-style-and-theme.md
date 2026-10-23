@@ -34,9 +34,13 @@ struct Color { uint8_t r, g, b, a; };
 | `rgb24()` | 打包成 `0xRRGGBB` |
 | `==` / `!=` | 四通道全等 |
 
-> **坑**：`is_none()` 判的是 `alpha == 0`。所以 `Color(255, 0, 0, 0)`（透明红）
-> 会被当作「没设置」，组件会回落到主题默认色。要表达「透明」请用主题色配
-> `scaled_alpha(0.0f)` 之外的明确手段，或直接接受主题默认。
+> **坑（会被当成「没传」）**：`is_none()` 判的是 `alpha == 0`，所以 `Color(255, 0, 0, 0)`
+> （透明红）和默认的 `Color::none()` 完全没法区分 —— `Style().background(Color(0, 0, 0, 0))`
+> 只会被理解成「调用方没指定背景」，组件随即回退到自己的默认底色。
+>
+> 想让组件**不画底**，得看它有没有专门的开关（`input()` 认 `stroke(0)` + 无 `bg` 这
+> 个组合，见 [06 §16.5](06-interactive.md)），或者干脆把底色画在自己的图层里、把组件
+> 叠在上面。`Color::transparent()` 并不是「画一层透明的意思」—— 它和 `none()` 是同一个值。
 
 > **坑（会闪）**：`mix()` 连 **alpha 一起**插值。所以**淡入一个颜色**时不要拿
 > `Color::none()` 当起点：
@@ -240,7 +244,7 @@ variant 决定 base/fg/border
 | `popover_foreground` | `#09090B` | `#FAFAFA` | 浮层文字 |
 | `primary` | `#18181B` | `#FAFAFA` | 主色（按钮填充、进度条、滑杆已选段） |
 | `primary_foreground` | `#FAFAFA` | `#18181B` | 主色上的文字 |
-| `secondary` | `#F4F4F5` | `#27272A` | 次级填充（badge、次级按钮） |
+| `secondary` | `#F4F4F5` | `#27272A` | 次级填充（`Style::Secondary` 的按钮 / 徽章 / kbd / 分段凹槽） |
 | `secondary_foreground` | `#18181B` | `#FAFAFA` | 次级填充上的文字 |
 | `muted` | `#F4F4F5` | `#27272A` | 低强调底（skeleton、code 块、slider 轨道） |
 | `muted_foreground` | `#71717A` | `#A1A1AA` | 次要文字、占位符 |
@@ -251,6 +255,18 @@ variant 决定 base/fg/border
 | `border` | `#E4E4E7` | `#27272A` | 描边、分隔线 |
 | `input` | `#E4E4E7` | `#2E2E33` | 输入类控件的边框（深色下比 border 亮一点） |
 | `ring` | `#18181B` | `#D4D4D8` | 焦点环（以 55% alpha 画 2px） |
+
+> **`secondary` / `muted` / `accent` 在浅色主题里是同一个 `#F4F4F5`**（shadcn 原样）。
+> 三者语义不同（次级填充 / 低强调底 / 悬停底），视觉上却是同一个色 —— 于是
+> **铺了 `muted` 的容器不能和铺了 `secondary` 的组件叠在一起**，两者完全同色，
+> 组件会凭空消失。
+>
+> 这不是理论风险。gallery 的预览底板原来铺 `muted.mix(background, 0.12)`（`#F5F5F6`），
+> 和 `secondary` 只差 1 级 —— 头像的圆、Secondary 按钮、骨架、徽章、进度条轨道
+> 全部糊在板子里，只剩文字。现在底板改铺 `background`，靠 1px `border` 分层。
+>
+> 经验值：浅色主题里要让一层「浮起来」，容器与内容至少差 **8~10 级灰度**；
+> 差 1~4 级在缩放的截图上就等于看不见。
 
 ### 3.2 度量（8 个）
 
@@ -270,7 +286,7 @@ variant 决定 base/fg/border
 | token | 默认 | 说明 |
 |---|---|---|
 | `font_family` | `""` | 空 = **自动挑一个和系统一致的字体**，见下方 3.3.1 |
-| `font_family_mono` | `""` | **保留字段，当前版本不生效**：它只被传给 `TextRenderer::init` 存下来，没有任何绘制路径读它。`code_text` 用的是普通无衬线，只是字号小一号 + 加了 `muted` 底衬 |
+| `font_family_mono` | `""` | 等宽字体，空 = **Consolas**。**只被 `code_block` 用**（走 `measure_mono` / `draw_mono` 这条独立通道）；`code_text` / `label` 等仍然是比例字体 |
 
 #### 3.3.1 `font_family` 留空时到底用了什么字体
 
@@ -300,9 +316,14 @@ t.font_family = "Microsoft YaHei UI";   // 全用雅黑：拉丁也走它的西�
 > 平台差异：Windows 会做上面这套探测；X11 / macOS 后端只是把 `font_family`
 > 原样交给系统字体接口，留空时用各自的平台默认值。
 
-> `code_text` **不是真正的等宽渲染**。若需要严格等宽（对齐数字、代码缩进），
-> 当前版本做不到 —— 要么把 `font_family` 整体换成一个等宽字体，
-> 要么等后续版本把 `font_family_mono` 接进绘制路径。
+> **哪条路径是等宽的？** 只有 `code_block()`（和它背后的 `TextRenderer::measure_mono` /
+> `draw_mono`）。`code_text` / `label` / `table` 这些**都不是**等宽 —— 想要表格里数字对齐，
+> 要么给那一列用 `code_block`，要么把 `font_family` 整体换成等宽字体（连带英文一起变宽）。
+>
+> 这条等宽通道是**可选实现**：后端不覆写 `measure_mono` / `draw_mono` 时，基类会退化成
+> 比例字体，照样编得过，只是代码块的列对不齐。GDI 后端用 `CreateFontW` 的
+> `FIXED_PITCH | FF_MODERN` + 家族名建字体，字体缓存键里拿**第 28 位**当 mono 标记
+> （28..31 本来是空着的），所以同一个字号的比例/等宽字体不会互相串。
 
 ### 3.4 自定义主题
 

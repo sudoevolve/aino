@@ -89,6 +89,14 @@
 47 个测试项（46 个组件 + 1 个空基线）。「组件绘制」是台架测的组件调用耗时，  
 「帧均 / 上屏」来自库的分段计时。
 
+> **覆盖范围（诚实说明）**：这 47 项是 0.3.0 之前的全部组件。0.3.0 新增的 20 个 ——
+> `toggle_button` `toggle_group` `toggle_group_multi` `button_group` `input_group` `input_otp`
+> `field` `item` `empty_state` `pagination` `calendar` `code_block` `combobox` `popover`
+> `hover_card` `alert_dialog` `drawer` `context_menu` `menubar` `split_pane` —— **还没进台架**，
+> 所以下表里查不到它们各自的绘制耗时。它们的行为有断言盯着（`tools/probe/widget_probe.cpp`
+> 78 条，加上 `measure_probe` 对 `code_block` 的测量闸门），只是没有单独的成本数字。
+> 要补就照 `tools/probe/perf_comp.cpp` 里任意一个 `case` 加一段，再跑一遍 `perf_bench.py`（约 15 分钟）。
+
 | 组件              | 静置 CPU    | 静置帧     | 组件绘制 µs    | 帧均 µs | 上屏 µs | 交互 CPU     | 交互帧率   |
 | --------------- | --------- | ------- | ---------- | ----- | ----- | ---------- | ------ |
 | `empty`         | 0.00%     | 0       | 0.2        | 300   | 290   | 1.04%      | 90     |
@@ -431,10 +439,7 @@ python tools/perf_bench.py --only dialog,table,sparkline
 python tools/perf_bench.py --quick --only button,label
 ```
 
-
-```
-
-## 9. 大文本 / 滚动 / 动画的开销（0.2 实测）
+## 10. 大文本 / 滚动 / 动画的开销（0.2 实测）
 
 这三块不是"单组件"，所以不进军架表，单独测：
 
@@ -459,4 +464,3 @@ python tools/perf_bench.py --quick --only button,label
 > 台架只统计「预热之后、`--dur` 之内」的帧。跑满窗口后它**停止统计但不退出**，
 > 进程生命周期交给脚本 —— 早期版本到点自动 `win.close()`，和脚本的 CPU
 > 采样窗口差 0.1 秒，进程先死、`psutil` 抛 `NoSuchProcess`，整条记录作废。
-```
