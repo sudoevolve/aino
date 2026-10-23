@@ -744,6 +744,40 @@ static bool scene_mixed_literal() {
                   wl.size(), wl.empty() ? 0u : unsigned(wl[0]));
     want_true(wl.size() >= 2 && wl[0] == wchar_t(0x6700) && wl[1] == wchar_t(0x5C0F),
               "S5 编译期字面量按 UTF-8 处理（/utf-8 或 pragma 生效）", buf);
+
+    // 再钉住"不许退化成整片西欧字母"：混合串解出来必须接近原义长度
+    // （"最小"2 + 分隔符 1 + " 0.4.7"6 = 9），而不是每个 UTF-8 字节一个字符。
+    std::snprintf(buf, sizeof buf, "长度 %zu（期望 9）末字符 U+%04X",
+                  w.size(), w.empty() ? 0u : unsigned(w.back()));
+    want_true(w.size() == 9, "S5 混合串没有退化成「每个字节一个西欧字母」", buf);
+
+    // 那个孤立的坏字节要么解成 "·"（单字节 ACP），要么落替换符 —— 不能是别的。
+    want_true(w.size() > 2 && (w[2] == wchar_t(0x00B7) || w[2] == wchar_t(0xFFFD)),
+              "S5 孤立坏字节按系统 ANSI 单字节解", buf);
+
+    // 路径 (a)：整串是系统 ANSI（用户没加 /utf-8，且串里全是中文）。按 ACP 编成
+    // 字节再喂回来必须还原 —— 逐段混合解码不能把这条老路弄坏。
+    {
+        const wchar_t src[] = {0x6700, 0x5C0F, 0x793A, 0x4F8B, 0};   // 最小示例
+        char ansi[32] = {0};
+        const int got = ::WideCharToMultiByte(CP_ACP, 0, src, 4, ansi, int(sizeof ansi),
+                                              nullptr, nullptr);
+        const std::wstring wa =
+            aino::detail::to_wide(std::string(ansi, size_t(got > 0 ? got : 0)));
+        std::snprintf(buf, sizeof buf, "ACP 编出 %d 字节，解回 %zu 个字符，首码位 U+%04X",
+                      got, wa.size(), wa.empty() ? 0u : unsigned(wa[0]));
+        want_true(wa.size() == 4 && wa[0] == wchar_t(0x6700) && wa[3] == wchar_t(0x4F8B),
+                  "S5 整串系统 ANSI 仍按 CP_ACP 解", buf);
+    }
+
+    // 补充平面（4 字节 UTF-8）要出代理对，别被当两段坏字节按 ACP 解掉。
+    {
+        const std::wstring we = aino::detail::to_wide(std::string("\xF0\x9F\x98\x80"));  // 😀
+        std::snprintf(buf, sizeof buf, "解出 %zu 个字符，首码位 U+%04X",
+                      we.size(), we.empty() ? 0u : unsigned(we[0]));
+        want_true(we.size() == 2 && we[0] == wchar_t(0xD83D) && we[1] == wchar_t(0xDE00),
+                  "S5 4 字节 UTF-8 转成代理对", buf);
+    }
     return true;
 #endif
 }

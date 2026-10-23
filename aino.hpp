@@ -48,13 +48,15 @@
 //       的代码"吞掉"，报出一堆莫名其妙的"uint8_t 缺少类型说明符"。
 //       若你的工具链会剥掉 BOM，请加 /utf-8。
 //    2) 字面量编码：没有 /utf-8 时，你自己代码里的中文字面量会被编成系统 ANSI
-//       代码页。单独一个字面量还能靠 to_wide() 的"严格 UTF-8 失败就回退 ACP"
-//       救回来，但**混合编码**救不了：串里只要有一个 ACP 里有单字节表示的字符
-//       （"·" U+00B7 最典型），那个字符被转成单字节、中文留 UTF-8 字节，整串
-//       既不合法 UTF-8 也不是纯 ANSI。所以本文件头部加了
-//       `#pragma execution_character_set("utf-8")`（MSVC），等价于 /utf-8 的
-//       执行字符集部分 —— 只要你 include 了本头文件，你自己写在后面的字面量
-//       也会被按 UTF-8 编。其它编译单元仍然应该加 /utf-8。
+//       代码页；更麻烦的是**混合编码** —— 串里只要有一个 ACP 里有单字节表示的
+//       字符（"·" U+00B7 最典型），那个字符被转成单字节、中文仍留 UTF-8 字节，
+//       整串既不合法 UTF-8 也不是纯 ANSI。两道防线：
+//         a. 本文件头部的 `#pragma execution_character_set("utf-8")`（MSVC），
+//            等价于 /utf-8 的执行字符集部分，对**本编译单元**余下部分生效 ——
+//            只要先 include 本头文件，你后面写的字面量也会按 UTF-8 编。
+//         b. to_wide() 逐段混合解码：合法 UTF-8 段按 UTF-8 出，孤立的坏字节才
+//            按 CP_ACP 出。所以即使字面量真的混了，中文也不会变成 "æœ€å°"。
+//       兜底归兜底，其它编译单元仍然应该加 /utf-8。
 //
 //  作者: sudoevolve <sudoevolve@gmail.com>
 //  许可: Apache-2.0（见仓库根 LICENSE）
@@ -67,8 +69,8 @@
 // 字符集那一半。这不是锦上添花：
 //   不加的话，字面量按系统 ANSI 代码页编码。只要串里混进一个"ANSI 里有单字节
 //   表示"的字符，字面量就成了**混合编码** —— 中文保留 UTF-8 字节，那个字符变成
-//   单字节。于是它不再是合法 UTF-8，to_wide 的严格解码判定失败、回退 CP_ACP
-//   整串重解，整片中文变成 "æœ€å°ç¤ºä¾‹"（看着像字，其实是垃圾）。
+//   单字节，整串不再是合法 UTF-8。to_wide 的逐段解码虽然能各自解回来，但源头
+//   就编成 UTF-8 更干净，也省得每个字符串都走恢复逻辑。
 //   "·"（U+00B7）是最典型的触发器：它在 1252 和 936 里都有单字节表示。
 //   症状也好认：窗口标题乱、界面里的中文却是好的 —— 因为界面那些串里没有 ACP
 //   能表示的字符，整串仍是合法 UTF-8。
@@ -80,8 +82,8 @@
 
 #define AINO_VERSION_MAJOR 0
 #define AINO_VERSION_MINOR 4
-#define AINO_VERSION_PATCH 8
-#define AINO_VERSION "0.4.8"
+#define AINO_VERSION_PATCH 9
+#define AINO_VERSION "0.4.9"
 
 #include <cstdint>
 #include <cstddef>
@@ -2067,42 +2069,70 @@ struct TextRenderer {
 inline void to_wide_into(const std::string& s, std::wstring& out) {
     out.clear();
     if (s.empty()) return;
-    // 库内部一律按 UTF-8 处理。严格模式失败说明串里真有非法字节，但"非法"有
-    // 两种完全不同的来源，处理方式相反：
-    //   (a) 整串是系统 ANSI（用户没加 /utf-8 编的 exe）→ 按 CP_ACP 解才对；
-    //   (b) 串是**混合**的：中文字符留了 UTF-8 字节，而个别"ANSI 里也有单字节
-    //       表示"的字符（"·" U+00B7 最典型）被编译器转成了单字节。这种串按
-    //       CP_ACP 整串重解，每个 UTF-8 字节都变成一个西欧字母 —— "最小示例"
-    //       显示成 "æœ€å°ç¤ºä¾‹"，比乱码还难认（0.4.7 前就是这么栽的）。
-    // 判据：按 UTF-8 无校验再解一遍，数替换符。混合串里坏字节只有被转换的那一
-    // 两个字符，而真 GBK 串几乎每个汉字都坏 —— 比例差一个数量级。
-    int need = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                                   s.c_str(), int(s.size()), nullptr, 0);
-    if (need <= 0) {
-        const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), int(s.size()), nullptr, 0);
-        if (n > 0) {
-            // 注意别写 `std::vector<wchar_t> tmp(size_t(n));` —— 那是个函数声明
-            // （most vexing parse），不是构造一个 vector。
-            std::vector<wchar_t> tmp;
-            tmp.resize(size_t(n));
-            const int got = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), int(s.size()),
-                                                tmp.data(), n);
-            int bad = 0;
-            for (int i = 0; i < got; ++i)
-                if (tmp[size_t(i)] == wchar_t(0xFFFD)) ++bad;
-            if (got > 0 && bad * 4 <= got) {     // 少量坏字节 → 本来就是 UTF-8
-                out.assign(tmp.data(), size_t(got));
-                return;
+    // 库内部一律按 UTF-8 处理。但真实世界的串有两种"不合法"来源，而它们的错误
+    // 处理方向**相反**：
+    //   (a) 整串是系统 ANSI（用户没加 /utf-8 编的 exe）→ 应该按 CP_ACP 解；
+    //   (b) 串是**混合**的：中文留了 UTF-8 字节，而个别"ANSI 里也有单字节表示"
+    //       的字符（"·" U+00B7 最典型）被编译器转成了单字节。
+    // 早期版本是"严格 UTF-8 解码失败 → 整串按 CP_ACP 重解"，这在 (b) 下是灾难：
+    // 每个 UTF-8 字节都变成一个西欧字母，"最小示例"显示成 "æœ€å°ç¤ºä¾‹"，
+    // 比乱码还难认。
+    // 现在改成**逐段混合解码**：走得通的 UTF-8 序列按 UTF-8 出，走不通的那一
+    // （或两）个字节才交给 CP_ACP。这样 (a)(b) 共用一条路径，而且任何输入都不
+    // 可能整体退化成"全拉丁乱码" —— 合法的中文永远是合法的中文。
+    // 逐字节判定还顺手拒绝了过长编码、代理区与超范围码位。
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(s.data());
+    const size_t n = s.size();
+    out.reserve(n);
+    static const unsigned int kMin[5] = {0u, 0u, 0x80u, 0x800u, 0x10000u};
+    for (size_t i = 0; i < n;) {
+        const unsigned char b = p[i];
+        if (b < 0x80) {                 // ASCII：绝大多数文字走这条
+            out.push_back(wchar_t(b));
+            ++i;
+            continue;
+        }
+        int len = 0;
+        unsigned int cp = 0;
+        if (b >= 0xC2 && b <= 0xDF)      { len = 2; cp = b & 0x1Fu; }
+        else if (b >= 0xE0 && b <= 0xEF) { len = 3; cp = b & 0x0Fu; }
+        else if (b >= 0xF0 && b <= 0xF4) { len = 4; cp = b & 0x07u; }
+        bool ok = (len > 0 && i + size_t(len) <= n);
+        if (ok) {
+            for (int k = 1; k < len; ++k) {
+                const unsigned char c = p[i + size_t(k)];
+                if ((c & 0xC0) != 0x80) { ok = false; break; }
+                cp = (cp << 6) | (c & 0x3Fu);
             }
         }
-        need = MultiByteToWideChar(CP_ACP, 0, s.c_str(), int(s.size()), nullptr, 0);
-        if (need <= 0) return;
-        out.resize(size_t(need));
-        MultiByteToWideChar(CP_ACP, 0, s.c_str(), int(s.size()), &out[0], need);
-        return;
+        if (ok && (cp < kMin[len] || cp > 0x10FFFFu ||
+                   (cp >= 0xD800u && cp <= 0xDFFFu)))
+            ok = false;
+        if (ok) {
+            if (cp >= 0x10000u) {       // 补充平面：UTF-16 要代理对
+                const unsigned int v = cp - 0x10000u;
+                out.push_back(wchar_t(0xD800u + (v >> 10)));
+                out.push_back(wchar_t(0xDC00u + (v & 0x3FFu)));
+            } else {
+                out.push_back(wchar_t(cp));
+            }
+            i += size_t(len);
+            continue;
+        }
+        // 不合法 UTF-8 —— 当成系统 ANSI 的一段。先试单字节（1252 这类单字节代码
+        // 页里 0xB7 就是"·"），再试双字节（936 这类双字节代码页里 A1A4 才是
+        // "·"）。都解不出来才落一个替换符。
+        size_t used = 0;
+        wchar_t buf[4] = {0, 0, 0, 0};
+        for (int trylen = 1; trylen <= 2 && i + size_t(trylen) <= n; ++trylen) {
+            const int got = MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS,
+                                                reinterpret_cast<const char*>(p + i),
+                                                trylen, buf, 4);
+            if (got == 1) { used = size_t(trylen); out.push_back(buf[0]); break; }
+        }
+        if (used == 0) { out.push_back(wchar_t(0xFFFD)); used = 1; }
+        i += used;
     }
-    out.resize(size_t(need));
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), int(s.size()), &out[0], need);
 }
 
 inline std::wstring to_wide(const std::string& s) {
