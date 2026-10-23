@@ -422,6 +422,16 @@ int main() {
         h.step([&]() { h.ui.avatar("AB", box, Style()); return true; });
         check(h.px_is(32, 8, LT.muted), "圆内上部是 muted 底色");
         check(!h.px_is(1, 1, LT.muted), "圆外角落未被填（是圆形不是方块）");
+        // 默认必须有 1px border 描边。理由不是审美：圆底是 muted，一旦落在浅灰容器
+        // （gallery 预览板 / card() / panel()）上就跟背景同色，只剩一个孤零零的字。
+        // 用户原话"头像咋只有个文字"。轮廓是唯一在任何底色上都能立住的线索。
+        {
+            const Color edge  = h.px(32, 0);
+            const Color inner = h.px(32, 8);
+            check(edge.luminance() + 0.02f < inner.luminance(),
+                  "圆边缘有 1px border 描边（比圆底暗）");
+            check(edge.luminance() + 0.02f < 1.0f, "描边不是纯白（确实画了）");
+        }
     }
 
     // -------------------------------------------------------------------------

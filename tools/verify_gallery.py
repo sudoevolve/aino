@@ -292,11 +292,22 @@ def main():
         rep.step("导航高亮移动到 Button", navdiff > 20,
                  "差异采样 = %d（页头 %d / 内容 %d）" % (navdiff, head, body))
 
-        # ---- 4. 卡片结构：预览区底色与卡片底色不同 ----
+        # ---- 4. 卡片结构：预览区必须是独立的一块 ----
+        #
+        # 以前这条比的是"预览区底色 ≠ 卡片底色"（板子铺 muted.mix(background, 0.12)）。
+        # 那个做法本身是个 bug 的源头：浅色主题里 secondary / muted / accent 都是
+        # #F4F4F5，板子铺 #F5F5F6 时，头像的圆、Secondary 按钮、骨架、徽章全都
+        # 糊在板子里看不见。现在板子改铺 background（和 shadcn 官网的预览区一致），
+        # 分层交给 1px border —— 所以这里改成断言"边界线真的画出来了"，
+        # 比原来的"底色差 3 级"更严：底色相同只剩描边一条线索，描边丢了就整块糊平。
         card_bg = s1.at(NAV_W + 60.0, 128.0)
         plate_bg = s1.at(NAV_W + 90.0, 200.0)
-        rep.step("预览区与卡片底色可分", not close(card_bg, plate_bg, 3),
-                "card=%s plate=%s" % (card_bg[:3], plate_bg[:3]))
+        edge = 0.0
+        for px in range(int(NAV_W + 18), int(NAV_W + 130)):
+            c = s1.at(float(px), 200.0)
+            edge = max(edge, 255.0 - sum(c[:3]) / 3.0)
+        rep.step("预览区有 1px 边界（描边）", edge >= 8.0,
+                "最深一条暗 %.0f 级（card=%s plate=%s）" % (edge, card_bg[:3], plate_bg[:3]))
 
         # ---- 5. 代码块确实画了字 ----
         code_x0 = LOGICAL_W - 56.0 - 40.0 - 300.0

@@ -60,8 +60,8 @@
 
 #define AINO_VERSION_MAJOR 0
 #define AINO_VERSION_MINOR 4
-#define AINO_VERSION_PATCH 1
-#define AINO_VERSION "0.4.1"
+#define AINO_VERSION_PATCH 2
+#define AINO_VERSION "0.4.2"
 
 #include <cstdint>
 #include <cstddef>
@@ -4333,19 +4333,20 @@ inline void Ui::badge(const std::string& text, const Rect& box, const Style& st)
     const Theme& th = impl->theme;
     const float rad = st.radius >= 0.0f ? st.radius : 999.0f;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size - 3.0f;
-    detail::Skin sk = detail::make_skin(th, st, Style::Secondary, rad);
+    // 默认变体是 Default（primary 底 + primary_foreground 字），与 shadcn 的 <Badge>
+    // 一致。以前这里把 bg / fg 硬编码成 secondary，`make_skin` 算出来的配色只被取了
+    // 字重 —— 于是 Default 和 Secondary 画出来一模一样，"四种变体"实际只有两种视觉。
+    detail::Skin sk = detail::make_skin(th, st, Style::Default, rad);
     if (sk.weight == 400) sk.weight = 500;
-    const Color bg = !st.bg.is_none() ? st.bg : th.secondary;
-    const Color fg = !st.fg.is_none() ? st.fg : th.secondary_foreground;
-    fill_rect(box, bg, rad);
-    if (st.border_width > 0.0f && !st.border_color.is_none())
-        stroke_rect(box, st.border_color, rad, st.border_width);
+    if (sk.base.a > 0) fill_rect(box, sk.base, rad);
+    if (sk.border_w > 0.0f && !sk.border.is_none())
+        stroke_rect(box, sk.border, rad, sk.border_w);
     Style ts;
     ts.font_size = fs;
     ts.font_weight = sk.weight;
     ts.align = Align::Center;
     ts.valign = VAlign::Middle;
-    draw_text(text, box, fg, ts);
+    draw_text(text, box, sk.fg, ts);
 }
 
 inline void Ui::progress(float value, const Rect& box, const Style& st) {
@@ -5823,8 +5824,14 @@ inline void Ui::avatar(const std::string& text, const Rect& box, const Style& st
     Color bg = !st.bg.is_none() ? st.bg : th.muted;
     if (st.disabled) bg.a = uint8_t(float(bg.a) * 0.45f);
     fill_rect(c, bg, d * 0.5f);
-    const float bw = st.border_width >= 0.0f ? st.border_width : 0.0f;   // 默认不描边（照片位通常有底图）
-    if (bw > 0.0f && !st.border_color.is_none()) stroke_rect(c, st.border_color, d * 0.5f, bw);
+    // 默认 1px 描边。以前是 0——理由是"照片位通常有底图"，但那样 `muted` 圆底一旦落在
+    // 浅灰容器上（gallery 预览板、`card()`、`panel()`）就完全看不见，只剩一个孤零零的字，
+    // 用户看到的就是"头像咋只有个文字"。头像的**轮廓**比"没有边框"重要。
+    const float bw = st.border_width >= 0.0f ? st.border_width : 1.0f;
+    if (bw > 0.0f) {
+        const Color bc = !st.border_color.is_none() ? st.border_color : th.border;
+        stroke_rect(c, bc, d * 0.5f, bw);
+    }
 
     const std::vector<uint32_t> cps = utf8_codepoints(text);
     std::string initial = cps.empty() ? std::string("?") : utf8_from_codepoints(cps, 0, 1);

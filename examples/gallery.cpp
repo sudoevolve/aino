@@ -1589,7 +1589,12 @@ void draw_demo_card(Ui& ui, App& a, const Demo& d, const Rect& card, const CardG
     const Rect content(plate.x + 20.0f,
                        plate.y + kPlatePadY + (body_h - 2.0f * kPlatePadY - g.inner_h) * 0.5f,
                        plate.w - 40.0f, g.inner_h);
-    ui.fill_rect(plate, th.muted.mix(th.background, 0.12f), th.radius);
+    // 底板必须是**纯背景色**，不能用 muted —— 浅色主题里 secondary / muted / accent
+    // 是同一个 #F4F4F5，若底板也偏灰（以前是 muted.mix(background, 0.12) = #F5F5F6），
+    // 二者只差 1 个色阶：头像的圆、Secondary 按钮、骨架、徽章、进度条轨道全部糊在
+    // 底板里看不见，只剩文字。shadcn 官网的预览区同样铺 --background，靠 1px 边框分层。
+    ui.fill_rect(plate, th.background, th.radius);
+    ui.stroke_rect(plate, th.border, th.radius, 1.0f);
     d.draw(ui, a, content);
 
     ui.code_block(d.code, cod, Style().font(11.5f));
