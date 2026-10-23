@@ -9845,10 +9845,18 @@ private:
         XFillRectangle(dpy_, xft_pm_, xft_gc_, 0, 0, unsigned(tw), unsigned(th));
         XftDrawStringUtf8(xft_draw_, &xft_white_, fc->font, 1, 1 + fc->asc,
                           reinterpret_cast<const FcChar8*>(s.data()), int(s.size()));
-
         XImage* im = XGetImage(dpy_, xft_pm_, 0, 0, unsigned(tw), unsigned(th),
                                AllPlanes, ZPixmap);
         if (!im) return false;
+        if (x11_trace_on()) {
+            int ink = 0;
+            for (int gy = 0; gy < th; ++gy)
+                for (int gx = 0; gx < tw; ++gx)
+                    if (XGetPixel(im, gx, gy) & 0xfffffful) ++ink;
+            x11_trace("  xft \"%s\" tw=%d th=%d asc=%d desc=%d ink=%d depth=%d bpp=%d mask=%lx",
+                      s.c_str(), tw, th, fc->asc, fc->desc, ink, im->depth,
+                      im->bits_per_pixel, im->red_mask);
+        }
 
         const unsigned long rmask = im->red_mask ? im->red_mask : 0xff0000ul;
         int rshift = 0;

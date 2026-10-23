@@ -86,7 +86,10 @@ jobs:
       - name: 像素断言（30 项，xvfb 虚拟屏）
         env:
           AINO_PIX_BMP: "1"
-        run: xvfb-run -a ./ci_pixels
+          AINO_X11_TRACE: "1"
+        run: |
+          set -o pipefail
+          xvfb-run -a ./ci_pixels 2>&1 | tail -400
 
       - name: 失败时保留抓到的帧
         if: failure()
