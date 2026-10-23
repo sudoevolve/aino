@@ -43,6 +43,11 @@
 #include <string>
 #include <vector>
 
+#if defined(AINO_PLATFORM_X11)
+#include <cerrno>
+#include <dirent.h>          // 只为失败诊断数一下打开的 fd
+#endif
+
 using namespace aino;
 // 通道下标定义在 detail 里（Windows 的 DIB 是 BGRA，X11/macOS 是 RGBA），
 // 断言一律走这三个常量，不写死偏移。
@@ -56,6 +61,23 @@ using aino::detail::CH_R;
 
 static int g_pass = 0;
 static int g_fail = 0;
+
+// 窗口建不起来时，光说一句"创建失败"没法查（Linux 上可能是 DISPLAY 没了、
+// 也可能是 fd 被前面场景打开的字体吃光）。第一次踩到时 CI 日志里只有一行
+// "窗口创建失败"，白跑了两轮。
+static void win_fail(const char* tag) {
+    std::printf("[pixels] %s 窗口创建失败\n", tag);
+#if defined(AINO_PLATFORM_X11)
+    int nfd = 0;
+    if (DIR* d = ::opendir("/proc/self/fd")) {
+        while (::readdir(d)) ++nfd;
+        ::closedir(d);
+    }
+    const char* disp = std::getenv("DISPLAY");
+    std::printf("[pixels]   DISPLAY=%s 打开的 fd=%d errno=%d\n",
+                disp ? disp : "(null)", nfd, errno);
+#endif
+}
 
 // -----------------------------------------------------------------------------
 //  一帧像素快照
@@ -294,7 +316,7 @@ static bool scene_clear() {
     const Color bg = th.background;
 
     aino::Window win(200, 150, "aino pixels: clear");
-    if (!win.ok()) { std::printf("[pixels] 窗口创建失败（Linux 上多半是没有 DISPLAY）\n"); return false; }
+    if (!win.ok()) { win_fail("S1"); return false; }
     win.set_theme(th);
 
     Shot shot;
@@ -354,7 +376,7 @@ static bool scene_primitives() {
     const Color c_yell  = Color(255, 200, 0);
 
     aino::Window win(420, 380, "aino pixels: primitives");
-    if (!win.ok()) { std::printf("[pixels] 窗口创建失败\n"); return false; }
+    if (!win.ok()) { win_fail("S2"); return false; }
     win.set_theme(th);
 
     // 文字度量要在帧内取（TextRenderer 是 Window 构造时才建好的）
@@ -572,7 +594,7 @@ static bool scene_dark() {
     const Color card = th.card;         // 0x101012
 
     aino::Window win(300, 220, "aino pixels: dark");
-    if (!win.ok()) { std::printf("[pixels] 窗口创建失败\n"); return false; }
+    if (!win.ok()) { win_fail("S3"); return false; }
     win.set_theme(th);
 
     Shot shot;
@@ -632,7 +654,7 @@ static bool scene_cjk_fallback() {
     ::setenv("AINO_X11_CHAIN_CAP", "4", 1);
 #endif
     aino::Window win(cfg);
-    if (!win.ok()) { std::printf("[pixels] 窗口创建失败\n"); return false; }
+    if (!win.ok()) { win_fail("S4"); return false; }
     win.set_theme(th);
 
     const Rect box(20.0f, 40.0f, 220.0f, 28.0f);

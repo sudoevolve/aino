@@ -9729,16 +9729,17 @@ inline FcApi& fc_api() {
     return api;
 }
 
-// 兜底链最多留几条。默认 32：足够覆盖"同一家族每个 style 各占一条"的膨胀，
-// 又不至于为一个生僻符号把系统里几百个字体全打开（每个只是路径字符串，
-// face 是懒加载的）。
+// 兜底链最多留几条。默认 16：主字体 + 钉进来的 CJK + 十几个候选，够用了。
+// 不用"多留一些以防万一"：每多一条，凡是链首覆盖不了的码位都会多打开一个
+// face，而 FreeType 每个 face 都要 mmap 整个字体文件（Noto CJK 是 20MB）并占
+// 一个 fd。CJK 已经按 charset 钉到第 2 位了，剩下的名额只是给生僻符号兜底的。
 // AINO_X11_CHAIN_CAP 可以调小 —— 只给自检用：ci_pixels 的 S4 场景把它设成 4，
 // 精确复现用户机器上"前几条全被 DejaVu Sans 的各个 style 占满、CJK 排在后面"
 // 的状态。不读静态缓存，因为同一个进程里不同窗口要能用不同的值。
 inline int x11_chain_cap() {
     const char* e = std::getenv("AINO_X11_CHAIN_CAP");
     const int v = e ? std::atoi(e) : 0;
-    return v >= 2 ? v : 32;
+    return v >= 2 ? v : 16;
 }
 
 class X11TextRenderer : public TextRenderer {
