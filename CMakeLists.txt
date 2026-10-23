@@ -50,6 +50,8 @@ function(aino_add_demo name)
     # 于是回退不会被触发，画出来是乱码 —— 这类歧义字节没有任何启发式能救。
     if(MSVC)
         target_compile_options(${name} PRIVATE /W3 /utf-8)
+        # WIN32 子系统下 MSVC 默认找 WinMain；示例用的是 main()，指定入口为 mainCRTStartup。
+        target_link_options(${name} PRIVATE /ENTRY:mainCRTStartup)
     else()
         target_compile_options(${name} PRIVATE -Wall)
         if(MINGW)
@@ -87,7 +89,6 @@ function(aino_add_demo name)
 endfunction()
 
 # 三个目标：画廊（功能最全，也是回归靶子）+ 两个最小 demo（新手照着读）。
-# 画廊取代了更早的 main.cpp / layout.cpp / components.cpp 三个 exe —— 分页比
 # 多个窗口好用：同一套 AppState 跨页共享，浮层也天然盖在所有页之上。
 aino_add_demo(aino_gallery examples/gallery.cpp)
 aino_add_demo(aino_sidebar_demo examples/sidebar_demo.cpp)
