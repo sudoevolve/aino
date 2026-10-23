@@ -40,7 +40,7 @@ jobs:
       - name: 冒烟（跑满 20 帧）
         run: .\ci_smoke.exe
 
-      - name: 像素断言（32 项）
+      - name: 像素断言（34 项）
         env:
           AINO_PIX_BMP: "1"
         run: .\ci_pixels.exe
@@ -88,10 +88,22 @@ jobs:
       - name: 冒烟（xvfb 虚拟屏，跑满 20 帧）
         run: xvfb-run -a ./ci_smoke
 
-      - name: 像素断言（32 项，xvfb 虚拟屏）
+      - name: 像素断言（34 项，xvfb 虚拟屏）
         env:
           AINO_PIX_BMP: "1"
         run: xvfb-run -a ./ci_pixels
+
+      # 兜底链自检：把链砍到 4 条（DejaVu Sans 的那几个 style 正好占满），
+      # 汉字仍然必须画出来 —— 这就是用户机器上「中文全消失了，但代码块里的
+      # 中文还有」的原样，只是把截断点压到最小。日志里要能看见 "cjk at N"：
+      # 说明 CJK 字体是被 charset 探测钉进链的，不是碰巧排进前几条。
+      - name: 字体兜底链自检（链砍到 4 条仍要画出中文）
+        run: |
+          AINO_X11_TRACE=1 AINO_X11_CHAIN_CAP=4 xvfb-run -a ./ci_pixels > narrow.txt 2> trace.txt
+          tail -2 narrow.txt
+          echo "--- 兜底链（去重）---"
+          grep "chain" trace.txt | sort -u | head -6
+          grep -q "cjk at " trace.txt
 
       # 布局自检：gallery 首帧会把全部 45 页量一遍，写出 `# over=N under=M total=K`。
       # over 必须为 0 —— 这正是 Windows 上 `tools/regress.py` 卡的那条。
@@ -145,7 +157,7 @@ jobs:
       - name: 冒烟（runner 没有交互桌面，能开窗就算过）
         run: ./ci_smoke
 
-      - name: 像素断言（32 项）
+      - name: 像素断言（34 项）
         env:
           AINO_PIX_BMP: "1"
         run: ./ci_pixels

@@ -591,12 +591,110 @@ static bool scene_dark() {
     return true;
 }
 
+// =============================================================================
+//  场景 4：显式指定一个**没有汉字**的字体族，汉字仍然必须画得出来
+//
+//  这是 0.4.6 在用户机器上的原样复现：「中文全消失了，但代码块里的中文还有」。
+//  根因是兜底链以前只取 FcFontSort 的**前 16 条**，而排序表里同一个家族的每个
+//  style 各占一条（DejaVu Sans 一家就能吃掉 Book / Bold / Oblique / Condensed
+//  七八条），CJK 字体被挤到 16 名之外。一个都找不到时 glyph() 只留半格空白、
+//  不落墨（宁可空白也不吐豆腐块）—— 于是整片中文变成空白。
+//  等宽通道因为字体种类少、CJK 挤进了前 16，代码块反而正常 ——
+//  「代码块的中文还在、别处全没了」这个不对称就是它的指纹。
+//
+//  修法是按 charset 探测 CJK 字体、钉进兜底链。这里把主字体显式钉成一个只有
+//  拉丁的家族，让「汉字必须靠兜底」变成必然；三个平台都要能画出墨。
+//  Windows / macOS 上这些家族名未必存在，顺带也考一次「指定家族不可用时退回
+//  系统字体」—— 那种情况下中文照样得出来。
+// =============================================================================
+static bool scene_cjk_fallback() {
+    const Theme th = Theme::light();
+    const Color bg = th.background;
+
+#if defined(AINO_PLATFORM_WINDOWS)
+    const char* latin_only = "Consolas";        // 随系统带，正文里没有汉字
+#elif defined(AINO_PLATFORM_MACOS)
+    const char* latin_only = "Menlo";           // 同上
+#else
+    const char* latin_only = "DejaVu Sans";     // Ubuntu 默认 sans，无汉字
+#endif
+
+    aino::WindowConfig cfg;
+    cfg.width  = 260;
+    cfg.height = 120;
+    cfg.title  = "aino pixels: cjk fallback";
+    cfg.font_family = latin_only;
+#if defined(AINO_PLATFORM_X11)
+    // 把兜底链砍到 4 条：DejaVu Sans 的 Book / Bold / Oblique / BoldOblique
+    // 正好把名额占满，汉字一条都排不进来 —— 用户机器上是"前 N 条全被同一家族
+    // 的各个 style 吃掉、CJK 排在 N 之后"，这里把 N 压到最小，让回归必然暴露。
+    // 只对这个场景生效，S2 仍跑默认的 32 条。
+    ::setenv("AINO_X11_CHAIN_CAP", "4", 1);
+#endif
+    aino::Window win(cfg);
+    if (!win.ok()) { std::printf("[pixels] 窗口创建失败\n"); return false; }
+    win.set_theme(th);
+
+    const Rect box(20.0f, 40.0f, 220.0f, 28.0f);
+    Shot shot;
+    const bool got = render_scene(win, [&](Ui& ui) {
+        ui.clear(bg);
+        ui.label("中文兜底", box);
+    }, shot);
+    if (!got) { fail("S4 抓到后备缓冲", "grab 失败"); return true; }
+#if defined(AINO_PLATFORM_X11)
+    ::unsetenv("AINO_X11_CHAIN_CAP");      // 后面的场景回到默认
+#endif
+
+    int bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
+    if (!ink_bbox(shot, box, bg, bx0, by0, bx1, by1)) {
+        fail("S4 主字体没有汉字时，兜底链仍须画出中文",
+             std::string("指定家族 = ") + latin_only + "；文字框里一个墨点都没有");
+        return true;
+    }
+
+    {
+        char buf[192];
+        const float ink_w = float(bx1 - bx0 + 1) / shot.scale;
+        std::snprintf(buf, sizeof buf, "主字体 %s，中文墨迹宽 %.1fpx（字号 %.1f）",
+                      latin_only, double(ink_w), double(th.font_size));
+        want_true(ink_w >= th.font_size * 2.0f, "S4 墨迹宽度像 4 个全角字", buf);
+    }
+
+    {
+        // 同上一条场景的道理：.notdef 的方块只有左右两条竖边，中间三分之一列
+        // 是空的。这条才钉得住「有墨但是豆腐块」。
+        const int mid0 = bx0 + (bx1 - bx0 + 1) / 3;
+        const int mid1 = bx0 + (bx1 - bx0 + 1) * 2 / 3;
+        int rows = 0, hit = 0;
+        for (int y = by0; y <= by1; ++y) {
+            bool any = false, mid = false;
+            for (int x = bx0; x <= bx1; ++x) {
+                const uint8_t* p = &shot.px[size_t(y) * size_t(shot.stride) + size_t(x) * 4u];
+                if (!chan_diff(Color(p[CH_R], p[CH_G], p[CH_B], 255), bg, 8)) continue;
+                any = true;
+                if (x >= mid0 && x < mid1) mid = true;
+            }
+            if (any) { ++rows; if (mid) ++hit; }
+        }
+        char buf[192];
+        std::snprintf(buf, sizeof buf, "%d 个有墨的行里 %d 行在中间三分之一列有墨",
+                      rows, hit);
+        want_true(rows > 0 && float(hit) >= float(rows) * 0.45f,
+                  "S4 不是豆腐方块（中间列有墨）", buf);
+    }
+
+    if (std::getenv("AINO_PIX_BMP")) write_bmp(shot, "ci_frame_4_cjk.bmp");
+    return true;
+}
+
 int main() {
     std::printf("=== aino ci_pixels ===\n");
 
     if (!scene_clear())       return 2;
     if (!scene_primitives())  return 2;
     if (!scene_dark())        return 2;
+    if (!scene_cjk_fallback()) return 2;
 
     std::printf("=== %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

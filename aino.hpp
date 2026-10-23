@@ -60,8 +60,8 @@
 
 #define AINO_VERSION_MAJOR 0
 #define AINO_VERSION_MINOR 4
-#define AINO_VERSION_PATCH 6
-#define AINO_VERSION "0.4.6"
+#define AINO_VERSION_PATCH 7
+#define AINO_VERSION "0.4.7"
 
 #include <cstdint>
 #include <cstddef>
@@ -9666,6 +9666,11 @@ struct FcApi {
     void  (*font_set_destroy)(void*) = nullptr;
     int  (*get_string)(void*, const char*, int, unsigned char**) = nullptr;
     int  (*get_integer)(void*, const char*, int, int*) = nullptr;
+    // 这两个用来**验证一个字体到底覆盖不覆盖汉字**（FcPatternGetCharSet 取
+    // pattern 上的 charset，FcCharSetHasChar 查某个码位在不在里面）。
+    // 少了它们就只能靠「排序表前 N 条里碰运气」，见 build() 里的注释。
+    int  (*get_charset)(void*, const char*, int, void**) = nullptr;
+    int  (*charset_has)(const void*, unsigned int) = nullptr;
 
     bool load() {
         if (lib) return true;
@@ -9694,6 +9699,8 @@ struct FcApi {
         font_set_destroy  = reinterpret_cast<decltype(font_set_destroy)>(dlsym(lib, "FcFontSetDestroy"));
         get_string        = reinterpret_cast<decltype(get_string)>(dlsym(lib, "FcPatternGetString"));
         get_integer       = reinterpret_cast<decltype(get_integer)>(dlsym(lib, "FcPatternGetInteger"));
+        get_charset       = reinterpret_cast<decltype(get_charset)>(dlsym(lib, "FcPatternGetCharSet"));
+        charset_has       = reinterpret_cast<decltype(charset_has)>(dlsym(lib, "FcCharSetHasChar"));
         if (!init || !pattern_create || !pattern_destroy || !add_string || !add_double
             || !add_integer || !add_bool || !config_substitute || !default_substitute
             || !font_match || !font_sort || !font_set_destroy || !get_string || !get_integer) {
@@ -9720,6 +9727,18 @@ inline FcApi& fc_api() {
     static const bool once = api.load();
     (void)once;
     return api;
+}
+
+// 兜底链最多留几条。默认 32：足够覆盖"同一家族每个 style 各占一条"的膨胀，
+// 又不至于为一个生僻符号把系统里几百个字体全打开（每个只是路径字符串，
+// face 是懒加载的）。
+// AINO_X11_CHAIN_CAP 可以调小 —— 只给自检用：ci_pixels 的 S4 场景把它设成 4，
+// 精确复现用户机器上"前几条全被 DejaVu Sans 的各个 style 占满、CJK 排在后面"
+// 的状态。不读静态缓存，因为同一个进程里不同窗口要能用不同的值。
+inline int x11_chain_cap() {
+    const char* e = std::getenv("AINO_X11_CHAIN_CAP");
+    const int v = e ? std::atoi(e) : 0;
+    return v >= 2 ? v : 32;
 }
 
 class X11TextRenderer : public TextRenderer {
@@ -9900,16 +9919,61 @@ private:
         void* sort = fc.font_sort(nullptr, pat, 1, nullptr, &res);
         if (sort) {
             FcFontSetLite* set = static_cast<FcFontSetLite*>(sort);
-            const int n = set->nfont > 16 ? 16 : set->nfont;
-            for (int i = 0; i < n; ++i) {
+            // -------------------------------------------------------------
+            //  兜底链怎么取：不能"取前 16 条"了事。
+            //
+            //  踩过的坑（0.4.6，Ubuntu 桌面上中文全变空白、而代码块里的中文
+            //  好好的）：FcFontSort 会把**同一家族的每个 style 都列一遍**。
+            //  DejaVu Sans 一家就能占掉 Book/Bold/Oblique/BoldOblique/Condensed
+            //  七八条，Noto Sans 再占一批，前 16 条扫完还没轮到 Noto Sans CJK。
+            //  没有 CJK 覆盖 → glyph() 一个都找不到 → 空格子（连豆腐块都没有）。
+            //  等宽链（DejaVu Sans Mono + Liberation Mono）字体种类少，CJK 挤进
+            //  了前 16，于是"代码块的中文还在" —— 这个不对称正是线索。
+            //
+            //  解法：不再靠名次猜。整张表扫一遍，用 fontconfig 的 charset 直接
+            //  问「这个字体覆盖 U+4E2D 吗」，把第一个覆盖的**钉到链的第 2 位**
+            //  （紧跟主字体）。这样无论系统装了多少字体、排序怎么变，汉字都有
+            //  确定的那一条可用，而且链长度仍然只有几十条。
+            // -------------------------------------------------------------
+            const int cap = x11_chain_cap();
+            std::string cjk_file;
+            long cjk_index = 0;
+            bool cjk_found = false;
+            int  cjk_pos   = -1;      // 已在收集范围内时的位置
+            for (int i = 0; i < set->nfont; ++i) {
                 unsigned char* file = nullptr;
                 int index = 0;
                 if (fc.get_string(set->fonts[i], "file", 0, &file) != 0 || !file) continue;
                 if (fc.get_integer(set->fonts[i], "index", 0, &index) != 0) index = 0;
+                bool has_cjk = false;
+                if (!cjk_found && fc.get_charset && fc.charset_has) {
+                    void* cs = nullptr;
+                    if (fc.get_charset(set->fonts[i], "charset", 0, &cs) == 0 && cs)
+                        has_cjk = fc.charset_has(cs, 0x4E2Du) != 0;
+                }
+                if (has_cjk) {
+                    cjk_found = true;
+                    cjk_file = reinterpret_cast<const char*>(file);
+                    cjk_index = long(index);
+                }
+                if (int(f.files.size()) >= cap) {
+                    if (cjk_found) break;     // 已经拿到了需要的，不用再扫
+                    continue;
+                }
+                if (has_cjk) cjk_pos = int(f.files.size());
                 f.files.push_back(reinterpret_cast<const char*>(file));
                 f.indices.push_back(long(index));
             }
+            // 第一条覆盖汉字的字体没进前 cap 条 → 手动插到主字体后面。
+            if (cjk_found && cjk_pos < 0) {
+                f.files.insert(f.files.begin() + (f.files.empty() ? 0 : 1), cjk_file);
+                f.indices.insert(f.indices.begin() + (f.indices.empty() ? 0 : 1), cjk_index);
+                cjk_pos = f.files.empty() ? 0 : 1;
+            }
             fc.font_set_destroy(sort);
+            if (x11_trace_on())
+                x11_trace("  chain %zu fonts, cjk at %d (%s)", f.files.size(), cjk_pos,
+                          cjk_found ? cjk_file.c_str() : "none");
         }
         fc.pattern_destroy(pat);
         if (f.files.empty()) return false;
@@ -9976,11 +10040,19 @@ private:
         FtApi& ft = ft_api();
         Glyph g;
         int hit = -1;
-        if (void* face = open_face(f, size_t(f.hit))) {
-            if (ft.char_index(face, cp)) hit = f.hit;
+        // 主字体优先：西文必须落在链首（DejaVu Sans），字形才和 Windows /
+        // macOS 对得上。以前这里是"先试 f.hit"，汉字把 hit 推到 CJK 之后，
+        // 下一段西文就改用 CJK 的拉丁字形画了 —— 同一个界面上两种西文字形。
+        if (void* primary = open_face(f, 0)) {
+            if (ft.char_index(primary, cp)) hit = 0;
+        }
+        if (hit < 0 && f.hit != 0) {
+            if (void* face = open_face(f, size_t(f.hit))) {
+                if (ft.char_index(face, cp)) hit = f.hit;
+            }
         }
         if (hit < 0) {
-            for (size_t i = 0; i < f.files.size(); ++i) {
+            for (size_t i = 1; i < f.files.size(); ++i) {
                 if (int(i) == f.hit) continue;
                 void* cand = open_face(f, i);
                 if (!cand) continue;
