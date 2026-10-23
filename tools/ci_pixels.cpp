@@ -396,6 +396,9 @@ static bool scene_primitives() {
         // ---- 9. 按钮：绘制范围必须等于传入的 box（抓 DPI 缩放乘两次）----
         ui.button("OK", Rect(20.0f, 250.0f, 80.0f, 36.0f));
 
+        // ---- 10. 中文：要靠 fontconfig 的逐字符兜底才画得出来 ----
+        ui.label("中国字", Rect(20.0f, 290.0f, 160.0f, 24.0f));
+
         tw_hg = ui.text_width("Hg", th.font_size);
     }, shot);
     if (!got) { fail("S2 抓到后备缓冲", "grab 失败"); return true; }
@@ -409,6 +412,44 @@ static bool scene_primitives() {
     want_color(shot, 160.0f,  40.0f, c_blue, "S2 圆角矩形中心是填充色");
     // (123,23) 到圆角弧心 (134,34) 的距离 ≈ 15.6 > r=14 —— 完全在圆角外，必须是背景
     want_color(shot, 123.0f,  23.0f, bg,     "S2 圆角矩形的圆角外是背景（没被方角填满）");
+
+    // ===== 中文 =====
+    {
+        // 三条一起看：① 有墨；② 宽度 ≈ 3 个全角字；③ 中间三分之一列里有墨。
+        // .notdef 的豆腐方块是个**空心矩形**，中间列除了上下两条边什么都没有 ——
+        // 所以第 ③ 条才是「中文全是方框」这个回归的真正钉子。
+        int bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
+        const Rect box(20.0f, 290.0f, 160.0f, 24.0f);
+        if (!ink_bbox(shot, box, bg, bx0, by0, bx1, by1)) {
+            fail("S2 中文画出了墨（CJK 兜底字体）", "文字框里一个墨点都没有");
+        } else {
+            char buf[192];
+            const float ink_w = float(bx1 - bx0 + 1) / shot.scale;
+            std::snprintf(buf, sizeof buf,
+                          "中文墨迹宽 %.1fpx（字号 %.1f，期望约 3 个全角字）",
+                          double(ink_w), double(th.font_size));
+            want_true(ink_w >= th.font_size * 2.0f, "S2 中文墨迹宽度像 3 个全角字", buf);
+
+            const int mid0 = bx0 + (bx1 - bx0 + 1) / 3;
+            const int mid1 = bx0 + (bx1 - bx0 + 1) * 2 / 3;
+            int rows = 0, hit = 0;
+            for (int y = by0; y <= by1; ++y) {
+                bool any = false, mid = false;
+                for (int x = bx0; x <= bx1; ++x) {
+                    const uint8_t* p = &shot.px[size_t(y) * size_t(shot.stride) + size_t(x) * 4u];
+                    if (!chan_diff(Color(p[CH_R], p[CH_G], p[CH_B], 255), bg, 8)) continue;
+                    any = true;
+                    if (x >= mid0 && x < mid1) mid = true;
+                }
+                if (any) { ++rows; if (mid) ++hit; }
+            }
+            std::snprintf(buf, sizeof buf,
+                          "%d 个有墨的行里只有 %d 行在中间三分之一列有墨；"
+                          "方块字形（.notdef）只在左右边框有墨", rows, hit);
+            want_true(rows > 0 && float(hit) >= float(rows) * 0.45f,
+                      "S2 中文是字形而不是 tofu 方块", buf);
+        }
+    }
 
     // ===== 3. 圆 =====
     want_color(shot, 250.0f,  60.0f, c_green, "S2 fill_circle 中心是填充色");
@@ -472,7 +513,7 @@ static bool scene_primitives() {
         want_true(n >= 20, "S2 文字画出了墨（字体加载成功）", buf);
     }
     {
-        // 抗锯齿：1bit 点阵字体只有"有墨 / 没墨"两档，Xft（FreeType 灰度）才会
+        // 抗锯齿：1bit 点阵字体只有"有墨 / 没墨"两档，FreeType 灰度才会
         // 出现大量中间灰。这条专门钉 Ubuntu 上「文字像点阵马赛克、标题和正文一样细」
         // 那个回归 —— 后端悄悄退回 XFontSet 时，上面那条墨迹断言照样绿。
         const int levels = text_gray_levels(shot, Rect(20.0f, 170.0f, 120.0f, 24.0f), bg);
@@ -480,9 +521,9 @@ static bool scene_primitives() {
 #if defined(AINO_PLATFORM_X11)
         std::snprintf(buf, sizeof buf,
                       "文字框里有 %d 档灰度；1 档 = 纯 1bit 点阵，≥4 才说明走了灰度抗锯齿"
-                      "（Xft 是运行时 dlopen 的，系统里没 libXft.so.2 就会退回点阵）",
+                      "（freetype 是运行时 dlopen 的，加载不到就退回点阵）",
                       levels);
-        want_true(levels >= 4, "S2 文字是灰度抗锯齿渲染（Xft 运行时加载成功）", buf);
+        want_true(levels >= 4, "S2 文字是灰度抗锯齿渲染（FreeType 运行时加载成功）", buf);
 #else
         std::snprintf(buf, sizeof buf,
                       "非 X11 平台：文字框里有 %d 档灰度", levels);

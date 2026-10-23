@@ -40,7 +40,7 @@ jobs:
       - name: 冒烟（跑满 20 帧）
         run: .\ci_smoke.exe
 
-      - name: 像素断言（30 项）
+      - name: 像素断言（32 项）
         env:
           AINO_PIX_BMP: "1"
         run: .\ci_pixels.exe
@@ -59,22 +59,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 装 X11 头文件、虚拟屏、基础字体与 Xft
+      - name: 装 X11 头文件、虚拟屏、字体与 freetype/fontconfig 运行时
         run: |
           sudo apt-get update
-          # 注意只装**运行时**包 libxft2，不装 libxft-dev：aino 不用 Xft 头文件也不用
-          # -lXft，而是 dlopen("libXft.so.2") 取符号。CI 这样装才对得上用户的真实环境
-          # （普通 Ubuntu 桌面只有 libxft2）。
+          # 只装**运行时**包 libfreetype6 / libfontconfig1，不装 -dev：aino 不 include
+          # 任何第三方头、也不加 -l，运行时 dlopen 取符号。CI 这样装才对得上用户的
+          # 真实环境（普通 Ubuntu 桌面只有运行时包，开发包要另外 apt install）。
+          # fonts-noto-cjk 是中文的兜底字体：没有它「中文」这条断言必然是 tofu 方块，
+          # 而那正是用户报的 bug，所以必须在 CI 里能复现、也必须被钉住。
           # xfonts-base 是核心 X 的 XLFD 位图字体（fixed / 6x13 ...），只作为
-          # "Xft 加载失败"时的兜底来源 —— 但仍然要装，否则那条兜底路一个字都没有。
-          sudo apt-get install -y --no-install-recommends libx11-dev libxft2 xvfb xfonts-base fonts-dejavu-core
-          # Xft 走 fontconfig，裸容器里字体缓存可能还没建：不建的话 fc-match 找不到
-          # DejaVu，XftFontOpenName 会退化到某个位图字体 —— 抗锯齿断言就会红。
+          # "freetype 加载失败"时的兜底来源 —— 但仍然要装，否则那条兜底路一个字都没有。
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev libfreetype6 libfontconfig1 libfontconfig \
+            xvfb xfonts-base fonts-dejavu-core fonts-noto-cjk
+          # 裸容器里字体缓存可能还没建：不建的话 FcFontMatch 找不到 DejaVu / Noto，
+          # 抗锯齿和中文断言都会红。
           fc-cache -f > /dev/null
+          fc-match "sans" ; fc-match "sans:lang=zh-cn"
 
       - name: 编译 gallery、冒烟程序与像素断言
         run: |
-          # 不需要 -lXft（也没有头文件可 include）：libXft 是运行时 dlopen 的。
+          # 不需要 -lXft / -lfreetype / -lfontconfig：都是运行时 dlopen 的。
           # -ldl 在老 glibc（< 2.34）上必须，新版是空库，加上无害。
           g++ -std=c++17 -O2 -Wall examples/gallery.cpp -o gallery -lX11 -ldl
           g++ -std=c++17 -O2 -Wall tools/ci_smoke.cpp -o ci_smoke -lX11 -ldl
@@ -83,13 +88,36 @@ jobs:
       - name: 冒烟（xvfb 虚拟屏，跑满 20 帧）
         run: xvfb-run -a ./ci_smoke
 
-      - name: 像素断言（30 项，xvfb 虚拟屏）
+      - name: 像素断言（32 项，xvfb 虚拟屏）
         env:
           AINO_PIX_BMP: "1"
-          AINO_X11_TRACE: "1"
+        run: xvfb-run -a ./ci_pixels
+
+      # 布局自检：gallery 首帧会把全部 45 页量一遍，写出 `# over=N under=M total=K`。
+      # over 必须为 0 —— 这正是 Windows 上 `tools/regress.py` 卡的那条。
+      # 放在 Linux 上跑的意义：Xft 的行高/字宽和 GDI 不一样，某些手填高度的卡片
+      # 在 Windows 上刚好装下、换到 Xft 就可能溢出一行。
+      - name: 布局自检（gallery 全页，over 必须为 0）
         run: |
-          set -o pipefail
-          xvfb-run -a ./ci_pixels 2>&1 | tail -400
+          rm -f layout.txt
+          AINO_LAYOUT_REPORT=layout.txt timeout 20 xvfb-run -a ./gallery || true
+          echo "--- layout report ---"
+          cat layout.txt 2>/dev/null || { echo "没有产出布局报告"; exit 1; }
+          grep -q "# over=0 " layout.txt
+
+      # 整窗截图：xvfb 里没有交互桌面，人工核对"画成什么样"只能靠这个。
+      # 中文、词标对齐、配色都是靠它拍下来的，不看图就只能靠猜。
+      - name: 整窗截图（xvfb）
+        run: |
+          rm -f gallery_linux.bmp
+          AINO_SHOT_BMP=gallery_linux.bmp timeout 20 xvfb-run -a ./gallery || true
+          ls -l gallery_linux.bmp
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gallery-linux
+          path: gallery_linux.bmp
+          if-no-files-found: warn
 
       - name: 失败时保留抓到的帧
         if: failure()
@@ -117,7 +145,7 @@ jobs:
       - name: 冒烟（runner 没有交互桌面，能开窗就算过）
         run: ./ci_smoke
 
-      - name: 像素断言（30 项）
+      - name: 像素断言（32 项）
         env:
           AINO_PIX_BMP: "1"
         run: ./ci_pixels

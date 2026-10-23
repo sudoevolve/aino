@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1750,12 +1751,52 @@ int start_page_from_env() {
     return 0;
 }
 
+// 工具钩子：AINO_SHOT_BMP=<路径> —— 把后备缓冲存成 24bit BMP。
+// xvfb 里没有交互桌面，Linux 上想看"真画成什么样"只能这么取帧；
+// Windows 上平时不用（有 shot_pages.py 走 PrintWindow）。
+void dump_canvas_bmp(aino::Window& win, const char* path) {
+    aino::Canvas& cv = win.impl->canvas;
+    if (!cv.px || cv.w <= 0 || cv.h <= 0 || cv.stride <= 0) return;
+    std::FILE* f = std::fopen(path, "wb");
+    if (!f) return;
+    const int w = cv.w, h = cv.h;
+    const int pad = (4 - (w * 3) % 4) % 4;
+    const int row = w * 3 + pad;
+    const uint32_t data = uint32_t(row) * uint32_t(h);
+    const uint32_t file = 54u + data, off = 54u, bisize = 40u;
+    const uint16_t planes = 1, bpp = 24;
+    uint8_t hd[54] = {};
+    hd[0] = 'B'; hd[1] = 'M';
+    std::memcpy(&hd[2], &file, 4);
+    std::memcpy(&hd[10], &off, 4);
+    std::memcpy(&hd[14], &bisize, 4);
+    std::memcpy(&hd[18], &w, 4);
+    std::memcpy(&hd[22], &h, 4);
+    std::memcpy(&hd[26], &planes, 2);
+    std::memcpy(&hd[28], &bpp, 2);
+    std::memcpy(&hd[34], &data, 4);
+    std::fwrite(hd, 1, 54, f);
+    std::vector<uint8_t> line(size_t(row), 0);
+    for (int y = h - 1; y >= 0; --y) {              // BMP 自下而上
+        const uint8_t* src = &cv.px[size_t(y) * size_t(cv.stride)];
+        for (int x = 0; x < w; ++x) {
+            line[size_t(x) * 3u + 0u] = src[size_t(x) * 4u + aino::detail::CH_B];
+            line[size_t(x) * 3u + 1u] = src[size_t(x) * 4u + aino::detail::CH_G];
+            line[size_t(x) * 3u + 2u] = src[size_t(x) * 4u + aino::detail::CH_R];
+        }
+        std::fwrite(line.data(), 1, line.size(), f);
+    }
+    std::fclose(f);
+    std::fprintf(stderr, "[gallery] 已写出 %s（%dx%d）\n", path, w, h);
+}
+
 int main() {
     aino::Window win(1180, 760, "aino components");
     if (!win.ok()) return 1;
     App app;
     app.page = start_page_from_env();
     bool dumped = false;
+    int frames = 0;
     win.run([&](Ui& ui) {
         if (!dumped) {
             dumped = true;
@@ -1763,6 +1804,10 @@ int main() {
             dump_layout_report(ui, app, ui.width() - kNavW - 56.0f);
         }
         build_ui(ui, app);
+        // 第 2 帧再存图：第 1 帧里折叠/动画状态还没稳定
+        if (++frames == 2) {
+            if (const char* path = std::getenv("AINO_SHOT_BMP")) dump_canvas_bmp(win, path);
+        }
     });
     return 0;
 }
