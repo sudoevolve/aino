@@ -66,16 +66,19 @@ jobs:
           # 文字才和 Windows/macOS 一个观感。没有它也能编，只是退回 1bit 点阵字体。
           # xfonts-base 是核心 X 的 XLFD 位图字体（fixed / 6x13 ...），现在只作为
           # "Xft 不可用"兜底路径的字体来源 —— 但仍然要装，否则那条兜底路会一个字都没有。
-          sudo apt-get install -y --no-install-recommends libx11-dev libxft-dev xvfb xfonts-base fonts-dejavu-core
+          sudo apt-get install -y --no-install-recommends libx11-dev libxft-dev pkg-config xvfb xfonts-base fonts-dejavu-core
           # Xft 走 fontconfig，裸容器里字体缓存可能还没建：不建的话 fc-match 找不到
           # DejaVu，XftFontOpenName 会退化到某个位图字体 —— 抗锯齿断言就会红。
           fc-cache -f > /dev/null
 
       - name: 编译 gallery、冒烟程序与像素断言
         run: |
-          g++ -std=c++17 -O2 -Wall examples/gallery.cpp -o gallery -lX11 -lXft
-          g++ -std=c++17 -O2 -Wall tools/ci_smoke.cpp -o ci_smoke -lX11 -lXft
-          g++ -std=c++17 -O2 -Wall tools/ci_pixels.cpp -o ci_pixels -lX11 -lXft
+          # Xft.h 内部会 #include <ft2build.h>，而它在 /usr/include/freetype2 下面 ——
+          # 光有 -lXft 编不过，必须把 freetype2 的 include 目录带上，所以走 pkg-config。
+          XFT="$(pkg-config --cflags --libs xft)"
+          g++ -std=c++17 -O2 -Wall examples/gallery.cpp -o gallery $XFT -lX11
+          g++ -std=c++17 -O2 -Wall tools/ci_smoke.cpp -o ci_smoke $XFT -lX11
+          g++ -std=c++17 -O2 -Wall tools/ci_pixels.cpp -o ci_pixels $XFT -lX11
 
       - name: 冒烟（xvfb 虚拟屏，跑满 20 帧）
         run: xvfb-run -a ./ci_smoke

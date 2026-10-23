@@ -283,8 +283,10 @@ gallery 是唯一同时用到全部控件的程序，所以它另外挂了两个
   直接返回空串、以及「`CGImage` 交给 `drawRect:` 之后上屏是否正确」没人核对
   （像素断言读的是 CGContext 的缓冲，在 `drawRect:` 的上游）。
 
-链接依赖：Windows 只需 `user32` + `gdi32`；Linux 是 `-lX11 -lXft`（`-lXft` 只在装了
-`libxft-dev` 时可用；不加也能编，文字退回 1bit 点阵）；
+链接依赖：Windows 只需 `user32` + `gdi32`；Linux 是 `-lX11` 加上
+`$(pkg-config --cflags --libs xft)`（`Xft.h` 里要 `#include <ft2build.h>`，它在
+`/usr/include/freetype2` 子目录，手写 `-lXft` 编不过）；只在装了 `libxft-dev` 时可用，
+不装也能编、文字退回 1bit 点阵；
 macOS 只需 `-framework Cocoa -framework CoreText -framework CoreGraphics`。
 
 ---

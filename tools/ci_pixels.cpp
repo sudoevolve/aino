@@ -27,7 +27,7 @@
 //  环境变量 AINO_PIX_BMP=1 时把最后一个场景打成 ci_frame.bmp（CI 里当 artifact 看）
 //
 //  作者：sudoevolve <sudoevolve@gmail.com>
-//  编译：g++ -std=c++17 -O2 ci_pixels.cpp -o ci_pixels -lX11 -lXft
+//  编译：g++ -std=c++17 -O2 ci_pixels.cpp -o ci_pixels $(pkg-config --cflags --libs xft) -lX11
 //        clang++ -std=c++17 -O2 ci_pixels.cpp -o ci_pixels \
 //                -framework Cocoa -framework CoreText -framework CoreGraphics
 // =============================================================================

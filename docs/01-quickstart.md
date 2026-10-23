@@ -28,25 +28,30 @@ aino 是**单个头文件**，没有构建系统、没有第三方库、没有�
 |---|---|
 | MSVC | `cl /std:c++17 /utf-8 /EHsc /O2 /MT main.cpp user32.lib gdi32.lib` |
 | MinGW | `g++ -std=c++17 -O2 -static-libgcc -static-libstdc++ main.cpp -o app.exe -lgdi32 -luser32` |
-| GCC/X11 | `g++ -std=c++17 -O2 main.cpp -lX11 -lXft`（`-lXft` 见下）|
+| GCC/X11 | `g++ -std=c++17 -O2 main.cpp -o app $(pkg-config --cflags --libs xft) -lX11`（见下）|
 | Clang/macOS | `clang++ -std=c++17 -O2 main.cpp -framework Cocoa -framework CoreText -framework CoreGraphics` |
 
 要求 **C++17**（用到 `std::function`、`std::string_view` 为可选、结构化绑定）
 和 **`std::uint8_t` 等定宽类型**。
 
-### Linux 上的 `-lXft`
+### Linux 上的 Xft
 
-`-lXft` 是文字渲染依赖（Xft = FreeType + fontconfig）。先装开发包：
+文字渲染依赖 Xft（= FreeType + fontconfig）。先装开发包：
 
 ```bash
-sudo apt install libxft-dev        # Debian / Ubuntu
-sudo dnf install libXft-devel      # Fedora
+sudo apt install libxft-dev pkg-config   # Debian / Ubuntu
+sudo dnf install libXft-devel pkgconf    # Fedora
 ```
 
+编译命令里用 `$(pkg-config --cflags --libs xft)` 而不是手写 `-lXft`，因为
+`<X11/Xft/Xft.h>` 内部会 `#include <ft2build.h>`，而那个头在 `/usr/include/freetype2`
+**子目录**里 —— 只给 `-lXft` 会死在 `fatal error: ft2build.h: No such file or directory`。
+`pkg-config` 会把这几个 `-I` 和 `-l` 一起吐出来。
+
 **不装也能编过**：`__has_include(<X11/Xft/Xft.h>)` 探测不到，整条 Xft 路径直接消失，
-编译命令里多加的 `-lXft` 会变成「没用到，无所谓」。但那样文字就退回核心 X 的
-1bit 点阵字体 —— 没有抗锯齿、请求 13px 时服务端拿 12px 位图缩放上去、中文挑全角
-点阵、粗体跟正文一样细，整屏像马赛克。**想在 Ubuntu 桌面上看着正常，就装它。**
+`$(pkg-config ...)` 输出空串也不影响编译。但那样文字就退回核心 X 的 1bit 点阵字体 ——
+没有抗锯齿、请求 13px 时服务端拿 12px 位图缩放上去、中文挑全角点阵、粗体跟正文一样细，
+整屏像马赛克。**想在 Ubuntu 桌面上看着正常，就装它。**
 
 实时诊断：`AINO_X11_TRACE=1 ./app` 会把每个字体候选、`XftFontOpenName` 命中的指针、
 升降部高度和每次绘制的 pixmap 尺寸打到 stderr。
