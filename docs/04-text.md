@@ -274,7 +274,7 @@ float h = ui.text_height(long_doc, 700.0f, aino::Style().wrap_text());
 | macOS | CoreText | 系统 UI 字体（SF） | 有 | 真字面 |
 | Linux | FreeType + fontconfig（都是运行时 `dlopen`） | 主字体 `sans` → DejaVu Sans；缺字时沿 `FcFontSort` 的兜底链找到 Noto Sans CJK | 灰度 AA | fontconfig 按 `weight` 匹配字面 |
 
-Linux 上有三个坑，都写在代码注释里：
+Linux 上有四个坑，都写在代码注释里：
 
 1. **字形在客户端光栅化，不走 X server**。`XftDrawString` / `Xutf8DrawString` 是把字画到
    **服务端 drawable** 上的，而 aino 每一帧都是先在客户端缓冲里画完、帧末 `XPutImage`
@@ -287,7 +287,15 @@ Linux 上有三个坑，都写在代码注释里：
    （西文几乎都命中主字体，汉字落到 Noto Sans CJK）。`ci_pixels` 里那条
    「有墨的行里有没有一行在中间三分之一列有墨」就是钉这件事的 —— 豆腐方块是空心矩形，
    中间列除了上下两条边什么都没有。
-3. **基线只按主字体的 metrics**。汉字 ink 本来就在 em 框内（上缘约 0.88em < DejaVu 的
+3. **兜底链不能"取前 N 条"**。`FcFontSort` 的返回表里**同一个家族的每个 style 各占
+   一条**：DejaVu Sans 一家就能吃掉 Book / Bold / Oblique / Condensed 七八条，Noto Sans
+   再占一批。只取前 16 条时，用户机器上扫完 16 条还没有一个覆盖汉字 —— 于是整片中文
+   变成空白（不是豆腐块，是彻底不落墨）。等宽通道字体种类少、CJK 挤进了前 16，所以
+   表现成「代码块里的中文还在、别处全没了」这个奇怪的不对称。
+   现在的做法是**按 charset 探测**（`FcPatternGetCharSet` + `FcCharSetHasChar`）：
+   整张表扫一遍，把第一个覆盖 U+4E2D 的字体插到主字体之后，名次怎么排都不影响。
+   `ci_pixels` 的 S4 场景用 `AINO_X11_CHAIN_CAP=4` 把链砍短，精确复现这个状态。
+4. **基线只按主字体的 metrics**。汉字 ink 本来就在 em 框内（上缘约 0.88em < DejaVu 的
    0.93em），拿「国」的 ink 去撑 asc 反而会把 19px 的字算成 24px 的 asc，行高 30 > 26px
    的盒子，`VAlign::Middle` 居中后整行上移 2px、顶部被裁。踩过这个坑：
    侧边栏那个 `aino` 词标看起来像被切了一刀。

@@ -91,7 +91,13 @@ jobs:
       - name: 像素断言（34 项，xvfb 虚拟屏）
         env:
           AINO_PIX_BMP: "1"
-        run: xvfb-run -a ./ci_pixels
+          AINO_X11_TRACE: "1"
+        run: |
+          set +e
+          xvfb-run -a ./ci_pixels 2> pixels_trace.txt
+          rc=$?
+          if [ $rc -ne 0 ]; then echo "--- trace ---"; cat pixels_trace.txt; fi
+          exit $rc
 
       # 兜底链自检：把链砍到 4 条（DejaVu Sans 的那几个 style 正好占满），
       # 汉字仍然必须画出来 —— 这就是用户机器上「中文全消失了，但代码块里的
