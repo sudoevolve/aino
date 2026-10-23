@@ -2,7 +2,7 @@
 
 # 三平台各跑两件事：
 #   1. ci_smoke   —— 能编译、能开窗、能跑满 20 帧（冒烟）
-#   2. ci_pixels  —— 29 项像素断言，直接从后备缓冲读像素（画得对不对）
+#   2. ci_pixels  —— 30 项像素断言，直接从后备缓冲读像素（画得对不对）
 #
 # 现状：
 #   · Windows —— 唯一经过真桌面验证的后端，这个 job 必须绿；
@@ -40,7 +40,7 @@ jobs:
       - name: 冒烟（跑满 20 帧）
         run: .\ci_smoke.exe
 
-      - name: 像素断言（29 项）
+      - name: 像素断言（30 项）
         env:
           AINO_PIX_BMP: "1"
         run: .\ci_pixels.exe
@@ -59,24 +59,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 装 X11 头文件、虚拟屏与基础字体
+      - name: 装 X11 头文件、虚拟屏、基础字体与 Xft
         run: |
           sudo apt-get update
-          # xfonts-base 提供 core X 的 XLFD 位图字体（fixed / 6x13 ...）。
-          # 没有它，XCreateFontSet 在裸 xvfb 上找不到任何字体 → 文字全不显示，
-          # 而"什么都没画"和"画了但被覆盖"在日志里长得一模一样。
-          sudo apt-get install -y --no-install-recommends libx11-dev xvfb xfonts-base
+          # libxft-dev 提供 <X11/Xft/Xft.h>：有了它就编进 Xft（FreeType 灰度抗锯齿），
+          # 文字才和 Windows/macOS 一个观感。没有它也能编，只是退回 1bit 点阵字体。
+          # xfonts-base 是核心 X 的 XLFD 位图字体（fixed / 6x13 ...），现在只作为
+          # "Xft 不可用"兜底路径的字体来源 —— 但仍然要装，否则那条兜底路会一个字都没有。
+          sudo apt-get install -y --no-install-recommends libx11-dev libxft-dev xvfb xfonts-base fonts-dejavu-core
+          # Xft 走 fontconfig，裸容器里字体缓存可能还没建：不建的话 fc-match 找不到
+          # DejaVu，XftFontOpenName 会退化到某个位图字体 —— 抗锯齿断言就会红。
+          fc-cache -f > /dev/null
 
       - name: 编译 gallery、冒烟程序与像素断言
         run: |
-          g++ -std=c++17 -O2 -Wall examples/gallery.cpp -o gallery -lX11
-          g++ -std=c++17 -O2 -Wall tools/ci_smoke.cpp -o ci_smoke -lX11
-          g++ -std=c++17 -O2 -Wall tools/ci_pixels.cpp -o ci_pixels -lX11
+          g++ -std=c++17 -O2 -Wall examples/gallery.cpp -o gallery -lX11 -lXft
+          g++ -std=c++17 -O2 -Wall tools/ci_smoke.cpp -o ci_smoke -lX11 -lXft
+          g++ -std=c++17 -O2 -Wall tools/ci_pixels.cpp -o ci_pixels -lX11 -lXft
 
       - name: 冒烟（xvfb 虚拟屏，跑满 20 帧）
         run: xvfb-run -a ./ci_smoke
 
-      - name: 像素断言（29 项，xvfb 虚拟屏）
+      - name: 像素断言（30 项，xvfb 虚拟屏）
         env:
           AINO_PIX_BMP: "1"
         run: xvfb-run -a ./ci_pixels
@@ -107,7 +111,7 @@ jobs:
       - name: 冒烟（runner 没有交互桌面，能开窗就算过）
         run: ./ci_smoke
 
-      - name: 像素断言（29 项）
+      - name: 像素断言（30 项）
         env:
           AINO_PIX_BMP: "1"
         run: ./ci_pixels

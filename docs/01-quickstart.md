@@ -28,11 +28,28 @@ aino 是**单个头文件**，没有构建系统、没有第三方库、没有�
 |---|---|
 | MSVC | `cl /std:c++17 /utf-8 /EHsc /O2 /MT main.cpp user32.lib gdi32.lib` |
 | MinGW | `g++ -std=c++17 -O2 -static-libgcc -static-libstdc++ main.cpp -o app.exe -lgdi32 -luser32` |
-| GCC/X11 | `g++ -std=c++17 -O2 main.cpp -lX11` |
+| GCC/X11 | `g++ -std=c++17 -O2 main.cpp -lX11 -lXft`（`-lXft` 见下）|
 | Clang/macOS | `clang++ -std=c++17 -O2 main.cpp -framework Cocoa -framework CoreText -framework CoreGraphics` |
 
 要求 **C++17**（用到 `std::function`、`std::string_view` 为可选、结构化绑定）
 和 **`std::uint8_t` 等定宽类型**。
+
+### Linux 上的 `-lXft`
+
+`-lXft` 是文字渲染依赖（Xft = FreeType + fontconfig）。先装开发包：
+
+```bash
+sudo apt install libxft-dev        # Debian / Ubuntu
+sudo dnf install libXft-devel      # Fedora
+```
+
+**不装也能编过**：`__has_include(<X11/Xft/Xft.h>)` 探测不到，整条 Xft 路径直接消失，
+编译命令里多加的 `-lXft` 会变成「没用到，无所谓」。但那样文字就退回核心 X 的
+1bit 点阵字体 —— 没有抗锯齿、请求 13px 时服务端拿 12px 位图缩放上去、中文挑全角
+点阵、粗体跟正文一样细，整屏像马赛克。**想在 Ubuntu 桌面上看着正常，就装它。**
+
+实时诊断：`AINO_X11_TRACE=1 ./app` 会把每个字体候选、`XftFontOpenName` 命中的指针、
+升降部高度和每次绘制的 pixmap 尺寸打到 stderr。
 
 ### 分发：怎么做到「只有一个 exe，不带 DLL」
 

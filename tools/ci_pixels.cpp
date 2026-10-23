@@ -27,7 +27,7 @@
 //  环境变量 AINO_PIX_BMP=1 时把最后一个场景打成 ci_frame.bmp（CI 里当 artifact 看）
 //
 //  作者：sudoevolve <sudoevolve@gmail.com>
-//  编译：g++ -std=c++17 -O2 ci_pixels.cpp -o ci_pixels -lX11
+//  编译：g++ -std=c++17 -O2 ci_pixels.cpp -o ci_pixels -lX11 -lXft
 //        clang++ -std=c++17 -O2 ci_pixels.cpp -o ci_pixels \
 //                -framework Cocoa -framework CoreText -framework CoreGraphics
 // =============================================================================
@@ -205,6 +205,27 @@ static int darkest(const Shot& s, const Rect& r) {
         }
     }
     return lo;
+}
+
+// 数一个矩形里有多少档灰度（8 级一档，跳过背景）。用来区分"灰度抗锯齿"和"1bit 点阵"：
+// 点阵字体只会有 1~2 档，Xft / CoreText / GDI 的 ClearType 都会有十几档。
+static int text_gray_levels(const Shot& s, const Rect& r, const Color& bg) {
+    const int bg_l = (int(bg.r) * 77 + int(bg.g) * 150 + int(bg.b) * 29) >> 8;
+    int x0, y0, x1, y1;
+    s.to_phys(r, x0, y0, x1, y1);
+    bool seen[32] = {};
+    int levels = 0;
+    for (int y = y0; y < y1; ++y) {
+        const uint8_t* row = &s.px[size_t(y) * size_t(s.stride)];
+        for (int x = x0; x < x1; ++x) {
+            const uint8_t* p = row + size_t(x) * 4u;
+            const int l = (int(p[CH_R]) * 77 + int(p[CH_G]) * 150 + int(p[CH_B]) * 29) >> 8;
+            if (std::abs(l - bg_l) <= 8) continue;      // 背景，不算墨
+            const int b = l >> 3;
+            if (!seen[b]) { seen[b] = true; ++levels; }
+        }
+    }
+    return levels;
 }
 
 // 文字墨迹的外接框（物理像素），返回 false 表示一个墨点都没有
@@ -449,6 +470,23 @@ static bool scene_primitives() {
                       tw_hg <= 0.0f ? "字体根本没量出来，XCreateFontSet 失败或缺字"
                                     : "能量出宽度却没画上，问题在绘制路径");
         want_true(n >= 20, "S2 文字画出了墨（字体加载成功）", buf);
+    }
+    {
+        // 抗锯齿：1bit 点阵字体只有"有墨 / 没墨"两档，Xft（FreeType 灰度）才会
+        // 出现大量中间灰。这条专门钉 Ubuntu 上「文字像点阵马赛克、标题和正文一样细」
+        // 那个回归 —— 后端悄悄退回 XFontSet 时，上面那条墨迹断言照样绿。
+        const int levels = text_gray_levels(shot, Rect(20.0f, 170.0f, 120.0f, 24.0f), bg);
+        char buf[192];
+#if defined(AINO_HAVE_XFT)
+        std::snprintf(buf, sizeof buf,
+                      "文字框里有 %d 档灰度；1 档 = 纯 1bit 点阵，≥4 才说明走了灰度抗锯齿",
+                      levels);
+        want_true(levels >= 4, "S2 文字是灰度抗锯齿渲染（Xft 生效）", buf);
+#else
+        std::snprintf(buf, sizeof buf,
+                      "未编入 Xft（缺 libxft-dev），文字是 1bit 点阵：%d 档灰度属预期", levels);
+        want_true(levels >= 1, "S2 文字灰度档位（未编入 Xft，只验有墨）", buf);
+#endif
     }
     {
         int bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;

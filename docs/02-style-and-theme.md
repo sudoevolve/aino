@@ -313,8 +313,9 @@ t.font_family = "Microsoft YaHei UI";   // 全用雅黑：拉丁也走它的西�
 // t.font_family = "Consolas";          // 想要全等宽就换成这个
 ```
 
-> 平台差异：Windows 会做上面这套探测；X11 / macOS 后端只是把 `font_family`
-> 原样交给系统字体接口，留空时用各自的平台默认值。
+> 平台差异：Windows 会做上面这套探测；X11 把 `font_family` 当 **fontconfig 家族名**
+> 交给 Xft（留空 = `sans`，等宽通道 = `monospace`；名字在 Linux 上不存在时 fontconfig
+> 自动代换，不会缺字）；macOS 原样交给 CoreText。三者留空都用各自平台默认值。
 
 > **哪条路径是等宽的？** 只有 `code_block()`（和它背后的 `TextRenderer::measure_mono` /
 > `draw_mono`）。`code_text` / `label` / `table` 这些**都不是**等宽 —— 想要表格里数字对齐，

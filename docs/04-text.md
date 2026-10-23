@@ -155,7 +155,9 @@ ui.code_block(src, {x, y, 620.0f, h}, aino::Style().font(13.0f));
 | 行号与代码之间 | 一条 1px 竖线，位置取整后 `+0.5`，避免压在两列像素中间发虚 |
 
 它走的是**等宽通道**（`TextRenderer::measure_mono` / `draw_mono`），不经过 `draw_text`。
-所以后端不实现 mono 也编得过，只是退化成比例字体、列对不齐。
+三个后端都实现了它：Windows 用 Consolas（`CreateFontW` 的 `FIXED_PITCH|FF_MODERN`），
+macOS 用 `Menlo`，Linux 用 fontconfig 的 `monospace`。后端不实现也编得过 —— 基类会
+退化成比例字体、列对不齐，总比整块文字消失好。
 
 ### 6.1 它不滚动，也不折行
 
@@ -259,3 +261,28 @@ float h = ui.text_height(long_doc, 700.0f, aino::Style().wrap_text());
 
 需要**底 + 框 + 内边距**的文本块（如提示条）→ 用 `alert`；
 需要**可点击**的文本 → 用 `Style().ghost()` 或 `Style().link()` 的 `button`。
+---
+
+## 9. 三个平台的字体从哪来
+
+字号（`Style::font_size`，默认 `theme.font_size`）在三个后端都当**像素尺寸**用，
+但取字形的路完全不同：
+
+| 平台 | 后端 | 字形来源 | 抗锯齿 | 粗体 |
+|---|---|---|---|---|
+| Windows | GDI | Segoe UI（中文经字体链接落到微软雅黑） | 灰度 AA | 真字面；缺字面时 GDI 合成加粗 |
+| macOS | CoreText | 系统 UI 字体（SF） | 有 | 真字面 |
+| Linux | Xft（FreeType + fontconfig） | `sans` → 系统的 Noto Sans / DejaVu Sans，CJK 由 fontconfig 自动 fallback | 灰度 AA | fontconfig 按 `weight` 匹配字面 |
+
+Linux 上有两个坑，都写在代码注释里：
+
+1. **装了 `libxft-dev` 才有抗锯齿**。没有它，后端退回核心 X 的 XLFD 点阵字体
+   （`xfonts-base` 里那几套 6x13）：覆盖率只有 0/1，而且点阵字体没有 12/13/14 这种
+   连续字号 —— 请求 13px 时服务端会拿 12px 位图缩放上去，汉字挑全角点阵、拉丁字距被
+   拉成等宽、粗体跟正文一样细，整屏像马赛克。`ci_pixels` 里那条「文字框里有几档灰度」
+   就是钉这件事的（1 档 = 点阵，≥4 档才算抗锯齿）。
+2. **基线要按 CJK 兜底**。`XftFont::ascent` 只是主字体（DejaVu Sans ≈ 0.93em）的，
+   而汉字是 fontconfig 现场 fallback 到 Noto Sans CJK（≈ 1.16em）画的。照主字体的
+   ascent 摆基线，中文顶部会被行盒裁掉一截；按字符串逐个量又会让同一行的基线忽高忽低。
+   所以 `X11TextRenderer` 拿一个「国」实测 ink，把超出部分补进 asc/desc，再按字号缓存 ——
+   同一字号的所有文本共用一条基线。

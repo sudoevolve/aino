@@ -201,14 +201,14 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 | 平台 | 后端 | 状态 |
 |---|---|---|
 | Windows | GDI（`BitBlt` + 自绘 AA 光栅化） | **已验证**（Win11 / MSVC 与 MinGW g++，47 项回归全绿） |
-| Linux | X11 + XFontSet 系统字体 | **CI 通过**：编译 + xvfb 开窗跑满 20 帧 + **29 项像素断言** |
-| macOS | Cocoa / CoreText / CoreGraphics | **CI 通过**：编译 + 开窗跑满 20 帧 + **29 项像素断言** |
+| Linux | X11 + Xft（缺 libxft-dev 时退回 XFontSet 点阵） | **CI 通过**：编译 + xvfb 开窗跑满 20 帧 + **30 项像素断言** |
+| macOS | Cocoa / CoreText / CoreGraphics | **CI 通过**：编译 + 开窗跑满 20 帧 + **30 项像素断言** |
 
 上表不是「能编译就算过」：
 
 - `tools/ci_smoke.cpp` 必须真的建出窗口、跑满 20 帧、自己退出
   （退出码 2/3 分别代表开不了窗 / 帧没跑满）；
-- `tools/ci_pixels.cpp` 必须让 29 项断言全过，它**直接读后备缓冲**
+- `tools/ci_pixels.cpp` 必须让 30 项断言全过，它**直接读后备缓冲**
   （`Window::Impl::canvas.px`，三个后端都往同一块缓冲里画），不依赖任何窗口抓图 API。
 
 ### 跨平台像素断言怎么做到「同一个标准、三种字形」
@@ -256,18 +256,23 @@ gallery 是唯一同时用到全部控件的程序，所以它另外挂了两个
 - **Linux / X11**：CI 的像素断言一上线就抓到两条真 bug，都已修：
   ① **文字一个像素都不显示** —— 几何图形是在**客户端 XImage** 里光栅化的、一帧结束才
   `XPutImage` 上屏，而文字走 `Xutf8DrawString` 直接画在**窗口**上，于是先出现、再被
-  整块覆盖。改成画到 1bit Pixmap → `XGetImage` 取回 → 逐像素 `blend` 进缓冲；
+  整块覆盖。改成画到 Pixmap → `XGetImage` 取回 → 逐像素 `blend` 进缓冲；
   ② **字体挑到退化字体** —— XLFD 有 14 个字段、第 7 个才是 `pixel_size`（原来写在第 8 个
   `point_size` 位），精确匹配从来没命中过，一路落到 `"*"`，在 runner 上挑到 1px 宽的
   字体（`text_width("Hg") = 2`）。现在有候选链 + 「量一下 `Hg` 宽不宽」的体检。
   尚未验证：键盘/鼠标事件映射、XIM 输入法组字、剪贴板（`set_clipboard` 只声明所有权）、
   HiDPI、中文（裸 runner 没有中文字体，汉字会缺字）。
-  **已知取舍**：文字没有抗锯齿 —— core X 字体本身就是位图，覆盖率只有 0/1。
-  再遇到文字问题时开 `AINO_X11_TRACE=1`：会把每个字体候选、体检宽度、每次绘制
-  的 pixmap 尺寸打到 stderr（并立即 fflush —— 崩溃时管道里的 stderr 是全缓冲的，
+  **文字渲染已改为 Xft**（0.4.4）：核心 XLFD 字体只有 1bit 点阵、没有 12/13/14 这种
+  连续字号，Ubuntu 桌面上请求 13px 会被服务端拿 12px 位图缩放上去 —— 中文挑全角点阵、
+  拉丁字距被拉成等宽、字重完全拉不开，整屏像马赛克。装了 `libxft-dev` 就自动编进
+  Xft（FreeType 灰度抗锯齿 + 任意字号 + 真粗体），`__has_include` 探测不到则退回点阵。
+  `ci_pixels` 里那条「文字框里有几档灰度」的断言就是钉这件事的：1 档 = 点阵，≥4 档才
+  算抗锯齿。
+  再遇到文字问题时开 `AINO_X11_TRACE=1`：会把每个字体候选、体检宽度、Xft 字体指针、
+  每次绘制的 pixmap 尺寸打到 stderr（并立即 fflush —— 崩溃时管道里的 stderr 是全缓冲的，
   不 flush 等于什么都没打）。
 - **macOS / Cocoa**：曾经一个 `.cpp` 都编不过；2026-10-20 用 CI 当编译器，一路修到能跑，
-  并跑通了 29 项像素断言（说明 CoreText 画字、裁剪、阴影这条链是真的对）：
+  并跑通了 30 项像素断言（说明 CoreText 画字、裁剪、阴影这条链是真的对）：
   ① `CocoaState` 补上 `pending_image` / `key_ctrl` / `key_shift` / `key_alt` 四个字段；
   ② arm64 不允许裸调 `objc_msgSend`，加 `oc_send<R>(...)` 模板统一转型；
   ③ 系统头的 QuickDraw `::Rect` / `::Style` 与 `aino::Rect` 撞名，包含前用宏改名；
@@ -278,7 +283,8 @@ gallery 是唯一同时用到全部控件的程序，所以它另外挂了两个
   直接返回空串、以及「`CGImage` 交给 `drawRect:` 之后上屏是否正确」没人核对
   （像素断言读的是 CGContext 的缓冲，在 `drawRect:` 的上游）。
 
-链接依赖：Windows 只需 `user32` + `gdi32`；Linux 只需 `-lX11`；
+链接依赖：Windows 只需 `user32` + `gdi32`；Linux 是 `-lX11 -lXft`（`-lXft` 只在装了
+`libxft-dev` 时可用；不加也能编，文字退回 1bit 点阵）；
 macOS 只需 `-framework Cocoa -framework CoreText -framework CoreGraphics`。
 
 ---
