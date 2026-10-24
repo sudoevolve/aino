@@ -760,16 +760,32 @@ static bool scene_mixed_literal() {
 
     // 路径 (a)：整串是系统 ANSI（用户没加 /utf-8，且串里全是中文）。按 ACP 编成
     // 字节再喂回来必须还原 —— 逐段混合解码不能把这条老路弄坏。
+    //
+    // 但样本得挑：CI 的 Windows runner 系统代码页是 **1252**，
+    // WideCharToMultiByte 会把「最小示例」替换成 4 个 '?'（U+003F），这种情况下
+    // 还原不了也不该还原 —— 这条断言因此在 CI 上红了好几轮，本地是 936 看不见。
+    // 所以先问 ACP 能不能表示中文：能就用「最小示例」，不能就退到「café」。
+    // 后者在 1252 是单字节 0xE9、在 936 是双字节 A8A6，两条 ACP 路径都能考到。
     {
-        const wchar_t src[] = {0x6700, 0x5C0F, 0x793A, 0x4F8B, 0};   // 最小示例
+        const wchar_t cjk[] = {0x6700, 0x5C0F, 0x793A, 0x4F8B, 0};   // 最小示例
         char ansi[32] = {0};
-        const int got = ::WideCharToMultiByte(CP_ACP, 0, src, 4, ansi, int(sizeof ansi),
+        const int got = ::WideCharToMultiByte(CP_ACP, 0, cjk, 4, ansi, int(sizeof ansi),
                                               nullptr, nullptr);
-        const std::wstring wa =
-            aino::detail::to_wide(std::string(ansi, size_t(got > 0 ? got : 0)));
-        std::snprintf(buf, sizeof buf, "ACP 编出 %d 字节，解回 %zu 个字符，首码位 U+%04X",
-                      got, wa.size(), wa.empty() ? 0u : unsigned(wa[0]));
-        want_true(wa.size() == 4 && wa[0] == wchar_t(0x6700) && wa[3] == wchar_t(0x4F8B),
+        wchar_t back[8] = {0};
+        const int backn = got > 0 ? ::MultiByteToWideChar(CP_ACP, 0, ansi, got, back, 8) : 0;
+        const bool cjk_ok = got > 0 && backn == 4 &&
+                            back[0] == wchar_t(0x6700) && back[3] == wchar_t(0x4F8B);
+
+        const wchar_t lat[] = {0x63, 0x61, 0x66, 0xE9, 0};           // café
+        const wchar_t* src = cjk_ok ? cjk : lat;
+        char enc[32] = {0};
+        const int n = ::WideCharToMultiByte(CP_ACP, 0, src, 4, enc, int(sizeof enc),
+                                            nullptr, nullptr);
+        const std::wstring wa = aino::detail::to_wide(std::string(enc, size_t(n > 0 ? n : 0)));
+        std::snprintf(buf, sizeof buf, "ACP=%d 样本=%s 编出 %d 字节，解回 %zu 个字符，首码位 U+%04X",
+                      int(::GetACP()), cjk_ok ? "最小示例" : "café", n, wa.size(),
+                      wa.empty() ? 0u : unsigned(wa[0]));
+        want_true(wa.size() == 4 && wa[0] == wchar_t(src[0]) && wa[3] == wchar_t(src[3]),
                   "S5 整串系统 ANSI 仍按 CP_ACP 解", buf);
     }
 
