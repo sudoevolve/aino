@@ -82,8 +82,8 @@
 
 #define AINO_VERSION_MAJOR 0
 #define AINO_VERSION_MINOR 4
-#define AINO_VERSION_PATCH 11
-#define AINO_VERSION "0.4.11"
+#define AINO_VERSION_PATCH 12
+#define AINO_VERSION "0.4.12"
 
 #include <cstdint>
 #include <cstddef>
@@ -2104,64 +2104,12 @@ inline bool strict_utf8_decode(const std::string& s, std::wstring& out) {
     return true;
 }
 
-// 还原"UTF-8 字节被当成 Latin-1 逐字节读进去"的串。
-//
-// 这是**最脏也最常见**的一种坏串，而且它能绕过前面所有防线：如果源码的 BOM 被剥
-// 掉了（或被不认 BOM 的工具链读成 ANSI），"最小示例"这 12 个 UTF-8 字节会被当成
-// 12 个字符 —— 每个字节一个字符，得到 'æ' 'œ' '€' … 这些**仍然是合法 UTF-8**，
-// 严格解码照样通过，于是中文全变成西欧字母，中间还夹着 U+009C 这种 C1 控制字符
-// （Windows 标题栏把 C1 画成带十六进制的方框，一眼就能认出来）。
-//
-// 判据刻意收紧，只在"确定是这种坏法"时才动手：
-//   · 所有字符都 ≤ U+00FF（说明原串只有单字节字符）
-//   · 至少有一个 U+0080..U+009F（C1 控制字符；正常界面文案里不可能有）
-//   · 逐字节还原后必须是**合法 UTF-8**，而且要能解出 CJK
-// 三条同时满足才替换，所以 "café" 这种真 Latin-1 文案不会被误伤。
-inline void fix_latin1_mojibake(std::wstring& w) {
-    if (w.size() < 2) return;
-    // cp1252 在 0x80..0x9F 这段把字节映射到了别的码位（0x80 -> €，0x9C -> œ …），
-    // 这几个槽位在 cp1252 里没有定义，就保持"字节值 = 码位"。两种误读方式（原样
-    // 逐字节 / 按 cp1252 逐字节）都要能反推回去，所以用一张表统一处理。
-    static const unsigned int kCp1252Hi[32] = {
-        0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
-        0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
-        0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
-        0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178
-    };
-    bool any_high = false;
-    std::string bytes;
-    bytes.reserve(w.size());
-    for (size_t i = 0; i < w.size(); ++i) {
-        const unsigned int c = unsigned(w[i]);
-        if (c < 0x80u) { bytes.push_back(char(c)); continue; }
-        any_high = true;
-        if (c <= 0xFFu) { bytes.push_back(char(c)); continue; }
-        bool hit = false;
-        for (int k = 0; k < 32; ++k)
-            if (kCp1252Hi[k] == c) { bytes.push_back(char(unsigned(0x80 + k))); hit = true; break; }
-        if (!hit) return;     // 真宽字符（汉字等）→ 本来就是好串，别碰
-    }
-    if (!any_high) return;    // 纯 ASCII：不可能是这种坏法
-    // 反推出来的字节必须是**合法 UTF-8**、而且真能解出汉字，才认。
-    // 这两条把关，"café" 这种真单字节文案（反推出的 E9 不是合法 UTF-8 头）不会被误伤。
-    std::wstring fixed;
-    if (!strict_utf8_decode(bytes, fixed)) return;
-    bool has_cjk = false;
-    for (size_t i = 0; i < fixed.size(); ++i)
-        if (unsigned(fixed[i]) >= 0x2E80u) { has_cjk = true; break; }
-    if (!has_cjk) return;
-    w.swap(fixed);
-}
-
 inline void to_wide_into(const std::string& s, std::wstring& out) {
     out.clear();
     if (s.empty()) return;
     // 快路径：正常编译出来的串都是纯合法 UTF-8，一次走完，别让所有文字都去跑
     // 下面的逐字节兜底。
-    if (strict_utf8_decode(s, out)) {
-        fix_latin1_mojibake(out);
-        return;
-    }
+    if (strict_utf8_decode(s, out)) return;
     out.clear();
     // 慢路径：串里有非法字节。两种来源方向相反 ——
     //   (a) 整串是系统 ANSI（用户没加 /utf-8 编的 exe）→ 该按 CP_ACP 解；
@@ -2220,7 +2168,6 @@ inline void to_wide_into(const std::string& s, std::wstring& out) {
         if (used == 0) { out.push_back(wchar_t(0xFFFD)); used = 1; }
         i += used;
     }
-    fix_latin1_mojibake(out);
 }
 
 inline std::wstring to_wide(const std::string& s) {
@@ -9317,30 +9264,6 @@ inline void w32_create(Window* self, const WindowConfig& cfg) {
     }
 
     std::wstring wtitle = to_wide(cfg.title.empty() ? std::string("aino") : cfg.title);
-    // 诊断开关 AINO_TITLE_TRACE=<文件路径>：把标题的**原始字节**和**解码后的码位**
-    // 各写一行。窗口标题乱码这类问题隔着截图只能猜（"是编译器编错了，还是解码错
-    // 了？"），而这两行一对照就分得清：
-    //   原始字节是纯 UTF-8 / 混合编码 / 一个字节一个字符 —— 说明编译器怎么编的；
-    //   码位对不上 —— 说明 to_wide 解错了。
-    // 只在设了环境变量时生效，平时零开销。
-    if (const char* trace_path = std::getenv("AINO_TITLE_TRACE")) {
-        if (FILE* f = std::fopen(trace_path, "ab")) {
-            wchar_t mod[MAX_PATH] = {0};
-            ::GetModuleFileNameW(nullptr, mod, MAX_PATH);
-            char mod_narrow[MAX_PATH] = {0};
-            for (int i = 0; i < MAX_PATH && mod[i]; ++i)
-                mod_narrow[i] = mod[i] < 0x80 ? char(mod[i]) : '?';
-            std::fprintf(f, "[title] ver=%s exe=%s\n", AINO_VERSION, mod_narrow);
-            std::fprintf(f, "[title] raw len=%zu:", cfg.title.size());
-            for (size_t i = 0; i < cfg.title.size(); ++i)
-                std::fprintf(f, " %02X", unsigned((unsigned char)cfg.title[i]));
-            std::fprintf(f, "\n[title] codes (%zu):", wtitle.size());
-            for (size_t i = 0; i < wtitle.size(); ++i)
-                std::fprintf(f, " U+%04X", unsigned(wtitle[i]));
-            std::fprintf(f, "\n");
-            std::fclose(f);
-        }
-    }
     HWND hwnd = CreateWindowExW(0, L"AinoWindowClass", wtitle.c_str(), style,
                                 px, py, win_w, win_h,
                                 nullptr, nullptr, GetModuleHandleW(nullptr), s);
@@ -10710,6 +10633,30 @@ inline bool x11_handle(X11State* s, XEvent& e) {
     return true;
 }
 
+// 设置窗口标题。
+//
+// ICCCM 规定 WM_NAME 是 ISO-8859-1，XStoreName 塞进去的 UTF-8 字节会被 GTK/GNOME/
+// KDE 当成 latin1 **逐字节**解码 —— 标题栏里就成了 "æœ€å°ç¤ºä¾‹"，中间那些落进
+// U+0080..U+009F 的字节还会被画成带十六进制的方框。
+// 现代窗口管理器读的是 EWMH 的 _NET_WM_NAME，而且类型必须是 UTF8_STRING，所以两个
+// 都要设：_NET_WM_NAME 给现代桌面，WM_NAME 留作兜底（只认它的老 WM）。
+// 兜底那份仍写 UTF-8 字节：中文本来就没有 latin1 表示，转不过去，而现代 WM 都以
+// _NET_WM_NAME 为准，不会看它。
+inline void x11_set_title(Display* dpy, ::Window win, const std::string& utf8) {
+    if (!dpy || !win) return;
+    const char* p = utf8.empty() ? "aino" : utf8.c_str();
+    const size_t n = utf8.empty() ? 4u : utf8.size();
+    const Atom net_name = XInternAtom(dpy, "_NET_WM_NAME", False);
+    const Atom net_icon = XInternAtom(dpy, "_NET_WM_ICON_NAME", False);
+    const Atom utf8_atom = XInternAtom(dpy, "UTF8_STRING", False);
+    XChangeProperty(dpy, win, net_name, utf8_atom, 8, PropModeReplace,
+                    reinterpret_cast<const unsigned char*>(p), int(n));
+    XChangeProperty(dpy, win, net_icon, utf8_atom, 8, PropModeReplace,
+                    reinterpret_cast<const unsigned char*>(p), int(n));
+    XStoreName(dpy, win, p);
+}
+
+
 inline void x11_create(Window* self, const WindowConfig& cfg) {
     Window::Impl* o = self->impl;
     const int w = cfg.width > 0 ? cfg.width : 880;
@@ -10758,7 +10705,7 @@ inline void x11_create(Window* self, const WindowConfig& cfg) {
     const int wy = cfg.center ? (scr_h - h) / 2 : 0;
     s->win = XCreateSimpleWindow(s->dpy, root, wx, wy, unsigned(w), unsigned(h), 0,
                                  BlackPixel(s->dpy, screen), WhitePixel(s->dpy, screen));
-    XStoreName(s->dpy, s->win, cfg.title.empty() ? "aino" : cfg.title.c_str());
+    x11_set_title(s->dpy, s->win, cfg.title);
     XSelectInput(s->dpy, s->win,
                  ExposureMask | StructureNotifyMask | PointerMotionMask |
                  ButtonPressMask | ButtonReleaseMask | KeyPressMask | KeyReleaseMask |
@@ -10912,7 +10859,7 @@ inline void Window::run(const std::function<void(Ui&)>& frame) {
 
 inline void Window::set_title(const std::string& title) {
     detail::X11State* s = reinterpret_cast<detail::X11State*>(impl->native);
-    if (s && s->dpy && s->win) XStoreName(s->dpy, s->win, title.c_str());
+    if (s && s->dpy && s->win) detail::x11_set_title(s->dpy, s->win, title);
 }
 inline void Window::set_size(int w, int h) {
     detail::X11State* s = reinterpret_cast<detail::X11State*>(impl->native);

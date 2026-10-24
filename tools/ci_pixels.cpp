@@ -717,9 +717,12 @@ static bool scene_cjk_fallback() {
 //  有单字节表示"的字符（"·" U+00B7 最典型），编译结果就是**混合编码**：中文
 //  留 UTF-8 字节、那个字符变单字节。整串既不合法 UTF-8 也不是纯 ANSI。
 //  老的 to_wide 在严格判定失败后整串回退 CP_ACP，每个 UTF-8 字节都被解成一个
-//  西欧字母 —— "最小"显示成 "æœ€å°" —— 用户的症状正是「小窗口标题乱、界面里的
-//  中文却好好的」（界面那些串里没有 ACP 能表示的字符，仍是合法 UTF-8）。
-//  这里直接把这种混合串喂给 to_wide：中文必须原样出来。
+//  西欧字母 —— "最小"显示成 "æœ€å°"。这里直接把这种混合串喂给 to_wide：
+//  中文必须原样出来。
+//
+//  注意这段只解释 **Windows 编译器**这一种来源。曾经在这里断言过「源码被当成
+//  Latin-1 读」的第三种坏法并配套写了还原逻辑，后来查明那是误判 —— 标题乱的真
+//  实原因在 X11（见场景 6），那套还原逻辑已随 0.4.12 删除。
 // =============================================================================
 static bool scene_mixed_literal() {
 #if !defined(AINO_PLATFORM_WINDOWS)
@@ -778,76 +781,91 @@ static bool scene_mixed_literal() {
         want_true(we.size() == 2 && we[0] == wchar_t(0xD83D) && we[1] == wchar_t(0xDE00),
                   "S5 4 字节 UTF-8 转成代理对", buf);
     }
-    // 最脏的一种坏串：源码被当成 Latin-1 读 —— "最小示例"的 12 个 UTF-8 字节各自
-    // 变成一个字符，得到 'æ' 'œ' '€'… 它**仍然是合法 UTF-8**，严格解码照样通过，
-    // 但中文全成了西欧字母，中间还夹着 U+009C 这类 C1 控制字符（标题栏会把它画成
-    // 带十六进制的方框）。用户报的「小窗口标题乱、界面中文正常」就是这个。
-    {
-        const char* raw = "\xE6\x9C\x80\xE5\xB0\x8F\xE7\xA4\xBA\xE4\xBE\x8B";  // 最小示例
-        std::string moj;
-        for (const char* q = raw; *q; ++q) {
-            const unsigned char b = (unsigned char)*q;
-            if (b < 0x80) {
-                moj.push_back(char(b));
-            } else {                    // 把字节当成码位 U+00xx，再按 UTF-8 存
-                moj.push_back(char(0xC0 | (b >> 6)));
-                moj.push_back(char(0x80 | (b & 0x3F)));
-            }
-        }
-        const std::wstring wm = aino::detail::to_wide(moj);
-        std::snprintf(buf, sizeof buf, "解出 %zu 个字符，首码位 U+%04X（期望 U+6700）",
-                      wm.size(), wm.empty() ? 0u : unsigned(wm[0]));
-        want_true(wm.size() == 4 && wm[0] == wchar_t(0x6700) && wm[3] == wchar_t(0x4F8B),
-                  "S5 被当成 Latin-1 读过的串能还原回中文", buf);
-    }
-    // 同一个坏法的变体：误读走的是 cp1252 映射（0x80 变 €、0x9C 变 œ），不是原样
-    // 逐字节。判据必须两种都吃得下 —— 否则在这种机器上修复永远不触发。
-    {
-        const char* raw = "\xE6\x9C\x80\xE5\xB0\x8F\xE7\xA4\xBA\xE4\xBE\x8B";  // 最小示例
-        static const unsigned int kHi[32] = {   // 0x80..0x9F 的 cp1252 映射
-            0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
-            0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
-            0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
-            0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178
-        };
-        std::wstring ws;
-        for (const char* q = raw; *q; ++q) {
-            const unsigned int b = (unsigned char)*q;
-            if (b < 0x80u) ws.push_back(wchar_t(b));
-            else if (b >= 0xA0u) ws.push_back(wchar_t(b));
-            else ws.push_back(wchar_t(kHi[b - 0x80u]));
-        }
-        std::string moj;                      // wstring -> UTF-8 字节
-        for (size_t k = 0; k < ws.size(); ++k) {
-            const unsigned int c = unsigned(ws[k]);
-            if (c < 0x80u) {
-                moj.push_back(char(c));
-            } else if (c < 0x800u) {
-                moj.push_back(char(0xC0 | (c >> 6)));
-                moj.push_back(char(0x80 | (c & 0x3F)));
-            } else {
-                moj.push_back(char(0xE0 | (c >> 12)));
-                moj.push_back(char(0x80 | ((c >> 6) & 0x3F)));
-                moj.push_back(char(0x80 | (c & 0x3F)));
-            }
-        }
-        const std::wstring wm = aino::detail::to_wide(moj);
-        char b2[192];
-        std::snprintf(b2, sizeof b2, "解出 %zu 个字符，首码位 U+%04X（期望 U+6700）",
-                      wm.size(), wm.empty() ? 0u : unsigned(wm[0]));
-        want_true(wm.size() == 4 && wm[0] == wchar_t(0x6700) && wm[3] == wchar_t(0x4F8B),
-                  "S5 cp1252 映射的乱码也能还原", b2);
-    }
+    return true;
+#endif
+}
 
-    // 反向保护：真正的 Latin-1 文案（没有 C1 控制字符）不许被"还原"坏。
-    {
-        const std::wstring wc = aino::detail::to_wide(std::string("caf\xC3\xA9"));  // café
-        char b2[192];
-        std::snprintf(b2, sizeof b2, "解出 %zu 个字符，末码位 U+%04X",
-                      wc.size(), wc.empty() ? 0u : unsigned(wc.back()));
-        want_true(wc.size() == 4 && wc[3] == wchar_t(0x00E9),
-                  "S5 正常 Latin-1 文案不被误判", b2);
+// =============================================================================
+//  X11 标题：必须同时设 EWMH 的 _NET_WM_NAME（类型 UTF8_STRING）
+//
+//  ICCCM 规定 WM_NAME 是 ISO-8859-1 语义。只调 XStoreName 的话，塞进去的 UTF-8
+//  字节会被 GTK/GNOME/KDE **逐字节**当 latin1 解码 —— 标题栏里就成了
+//  "æœ€å°ç¤ºä¾‹"，而落进 U+0080..U+009F 的字节还会被画成带十六进制的方框。
+//  现代窗口管理器读的是 _NET_WM_NAME，所以这里查的就是那个属性：
+//  在不在、类型对不对、字节是不是原样 —— 中文能不能过，全看这三条。
+// =============================================================================
+#if defined(AINO_PLATFORM_X11)
+// 读一个 X11 属性回来，顺带把实际类型和格式带出来
+static bool x11_read_prop(Display* dpy, ::Window w, const char* name,
+                          std::string& out, Atom& type, int& format) {
+    out.clear();
+    type = None;
+    format = 0;
+    const Atom a = XInternAtom(dpy, name, False);
+    Atom at = None;
+    int af = 0;
+    unsigned long n = 0, after = 0;
+    unsigned char* p = nullptr;
+    if (XGetWindowProperty(dpy, w, a, 0, 4096, False, AnyPropertyType,
+                           &at, &af, &n, &after, &p) != Success || !p) {
+        if (p) XFree(p);
+        return false;
     }
+    out.assign(reinterpret_cast<const char*>(p), size_t(n));
+    type = at;
+    format = af;
+    XFree(p);
+    return true;
+}
+#endif
+
+static bool scene_x11_title() {
+#if !defined(AINO_PLATFORM_X11)
+    return true;        // EWMH 属性是 X11 专有的，别的平台没有可考的
+#else
+    // 标题用显式转义写，别让源码编码再插一手（这条断言考的是属性，不是编译期）
+    const std::string t1("\xE6\x9C\x80\xE5\xB0\x8F\xE7\xA4\xBA\xE4\xBE\x8B");  // 最小示例
+    aino::Window win(260, 140, t1);
+    aino::detail::X11State* s = reinterpret_cast<aino::detail::X11State*>(win.impl->native);
+    if (!s || !s->dpy || !s->win) { win_fail("x11_title"); return false; }
+
+    const Atom utf8 = XInternAtom(s->dpy, "UTF8_STRING", False);
+    std::string v;
+    Atom ty = None;
+    int fm = 0;
+    const bool has = x11_read_prop(s->dpy, s->win, "_NET_WM_NAME", v, ty, fm);
+    char buf[192];
+    std::snprintf(buf, sizeof buf, "_NET_WM_NAME %s，类型 %lu（期望 %lu），格式 %d",
+                  has ? "存在" : "缺失", static_cast<unsigned long>(ty),
+                  static_cast<unsigned long>(utf8), fm);
+    want_true(has && !v.empty() && ty == utf8 && fm == 8,
+              "S6 _NET_WM_NAME 已设为 UTF8_STRING", buf);
+    std::snprintf(buf, sizeof buf, "读到 %zu 字节，期望 %zu 字节",
+                  v.size(), t1.size());
+    want_true(v == t1, "S6 标题字节原样写进属性（中文没被 latin1 化）", buf);
+
+    // Alt+Tab / 任务栏读的是 _NET_WM_ICON_NAME，同一个坑，一起钉住
+    std::string vi;
+    Atom tyi = None;
+    int fmi = 0;
+    const bool hasi = x11_read_prop(s->dpy, s->win, "_NET_WM_ICON_NAME", vi, tyi, fmi);
+    std::snprintf(buf, sizeof buf, "读到 %zu 字节，类型 %lu（期望 %lu），格式 %d",
+                  vi.size(), static_cast<unsigned long>(tyi),
+                  static_cast<unsigned long>(utf8), fmi);
+    want_true(hasi && tyi == utf8 && vi == t1,
+              "S6 _NET_WM_ICON_NAME 同为 UTF8_STRING", buf);
+
+    // 运行中改标题：set_title 也必须走同一条路（不只是建窗那一刻）
+    const std::string t2("\xE7\xA4\xBA\xE4\xBE\x8B");  // 示例
+    win.set_title(t2);
+    std::string v2;
+    Atom ty2 = None;
+    int fm2 = 0;
+    const bool has2 = x11_read_prop(s->dpy, s->win, "_NET_WM_NAME", v2, ty2, fm2);
+    std::snprintf(buf, sizeof buf, "读到 %zu 字节，期望 %zu 字节",
+                  v2.size(), t2.size());
+    want_true(has2 && ty2 == utf8 && v2 == t2,
+              "S6 set_title() 后 _NET_WM_NAME 跟着变", buf);
     return true;
 #endif
 }
@@ -860,6 +878,7 @@ int main() {
     if (!scene_dark())        return 2;
     if (!scene_cjk_fallback()) return 2;
     if (!scene_mixed_literal()) return 2;
+    if (!scene_x11_title())      return 2;
 
     std::printf("=== %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

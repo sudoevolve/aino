@@ -2,7 +2,7 @@
 
 # 三平台各跑两件事：
 #   1. ci_smoke   —— 能编译、能开窗、能跑满 20 帧（冒烟）
-#   2. ci_pixels  —— 30 项像素断言，直接从后备缓冲读像素（画得对不对）
+#   2. ci_pixels  —— 44 项像素断言，直接从后备缓冲读像素（画得对不对）
 #
 # 现状：
 #   · Windows —— 唯一经过真桌面验证的后端，这个 job 必须绿；
@@ -40,7 +40,8 @@ jobs:
       - name: 冒烟（跑满 20 帧）
         run: .\ci_smoke.exe
 
-      - name: 像素断言（43 项）
+      # S6 那 4 项查的是 X11 的 _NET_WM_NAME，Windows 上没有可考的，这里 40 项实跑。
+      - name: 像素断言（40 项 + 4 项 X11 专有跳过）
         env:
           AINO_PIX_BMP: "1"
         run: .\ci_pixels.exe
@@ -99,7 +100,7 @@ jobs:
       - name: 冒烟（xvfb 虚拟屏，跑满 20 帧）
         run: xvfb-run -a ./ci_smoke
 
-      - name: 像素断言（43 项，xvfb 虚拟屏）
+      - name: 像素断言（44 项，xvfb 虚拟屏）
         env:
           AINO_PIX_BMP: "1"
           AINO_X11_TRACE: "1"
@@ -180,7 +181,7 @@ jobs:
       - name: 冒烟（runner 没有交互桌面，能开窗就算过）
         run: ./ci_smoke
 
-      - name: 像素断言（43 项）
+      - name: 像素断言（44 项）
         env:
           AINO_PIX_BMP: "1"
         run: ./ci_pixels

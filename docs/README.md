@@ -201,14 +201,14 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 | 平台 | 后端 | 状态 |
 |---|---|---|
 | Windows | GDI（`BitBlt` + 自绘 AA 光栅化） | **已验证**（Win11 / MSVC 与 MinGW g++，47 项回归全绿） |
-| Linux | X11 + FreeType/fontconfig（运行时 dlopen，加载不到退回 XFontSet 点阵） | **CI 通过**：编译 + xvfb 开窗跑满 20 帧 + **43 项像素断言** |
-| macOS | Cocoa / CoreText / CoreGraphics | **CI 通过**：编译 + 开窗跑满 20 帧 + **43 项像素断言** |
+| Linux | X11 + FreeType/fontconfig（运行时 dlopen，加载不到退回 XFontSet 点阵） | **CI 通过**：编译 + xvfb 开窗跑满 20 帧 + **44 项像素断言** |
+| macOS | Cocoa / CoreText / CoreGraphics | **CI 通过**：编译 + 开窗跑满 20 帧 + **44 项像素断言** |
 
 上表不是「能编译就算过」：
 
 - `tools/ci_smoke.cpp` 必须真的建出窗口、跑满 20 帧、自己退出
   （退出码 2/3 分别代表开不了窗 / 帧没跑满）；
-- `tools/ci_pixels.cpp` 必须让 43 项断言全过，它**直接读后备缓冲**
+- `tools/ci_pixels.cpp` 必须让 44 项断言全过，它**直接读后备缓冲**
   （`Window::Impl::canvas.px`，三个后端都往同一块缓冲里画），不依赖任何窗口抓图 API。
 
 ### 跨平台像素断言怎么做到「同一个标准、三种字形」
@@ -280,7 +280,7 @@ gallery 是唯一同时用到全部控件的程序，所以它另外挂了两个
   Linux 侧的界面长什么样，看 CI 上传的 `gallery-linux` artifact（
   `AINO_SHOT_BMP=gallery_linux.bmp xvfb-run ./gallery` 拍的后备缓冲整窗截图）。
 - **macOS / Cocoa**：曾经一个 `.cpp` 都编不过；2026-10-20 用 CI 当编译器，一路修到能跑，
-  并跑通了 43 项像素断言（说明 CoreText 画字、裁剪、阴影这条链是真的对）：
+  并跑通了 44 项像素断言（说明 CoreText 画字、裁剪、阴影这条链是真的对）：
   ① `CocoaState` 补上 `pending_image` / `key_ctrl` / `key_shift` / `key_alt` 四个字段；
   ② arm64 不允许裸调 `objc_msgSend`，加 `oc_send<R>(...)` 模板统一转型；
   ③ 系统头的 QuickDraw `::Rect` / `::Style` 与 `aino::Rect` 撞名，包含前用宏改名；
