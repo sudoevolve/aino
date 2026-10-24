@@ -122,28 +122,28 @@ jobs:
       # 中文还有」的原样，只是把截断点压到最小。日志里要能看见 "cjk at N"：
       # 说明 CJK 字体是被 charset 探测钉进链的，不是碰巧排进前几条。
       #
-      # 直接连跑第二个 xvfb-run 会偶发拿不到 display（上一个 Xvfb 刚退出，
-      # 和 XOpenDisplay 撞上 EAGAIN 是同一类时序问题）—— 那时 trace.txt 是空的，
-      # 步骤只报一句 "exit code 1"，看着像「CJK 没钉进链」。所以：重试 + 失败时
-      # 把 trace.txt 的头几行打出来（空文件 vs 有内容，一眼分得清）。
+      # 两个坑（都是实测踩到的，别再"优化"回去）：
+      #  · **stdout / stderr 要合并写同一个文件**：经 xvfb-run 起的子进程，
+      #    它的 stderr 会被直接接到 job 日志上，`2> trace.txt` 抓到的是空文件
+      #    （日志里明明有 "chain 5 fonts, cjk at 1"，trace.txt 却 0 行）。
+      #  · 紧跟着上一个 xvfb-run 再起一个，偶发拿不到 display，所以要重试。
       - name: 字体兜底链自检（链砍到 4 条仍要画出中文）
         run: |
           set +e
           rc=1
           for i in 1 2 3 4; do
-            AINO_X11_TRACE=1 AINO_X11_CHAIN_CAP=4 xvfb-run -a ./ci_pixels > narrow.txt 2> trace.txt
+            AINO_X11_TRACE=1 AINO_X11_CHAIN_CAP=4 xvfb-run -a ./ci_pixels > narrow.txt 2>&1
             rc=$?
-            if [ $rc -eq 0 ] && grep -q "cjk at " trace.txt; then break; fi
-            echo "第 $i 次没验到兜底链（rc=$rc，trace 有 $(wc -l < trace.txt) 行），1s 后重试"
+            if [ $rc -eq 0 ] && grep -q "cjk at " narrow.txt; then break; fi
+            echo "第 $i 次没验到兜底链（rc=$rc，narrow.txt 有 $(wc -l < narrow.txt) 行），1s 后重试"
             sleep 1
           done
-          tail -2 narrow.txt
-          echo "--- trace 开头（共 $(wc -l < trace.txt) 行）---"
-          head -5 trace.txt
+          echo "--- 程序结论 ---"
+          grep "passed," narrow.txt | tail -1
           echo "--- 兜底链（去重）---"
-          grep "chain" trace.txt | sort -u | head -6
+          grep "chain" narrow.txt | sort -u | head -6
           test $rc -eq 0
-          grep -q "cjk at " trace.txt
+          grep -q "cjk at " narrow.txt
 
       # 布局自检：gallery 首帧会把全部 45 页量一遍，写出 `# over=N under=M total=K`。
       # over 必须为 0 —— 这正是 Windows 上 `tools/regress.py` 卡的那条。
