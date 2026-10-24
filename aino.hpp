@@ -82,8 +82,8 @@
 
 #define AINO_VERSION_MAJOR 0
 #define AINO_VERSION_MINOR 4
-#define AINO_VERSION_PATCH 9
-#define AINO_VERSION "0.4.9"
+#define AINO_VERSION_PATCH 10
+#define AINO_VERSION "0.4.10"
 
 #include <cstdint>
 #include <cstddef>
@@ -2066,28 +2066,100 @@ struct TextRenderer {
 //  Windows: GDI 文字
 // -----------------------------------------------------------------------------
 // 复用调用方缓冲，避免每次绘制文字都分配一个 wstring。
+// 严格 UTF-8 解码：整串合法才返回 true。
+// 走的是"逐码位判定 + 拒绝过长编码/代理区/超范围"，与 to_wide 的兜底路径同一套
+// 规则，所以两者的判定不会打架。
+inline bool strict_utf8_decode(const std::string& s, std::wstring& out) {
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(s.data());
+    const size_t n = s.size();
+    static const unsigned int kMin[5] = {0u, 0u, 0x80u, 0x800u, 0x10000u};
+    std::wstring tmp;
+    tmp.reserve(n);
+    for (size_t i = 0; i < n;) {
+        const unsigned char b = p[i];
+        if (b < 0x80) { tmp.push_back(wchar_t(b)); ++i; continue; }
+        int len = 0;
+        unsigned int cp = 0;
+        if (b >= 0xC2 && b <= 0xDF)      { len = 2; cp = b & 0x1Fu; }
+        else if (b >= 0xE0 && b <= 0xEF) { len = 3; cp = b & 0x0Fu; }
+        else if (b >= 0xF0 && b <= 0xF4) { len = 4; cp = b & 0x07u; }
+        if (len == 0 || i + size_t(len) > n) return false;
+        for (int k = 1; k < len; ++k) {
+            const unsigned char c = p[i + size_t(k)];
+            if ((c & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (c & 0x3Fu);
+        }
+        if (cp < kMin[len] || cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu))
+            return false;
+        if (cp >= 0x10000u) {
+            const unsigned int v = cp - 0x10000u;
+            tmp.push_back(wchar_t(0xD800u + (v >> 10)));
+            tmp.push_back(wchar_t(0xDC00u + (v & 0x3FFu)));
+        } else {
+            tmp.push_back(wchar_t(cp));
+        }
+        i += size_t(len);
+    }
+    out.swap(tmp);
+    return true;
+}
+
+// 还原"UTF-8 字节被当成 Latin-1 逐字节读进去"的串。
+//
+// 这是**最脏也最常见**的一种坏串，而且它能绕过前面所有防线：如果源码的 BOM 被剥
+// 掉了（或被不认 BOM 的工具链读成 ANSI），"最小示例"这 12 个 UTF-8 字节会被当成
+// 12 个字符 —— 每个字节一个字符，得到 'æ' 'œ' '€' … 这些**仍然是合法 UTF-8**，
+// 严格解码照样通过，于是中文全变成西欧字母，中间还夹着 U+009C 这种 C1 控制字符
+// （Windows 标题栏把 C1 画成带十六进制的方框，一眼就能认出来）。
+//
+// 判据刻意收紧，只在"确定是这种坏法"时才动手：
+//   · 所有字符都 ≤ U+00FF（说明原串只有单字节字符）
+//   · 至少有一个 U+0080..U+009F（C1 控制字符；正常界面文案里不可能有）
+//   · 逐字节还原后必须是**合法 UTF-8**，而且要能解出 CJK
+// 三条同时满足才替换，所以 "café" 这种真 Latin-1 文案不会被误伤。
+inline void fix_latin1_mojibake(std::wstring& w) {
+    if (w.size() < 2) return;
+    bool all_single = true, has_c1 = false;
+    for (size_t i = 0; i < w.size(); ++i) {
+        const unsigned int c = unsigned(w[i]);
+        if (c > 0xFFu) { all_single = false; break; }
+        if (c >= 0x80u && c <= 0x9Fu) has_c1 = true;
+    }
+    if (!all_single || !has_c1) return;
+    std::string bytes;
+    bytes.reserve(w.size());
+    for (size_t i = 0; i < w.size(); ++i) bytes.push_back(char(w[i] & 0xFFu));
+    std::wstring fixed;
+    if (!strict_utf8_decode(bytes, fixed)) return;
+    bool has_cjk = false;
+    for (size_t i = 0; i < fixed.size(); ++i)
+        if (unsigned(fixed[i]) >= 0x2E80u) { has_cjk = true; break; }
+    if (!has_cjk) return;
+    w.swap(fixed);
+}
+
 inline void to_wide_into(const std::string& s, std::wstring& out) {
     out.clear();
     if (s.empty()) return;
-    // 库内部一律按 UTF-8 处理。但真实世界的串有两种"不合法"来源，而它们的错误
-    // 处理方向**相反**：
-    //   (a) 整串是系统 ANSI（用户没加 /utf-8 编的 exe）→ 应该按 CP_ACP 解；
-    //   (b) 串是**混合**的：中文留了 UTF-8 字节，而个别"ANSI 里也有单字节表示"
-    //       的字符（"·" U+00B7 最典型）被编译器转成了单字节。
-    // 早期版本是"严格 UTF-8 解码失败 → 整串按 CP_ACP 重解"，这在 (b) 下是灾难：
-    // 每个 UTF-8 字节都变成一个西欧字母，"最小示例"显示成 "æœ€å°ç¤ºä¾‹"，
-    // 比乱码还难认。
-    // 现在改成**逐段混合解码**：走得通的 UTF-8 序列按 UTF-8 出，走不通的那一
-    // （或两）个字节才交给 CP_ACP。这样 (a)(b) 共用一条路径，而且任何输入都不
-    // 可能整体退化成"全拉丁乱码" —— 合法的中文永远是合法的中文。
-    // 逐字节判定还顺手拒绝了过长编码、代理区与超范围码位。
+    // 快路径：正常编译出来的串都是纯合法 UTF-8，一次走完，别让所有文字都去跑
+    // 下面的逐字节兜底。
+    if (strict_utf8_decode(s, out)) {
+        fix_latin1_mojibake(out);
+        return;
+    }
+    out.clear();
+    // 慢路径：串里有非法字节。两种来源方向相反 ——
+    //   (a) 整串是系统 ANSI（用户没加 /utf-8 编的 exe）→ 该按 CP_ACP 解；
+    //   (b) **混合**编码：中文留 UTF-8 字节，个别"ANSI 里也有单字节表示"的字符
+    //       （"·" U+00B7 最典型）被编译器转成单字节。
+    // 所以**逐段**解：走得通的 UTF-8 序列按 UTF-8 出，走不通的那一（或两）个字节
+    // 才交给 CP_ACP。绝不能整串回退 —— 那会把合法的中文全解成西欧字母。
     const unsigned char* p = reinterpret_cast<const unsigned char*>(s.data());
     const size_t n = s.size();
-    out.reserve(n);
     static const unsigned int kMin[5] = {0u, 0u, 0x80u, 0x800u, 0x10000u};
     for (size_t i = 0; i < n;) {
         const unsigned char b = p[i];
-        if (b < 0x80) {                 // ASCII：绝大多数文字走这条
+        if (b < 0x80) {
             out.push_back(wchar_t(b));
             ++i;
             continue;
@@ -2109,7 +2181,7 @@ inline void to_wide_into(const std::string& s, std::wstring& out) {
                    (cp >= 0xD800u && cp <= 0xDFFFu)))
             ok = false;
         if (ok) {
-            if (cp >= 0x10000u) {       // 补充平面：UTF-16 要代理对
+            if (cp >= 0x10000u) {
                 const unsigned int v = cp - 0x10000u;
                 out.push_back(wchar_t(0xD800u + (v >> 10)));
                 out.push_back(wchar_t(0xDC00u + (v & 0x3FFu)));
@@ -2133,6 +2205,7 @@ inline void to_wide_into(const std::string& s, std::wstring& out) {
         if (used == 0) { out.push_back(wchar_t(0xFFFD)); used = 1; }
         i += used;
     }
+    fix_latin1_mojibake(out);
 }
 
 inline std::wstring to_wide(const std::string& s) {

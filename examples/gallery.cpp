@@ -17,6 +17,13 @@
 //  编译：cl /std:c++17 /EHsc /O2 /utf-8 gallery.cpp user32.lib gdi32.lib
 //        （必须带 /utf-8；字面量是 UTF-8，MSVC 默认按 GBK 解码）
 // =============================================================================
+// 让 MSVC 把本文件的窄字面量按 UTF-8 编。头文件里那道 pragma 通常已经覆盖
+// 到这里（pragma 对编译单元余下部分生效），但万一 BOM 被剥掉、或某些工具链
+// 只看当前文件，这里的 "·"（U+00B7）就会被编成单字节 -> 混合编码。
+#if defined(_MSC_VER)
+#  pragma execution_character_set("utf-8")
+#endif
+
 #define AINO_IMPLEMENTATION
 #include "../aino.hpp"
 

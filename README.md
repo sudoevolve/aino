@@ -84,7 +84,7 @@ cmake --build build --config Release
 
 `win.run(frame_cb)` 就是完整主循环：没事件时阻塞在 `WaitMessage`，帧回调只在需要重绘时被调用 —— 窗口静止时 0 帧 / 0.00% CPU，不是低帧率空转。
 
-平台状态：三个后端都能编译、能开窗画帧，**也都跑同一套 40 项像素断言**
+平台状态：三个后端都能编译、能开窗画帧，**也都跑同一套 42 项像素断言**
 （`tools/ci_pixels.cpp` 直接读后备缓冲，只断言与字形无关的几何/颜色/裁剪/阴影性质）。
 Windows 另有 47 项回归（离屏行为探针 78 + 85 + 80 + 36 + 16 + 11 + 14 条断言、18 项整窗断言、
 卡片布局自检、测量不落像素、点击归属、窗口配置、hover 淡入无暗闪、空闲 CPU、交互 CPU 比值）；
@@ -107,7 +107,7 @@ tools/               构建、像素断言与回归脚本
 tools/regress.py     全量回归（编译 + 探针 + 像素断言 + 布局自检 + 空闲/交互 CPU）
 tools/shot_pages.py  逐页截整窗图（改完版式先看一眼，不算回归）
 tools/ci_smoke.cpp   CI 冒烟程序：开窗 + 跑满 20 帧就退（三平台共用）
-tools/ci_pixels.cpp  跨平台像素断言：40 项，直接读后备缓冲（三平台共用）
+tools/ci_pixels.cpp  跨平台像素断言：42 项，直接读后备缓冲（三平台共用）
 tools/probe/         数值/像素探针（回归用，不参与发布）
 CMakeLists.txt       构建 gallery 与两个 demo
 ```

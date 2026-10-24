@@ -778,6 +778,38 @@ static bool scene_mixed_literal() {
         want_true(we.size() == 2 && we[0] == wchar_t(0xD83D) && we[1] == wchar_t(0xDE00),
                   "S5 4 字节 UTF-8 转成代理对", buf);
     }
+    // 最脏的一种坏串：源码被当成 Latin-1 读 —— "最小示例"的 12 个 UTF-8 字节各自
+    // 变成一个字符，得到 'æ' 'œ' '€'… 它**仍然是合法 UTF-8**，严格解码照样通过，
+    // 但中文全成了西欧字母，中间还夹着 U+009C 这类 C1 控制字符（标题栏会把它画成
+    // 带十六进制的方框）。用户报的「小窗口标题乱、界面中文正常」就是这个。
+    {
+        const char* raw = "\xE6\x9C\x80\xE5\xB0\x8F\xE7\xA4\xBA\xE4\xBE\x8B";  // 最小示例
+        std::string moj;
+        for (const char* q = raw; *q; ++q) {
+            const unsigned char b = (unsigned char)*q;
+            if (b < 0x80) {
+                moj.push_back(char(b));
+            } else {                    // 把字节当成码位 U+00xx，再按 UTF-8 存
+                moj.push_back(char(0xC0 | (b >> 6)));
+                moj.push_back(char(0x80 | (b & 0x3F)));
+            }
+        }
+        const std::wstring wm = aino::detail::to_wide(moj);
+        std::snprintf(buf, sizeof buf, "解出 %zu 个字符，首码位 U+%04X（期望 U+6700）",
+                      wm.size(), wm.empty() ? 0u : unsigned(wm[0]));
+        want_true(wm.size() == 4 && wm[0] == wchar_t(0x6700) && wm[3] == wchar_t(0x4F8B),
+                  "S5 被当成 Latin-1 读过的串能还原回中文", buf);
+    }
+
+    // 反向保护：真正的 Latin-1 文案（没有 C1 控制字符）不许被"还原"坏。
+    {
+        const std::wstring wc = aino::detail::to_wide(std::string("caf\xC3\xA9"));  // café
+        char b2[192];
+        std::snprintf(b2, sizeof b2, "解出 %zu 个字符，末码位 U+%04X",
+                      wc.size(), wc.empty() ? 0u : unsigned(wc.back()));
+        want_true(wc.size() == 4 && wc[3] == wchar_t(0x00E9),
+                  "S5 正常 Latin-1 文案不被误判", b2);
+    }
     return true;
 #endif
 }
