@@ -82,8 +82,8 @@
 
 #define AINO_VERSION_MAJOR 0
 #define AINO_VERSION_MINOR 4
-#define AINO_VERSION_PATCH 10
-#define AINO_VERSION "0.4.10"
+#define AINO_VERSION_PATCH 11
+#define AINO_VERSION "0.4.11"
 
 #include <cstdint>
 #include <cstddef>
@@ -2119,16 +2119,31 @@ inline bool strict_utf8_decode(const std::string& s, std::wstring& out) {
 // 三条同时满足才替换，所以 "café" 这种真 Latin-1 文案不会被误伤。
 inline void fix_latin1_mojibake(std::wstring& w) {
     if (w.size() < 2) return;
-    bool all_single = true, has_c1 = false;
-    for (size_t i = 0; i < w.size(); ++i) {
-        const unsigned int c = unsigned(w[i]);
-        if (c > 0xFFu) { all_single = false; break; }
-        if (c >= 0x80u && c <= 0x9Fu) has_c1 = true;
-    }
-    if (!all_single || !has_c1) return;
+    // cp1252 在 0x80..0x9F 这段把字节映射到了别的码位（0x80 -> €，0x9C -> œ …），
+    // 这几个槽位在 cp1252 里没有定义，就保持"字节值 = 码位"。两种误读方式（原样
+    // 逐字节 / 按 cp1252 逐字节）都要能反推回去，所以用一张表统一处理。
+    static const unsigned int kCp1252Hi[32] = {
+        0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+        0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+        0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+        0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178
+    };
+    bool any_high = false;
     std::string bytes;
     bytes.reserve(w.size());
-    for (size_t i = 0; i < w.size(); ++i) bytes.push_back(char(w[i] & 0xFFu));
+    for (size_t i = 0; i < w.size(); ++i) {
+        const unsigned int c = unsigned(w[i]);
+        if (c < 0x80u) { bytes.push_back(char(c)); continue; }
+        any_high = true;
+        if (c <= 0xFFu) { bytes.push_back(char(c)); continue; }
+        bool hit = false;
+        for (int k = 0; k < 32; ++k)
+            if (kCp1252Hi[k] == c) { bytes.push_back(char(unsigned(0x80 + k))); hit = true; break; }
+        if (!hit) return;     // 真宽字符（汉字等）→ 本来就是好串，别碰
+    }
+    if (!any_high) return;    // 纯 ASCII：不可能是这种坏法
+    // 反推出来的字节必须是**合法 UTF-8**、而且真能解出汉字，才认。
+    // 这两条把关，"café" 这种真单字节文案（反推出的 E9 不是合法 UTF-8 头）不会被误伤。
     std::wstring fixed;
     if (!strict_utf8_decode(bytes, fixed)) return;
     bool has_cjk = false;
@@ -9302,6 +9317,30 @@ inline void w32_create(Window* self, const WindowConfig& cfg) {
     }
 
     std::wstring wtitle = to_wide(cfg.title.empty() ? std::string("aino") : cfg.title);
+    // 诊断开关 AINO_TITLE_TRACE=<文件路径>：把标题的**原始字节**和**解码后的码位**
+    // 各写一行。窗口标题乱码这类问题隔着截图只能猜（"是编译器编错了，还是解码错
+    // 了？"），而这两行一对照就分得清：
+    //   原始字节是纯 UTF-8 / 混合编码 / 一个字节一个字符 —— 说明编译器怎么编的；
+    //   码位对不上 —— 说明 to_wide 解错了。
+    // 只在设了环境变量时生效，平时零开销。
+    if (const char* trace_path = std::getenv("AINO_TITLE_TRACE")) {
+        if (FILE* f = std::fopen(trace_path, "ab")) {
+            wchar_t mod[MAX_PATH] = {0};
+            ::GetModuleFileNameW(nullptr, mod, MAX_PATH);
+            char mod_narrow[MAX_PATH] = {0};
+            for (int i = 0; i < MAX_PATH && mod[i]; ++i)
+                mod_narrow[i] = mod[i] < 0x80 ? char(mod[i]) : '?';
+            std::fprintf(f, "[title] ver=%s exe=%s\n", AINO_VERSION, mod_narrow);
+            std::fprintf(f, "[title] raw len=%zu:", cfg.title.size());
+            for (size_t i = 0; i < cfg.title.size(); ++i)
+                std::fprintf(f, " %02X", unsigned((unsigned char)cfg.title[i]));
+            std::fprintf(f, "\n[title] codes (%zu):", wtitle.size());
+            for (size_t i = 0; i < wtitle.size(); ++i)
+                std::fprintf(f, " U+%04X", unsigned(wtitle[i]));
+            std::fprintf(f, "\n");
+            std::fclose(f);
+        }
+    }
     HWND hwnd = CreateWindowExW(0, L"AinoWindowClass", wtitle.c_str(), style,
                                 px, py, win_w, win_h,
                                 nullptr, nullptr, GetModuleHandleW(nullptr), s);

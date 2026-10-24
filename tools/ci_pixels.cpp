@@ -800,6 +800,44 @@ static bool scene_mixed_literal() {
         want_true(wm.size() == 4 && wm[0] == wchar_t(0x6700) && wm[3] == wchar_t(0x4F8B),
                   "S5 被当成 Latin-1 读过的串能还原回中文", buf);
     }
+    // 同一个坏法的变体：误读走的是 cp1252 映射（0x80 变 €、0x9C 变 œ），不是原样
+    // 逐字节。判据必须两种都吃得下 —— 否则在这种机器上修复永远不触发。
+    {
+        const char* raw = "\xE6\x9C\x80\xE5\xB0\x8F\xE7\xA4\xBA\xE4\xBE\x8B";  // 最小示例
+        static const unsigned int kHi[32] = {   // 0x80..0x9F 的 cp1252 映射
+            0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+            0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+            0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+            0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178
+        };
+        std::wstring ws;
+        for (const char* q = raw; *q; ++q) {
+            const unsigned int b = (unsigned char)*q;
+            if (b < 0x80u) ws.push_back(wchar_t(b));
+            else if (b >= 0xA0u) ws.push_back(wchar_t(b));
+            else ws.push_back(wchar_t(kHi[b - 0x80u]));
+        }
+        std::string moj;                      // wstring -> UTF-8 字节
+        for (size_t k = 0; k < ws.size(); ++k) {
+            const unsigned int c = unsigned(ws[k]);
+            if (c < 0x80u) {
+                moj.push_back(char(c));
+            } else if (c < 0x800u) {
+                moj.push_back(char(0xC0 | (c >> 6)));
+                moj.push_back(char(0x80 | (c & 0x3F)));
+            } else {
+                moj.push_back(char(0xE0 | (c >> 12)));
+                moj.push_back(char(0x80 | ((c >> 6) & 0x3F)));
+                moj.push_back(char(0x80 | (c & 0x3F)));
+            }
+        }
+        const std::wstring wm = aino::detail::to_wide(moj);
+        char b2[192];
+        std::snprintf(b2, sizeof b2, "解出 %zu 个字符，首码位 U+%04X（期望 U+6700）",
+                      wm.size(), wm.empty() ? 0u : unsigned(wm[0]));
+        want_true(wm.size() == 4 && wm[0] == wchar_t(0x6700) && wm[3] == wchar_t(0x4F8B),
+                  "S5 cp1252 映射的乱码也能还原", b2);
+    }
 
     // 反向保护：真正的 Latin-1 文案（没有 C1 控制字符）不许被"还原"坏。
     {
