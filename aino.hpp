@@ -931,7 +931,7 @@ public:
     void  scroll_to(float offset);          // 程序化滚动
 
     // 低层零件：自己算可见区间、自己画，只要偏移与滚动条
-    int   scroll_visible(const Rect& box, int count, float item_h, int* first, int* last);
+    float scroll_visible(const Rect& box, int count, float item_h, int* first, int* last);
     void  scroll_bar(const Rect& box, float content_h);
     float scroll_offset(const Rect& box) const;
     void  scroll_to_index(const Rect& box, int index, float item_h, int count);
@@ -2659,7 +2659,29 @@ struct Ui::Impl {
 
     // 本帧 interact() 的调用序号。立即模式下"调用顺序 = 绘制顺序 = 层级"，
     // 序号小的先画、在下面，所以它可以直接当 z 序用。每帧归零重数。
+    //
+    // 帧末的 deferred 弹层是个例外：它们视觉上在最上面，但序号落在**所有**普通
+    // 控件之后，光比大小分不清"弹层自己的内容"和"弹层之后画的普通控件"（后者
+    // 也在弹层下面，理应被挡住）。所以 end_frame() 起跑 deferred 之前把 seq 抬到
+    // Z_FRAME_END，给帧末层划出一段独立的序号区：
+    //   普通控件 [1, Z_FRAME_END)      帧末弹层内容 [Z_FRAME_END, ...)
+    // 弹层登记闸门时用 Z_FRAME_END 当层级号，于是普通控件"怎么画都"低于弹层，
+    // 而弹层内容自己永远在上面。见 gate_claim() 的注释。
+    static constexpr uint64_t Z_FRAME_END = 1ull << 40;
     uint64_t seq = 0;
+
+    // 有些弹层的项是"帧内 interact、帧末才画"（combobox / menubar / context_menu：
+    // 交互要当帧出结果，绘制排到帧末才盖得住别人）。它们视觉上属于帧末层，
+    // 序号却落在普通区 —— 用这个作用域把交互期间的序号临时切到帧末区，
+    // 闸门才会把它们当"弹层内容"放行。
+    struct SeqFrameEnd {
+        Impl* im;
+        uint64_t saved;
+        explicit SeqFrameEnd(Impl* i) : im(i), saved(i->seq) { im->seq = Z_FRAME_END; }
+        ~SeqFrameEnd() { im->seq = saved; }
+        SeqFrameEnd(const SeqFrameEnd&) = delete;
+        SeqFrameEnd& operator=(const SeqFrameEnd&) = delete;
+    };
 
     // ---- 浮层输入闸门 ----
     // 立即模式的绘制顺序决定视觉层级，交互却按调用顺序处理：最后画的对话框
@@ -2709,8 +2731,15 @@ struct Ui::Impl {
     }
 
     // 浮层在帧内登记"下一帧谁能交互"（触发器、面板、下拉列表都算）。
-    // z 传**浮层第一个控件的序号**（函数入口处 seq+1），不是登记那一刻的 seq：
-    // dialog 的关闭按钮在 claim 之前就 interact 过了，传晚了会把自己也挡住。
+    //
+    // z 的取法分两种，选错了不是漏挡就是自己挡自己：
+    //   · 触发器、以及 dialog 这类**当帧直接画**的面板内容 → 传函数入口处的
+    //     seq+1。它们和普通控件同在一个序号区，比大小才有意义。
+    //   · deferred 到帧末画的面板（select/menu/popover/combobox/context_menu…）
+    //     → 传 Z_FRAME_END。面板里的控件在帧末才 interact，序号从这一段起，
+    //     用同一个基准比较才能既放行自己、又挡住"排在浮层之后画的普通控件"。
+    //     传入口的 seq+1 就漏挡：侧栏先画 select、紧接着画列表项，那些列表项
+    //     的序号更大，会被判成"在弹层上面"，点击直接穿到列表项上。
     void gate_claim(const Rect& r, uint64_t z) {
         if (gate_next_allow_n < GATE_SLOTS) {
             gate_next_allow[gate_next_allow_n] = r;
@@ -2953,7 +2982,10 @@ inline void Ui::begin_frame(float w, float h, float dt, float dpi) {
 }
 
 inline void Ui::end_frame() {
-    // 帧末统一绘制弹出层，保证它盖在所有常规组件之上
+    // 帧末统一绘制弹出层，保证它盖在所有常规组件之上。
+    // 序号同时抬到 Z_FRAME_END：面板里的控件从这一段开始数，和普通控件分开，
+    // 闸门才分得清"弹层自己的内容"和"排在弹层后面画的普通控件"。
+    impl->seq = Impl::Z_FRAME_END;
     for (size_t i = 0; i < impl->defer.size(); ++i) {
         if (impl->defer[i]) impl->defer[i]();
     }
@@ -5283,64 +5315,81 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
         Rect list(box.x, ly, box.w, list_h);
 
         // 同上：展开期间只有主体和下拉列表能接收点击。
+        // 触发器在普通层（它自己已经 interact 过），列表是帧末画的，层级取帧末基准。
         impl->gate_claim(box, z_first);
-        impl->gate_claim(list, z_first);
+        impl->gate_claim(list, Impl::Z_FRAME_END);
 
-        std::vector<std::string> items_copy = items;
-        int* idx_ptr = index;
-        const Style st_copy = st;
-        const Rect box_copy = box;
-
-        deferred([this, id, list, item_h, items_copy, idx_ptr, rad, fs, box_copy, st_copy, th]() mutable {
-            // 点击外部关闭
-            const Input& kin = impl->input;
-            bool inside_list = list.contains(kin.mouse.x, kin.mouse.y);
-            bool inside_body = box_copy.contains(kin.mouse.x, kin.mouse.y);
-            bool click_outside = (kin.pressed[0] || kin.pressed[1]) && !inside_list && !inside_body;
-
-            // 阴影 + 面板
-            drop_shadow(list, rad, 10.0f, Color(0, 0, 0, 34), 3.0f);
-            fill_rect(list, th.popover, rad);
-            stroke_rect(list, th.border, rad, 1.0f);
-            push_clip(list);
-
-            const float pad = 4.0f;
-            int clicked_index = -1;
-            for (size_t i = 0; i < items_copy.size(); ++i) {
-                Rect item(list.x + pad, list.y + pad + item_h * float(i), list.w - pad * 2.0f, item_h);
-                detail::Interact ii = detail::interact(impl, detail::make_id("select_item", item), item, true);
-                if (ii.hovered) set_cursor(Cursor::Hand);
-
-                const float t_h = detail::animate_value(impl, detail::hash_string("si") + i * 97u + uint64_t(list.y),
-                                                        ii.hovered ? 1.0f : 0.0f, 20.0f);
-                if (t_h > 0.02f) fill_rect(item, th.accent.mix(th.foreground.with_alpha(10), t_h * 0.3f), rad - 2.0f);
-
-                Style its;
-                its.font_size = fs;
-                its.font_weight = (*idx_ptr == int(i)) ? 600 : 500;
-                its.align = Align::Left;
-                its.valign = VAlign::Middle;
-                draw_text(items_copy[i], item.inset(10.0f, 0.0f), th.popover_foreground, its);
-
-                if (*idx_ptr == int(i)) {
-                    const float ccx = item.right() - 16.0f, ccy = item.cy();
-                    const float s = 3.4f;
-                    draw_line(ccx - s * 1.2f, ccy + 0.5f, ccx - s * 0.2f, ccy + s * 0.9f, th.foreground, 1.7f);
-                    draw_line(ccx - s * 0.2f, ccy + s * 0.9f, ccx + s * 1.2f, ccy - s * 0.9f, th.foreground, 1.7f);
-                }
+        // ---- 逐项交互：必须在**帧内**做完 ----
+        // 早先把交互放在 deferred 里，写回的是调用方栈上的 int*（帧末早就出栈了），
+        // 而且 changed 永远是 false —— 表现就是"点了没反应"。menu 也是这么处理的：
+        // 交互帧内、绘制帧末。
+        const float pad = 4.0f;
+        std::vector<Rect>    rects(items.size());
+        std::vector<uint64_t> ids(items.size());
+        std::vector<uint8_t>  hov(items.size(), 0);
+        int clicked_index = -1;
+        {
+            Impl::SeqFrameEnd guard(impl);   // 视觉属于帧末层，序号也算帧末层
+            for (size_t i = 0; i < items.size(); ++i) {
+                rects[i] = Rect(list.x + pad, list.y + pad + item_h * float(i),
+                                list.w - pad * 2.0f, item_h);
+                ids[i] = detail::make_id("select_item", rects[i]);
+                detail::Interact ii = detail::interact(impl, ids[i], rects[i], true);
+                if (ii.hovered) { set_cursor(Cursor::Hand); hov[i] = 1; }
                 if (ii.clicked) clicked_index = int(i);
             }
-            pop_clip();
+        }
 
-            if (clicked_index >= 0) {
-                *idx_ptr = clicked_index;
-                impl->flags[id] = 0.0f;
-                if (impl->request_repaint) impl->request_repaint();
-            } else if (click_outside) {
-                impl->flags[id] = 0.0f;
-                if (impl->request_repaint) impl->request_repaint();
-            }
-        });
+        const Input& kin = impl->input;
+        const bool click_outside = (kin.pressed[0] || kin.pressed[1])
+                                && !list.contains(kin.mouse.x, kin.mouse.y)
+                                && !box.contains(kin.mouse.x, kin.mouse.y);
+
+        if (clicked_index >= 0) {
+            *index = clicked_index;
+            impl->flags[id] = 0.0f;
+            open = false;
+            changed = true;
+            repaint();
+        } else if (click_outside) {
+            impl->flags[id] = 0.0f;
+            open = false;
+            repaint();
+        }
+
+        // ---- 绘制：帧末，只画不判 ----
+        // 选中/点外部的那一帧不再画：状态已经变了，再画一遍旧弹层会多闪一帧。
+        if (clicked_index < 0 && !click_outside) {
+            const int sel_now = *index;
+            const std::vector<std::string> items_copy = items;
+            deferred([this, list, items_copy, rects, ids, hov, sel_now, rad, fs, th]() {
+                drop_shadow(list, rad, 10.0f, Color(0, 0, 0, 34), 3.0f);
+                fill_rect(list, th.popover, rad);
+                stroke_rect(list, th.border, rad, 1.0f);
+                push_clip(list);
+                for (size_t i = 0; i < rects.size(); ++i) {
+                    const Rect& item = rects[i];
+                    const float t_h = detail::animate_value(impl, ids[i] * 97u + 1u, hov[i] ? 1.0f : 0.0f, 20.0f);
+                    if (t_h > 0.02f)
+                        fill_rect(item, th.accent.mix(th.foreground.with_alpha(10), t_h * 0.3f), rad - 2.0f);
+
+                    Style its;
+                    its.font_size = fs;
+                    its.font_weight = (sel_now == int(i)) ? 600 : 500;
+                    its.align = Align::Left;
+                    its.valign = VAlign::Middle;
+                    draw_text(items_copy[i], item.inset(10.0f, 0.0f), th.popover_foreground, its);
+
+                    if (sel_now == int(i)) {
+                        const float ccx = item.right() - 16.0f, ccy = item.cy();
+                        const float s = 3.4f;
+                        draw_line(ccx - s * 1.2f, ccy + 0.5f, ccx - s * 0.2f, ccy + s * 0.9f, th.foreground, 1.7f);
+                        draw_line(ccx - s * 0.2f, ccy + s * 0.9f, ccx + s * 1.2f, ccy - s * 0.9f, th.foreground, 1.7f);
+                    }
+                }
+                pop_clip();
+            });
+        }
         repaint();
     }
 
@@ -6406,8 +6455,9 @@ inline bool Ui::menu(const std::string& label, const std::vector<std::string>& i
         const Rect list(box.x, ly, list_w, list_h);
 
         // 打开时把"触发器 + 下拉列表"登记为可交互区，其余地方全被闸门挡住。
+        // 触发器在普通层；列表帧末才画，层级用帧末基准（否则同帧后面画的控件会穿透）。
         impl->gate_claim(box, z_first);
-        impl->gate_claim(list, z_first);
+        impl->gate_claim(list, Impl::Z_FRAME_END);
 
         std::vector<Rect>    rects;
         std::vector<uint64_t> ids;
@@ -6421,10 +6471,13 @@ inline bool Ui::menu(const std::string& label, const std::vector<std::string>& i
             ids.push_back(detail::make_id("menu_item", r, id + i));
             hov.push_back(0);
         }
+        {
+        Impl::SeqFrameEnd guard(impl);   // 项在帧内交互、帧末绘制，序号算帧末层
         for (size_t i = 0; i < items.size(); ++i) {
             detail::Interact ii = detail::interact(impl, ids[i], rects[i], true);
             if (ii.hovered) { set_cursor(Cursor::Hand); hov[i] = 1; }
             if (ii.clicked) chosen = int(i);
+        }
         }
         const bool inside_list = list.contains(impl->input.mouse.x, impl->input.mouse.y);
         closing = (impl->input.pressed[0] || impl->input.pressed[1]) && !inside_list
@@ -6564,7 +6617,7 @@ inline MenuPick Ui::menubar(const std::vector<std::string>& labels,
         if (lx + list_w > width() - 4.0f) lx = std::max(4.0f, width() - 4.0f - list_w);
         const Rect list(lx, box.bottom() + 3.0f, list_w, list_h);
 
-        impl->gate_claim(list, z_first);
+        impl->gate_claim(list, Impl::Z_FRAME_END);
         impl->gate_claim(trg[size_t(open_idx)], z_first);
 
         std::vector<Rect>     rects;
@@ -6580,10 +6633,13 @@ inline MenuPick Ui::menubar(const std::vector<std::string>& labels,
             lhov.push_back(0);
         }
         int chosen = -1;
+        {
+        Impl::SeqFrameEnd guard(impl);  // 项在帧内交互、帧末绘制，序号算帧末层
         for (size_t i = 0; i < rects.size(); ++i) {
             detail::Interact ii = detail::interact(impl, ids[i], rects[i], true);
             if (ii.hovered) { set_cursor(Cursor::Hand); lhov[i] = 1; }
             if (ii.clicked) chosen = int(i);
+        }
         }
         // 点菜单栏自己不算"点外面" —— 那是切换/收起，由上面的逻辑管。
         const bool in_list = list.contains(impl->input.mouse.x, impl->input.mouse.y);
@@ -7563,7 +7619,7 @@ inline bool Ui::popover(const std::string& label, bool* open, const Rect& box,
     const Rect inner = panel.inset(inner_pad, inner_pad);
 
     impl->gate_claim(box, z_first);
-    impl->gate_claim(panel, z_first);
+    impl->gate_claim(panel, Impl::Z_FRAME_END);
 
     // 点面板和触发器以外的地方、或按 Esc → 关闭
     bool dismiss = false;
@@ -7849,7 +7905,7 @@ inline bool Ui::context_menu(const Rect& area, const std::vector<std::string>& i
     ly = detail::clampf(ly, 4.0f, std::max(4.0f, height() - lh - 4.0f));
     const Rect list(lx, ly, lw, lh);
 
-    impl->gate_claim(list, z_first);
+    impl->gate_claim(list, Impl::Z_FRAME_END);
 
     std::vector<Rect> rects;
     std::vector<uint64_t> ids;
@@ -7865,10 +7921,13 @@ inline bool Ui::context_menu(const Rect& area, const std::vector<std::string>& i
     }
 
     int chosen = -1;
+    {
+    Impl::SeqFrameEnd guard(impl);      // 项在帧内交互、帧末绘制，序号算帧末层
     for (size_t i = 0; i < items.size(); ++i) {
         detail::Interact ii = detail::interact(impl, ids[i], rects[i], true);
         if (ii.hovered) { set_cursor(Cursor::Hand); hov[i] = 1; }
         if (ii.clicked) chosen = int(i);
+    }
     }
 
     bool close = false;
@@ -8021,16 +8080,21 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
     const Rect sr(list.x + 4.0f, list.y + 4.0f, list.w - 8.0f, search_h);
 
     impl->gate_claim(box, z_first);
-    impl->gate_claim(list, z_first);
+    impl->gate_claim(list, Impl::Z_FRAME_END);
 
     // ---- 逐项交互（帧内），绘制另算 ----
+    // 交互确实发生在帧内，但这些项视觉上属于帧末弹层。临时把序号抬到帧末区：
+    // 闸门才会把它们当"弹层内容"放行，同时挡住同帧排在后面的普通控件。
     int chosen_now = -1;
+    {
+    Impl::SeqFrameEnd guard(impl);
     for (int r = 0; r < rows; ++r) {
         const Rect rr(list.x + 4.0f, sr.bottom() + 4.0f + item_h * float(r), list.w - 8.0f, item_h);
         const uint64_t iid = detail::make_id("cb_item", rr, id + uint64_t(vis[size_t(r)]));
         detail::Interact ii = detail::interact(impl, iid, rr, true);
         if (ii.hovered) { set_cursor(Cursor::Hand); hi = r; }
         if (ii.clicked) chosen_now = vis[size_t(r)];
+    }
     }
     hi_f = float(hi);
 
@@ -8355,7 +8419,7 @@ inline void Ui::scroll_to(float offset) {
 //  只算可见区间，其余项**不构建、不绘制**。这是"一万行列表"和"一万行布局 +
 //  一万次绘制"的区别：后者的成本随数据量线性增长，前者与数据量无关。
 // -----------------------------------------------------------------------------
-inline int Ui::scroll_visible(const Rect& box, int count, float item_h, int* first, int* last) {
+inline float Ui::scroll_visible(const Rect& box, int count, float item_h, int* first, int* last) {
     if (first) *first = 0;
     if (last)  *last  = -1;
     if (count < 0) count = 0;

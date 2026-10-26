@@ -50,6 +50,7 @@ function(aino_add_demo name)
     # 于是回退不会被触发，画出来是乱码 —— 这类歧义字节没有任何启发式能救。
     if(MSVC)
         target_compile_options(${name} PRIVATE /W3 /utf-8)
+        target_compile_definitions(${name} PRIVATE _CRT_SECURE_NO_WARNINGS)
         # WIN32 子系统下 MSVC 默认找 WinMain；示例用的是 main()，指定入口为 mainCRTStartup。
         target_link_options(${name} PRIVATE /ENTRY:mainCRTStartup)
     else()
@@ -93,3 +94,4 @@ endfunction()
 aino_add_demo(aino_gallery examples/gallery.cpp)
 aino_add_demo(aino_sidebar_demo examples/sidebar_demo.cpp)
 aino_add_demo(aino_zoom_demo examples/zoom_demo.cpp)
+aino_add_demo(aino_function_viewer examples/function_viewer.cpp)

@@ -48,7 +48,13 @@ def msvc_plan():
         return None
     libs = [e for e in extra if e.lower().endswith(".lib")]
     flags = [e for e in extra if not e.lower().endswith(".lib")]
-    cmd = [cl, "/nologo", "/std:c++17", "/EHsc", "/O2", "/W3", "/DNDEBUG",
+    # /DNOMINMAX：探针常在 include aino.hpp 之前先 include windows.h，那会儿
+    # 库自己的 NOMINMAX 还没生效，min/max 宏会把头里的 std::min/std::max 撕裂。
+    # 这是构建参数该管的事，不必要求每个探针都记得手动写。
+    # /utf-8：源码里到处是中文注释和中文字面量。不写这个开关，MSVC 按系统代码页
+    # （936/GBK）解析 UTF-8 字节，中文字符串会被吞掉换行、直接报 C2001「常量中有换行符」。
+    # g++ 默认就是 UTF-8，所以这个坑只在 MSVC 蹲着 —— 表现为同一份代码一会儿能编一会儿不能。
+    cmd = [cl, "/nologo", "/std:c++17", "/utf-8", "/EHsc", "/O2", "/W3", "/DNDEBUG", "/DNOMINMAX",
            "/Fe:" + out, src] + flags + libs
     return cmd, env
 

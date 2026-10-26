@@ -26,6 +26,12 @@ PROBE = os.path.join(HERE, "probe")
 PY = sys.executable
 
 DEMO = os.path.join(ROOT, "build")
+# 生成器不同，exe 落点也不同：Ninja/Makefiles 直接放 build/，VS 多配置放在
+# build/Release 或 build/Debug。按存在性挑一个，别逼用户换生成器。
+for _sub in ("", "Release", "Debug"):
+    if os.path.isfile(os.path.join(DEMO, _sub, "aino_gallery.exe")):
+        DEMO = os.path.join(DEMO, _sub)
+        break
 GALLERY = os.path.join(DEMO, "aino_gallery.exe")
 
 results = []
@@ -219,7 +225,7 @@ def layout_probe():
     max(声明, 实测)，所以溢出在结构上不可能发生；本断言确保测量机制没坏、
     也没有哪条示例离声明值太远（太远说明卡片会留一大块空白）。
     """
-    exe = os.path.join(ROOT, "build", "aino_gallery.exe")
+    exe = GALLERY
     out = os.path.join(ROOT, "build", "layout_report.txt")
     if os.path.exists(out):
         os.remove(out)
@@ -376,6 +382,10 @@ PROBES = (
     # 离屏驱动 impl->input，验证 dialog/menu/select 打开时遮罩上的点击、
     # hover、滚轮都不会落到下层控件（"弹窗能点到后面的"那个 bug）。
     ("overlay_probe",    "通过 36 项，失败 0 项",           "浮层不穿透（点击/hover/光标/滚轮/键盘/层级）"),
+    # overlay_probe 的用例都是"下层控件画在浮层之前"。这一项反过来：先画 select、
+    # 紧接着画落在弹层位置上的按钮 —— 钉的是"侧栏先放下拉、下面紧跟列表项，
+    # 点下拉项却选中了背后的列表项"那个 bug（层级号没给帧末层分段）。
+    ("gate_order_probe", "PASS（通过 8 项，失败 0 项）",     "浮层层级：后画的控件不得穿透弹层"),
     # 离屏驱动 Ctrl+C/X/V。A 组**不绑** set_clipboard / get_clipboard ——
     # 修复前这里调空 std::function 抛 bad_function_call，进程直接 exit 132
     # （用户报的"按 Ctrl+C 闪退"）。C 组真读写系统剪贴板，跑完还原；

@@ -147,7 +147,9 @@ struct NavScene {
 // 1. 视口外的行不许吃点击
 static void test_row_outside_viewport() {
     std::printf("[1] 滚动视口外的行不参与命中\n");
-    Surface s(int(NavScene::kW), int(NavScene::kH));
+    // 花括号初始化：`Surface s(int(a), int(b));` 会被当成函数声明（most vexing parse），
+    // 于是 h(&s) 报"无法把 Surface(int,int) 转成 Surface*"。
+    Surface s{int(NavScene::kW), int(NavScene::kH)};
     Harness h(&s);
     Driver d{h.ui, int(NavScene::kW), int(NavScene::kH)};
     NavScene scene;
@@ -207,7 +209,9 @@ static void test_same_frame_press() {
 // 3. gallery 现状回归：点主题按钮不能顺带切页
 static void test_theme_button_vs_rows() {
     std::printf("[3] 页脚主题按钮：只切主题，不切页\n");
-    Surface s(int(NavScene::kW), int(NavScene::kH));
+    // 花括号初始化：`Surface s(int(a), int(b));` 会被当成函数声明（most vexing parse），
+    // 于是 h(&s) 报"无法把 Surface(int,int) 转成 Surface*"。
+    Surface s{int(NavScene::kW), int(NavScene::kH)};
     Harness h(&s);
     Driver d{h.ui, int(NavScene::kW), int(NavScene::kH)};
     NavScene scene;
