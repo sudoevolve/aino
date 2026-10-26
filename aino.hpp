@@ -931,7 +931,7 @@ public:
     void  scroll_to(float offset);          // 程序化滚动
 
     // 低层零件：自己算可见区间、自己画，只要偏移与滚动条
-    int   scroll_visible(const Rect& box, int count, float item_h, int* first, int* last);
+    float scroll_visible(const Rect& box, int count, float item_h, int* first, int* last);
     void  scroll_bar(const Rect& box, float content_h);
     float scroll_offset(const Rect& box) const;
     void  scroll_to_index(const Rect& box, int index, float item_h, int count);
@@ -8355,7 +8355,7 @@ inline void Ui::scroll_to(float offset) {
 //  只算可见区间，其余项**不构建、不绘制**。这是"一万行列表"和"一万行布局 +
 //  一万次绘制"的区别：后者的成本随数据量线性增长，前者与数据量无关。
 // -----------------------------------------------------------------------------
-inline int Ui::scroll_visible(const Rect& box, int count, float item_h, int* first, int* last) {
+inline float Ui::scroll_visible(const Rect& box, int count, float item_h, int* first, int* last) {
     if (first) *first = 0;
     if (last)  *last  = -1;
     if (count < 0) count = 0;
