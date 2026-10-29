@@ -89,9 +89,76 @@ function(aino_add_demo name)
     endif()
 endfunction()
 
-# 三个目标：画廊（功能最全，也是回归靶子）+ 两个最小 demo（新手照着读）。
+# 四个目标：画廊（功能最全，也是回归靶子）+ 三个最小 demo（新手照着读）。
 # 多个窗口好用：同一套 AppState 跨页共享，浮层也天然盖在所有页之上。
 aino_add_demo(aino_gallery examples/gallery.cpp)
 aino_add_demo(aino_sidebar_demo examples/sidebar_demo.cpp)
 aino_add_demo(aino_zoom_demo examples/zoom_demo.cpp)
 aino_add_demo(aino_function_viewer examples/function_viewer.cpp)
+
+# =============================================================================
+#  SSH 客户端（可选目标）
+#
+#  和上面四个 demo 不一样，它不是"只依赖 aino.hpp"：还需要静态 libssh2 + mbedTLS。
+#  这两个产物不在源码树里，由 build/third_party/_mk.py 下载源码并编成 .lib，所以
+#  这里先探测再决定加不加目标 —— 缺依赖只是跳过它，不能让整个工程配置失败。
+#
+#  为什么不能复用 aino_add_demo()：
+#    · 那个函数给的是 /MT（静态 CRT，产物零 DLL 依赖），而 libssh2.lib 是 /MD 编的，
+#      混链会满屏 __imp_* 未解析，所以本目标必须单独用 /MD；
+#    · 它还会把入口改成 mainCRTStartup，而 ssh_client.cpp 的入口是 WinMain
+#      （WINDOWS 子系统默认就找 WinMain，不用额外指定）。
+#
+#  依赖就绪后 `cmake --build build --config Release` 就会一起产出 aino_ssh.exe，
+#  不再需要单独跑 tools/build_ssh.py（那个脚本仍然保留，用来编各种探针）。
+# =============================================================================
+option(AINO_BUILD_SSH "构建 SSH 客户端示例（需要第三方静态依赖）" ON)
+set(AINO_SSH_DEPS "${CMAKE_CURRENT_SOURCE_DIR}/build/third_party"
+    CACHE PATH "libssh2 / mbedTLS 依赖目录")
+
+if(AINO_BUILD_SSH)
+    if(WIN32 AND MSVC)
+        set(_ssh_l2_inc  "${AINO_SSH_DEPS}/libssh2-1.11.1/include")
+        # 用 mbedTLS 后端那份构建产物（l2mbed），不是 WinCNG：
+        # WinCNG 版的 libssh2 没开 ECDSA/ED25519，只剩 diffie-hellman-group*，
+        # 而 OpenSSH 10.x 已经停用那一族，握手会"没有共同算法"。
+        set(_ssh_l2_bld  "${AINO_SSH_DEPS}/l2mbed/src")
+        set(_ssh_mbed_inc "${AINO_SSH_DEPS}/mbedtls-3.6.2/include")
+        set(_ssh_mbed_lib "${AINO_SSH_DEPS}/mbedtls-3.6.2/mbedtls_all.lib")
+
+        set(_ssh_missing "")
+        foreach(_p "${_ssh_l2_inc}/libssh2.h" "${_ssh_l2_bld}/libssh2_config.h"
+                   "${_ssh_l2_bld}/libssh2.lib" "${_ssh_mbed_lib}")
+            if(NOT EXISTS "${_p}")
+                list(APPEND _ssh_missing "${_p}")
+            endif()
+        endforeach()
+
+        if(_ssh_missing)
+            list(JOIN _ssh_missing "\n    " _ssh_msg)
+            message(WARNING
+                "跳过 aino_ssh —— 缺第三方静态依赖：\n    ${_ssh_msg}\n"
+                "  先跑：python build/third_party/_mk.py")
+        else()
+            add_executable(aino_ssh WIN32 examples/ssh_client.cpp)
+            set_target_properties(aino_ssh PROPERTIES
+                MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+            target_include_directories(aino_ssh PRIVATE
+                "${_ssh_l2_inc}" "${_ssh_l2_bld}" "${_ssh_mbed_inc}")
+            target_compile_options(aino_ssh PRIVATE /W3 /utf-8)
+            target_compile_definitions(aino_ssh PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
+            # 链接顺序：libssh2 依赖 mbedtls，所以 mbedtls 放后面。
+            target_link_libraries(aino_ssh PRIVATE
+                "${_ssh_l2_bld}/libssh2.lib" "${_ssh_mbed_lib}"
+                user32 gdi32 msimg32        # ime 候选框 / 圆角光栅化 / 渐变
+                ws2_32 crypt32 bcrypt       # 套接字 / 主机密钥指纹 / mbedTLS 熵源
+                shell32 ole32)              # SHBrowseForFolder 选下载目录
+        endif()
+    else()
+        # Linux/macOS 用发行版自带 libssh2；平台窗口库由 aino_add_demo 负责。
+        aino_add_demo(aino_ssh examples/ssh_client.cpp)
+        target_link_libraries(aino_ssh PRIVATE ssh2)
+        find_package(Threads REQUIRED)
+        target_link_libraries(aino_ssh PRIVATE Threads::Threads)
+    endif()
+endif()

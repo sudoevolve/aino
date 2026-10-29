@@ -440,6 +440,16 @@ struct Input {
     // 键盘
     bool key_down[KEY_COUNT] = {};
     bool key_pressed[KEY_COUNT] = {};
+    // key_repeat：按住不放时系统自动重复触发的"再按一次"。
+    //
+    // 为什么单列一个数组而不是把 key_pressed 直接置真：key_pressed 的语义是
+    // "按下那一刻"。很多地方靠它做一次性动作（切换开关、提交表单、Ctrl+Z 撤销），
+    // 让它自带重复会误触发。但终端、文本编辑这类"按住该连续动"的场景又必须要重复，
+    // 所以把重复单独暴露出来，由调用方自己决定要不要理它（Input::key_hit 是二者取或）。
+    //
+    // 记**次数**而不是 bool：一帧里可能挤进好几次自动重复（帧掉到 20fps、系统重复
+    // 率又高的时候），bool 会把这几次压成一次 —— 终端里就是"长按方向键偶尔少走一格"。
+    unsigned char key_repeat[KEY_COUNT] = {};
     // 每个键**按下那一刻**的修饰键状态。为什么需要单独存：同一批消息里
     // Ctrl 的 WM_KEYUP 可能排在 WM_KEYDOWN('Z') 之后、但在这帧之前被处理掉，
     // 于是帧里读 ctrl() 已经是 false —— Ctrl+Z 就收不到了（实测快速按键必现）。
@@ -451,6 +461,18 @@ struct Input {
     bool ctrl()  const { return key_down[KEY_CTRL]; }
     bool alt()   const { return key_down[KEY_ALT]; }
     bool super() const { return key_down[KEY_SUPER]; }
+
+    // "这一帧这个键生效了吗" = 首次按下 或 按住后的自动重复。
+    // 需要连发的场景（终端方向键、长按退格、游戏按键）用它；只该触发一次的
+    // 场景（开关、提交）继续用 key_pressed[k]。
+    bool key_hit(int k) const { return k >= 0 && k < KEY_COUNT && (key_pressed[k] || key_repeat[k] > 0); }
+
+    // 这一帧这个键总共应该生效几次（首按 1 次 + 本帧收到的自动重复次数）。
+    // 终端方向键、退格这种"按几次就该发几次"的地方用它，别用 key_hit 循环。
+    int key_times(int k) const {
+        if (k < 0 || k >= KEY_COUNT) return 0;
+        return (key_pressed[k] ? 1 : 0) + int(key_repeat[k]);
+    }
 
     // 组合键判定：ctrl_of(k) = "本帧按下的 k 当时 Ctrl 是按住状态"。
     // 注意它**自带** key_pressed[k] 判定 —— 写成"key_pressed[k] && ctrl_of(k)"
@@ -687,6 +709,25 @@ public:
     // 度量
     float text_width(const std::string& text, float font_size, int weight = -1) const;
     float line_height(float font_size) const;
+
+    // ---------------- 等宽文本（终端 / 日志 / 表格） ----------------
+    // draw_text 走比例字体：一行里每个字符的步进都不同，画不出"列对得齐"的东西。
+    // 终端、十六进制视图、固定宽度表格要的是**每个半角字符同宽**的网格：
+    //
+    //     const float fs  = 13.0f;
+    //     const float adv = ui.mono_advance(fs);        // 半角步进（量出来的，不是估的）
+    //     const float asc = ui.mono_ascent(fs);         // 顶到基线的距离
+    //     for (int row = 0; row < rows; ++row)
+    //         for (int col = 0; col < cols; ++col)
+    //             ui.draw_mono_text(cell_text, x + col * adv, y + row * lh, color, fs);
+    //
+    // draw_mono_text 的 (x, y_top) 是文字**左上角**（和 draw_text 的 box 定位同义），
+    // 并且自动裁到当前 push_clip 的区域内 —— 滚动区只要裁一次，不用自己切行。
+    float mono_width(const std::string& text, float font_size, int weight = 400) const;
+    float mono_advance(float font_size, int weight = 400) const;   // 单个半角字符步进
+    float mono_ascent(float font_size, int weight = 400) const;    // 顶到基线的距离
+    void  draw_mono_text(const std::string& text, float x, float y_top, const Color& c,
+                         float font_size, int weight = 400);
     // 按 st.wrap / '\n' 的真实折行结果算出这段文字要占多高（逻辑单位）。
     // 和 text_width 对称：aino 不做"高度自适应"，但高度是**可以量**的 ——
     // 折行规则和执行绘制时用的是同一套（layout_wrapped_lines），不是估算。
@@ -1015,6 +1056,20 @@ public:
     void close();
 
     void request_repaint();
+
+    // 跨线程叫醒主循环："外面有新数据了，排一帧"。
+    //
+    // request_repaint() 只置一个标志位 —— 主循环空闲时是阻塞在内核里的
+    // （WaitMessage / XNextEvent），光改标志叫不醒它。所以**后台线程**里有
+    // 数据到达时（SSH 收字节、下载进度、日志尾部、长任务回调）要用这个：
+    //
+    //     std::thread([&] {
+    //         while (running) { if (recv_new_bytes()) win.wake(); }
+    //     }).detach();
+    //
+    // 它只做两件事：置 need_frame、往自己窗口投一条无副作用的消息/空事件。
+    // 因此在主线程调用也是安全的（等价于 request_repaint）。
+    void wake();
 
     // 常驻动画（spinner / 光标闪烁 / hover 插值）的重绘帧率上限，默认 60fps。
     // 软件光栅化下，一个"一直在动"的组件会让整窗每帧重画；窗口越大越贵。
@@ -3454,6 +3509,45 @@ inline float Ui::line_height(float font_size) const {
     return impl->text->line_height(impl->px(fs), 400) / impl->scale;
 }
 
+// -----------------------------------------------------------------------------
+//  等宽文本：度量与绘制
+//
+//  三者都走 TextEngine 的 *_mono 那一组虚函数（Windows 上是 Consolas 之类的
+//  等宽字体，Linux/macOS 上由各自后端挑），所以"同字号下步进相同"这件事由
+//  字体引擎保证，而不是在这里乘一个 0.6 的魔法系数。
+//
+//  绘制不做旋转、不做折行、不做居中：终端网格的内容全部由调用方按 (row, col)
+//  算好坐标，越界部分交给裁剪区。样式越少，长滚动区里的行开销越可预测。
+// -----------------------------------------------------------------------------
+inline float Ui::mono_width(const std::string& text, float font_size, int weight) const {
+    if (!impl->text || text.empty()) return 0.0f;
+    const float fs = font_size > 0.0f ? font_size : impl->theme.font_size;
+    return impl->text->measure_mono(text, impl->px(fs), weight) / impl->scale;
+}
+
+inline float Ui::mono_advance(float font_size, int weight) const {
+    const float fs = font_size > 0.0f ? font_size : impl->theme.font_size;
+    if (!impl->text) return fs * 0.6f;
+    // 用 'M' 量：等宽字体里所有半角字符步进相同，'M' 不会退化成零宽。
+    return impl->text->measure_mono("M", impl->px(fs), weight) / impl->scale;
+}
+
+inline float Ui::mono_ascent(float font_size, int weight) const {
+    const float fs = font_size > 0.0f ? font_size : impl->theme.font_size;
+    if (!impl->text) return fs * 1.1f;
+    return impl->text->ascent_mono(impl->px(fs), weight) / impl->scale;
+}
+
+inline void Ui::draw_mono_text(const std::string& text, float x, float y_top, const Color& c,
+                               float font_size, int weight) {
+    if (impl->measure_on) return;
+    if (!impl->canvas || !impl->text || text.empty() || c.a == 0) return;
+    const float fs = font_size > 0.0f ? font_size : impl->theme.font_size;
+    const Rect clip = impl->effective_clip;     // w < 0 表示没裁
+    impl->text->draw_mono(*impl->canvas, text, impl->px(x), impl->px(y_top), impl->px(fs),
+                          weight, c, clip);
+}
+
 namespace detail {
 
 // 第 i 个字节处那个字符占几个字节。非法字节按 1 前进 —— 宁可画错一个字，
@@ -4768,7 +4862,7 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
             return true;
         };
 
-        if (!undone && kin.key_pressed[KEY_BACKSPACE]) {
+        if (!undone && kin.key_hit(KEY_BACKSPACE)) {
             edit_kind = detail::EDIT_DELETE;
             if (kin.ctrl_of(KEY_BACKSPACE) || kin.alt_of(KEY_BACKSPACE)) {
                 // Ctrl+Backspace：删到上一个词边界
@@ -4791,7 +4885,7 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
                 changed = true;
             }
         }
-        if (!undone && kin.key_pressed[KEY_DELETE]) {
+        if (!undone && kin.key_hit(KEY_DELETE)) {
             edit_kind = detail::EDIT_DELETE;
             if (!delete_selection()) {
                 std::vector<uint32_t> cps = utf8_codepoints(*value);
@@ -4803,7 +4897,7 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
             }
         }
         // ←/→：Ctrl 按词跳，Shift 扩选
-        if (!undone && kin.key_pressed[KEY_LEFT]) {
+        if (!undone && kin.key_hit(KEY_LEFT)) {
             if (!kin.shift()) {
                 impl->caret = has_sel ? sel_from
                                       : (kin.ctrl_of(KEY_LEFT) ? detail::word_left(utf8_codepoints(*value), impl->caret)
@@ -4816,7 +4910,7 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
             }
             impl->caret_blink = 0.0f;
         }
-        if (!undone && kin.key_pressed[KEY_RIGHT]) {
+        if (!undone && kin.key_hit(KEY_RIGHT)) {
             if (!kin.shift()) {
                 impl->caret = has_sel ? sel_to
                                       : (kin.ctrl_of(KEY_RIGHT) ? detail::word_right(utf8_codepoints(*value), impl->caret)
@@ -4829,12 +4923,12 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
             }
             impl->caret_blink = 0.0f;
         }
-        if (!undone && kin.key_pressed[KEY_HOME]) {
+        if (!undone && kin.key_hit(KEY_HOME)) {
             if (kin.shift()) { if (impl->sel_anchor < 0) impl->sel_anchor = impl->caret; }
             else impl->sel_anchor = -1;
             impl->caret = 0;
         }
-        if (!undone && kin.key_pressed[KEY_END]) {
+        if (!undone && kin.key_hit(KEY_END)) {
             if (kin.shift()) { if (impl->sel_anchor < 0) impl->sel_anchor = impl->caret; }
             else impl->sel_anchor = -1;
             impl->caret = n_cp;
@@ -5704,7 +5798,7 @@ inline bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
             delete_sel();
         };
 
-        if (!undone && kin.key_pressed[KEY_BACKSPACE]) {
+        if (!undone && kin.key_hit(KEY_BACKSPACE)) {
             edit_kind = detail::EDIT_DELETE;
             if ((kin.ctrl_of(KEY_BACKSPACE) || kin.alt_of(KEY_BACKSPACE)) && !has_sel) {
                 delete_span(detail::word_left(utf8_codepoints(*value), impl->caret), impl->caret);
@@ -5716,7 +5810,7 @@ inline bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
                 changed = true;
             }
         }
-        if (!undone && kin.key_pressed[KEY_DELETE]) {
+        if (!undone && kin.key_hit(KEY_DELETE)) {
             edit_kind = detail::EDIT_DELETE;
             if ((kin.ctrl_of(KEY_DELETE) || kin.alt_of(KEY_DELETE)) && !has_sel) {
                 delete_span(impl->caret, detail::word_right(utf8_codepoints(*value), impl->caret));
@@ -5729,13 +5823,13 @@ inline bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
                 }
             }
         }
-        if (!undone && kin.key_pressed[KEY_ENTER]) {
+        if (!undone && kin.key_hit(KEY_ENTER)) {
             edit_kind = detail::EDIT_TYPE;
             insert_text(kin.ctrl() || kin.shift() ? "\n\n" : "\n");
         }
 
         // ←/→：Ctrl 按词跳；Home/End：Ctrl 到文档首尾；Shift 一律扩选
-        if (!undone && kin.key_pressed[KEY_LEFT]) {
+        if (!undone && kin.key_hit(KEY_LEFT)) {
             if (!kin.shift()) {
                 impl->caret = has_sel ? sel_from
                                       : (kin.ctrl() ? detail::word_left(utf8_codepoints(*value), impl->caret)
@@ -5748,7 +5842,7 @@ inline bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
             }
             impl->caret_blink = 0.0f;
         }
-        if (!undone && kin.key_pressed[KEY_RIGHT]) {
+        if (!undone && kin.key_hit(KEY_RIGHT)) {
             if (!kin.shift()) {
                 impl->caret = has_sel ? sel_to
                                       : (kin.ctrl() ? detail::word_right(utf8_codepoints(*value), impl->caret)
@@ -5761,7 +5855,7 @@ inline bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
             }
             impl->caret_blink = 0.0f;
         }
-        if (!undone && (kin.key_pressed[KEY_UP] || kin.key_pressed[KEY_DOWN])) {
+        if (!undone && (kin.key_hit(KEY_UP) || kin.key_hit(KEY_DOWN))) {
             const std::pair<int, int> lc = to_linecol(impl->caret);
             const int target = lc.first + (kin.key_pressed[KEY_UP] ? -1 : 1);
             if (target >= 0 && target < int(lines.size())) {
@@ -5774,14 +5868,14 @@ inline bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
             if (kin.shift()) { if (impl->sel_anchor < 0) impl->sel_anchor = has_sel ? sel_from : impl->caret; }
             else impl->sel_anchor = -1;
         }
-        if (!undone && kin.key_pressed[KEY_HOME]) {
+        if (!undone && kin.key_hit(KEY_HOME)) {
             if (kin.shift()) { if (impl->sel_anchor < 0) impl->sel_anchor = impl->caret; }
             else impl->sel_anchor = -1;
             if (kin.ctrl_of(KEY_HOME)) impl->caret = 0;
             else { const std::pair<int, int> lc = to_linecol(impl->caret); impl->caret = to_caret(lc.first, 0); }
             impl->caret_blink = 0.0f;
         }
-        if (!undone && kin.key_pressed[KEY_END]) {
+        if (!undone && kin.key_hit(KEY_END)) {
             if (kin.shift()) { if (impl->sel_anchor < 0) impl->sel_anchor = impl->caret; }
             else impl->sel_anchor = -1;
             if (kin.ctrl_of(KEY_END)) impl->caret = n_cp;
@@ -7159,13 +7253,13 @@ inline bool Ui::input_otp(std::string* value, int length, const Rect& box, const
             ++cur;
             changed = true;
         }
-        if (kin.key_pressed[KEY_BACKSPACE] && cur > 0) {
+        if (kin.key_hit(KEY_BACKSPACE) && cur > 0) {
             --cur;
             if (cur < int(value->size())) value->erase(size_t(cur), 1);
             changed = true;
         }
-        if (kin.key_pressed[KEY_LEFT] && cur > 0) --cur;
-        if (kin.key_pressed[KEY_RIGHT] && cur < int(value->size())) ++cur;
+        if (kin.key_hit(KEY_LEFT) && cur > 0) --cur;
+        if (kin.key_hit(KEY_RIGHT) && cur < int(value->size())) ++cur;
         if (changed) { repaint(); impl->caret_blink = 0.0f; }
     }
     if (cur > int(value->size())) cur = int(value->size());
@@ -8036,7 +8130,7 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
     if (focused) {
         const Input& kin = impl->input;
         if (!kin.text_input.empty()) { query += kin.text_input; repaint(); }
-        if (kin.key_pressed[KEY_BACKSPACE] && !query.empty()) {
+        if (kin.key_hit(KEY_BACKSPACE) && !query.empty()) {
             // 删最后一个 UTF-8 码点（不能直接 pop_back：一个汉字三字节）
             size_t n = query.size();
             while (n > 0 && (uint8_t(query[n - 1]) & 0xC0) == 0x80) --n;
@@ -8062,8 +8156,8 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
     bool picked = false, close = false;
     if (focused) {
         const Input& kin = impl->input;
-        if (kin.key_pressed[KEY_DOWN] && hi + 1 < int(vis.size())) { ++hi; repaint(); }
-        if (kin.key_pressed[KEY_UP] && hi > 0) { --hi; repaint(); }
+        if (kin.key_hit(KEY_DOWN) && hi + 1 < int(vis.size())) { ++hi; repaint(); }
+        if (kin.key_hit(KEY_UP) && hi > 0) { --hi; repaint(); }
         if (kin.key_pressed[KEY_ENTER] && !vis.empty()) {
             *index = vis[size_t(hi)];
             picked = true;
@@ -8688,6 +8782,7 @@ struct Win32State {
     std::string text_in;
     bool  key_down[KEY_COUNT]    = {};
     bool  key_pressed[KEY_COUNT] = {};
+    unsigned char key_repeat[KEY_COUNT] = {};
     bool  key_ctrl[KEY_COUNT]    = {};
     bool  key_shift[KEY_COUNT]   = {};
     bool  key_alt[KEY_COUNT]     = {};
@@ -9195,13 +9290,23 @@ inline LRESULT CALLBACK win_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_KEYDOWN: case WM_SYSKEYDOWN: {
         int k = win_map_vk(w);
         if (k > 0 && k < KEY_COUNT) {
-            if (!s->key_down[k]) {
+            // lParam bit 30 = 这条消息之前该键是否已经按下（即系统自动重复）。
+            // 不认这一位就只能收到"按下那一下"，长按方向键不会连发 —— 终端里
+            // 表现为"上下左右只能单点、按住不动"，文本编辑里表现为"按住退格
+            // 只删一个字"。所以重复单独记到 key_repeat，由 UI 层按需取用。
+            const bool os_repeat = (l & (1 << 30)) != 0;
+            if (!s->key_down[k] || !os_repeat) {
+                // 首按。条件里带 !os_repeat 是兜底：焦点切回来、或我们漏收了
+                // KEYUP 时 key_down 可能是陈旧的 true，此时必须仍按"首按"派发，
+                // 否则这一下按键会被静默吞掉。
                 s->key_pressed[k] = true;
                 // 修饰位在**按下这一刻**定格：同一批消息里 Ctrl 的 KEYUP 可能
                 // 已经先被处理掉，帧里再看 key_down 就晚了。
                 s->key_ctrl[k]  = s->key_down[KEY_CTRL];
                 s->key_shift[k] = s->key_down[KEY_SHIFT];
                 s->key_alt[k]   = s->key_down[KEY_ALT];
+            } else {
+                if (s->key_repeat[k] < 255) ++s->key_repeat[k];
             }
             s->key_down[k] = true;
         }
@@ -9407,6 +9512,7 @@ inline void win_feed_input(Win32State* s) {
     for (int i = 0; i < KEY_COUNT; ++i) {
         in.key_down[i]    = s->key_down[i];
         in.key_pressed[i] = s->key_pressed[i];
+        in.key_repeat[i]  = s->key_repeat[i];
         in.key_ctrl[i]    = s->key_ctrl[i];
         in.key_shift[i]   = s->key_shift[i];
         in.key_alt[i]     = s->key_alt[i];
@@ -9418,7 +9524,7 @@ inline void win_feed_input(Win32State* s) {
     s->wheel = 0.0f;
     s->clicks = 0;
     s->text_in.clear();
-    for (int i = 0; i < KEY_COUNT; ++i) s->key_pressed[i] = false;
+    for (int i = 0; i < KEY_COUNT; ++i) { s->key_pressed[i] = false; s->key_repeat[i] = 0; }
 }
 
 inline uint64_t win_ticks_ms() {
@@ -9589,6 +9695,16 @@ inline void Window::set_size(int w, int h) {
     AdjustWindowRectEx(&rc, WS_OVERLAPPEDWINDOW, FALSE, 0);
     SetWindowPos(s->hwnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// 跨线程叫醒主循环：置标志 + 投一条 WM_NULL（对窗口自身零副作用，close() 用的同一招）。
+// 主循环空闲时阻塞在 WaitMessage()，只改标志位叫不醒它。
+inline void Window::wake() {
+    Window::Impl* o = impl;
+    if (!o) return;
+    o->need_frame = true;
+    detail::Win32State* s = reinterpret_cast<detail::Win32State*>(o->native);
+    if (s && s->hwnd) PostMessageW(s->hwnd, WM_NULL, 0, 0);
 }
 
 inline void Window::close() {
@@ -10931,6 +11047,28 @@ inline void Window::set_size(int w, int h) {
 }
 inline void Window::close() { if (impl) impl->running = false; }
 
+// X11 的主循环阻塞在 XNextEvent。往自己窗口投一条 ClientMessage（data.l[0]=0，
+// 不会命中 wm_delete）就能把它捅醒；x11_handle 里这条消息落到 default 分支，
+// 除了让循环再空转一圈之外没有别的效果。
+//
+// 提醒：这是"同一个 Xlib 连接被两个线程碰"。Xlib 在 XInitThreads() 之前不是
+// 线程安全的，aino 的 X11 后端没有调它 —— 所以 Linux 上后台线程只改标志，
+// wake() 留给主线程调；要直接从后台线程调，请在建窗前自己 XInitThreads()。
+inline void Window::wake() {
+    Window::Impl* o = impl;
+    if (!o) return;
+    o->need_frame = true;
+    detail::X11State* s = reinterpret_cast<detail::X11State*>(o->native);
+    if (!s || !s->dpy || !s->win) return;
+    XEvent e{};
+    e.type = ClientMessage;
+    e.xclient.window = s->win;
+    e.xclient.message_type = None;
+    e.xclient.format = 32;
+    XSendEvent(s->dpy, s->win, False, 0, &e);
+    XFlush(s->dpy);
+}
+
 inline void Window::set_clipboard(const std::string& text) {
     detail::X11State* s = reinterpret_cast<detail::X11State*>(impl->native);
     if (!s || !s->dpy) return;
@@ -11418,6 +11556,14 @@ inline void Window::set_size(int w, int h) {
         oc_send<void>(s->window, sel_registerName("setContentSize:"), CGSizeMake(CGFloat(w), CGFloat(h)));
 }
 inline void Window::close() { if (impl) impl->running = false; }
+
+// macOS 的 run() 是 usleep(2000) 轮询（没有真阻塞），所以只改标志就够了，
+// 后台线程直接调也不会碰 UIKit/AppKit。
+inline void Window::wake() {
+    Window::Impl* o = impl;
+    if (!o) return;
+    o->need_frame = true;
+}
 inline void Window::set_clipboard(const std::string&) {}
 inline std::string Window::clipboard() const { return std::string(); }
 

@@ -78,6 +78,18 @@ cmake --build build --config Release
 ./build/aino_gallery.exe
 ```
 
+同一份 CMake 工程还会编出 `examples/ssh_client.cpp`（SSH 客户端，产物
+`build/Release/aino_ssh.exe`）。它额外需要静态 libssh2 + mbedTLS，产物不在源码树里：
+
+```sh
+python build/third_party/_mk.py     # 下载源码并编成静态库（只需跑一次）
+cmake --build build --config Release
+```
+
+缺依赖时 CMake 只在配置期打一条警告并跳过 `aino_ssh`，其余 demo 照常构建；
+不想编它就在配置时加 `-DAINO_BUILD_SSH=OFF`。注意 `aino_ssh.exe` 正在运行时
+链接器会以 `LNK1104` 失败 —— 先关掉客户端再构建。
+
 概览页那段 Quick Start 代码可以直接点「在新窗口运行这段代码」：它会真的再开一个
 `aino::Window`（另一个线程、另一条消息循环、另一块后备缓冲），不是照着画的假框子 ——
 顺便演示 `WindowConfig` 的最小尺寸与居中。

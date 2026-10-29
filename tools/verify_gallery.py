@@ -37,8 +37,41 @@ NAV_W = 232.0
 
 
 def save_png(raw, w, h, path):
-    from PIL import Image
+    try:
+        from PIL import Image
+    except ImportError:
+        # 没装 Pillow 也能出图：自己按 PNG 规范拼（BGRX → RGB，逐行 filter 0）。
+        # 抓图脚本只用来人眼核对版式，不值得为它强制一个第三方依赖。
+        _save_png_nopil(raw, w, h, path)
+        return
     Image.frombuffer("RGB", (w, h), raw, "raw", "BGRX", 0, 1).save(path)
+
+
+def _save_png_nopil(raw, w, h, path):
+    import struct
+    import zlib
+
+    stride = w * 4
+    body = bytearray()
+    for y in range(h):
+        line = raw[y * stride:(y + 1) * stride]
+        rgb = bytearray(w * 3)
+        rgb[0::3] = line[2::4]      # R
+        rgb[1::3] = line[1::4]      # G
+        rgb[2::3] = line[0::4]      # B
+        body.append(0)              # filter type: None
+        body += rgb
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data +
+                struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    out = b"\x89PNG\r\n\x1a\n"
+    out += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+    out += chunk(b"IDAT", zlib.compress(bytes(body), 6))
+    out += chunk(b"IEND", b"")
+    with open(path, "wb") as f:
+        f.write(out)
 
 
 def close(c1, c2, tol=6):
