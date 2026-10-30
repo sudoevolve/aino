@@ -388,6 +388,13 @@ struct Theme {
     // macOS 的控件、面板、菜单一律 0.6 —— 这一项不改，色值全对也还是 Web 味。
     float corner_smoothing = 0.6f;
 
+    // 凹槽底（Segmented 轨道、输入框内壁）：浅色下压一层 8% 黑，深色下必须换
+    // 8% 白 —— 深色窗口本身已经接近纯黑，再压黑等于什么都没画，控件会"消失"。
+    Color track_well() const {
+        return window_bg.luminance() < 0.5f ? Color(255, 255, 255, 20) : Color(0, 0, 0, 20);
+    }
+    bool is_dark() const { return window_bg.luminance() < 0.5f; }
+
     std::string font_family;    // 空 = 用平台默认无衬线字体
     std::string font_family_mono;
 
@@ -4526,10 +4533,11 @@ inline Skin make_skin(const Theme& th, const Style& st, int default_variant, flo
             sk.fg   = th.label;
             break;
         case Style::Destructive:
-            sk.base  = th.destructive; sk.fg = Color(255, 255, 255);
-            sk.hover = th.destructive;
-            sk.press = th.destructive.darken(0.12f);
-            sk.rim   = Color(255, 255, 255, 36);
+            // macOS 的破坏性按钮 = 普通（8% 面）按钮 + 红字，不是红底白字的 iOS 主按钮。
+            // 红底会把"删除"变成页面里视觉最重的元素，这在一个原生界面里从不发生。
+            sk.base  = th.fill; sk.fg = th.destructive;
+            sk.hover = th.fill;
+            sk.press = th.fill_press;
             break;
         case Style::Link:
             sk.base = Color::none(); sk.hover = Color::none(); sk.press = Color::none();
@@ -4598,6 +4606,19 @@ inline void pop_shadow(Ui& ui, const Rect& r, float rad, const Theme& th, int le
 
 inline void paint_focus_ring(Ui& ui, const Rect& r, float radius, const Color& ring) {
     ui.stroke_rect(r.expand(1.5f), ring.scaled_alpha(0.55f), radius + 1.5f, 2.0f);
+}
+
+// 叠加色（th.accent / th.fill 这类自带 alpha 的"面"）按 t 淡入。
+// ⚠ 不能用 with_alpha(255*t)：那是**替换** alpha，会把 13% 的叠加色变成 100%
+// 不透明 —— 深色主题下直接变成一块纯白实心矩形把文字盖死。必须缩现有 alpha。
+inline Color fade(const Color& c, float t) {
+    return c.scaled_alpha(t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t));
+}
+
+// 实心强调色上的文字。亮强调色（黄/绿/橙）上用黑字，暗的用白字 ——
+// 官方 kit 里黄色 Selected 段就是黑字，一律白字在浅色强调色上会糊。
+inline Color on_color(const Color& bg) {
+    return bg.luminance() > 0.55f ? Color(0, 0, 0, 217) : Color(255, 255, 255);
 }
 
 // 把 Style 中与文字相关的部分转成 draw_text 用的 Style
@@ -5092,6 +5113,14 @@ inline void Ui::badge(const std::string& text, const Rect& box, const Style& st)
     // 字重 —— 于是 Default 和 Secondary 画出来一模一样，"四种变体"实际只有两种视觉。
     detail::Skin sk = detail::make_skin(th, st, Style::Default, rad);
     if (sk.weight == 400) sk.weight = 500;
+    // macOS 的标记（badge / tag）是**强调色 15% 底 + 强调色字**，不是实心色块 + 白字。
+    // 实心小色块是 iOS / Web 的写法，在一个 mac 界面里会变成最抢眼的东西。
+    const int bv = st.variant >= 0 ? st.variant : Style::Default;
+    if (st.bg.is_none() && (bv == Style::Default || bv == Style::Destructive)) {
+        const Color tone = (bv == Style::Destructive) ? th.destructive : th.tint;
+        sk.base = tone; sk.base.a = 38;
+        sk.fg = tone;
+    }
     if (sk.base.a > 0) fill_rect(box, sk.base, rad);
     if (sk.border_w > 0.0f && !sk.border.is_none())
         stroke_rect(box, sk.border, rad, sk.border_w);
@@ -5720,7 +5749,11 @@ inline bool Ui::toggle(bool* value, const Rect& box, const Style& st) {
     // ---- 官方 Switch/Medium：轨道 54×24 胶囊（r=1000, cornerSmoothing 0.6）----
     // 滑块不是圆点，是 32×20 的白色胶囊，四周内缩 2；按下时横向拉长到 50×31 的形变
     // 这里不做玻璃/形变，只保留尺寸与位移，避免"液态玻璃"。
-    const float track_h = 24.0f, track_w = 54.0f;
+    // 官方四档：Mini 36×16 / Small 44×20 / Regular 54×24 / Large 64×28，
+    // 宽高比恒为 2.25。按 box 高度选档 —— 以前把 54×24 写死，调用方给的 box
+    // 再小也照画，轨道会顶出热区。
+    const float track_h = box.h < 17.5f ? 16.0f : box.h < 21.5f ? 20.0f : box.h < 25.5f ? 24.0f : 28.0f;
+    const float track_w = track_h * 2.25f;
     Rect track = Rect::centered(box.cx(), box.cy(), track_w, track_h);
     const float rad = track_h * 0.5f;
 
@@ -5732,8 +5765,9 @@ inline bool Ui::toggle(bool* value, const Rect& box, const Style& st) {
     if (st.disabled) track_c = track_c.with_alpha(uint8_t(float(track_c.a) * 0.55f));
     fill_rect_s(track, track_c, rad, 0.0f);   // 胶囊：半径已到短边一半，不用再压 smoothing
 
+    // kit：滑块 32×20 装在 54×24 的轨道里，四周内缩 2（比例 0.593 / h-4）
     const float inset = 2.0f;
-    const float knob_w = 32.0f, knob_h = 20.0f;
+    const float knob_w = track_w * 0.593f, knob_h = track_h - 4.0f;
     const float kx = detail::lerpf(track.x + inset, track.right() - inset - knob_w, t);
     Rect knob_r(kx, track.cy() - knob_h * 0.5f, knob_w, knob_h);
     // 官方 Knob 阴影：drop(y3 blur36 #0000000D) —— 36 是 Figma 的模糊半径，落到像素上取 7
@@ -6012,29 +6046,33 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
             const int sel_now = *index;
             const std::vector<std::string> items_copy = items;
             deferred([this, list, items_copy, rects, ids, hov, sel_now, rad, fs, th]() {
-                detail::pop_shadow(*this, list, rad, th, 0);
-                fill_rect(list, th.popover_bg, rad);
-                stroke_rect(list, th.border, rad, 1.0f);
+                const float lrad = rad + 2.0f;
+                detail::pop_shadow(*this, list, lrad, th, 0);
+                fill_rect(list, th.popover_bg, lrad);
+                stroke_rect(list, th.border, lrad, 1.0f);
                 push_clip(list);
                 for (size_t i = 0; i < rects.size(); ++i) {
                     const Rect& item = rects[i];
                     const float t_h = detail::animate_value(impl, ids[i] * 97u + 1u, hov[i] ? 1.0f : 0.0f, 20.0f);
-                    if (t_h > 0.02f)
-                        fill_rect(item, th.accent.mix(th.foreground.with_alpha(10), t_h * 0.3f), rad - 2.0f);
+                    // 官方弹出菜单：高亮 = 强调色实心 + 白字。灰底那一套是 Web 习惯，
+                    // 在 macOS 上看着"淡得像没选中"。
+                    if (t_h > 0.02f) fill_rect_s(item, th.tint.scaled_alpha(t_h), 5.0f, 0.35f);
+                    const Color fg = (t_h > 0.5f) ? detail::on_color(th.tint) : th.popover_foreground;
+
+                    // 对勾在行首（官方菜单的 Selection 是左边一列勾位），不在行尾
+                    if (sel_now == int(i)) {
+                        const float ccx = item.x + 10.0f, ccy = item.cy();
+                        const float s = 3.2f;
+                        draw_line(ccx - s, ccy, ccx - s * 0.15f, ccy + s * 0.85f, fg, 1.8f);
+                        draw_line(ccx - s * 0.15f, ccy + s * 0.85f, ccx + s * 1.15f, ccy - s * 0.9f, fg, 1.8f);
+                    }
 
                     Style its;
                     its.font_size = fs;
                     its.font_weight = (sel_now == int(i)) ? 600 : 500;
                     its.align = Align::Left;
                     its.valign = VAlign::Middle;
-                    draw_text(items_copy[i], item.inset(10.0f, 0.0f), th.popover_foreground, its);
-
-                    if (sel_now == int(i)) {
-                        const float ccx = item.right() - 16.0f, ccy = item.cy();
-                        const float s = 3.4f;
-                        draw_line(ccx - s * 1.2f, ccy + 0.5f, ccx - s * 0.2f, ccy + s * 0.9f, th.foreground, 1.7f);
-                        draw_line(ccx - s * 0.2f, ccy + s * 0.9f, ccx + s * 1.2f, ccy - s * 0.9f, th.foreground, 1.7f);
-                    }
+                    draw_text(items_copy[i], Rect(item.x + 24.0f, item.y, item.w - 30.0f, item.h), fg, its);
                 }
                 pop_clip();
             });
@@ -6741,10 +6779,12 @@ inline void Ui::alert(const std::string& title, const std::string& description, 
     const bool danger = (st.variant == Style::Destructive);
     const bool quiet  = (st.variant == Style::Secondary);
 
-    Color bg = !st.bg.is_none() ? st.bg : (quiet ? th.muted : th.card);
-    Color bd = !st.border_color.is_none() ? st.border_color : (danger ? th.destructive.scaled_alpha(0.45f) : th.border);
+    // macOS 没有"红框警告条"这种 Web 组件：告警靠**红色符号 + 红色标题**表达，
+    // 面本身保持中性（一层 3% 标签色），描边一律不画 —— 一圈红边是最刺眼的 Web 味。
+    Color bg = !st.bg.is_none() ? st.bg : (quiet ? th.fill3 : th.fill4);
+    Color bd = !st.border_color.is_none() ? st.border_color : Color::none();
     const Color head_c = !st.fg.is_none() ? st.fg : (danger ? th.destructive : th.foreground);
-    Color icon_c = danger ? th.destructive : th.foreground;
+    Color icon_c = danger ? th.destructive : th.label2;
     if (st.disabled) {
         if (bg.a > 0) bg.a = uint8_t(float(bg.a) * 0.45f);
         bd.a = uint8_t(float(bd.a) * 0.45f);
@@ -6899,7 +6939,7 @@ inline void Ui::table(const std::vector<std::string>& headers,
 
     const float rad = st.radius >= 0.0f ? st.radius : th.radius;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
-    const float head_h = std::max(fs + 18.0f, 36.0f);
+    const float head_h = std::max(fs + 10.0f, 24.0f);   // kit: 表头 24，不是 Web 的 36
     // macOS 的表格行是紧的：正文 13pt + 7 → 20pt 行高，不是 Web 表格那种 34
     const float row_h  = std::max(fs + 7.0f, 20.0f);
     const float col_w  = box.w / float(cols);
@@ -6908,7 +6948,8 @@ inline void Ui::table(const std::vector<std::string>& headers,
     push_clip(box);
 
     const Rect hr(box.x, box.y, box.w, head_h);
-    fill_rect(hr, !st.bg.is_none() ? st.bg : th.fill3, rad);
+    // 表头不铺底色（macOS 列表的表头就是一行灰字 + 一条分隔线），传了 bg 才铺
+    if (!st.bg.is_none()) fill_rect(hr, st.bg, rad);
     for (size_t c = 0; c < cols; ++c) {
         const Rect cr(hr.x + col_w * float(c), hr.y, col_w, hr.h);
         // 列之间不画竖线：macOS 的列表靠留白和行分隔线分列，竖线是 Excel/Web 的语汇
@@ -6946,7 +6987,7 @@ inline void Ui::table(const std::vector<std::string>& headers,
     }
 
     pop_clip();
-    stroke_rect(box, th.border, rad, 1.0f);
+    // 外侧不描边：macOS 的列表/表格没有一圈边框，靠分隔线和留白分块
 }
 
 // 迷你折线图。默认在折线下方垫一层低透明度填充（经典 sparkline 观感），
@@ -7149,21 +7190,22 @@ inline bool Ui::menu(const std::string& label, const std::vector<std::string>& i
 
         std::vector<std::string> items_copy = items;
         deferred([this, list, rad, item_h, rects, ids, hov, items_copy, th, fs]() mutable {
-            detail::pop_shadow(*this, list, rad, th, 0);
-            fill_rect(list, th.popover_bg, rad);
-            stroke_rect(list, th.border, rad, 1.0f);
+            const float lrad = rad + 2.0f;
+            detail::pop_shadow(*this, list, lrad, th, 0);
+            fill_rect(list, th.popover_bg, lrad);
+            stroke_rect(list, th.border, lrad, 1.0f);
             push_clip(list);
             for (size_t i = 0; i < rects.size(); ++i) {
                 const float t_h = detail::animate_value(impl, ids[i] * 83u + 1u, hov[i] ? 1.0f : 0.0f, 20.0f);
-                if (t_h > 0.02f)
-                    fill_rect(rects[i], th.accent.mix(th.foreground.with_alpha(10), t_h * 0.3f),
-                              std::max(0.0f, rad - 2.0f));
+                // 官方菜单项 Hover = 强调色实心 + 白字，圆角 5（kit: Menu Item r=5）
+                if (t_h > 0.02f) fill_rect_s(rects[i], th.tint.scaled_alpha(t_h), 5.0f, 0.35f);
                 Style its;
                 its.font_size = fs;
                 its.font_weight = 500;
                 its.align = Align::Left;
                 its.valign = VAlign::Middle;
-                draw_text(items_copy[i], rects[i].inset(10.0f, 0.0f), th.popover_foreground, its);
+                draw_text(items_copy[i], rects[i].inset(10.0f, 0.0f),
+                          t_h > 0.5f ? detail::on_color(th.tint) : th.popover_foreground, its);
             }
             pop_clip();
             (void)item_h;
@@ -7313,9 +7355,10 @@ inline MenuPick Ui::menubar(const std::vector<std::string>& labels,
 
         std::vector<std::string> litems = src;
         deferred([this, list, rad, rects, ids, lhov, litems, th, fs]() mutable {
-            detail::pop_shadow(*this, list, rad, th, 0);
-            fill_rect(list, th.popover_bg, rad);
-            stroke_rect(list, th.border, rad, 1.0f);
+            const float lrad = rad + 2.0f;
+            detail::pop_shadow(*this, list, lrad, th, 0);
+            fill_rect(list, th.popover_bg, lrad);
+            stroke_rect(list, th.border, lrad, 1.0f);
             push_clip(list);
             for (size_t i = 0; i < rects.size(); ++i) {
                 const float t_h = detail::animate_value(impl, ids[i] * 83u + 1u, lhov[i] ? 1.0f : 0.0f, 20.0f);
@@ -7534,18 +7577,27 @@ inline bool group_cell(Ui& ui, Ui::Impl* im, uint64_t id, const Rect& r, const s
     const float t_on = animate_value(im, id * 101u + 1u, on ? 1.0f : 0.0f, 22.0f);
     const float t_h  = animate_value(im, id * 101u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
-    // 分隔线先画，免得压在选中底上（只在相邻两项之间）
-    if (divider)
-        ui.fill_rect(Rect(r.x, r.y + 5.0f, 1.0f, std::max(r.h - 10.0f, 1.0f)), th.border, 0.0f);
+    // 分隔线先画，免得压在选中底上（只在相邻两项之间）。
+    // 官方 Segmented Control：分隔线是 1×14 的 25% 标签色，不是 1px 边框色整条通高 ——
+    // 通高会像表格竖线，缩到 14 才是 macOS 的"段间细缝"。
+    if (divider) {
+        const float dh = std::min(14.0f, std::max(r.h - 10.0f, 1.0f));
+        ui.fill_rect(Rect(r.x, r.y + (r.h - dh) * 0.5f, 1.0f, dh), th.label3, 0.0f);
+    }
 
+    // 选中段内缩 2（24 高的轨道里放 20 高的滑块），圆角比容器小 2 —— 同心圆角
     const Rect inner = r.inset(2.0f, 2.0f);
-    const float ir = std::max(0.0f, outer_rad - 3.0f);
-    if (t_on > 0.01f)
-        ui.fill_rect(inner, on_bg.with_alpha(uint8_t(255.0f * t_on + 0.5f)), ir);
-    else if (t_h > 0.01f)
-        ui.fill_rect(inner, hover_bg.with_alpha(uint8_t(120.0f * t_h + 0.5f)), ir);
+    const float ir = std::max(0.0f, outer_rad - 2.0f);
+    if (t_on > 0.01f) {
+        // 强调色是不透明的：淡入只能缩 alpha，不能 mix（mix 会经过脏灰）
+        Color bg = on_bg;
+        bg.a = uint8_t(255.0f * t_on + 0.5f);
+        ui.fill_rect_s(inner, bg, ir, 0.35f);
+    } else if (t_h > 0.01f) {
+        ui.fill_rect(inner, hover_bg.scaled_alpha(t_h * 0.55f), ir);
+    }
 
-    Color fg = on ? th.accent_foreground : th.foreground;
+    Color fg = on ? on_color(on_bg) : th.foreground;
     if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
     Style ts;
     ts.font_size = fs;
@@ -7585,23 +7637,24 @@ inline bool Ui::toggle_button(const std::string& label, bool* value, const Rect&
     bool changed = false;
     if (in.clicked) { *value = !*value; changed = true; repaint(); }
 
-    // 底：未选中时只有 hover 会浮出一点点 accent；选中时整块 accent。
-    // 从"完全透明"混过去要用 alpha，不能用 RGB —— 混黑会经过一段脏灰。
-    const float hov = t_h * (1.0f - t_on) * 0.55f;
+    // macOS 的"按下态按钮"不是实心强调色按钮（那是 Prominent 主按钮的待遇），
+    // 而是**强调色淡底 + 加粗标签**：字体面板 / 格式栏的 B、I 就是这个样子。
+    // 实心蓝会让人以为这里有个主操作，视觉重心完全跑偏。
     Color bg = st.bg;
     if (t_on > 0.01f) {
-        bg = (bg.a == 0) ? th.accent.with_alpha(uint8_t(255.0f * t_on + 0.5f)) : bg.mix(th.accent, t_on);
-    } else if (hov > 0.01f) {
-        bg = (bg.a == 0) ? th.accent.with_alpha(uint8_t(255.0f * hov + 0.5f)) : bg.mix(th.accent, hov);
+        bg = th.tint;
+        bg.a = uint8_t(56.0f * t_on + 0.5f);       // ~22%
+    } else if (t_h > 0.01f) {
+        bg = detail::fade(th.fill, t_h);
     }
-    if (bg.a > 0) fill_rect(box, bg, rad);
+    if (bg.a > 0) fill_rect_s(box, bg, rad, 0.35f);
     if (st.border_width > 0.0f) stroke_rect(box, th.border, rad, st.border_width);
 
-    Color fg = !st.fg.is_none() ? st.fg : (t_on > 0.5f ? th.accent_foreground : th.foreground);
+    Color fg = !st.fg.is_none() ? st.fg : th.foreground;
     if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
     Style ts;
     ts.font_size = fs;
-    ts.font_weight = st.font_weight > 0 ? st.font_weight : 500;
+    ts.font_weight = st.font_weight > 0 ? st.font_weight : (t_on > 0.5f ? 600 : 500);
     ts.align = st.align_set ? st.align : Align::Center;
     ts.valign = VAlign::Middle;
     const float pad = st.pad_x >= 0.0f ? st.pad_x : 10.0f;
@@ -7623,16 +7676,20 @@ inline bool Ui::toggle_group(const std::vector<std::string>& items, int* index,
     const float iw  = box.w / float(n);
     const uint64_t base = detail::make_id("toggle_group", box);
 
-    // 整组共享一个外框，这是 shadcn Toggle Group 的视觉：组内各项不各画边框。
-    fill_rect(box, !st.bg.is_none() ? st.bg : th.background, rad);
-    stroke_rect(box, th.border, rad, 1.0f);
+    // 官方 Segmented Control 的轨道：**一层 8% 黑**（凹槽），没有描边。
+    // 深色主题下也是黑 —— 凹槽是"压下去"的，比窗口暗才对；拿白色铺会立刻
+    // 变成一条浮起的工具条，这是之前最明显的"不像 mac"来源之一。
+    fill_rect(box, !st.bg.is_none() ? st.bg : th.track_well(), rad);
 
     bool changed = false;
     for (int i = 0; i < n; ++i) {
         const Rect r(box.x + iw * float(i), box.y, iw, box.h);
         const uint64_t id = detail::make_id("tg_item", r, base + uint64_t(i));
-        if (detail::group_cell(*this, impl, id, r, items[size_t(i)], *index == i,
-                               fs, rad, st, th.accent, th.accent, i > 0)) {
+        const bool on = (*index == i);
+        // 分隔线只在两侧都没选中时画：官方 kit 的 Separator 会被 Selected 段整块盖住
+        const bool div = i > 0 && !on && !(*index == i - 1);
+        if (detail::group_cell(*this, impl, id, r, items[size_t(i)], on,
+                               fs, rad, st, th.tint, th.fill, div)) {
             *index = (*index == i) ? -1 : i;
             changed = true;
             repaint();
@@ -7652,16 +7709,16 @@ inline bool Ui::toggle_group_multi(const std::vector<std::string>& items, std::u
     const float iw  = box.w / float(n);
     const uint64_t base = detail::make_id("toggle_group_m", box);
 
-    fill_rect(box, !st.bg.is_none() ? st.bg : th.background, rad);
-    stroke_rect(box, th.border, rad, 1.0f);
+    fill_rect(box, !st.bg.is_none() ? st.bg : th.track_well(), rad);
 
     bool changed = false;
     for (int i = 0; i < n; ++i) {
         const Rect r(box.x + iw * float(i), box.y, iw, box.h);
         const uint64_t id = detail::make_id("tgm_item", r, base + uint64_t(i));
         const bool on = ((*mask >> i) & 1u) != 0u;
+        const bool prev_on = i > 0 && (((*mask >> (i - 1)) & 1u) != 0u);
         if (detail::group_cell(*this, impl, id, r, items[size_t(i)], on,
-                               fs, rad, st, th.accent, th.accent, i > 0)) {
+                               fs, rad, st, th.tint, th.fill, i > 0 && !on && !prev_on)) {
             *mask ^= (1u << i);
             changed = true;
             repaint();
@@ -7934,7 +7991,7 @@ inline bool Ui::item(const std::string& title, const std::string& description,
     const float t_h = detail::animate_value(impl, id * 107u + 1u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
     if (t_h > 0.01f)
-        fill_rect(box, th.accent.with_alpha(uint8_t(150.0f * t_h + 0.5f)), rad);
+        fill_rect(box, th.accent.scaled_alpha(t_h), rad);
 
     const float pad = st.pad_x >= 0.0f ? st.pad_x : 12.0f;
     const float trail_w = trailing.empty() ? 0.0f : text_width(trailing, fs - 1.0f, 400) + 12.0f;
@@ -8084,9 +8141,11 @@ inline bool Ui::pagination(int* page, int total_pages, const Rect& box, const St
 
         const bool is_cur = (s >= 0 && s == cur);
         const float t_h = detail::animate_value(impl, id * 103u + 1u, (in.hovered && !is_cur) ? 1.0f : 0.0f, 20.0f);
+        // 页码是方格子，但选中态是**胶囊/圆**（macOS 的选中标记永远是胶囊，不是方块）
         const Rect inner = r.inset(2.0f, 2.0f);
-        if (is_cur)      fill_rect(inner, th.primary, std::max(0.0f, rad - 3.0f));
-        else if (t_h > 0.01f) fill_rect(inner, th.accent.with_alpha(uint8_t(255.0f * t_h + 0.5f)), std::max(0.0f, rad - 3.0f));
+        const float pill_r = inner.h * 0.5f;
+        if (is_cur)      fill_rect_s(inner, th.tint, pill_r, 0.0f);
+        else if (t_h > 0.01f) fill_rect_s(inner, th.fill.scaled_alpha(t_h), pill_r, 0.0f);
 
         if (s < 0) {
             // 上一页 / 下一页：自绘箭头（不依赖字体里有没有 < >）
@@ -8102,7 +8161,7 @@ inline bool Ui::pagination(int* page, int total_pages, const Rect& box, const St
         } else {
             char buf[16];
             std::snprintf(buf, sizeof buf, "%d", s + 1);
-            draw_text(buf, r, is_cur ? th.primary_foreground : th.foreground, ts);
+            draw_text(buf, r, is_cur ? detail::on_color(th.tint) : th.foreground, ts);
             if (in.clicked && s != cur) { *page = s; changed = true; repaint(); }
         }
 
@@ -8148,7 +8207,7 @@ inline bool Ui::calendar(int* year, int* month, int* day, const Rect& box, const
         detail::Interact in = detail::interact(impl, id, r, true);
         if (in.hovered) set_cursor(Cursor::Hand);
         const float t_h = detail::animate_value(impl, id * 109u + 1u, in.hovered ? 1.0f : 0.0f, 20.0f);
-        if (t_h > 0.01f) fill_rect(r, th.accent.with_alpha(uint8_t(255.0f * t_h + 0.5f)), rad);
+        if (t_h > 0.01f) fill_rect(r, th.accent.scaled_alpha(t_h), rad);
         const float cx = r.cx(), cy = r.cy(), a = fs * 0.2f;
         const float dir = (k == 0) ? 1.0f : -1.0f;   // +1 = 尖朝左（上个月）
         draw_line(cx + dir * a, cy - a, cx - dir * a, cy, th.muted_foreground, 1.6f);
@@ -8197,8 +8256,12 @@ inline bool Ui::calendar(int* year, int* month, int* day, const Rect& box, const
             if (in.hovered) set_cursor(Cursor::Hand);
             const bool is_sel = (d == sel);
             const float t_h = detail::animate_value(impl, id * 113u + 1u, (in.hovered && !is_sel) ? 1.0f : 0.0f, 20.0f);
-            if (is_sel) fill_rect(inner, th.primary, std::max(0.0f, rad - 2.0f));
-            else if (t_h > 0.01f) fill_rect(inner, th.accent.with_alpha(uint8_t(255.0f * t_h + 0.5f)), std::max(0.0f, rad - 2.0f));
+            // 官方日期格是**正圆**，不是圆角方块：直径取格子的短边减 6，最小 22。
+            // 选中 = 强调色实心圆 + 白字；悬停 = 5% 标签色圆。
+            const float dia = std::max(22.0f, std::min(std::min(cw, ch) - 6.0f, 30.0f));
+            const Rect dot = Rect::centered(r.cx(), r.cy(), dia, dia);
+            if (is_sel) fill_rect_s(dot, th.tint, dia * 0.5f, 0.0f);
+            else if (t_h > 0.01f) fill_rect_s(dot, th.label5.scaled_alpha(t_h), dia * 0.5f, 0.0f);
 
             char buf[8];
             std::snprintf(buf, sizeof buf, "%d", d);
@@ -8207,7 +8270,7 @@ inline bool Ui::calendar(int* year, int* month, int* day, const Rect& box, const
             ds.font_weight = is_sel ? 600 : 400;
             ds.align = Align::Center;
             ds.valign = VAlign::Middle;
-            draw_text(buf, r, is_sel ? th.primary_foreground : th.foreground, ds);
+            draw_text(buf, r, is_sel ? detail::on_color(th.tint) : th.foreground, ds);
 
             if (in.clicked) {
                 sel = d;
@@ -8424,7 +8487,7 @@ inline bool Ui::alert_dialog(const std::string& title, const std::string& body,
     fill_rect(no_r, th.background, rad >= 8.0f ? 8.0f : rad);
     stroke_rect(no_r, th.border, rad >= 8.0f ? 8.0f : rad, 1.0f);
     if (no_t > 0.01f)
-        fill_rect(no_r, th.accent.with_alpha(uint8_t(160.0f * no_t + 0.5f)), rad >= 8.0f ? 8.0f : rad);
+        fill_rect(no_r, th.accent.scaled_alpha(no_t), rad >= 8.0f ? 8.0f : rad);
 
     // 确认（primary 或 destructive）
     const Color ok_bg0 = danger ? th.destructive : th.primary;
@@ -8512,7 +8575,7 @@ inline bool Ui::drawer(const std::string& title, bool* open, int side, const Rec
     draw_text(title, Rect(box.x + pad, box.y, std::max(box.w - pad * 2.0f - 30.0f, 1.0f), head_h),
               !st.fg.is_none() ? st.fg : th.foreground, hs);
 
-    if (ct > 0.02f) fill_rect(close_r, th.accent.with_alpha(uint8_t(255.0f * ct + 0.5f)), 6.0f);
+    if (ct > 0.02f) fill_rect(close_r, th.accent.scaled_alpha(ct), 6.0f);
     {
         const float s = 4.6f;
         draw_line(close_r.cx() - s, close_r.cy() - s, close_r.cx() + s, close_r.cy() + s, th.muted_foreground, 1.6f);
@@ -8608,7 +8671,7 @@ inline bool Ui::context_menu(const Rect& area, const std::vector<std::string>& i
         for (size_t i = 0; i < rects.size(); ++i) {
             const float t_h = detail::animate_value(impl, ids[i] * 83u + 1u, hov[i] ? 1.0f : 0.0f, 20.0f);
             if (t_h > 0.02f)
-                fill_rect(rects[i], th.accent.with_alpha(uint8_t(230.0f * t_h + 0.5f)),
+                fill_rect(rects[i], th.accent.scaled_alpha(t_h),
                           std::max(0.0f, rad - 2.0f));
             Style its;
             its.font_size = fs;
@@ -8646,10 +8709,11 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
     const Theme& th = impl->theme;
     const uint64_t id = detail::make_id("combobox", box);
     const uint64_t z_first = impl->seq + 1;
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float pad = 12.0f;
-    const float item_h = std::max(fs + 16.0f, 32.0f);
+    // kit: Menu Item/Menu 高 **24**（不是 32）。行太高会立刻变成 Web 的列表。
+    const float item_h = std::max(fs + 10.0f, 24.0f);
 
     bool open = impl->flags[id] > 0.5f;
     std::string& query = impl->strings[id];
@@ -8718,7 +8782,7 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
 
     const int max_rows = 7;
     const int rows = std::min(int(vis.size()), max_rows);
-    const float search_h = std::max(fs + 18.0f, 34.0f);
+    const float search_h = std::max(fs + 8.0f, 22.0f);
 
     float& hi_f = impl->flags[id * 131u + 1u];
     int hi = detail::clampi(int(hi_f + 0.5f), 0, std::max(0, int(vis.size()) - 1));
@@ -8776,9 +8840,10 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
     const int hi_c = hi;
     const int sel_c = *index;
     deferred([this, list, sr, rad, item_h, fs, th_c, items_c, vis_c, query_c, hi_c, sel_c, rows]() {
-        drop_shadow(list, rad, 12.0f, Color(0, 0, 0, 38), 3.0f);
-        fill_rect(list, th_c.popover, rad);
-        stroke_rect(list, th_c.border, rad, 1.0f);
+        const float lrad = rad + 2.0f;         // 弹层容器比触发器再圆一点（6 → 8）
+        drop_shadow(list, lrad, 12.0f, Color(0, 0, 0, 38), 3.0f);
+        fill_rect(list, th_c.popover, lrad);
+        stroke_rect(list, th_c.border, lrad, 1.0f);
         push_clip(list);
 
         // 搜索框（只是画出来，输入由上面那段代码负责 —— 不套 input()，
@@ -8798,14 +8863,21 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
             const Rect rr(list.x + 4.0f, sr.bottom() + 4.0f + item_h * float(r), list.w - 8.0f, item_h);
             const bool on  = (sel_c == ii);
             const bool hot = (r == hi_c);
-            if (hot || on)
-                fill_rect(rr, th_c.accent.with_alpha(hot ? 255 : 150), std::max(0.0f, rad - 2.0f));
+            // 官方弹出菜单：高亮行是**强调色实心 + 白字**，不是 13% 的一层灰。
+            // 当前值不靠底色，靠行首的对勾（所以所有行都留出 16px 的勾位）。
+            if (hot) fill_rect_s(rr, th_c.tint, 5.0f, 0.35f);
+            const Color fg = hot ? detail::on_color(th_c.tint) : th_c.popover_foreground;
+            if (on) {
+                const float cx = rr.x + 10.0f, cy = rr.cy(), s = 3.2f;
+                draw_line(cx - s, cy, cx - s * 0.15f, cy + s * 0.85f, fg, 1.8f);
+                draw_line(cx - s * 0.15f, cy + s * 0.85f, cx + s * 1.15f, cy - s * 0.9f, fg, 1.8f);
+            }
             Style its;
             its.font_size = fs;
             its.font_weight = on ? 600 : 400;
             its.align = Align::Left;
             its.valign = VAlign::Middle;
-            draw_text(items_c[size_t(ii)], rr.inset(10.0f, 0.0f), th_c.popover_foreground, its);
+            draw_text(items_c[size_t(ii)], Rect(rr.x + 24.0f, rr.y, rr.w - 30.0f, rr.h), fg, its);
         }
         if (rows == 0) {
             Style es;

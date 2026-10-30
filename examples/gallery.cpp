@@ -469,16 +469,33 @@ void d_slider(Ui& ui, App& a, const Rect& box) {
     ui.muted_text(buf, c.next(18.0f), Style().left().font(11.5f));
 }
 
+// 截图工具钩子：AINO_OPEN=select|combobox 让指定下拉默认展开。
+// 只影响示例（下拉的展开态本来是"点出来的"，脚本点不动它），不进库。
+void demo_force_open(Ui& ui, const char* kind, const Rect& box) {
+    const char* want = std::getenv("AINO_OPEN");
+    if (!want || std::string(want) != kind || !ui.impl) return;
+    // 一帧里量测趟和绘制趟的 rect 会差几像素（id 就是按坐标算的），
+    // 所以把出现过的 id 全记下来逐个点亮。
+    static std::vector<uint64_t> ids;
+    const uint64_t id = aino::detail::make_id(kind, box);
+    if (std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
+    for (uint64_t i : ids) ui.impl->flags[i] = 1.0f;
+}
+
 void d_select(Ui& ui, App& a, const Rect& box) {
     Stack c = ui.vbox(box, 10.0f);
-    ui.select(kPlans, &a.plan, c.next(24.0f), Style().hint("选择套餐"));
+    const Rect sr = c.next(24.0f);
+    demo_force_open(ui, "select", sr);        // AINO_OPEN=select 时强制展开（截图用）
+    ui.select(kPlans, &a.plan, sr, Style().hint("选择套餐"));
     ui.muted_text("列表在帧末绘制，所以永远压住后面的内容。", c.next(18.0f),
                   Style().left().font(11.5f));
 }
 
 void d_combobox(Ui& ui, App& a, const Rect& box) {
     Stack c = ui.vbox(box, 10.0f);
-    ui.combobox(kLangs, &a.combo, c.next(24.0f));
+    const Rect cr = c.next(24.0f);
+    demo_force_open(ui, "combobox", cr);      // AINO_OPEN=combobox 时强制展开
+    ui.combobox(kLangs, &a.combo, cr);
     ui.muted_text("展开后直接打字过滤，↑↓ 移动，回车确认，Esc 关闭。", c.next(18.0f),
                   Style().left().font(11.5f));
 }
@@ -490,15 +507,15 @@ void d_toggle(Ui& ui, App& a, const Rect& box) {
         ui.toggle_button("粗体", &a.bold, r.next(84.0f));
         ui.toggle_button("斜体", &a.italic, r.next(84.0f));
     }
-    ui.toggle_group({"日", "周", "月"}, &a.tg, c.next(34.0f));
+    ui.toggle_group({"日", "周", "月"}, &a.tg, c.next(24.0f));
     ui.muted_text("toggle_group 单选：再点当前项会取消，使 index 变为 -1。", c.next(18.0f),
                   Style().left().font(11.5f));
 }
 
 void d_button_group(Ui& ui, App& a, const Rect& box) {
     Stack c = ui.vbox(box, 12.0f);
-    ui.button_group({"复制", "粘贴", "剪切"}, &a.bg_click, c.next(34.0f));
-    ui.toggle_group_multi({"B", "I", "U"}, &a.tgm, c.next(34.0f));
+    ui.button_group({"复制", "粘贴", "剪切"}, &a.bg_click, c.next(24.0f));
+    ui.toggle_group_multi({"B", "I", "U"}, &a.tgm, c.next(24.0f));
     ui.muted_text("前者互斥、相邻共享边框；后者用位掩码表示任意组合。", c.next(18.0f),
                   Style().left().font(11.5f));
 }
@@ -632,6 +649,12 @@ void d_menu(Ui& ui, App& a, const Rect& box) {
                   Rect(box.x, box.y + 46.0f, box.w, 18.0f), Style().left().font(11.5f));
 }
 
+// 截图工具钩子：AINO_OPEN=dialog|popover|drawer|toast 让浮层默认打开。
+void demo_set_open(const char* kind, bool* v) {
+    const char* want = std::getenv("AINO_OPEN");
+    if (want && std::string(want) == kind) *v = true;
+}
+
 void d_menubar(Ui& ui, App& a, const Rect& box) {
     // 菜单栏必须占满一条：点开一项后横向移动要能切到隔壁
     const Rect bar(box.x, box.y, box.w, 32.0f);
@@ -650,6 +673,7 @@ void d_menubar(Ui& ui, App& a, const Rect& box) {
 }
 
 void d_popover(Ui& ui, App& a, const Rect& box) {
+    demo_set_open("popover", &a.pop);
     ui.popover("排序", &a.pop, Rect(box.x, box.y, 120.0f, 28.0f), Vec2(190.0f, 104.0f),
                [&](const Rect& c) {
                    ui.item("按名称", "", "", Rect(c.x, c.y, c.w, 30.0f));
@@ -674,6 +698,7 @@ void d_hover_card(Ui& ui, App& a, const Rect& box) {
 }
 
 void d_dialog(Ui& ui, App& a, const Rect& box) {
+    demo_set_open("dialog", &a.dlg);
     if (ui.button("打开对话框", Rect(box.x, box.y, 132.0f, 28.0f), Style().primary()))
         a.dlg = true;
     ui.muted_text("面板由 o_dialog() 在页面末尾绘制，遮罩覆盖整窗。",
@@ -685,9 +710,11 @@ void o_dialog(Ui& ui, App& a) {
     const std::string body =
         "正文按宽度折行并被裁进面板。按钮由调用方紧接着画，因此天然位于面板之上。";
     if (ui.dialog("确认删除", body, &a.dlg, d)) {
-        Stack b = ui.hbox(Rect(d.x + 22.0f, d.bottom() - 58.0f, d.w - 44.0f, 28.0f), 10.0f);
-        if (ui.button("取消", b.part(0, 2), Style().outline())) a.dlg = false;
-        if (ui.button("删除", b.part(1, 2), Style().destructive())) a.dlg = false;
+        // macOS 告警的按钮是**右下角右对齐、按内容定宽**的两个小按钮；
+        // 把面板底边二分之一二分之一地摊开是 Web 模态的做法，一眼就不是 mac。
+        const float bw = 86.0f, gap = 10.0f, by = d.bottom() - 58.0f;
+        if (ui.button("删除", Rect(d.right() - 22.0f - bw, by, bw, 28.0f), Style().destructive())) a.dlg = false;
+        if (ui.button("取消", Rect(d.right() - 22.0f - bw * 2.0f - gap, by, bw, 28.0f), Style().outline())) a.dlg = false;
     }
     ui.alert_dialog("删除这个文件？", "删除后无法恢复，这份数据没有其他备份。",
                     "删除", "取消", &a.confirm,
@@ -703,6 +730,7 @@ void d_alert_dialog(Ui& ui, App& a, const Rect& box) {
 }
 
 void d_drawer(Ui& ui, App& a, const Rect& box) {
+    demo_set_open("drawer", &a.drawer);
     if (ui.button("打开抽屉", Rect(box.x, box.y, 120.0f, 28.0f), Style().outline()))
         a.drawer = true;
     ui.muted_text("抽屉贴窗口边缘，所以同样在页面末尾绘制。",
@@ -1801,17 +1829,25 @@ int main() {
     app.page = start_page_from_env();
     bool dumped = false;
     int frames = 0;
+    // 截图钩子：在**下一帧开头**取上一帧的后备缓冲。
+    // 弹层（下拉 / 菜单 / 对话框）都是 deferred 到帧末才画的，回调里立刻取会
+    // 全部漏掉 —— 之前截出来的"下拉根本没展开"就是这个原因。
+    const char* shot = std::getenv("AINO_SHOT_BMP");
+    const bool shot_every = std::getenv("AINO_SHOT_EVERY") != nullptr;
+    bool shot_pending = false;
     win.run([&](Ui& ui) {
         if (!dumped) {
             dumped = true;
             // 首帧量一次：此时字体引擎已就绪，量出来的宽度才是真宽度
             dump_layout_report(ui, app, ui.width() - kNavW - 56.0f);
         }
-        build_ui(ui, app);
-        // 第 2 帧再存图：第 1 帧里折叠/动画状态还没稳定
-        if (++frames == 2) {
-            if (const char* path = std::getenv("AINO_SHOT_BMP")) dump_canvas_bmp(win, path);
+        if (shot && shot_pending && (shot_every || frames >= 2)) {
+            dump_canvas_bmp(win, shot);
+            shot_pending = false;
         }
+        build_ui(ui, app);
+        ++frames;
+        shot_pending = true;
     });
     return 0;
 }
