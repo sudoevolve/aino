@@ -1424,8 +1424,8 @@ const int kGroupCount = kPageGroup.empty() ? 0 : kPageGroup.back() + 1;
 //  导航
 // =============================================================================
 constexpr float kNavW = 232.0f;
-constexpr float kNavItemH = 30.0f;
-constexpr float kNavGroupH = 30.0f;
+constexpr float kNavItemH = 24.0f;
+constexpr float kNavGroupH = 26.0f;
 constexpr float kHeaderH = 92.0f;
 
 // 折叠状态下的列表高度也要算准：滚动条的 max_offset 直接用它，
@@ -1442,16 +1442,18 @@ float nav_content_height(const App& a) {
 
 void draw_nav(Ui& ui, App& a, const Rect& nav) {
     const aino::Theme& th = ui.theme();
-    ui.fill_rect(nav, th.background.mix(th.muted, 0.55f), 0.0f);
-    ui.fill_rect(Rect(nav.right() - 1.0f, nav.y, 1.0f, nav.h), th.border, 0.0f);
+    // 侧边栏是 macOS 的 source list 面：比内容区深一档的整片浅灰（暗色下更暗），
+    // 不是"背景色 + 一点点灰"。
+    ui.fill_rect(nav, th.sidebar_bg, 0.0f);
+    ui.fill_rect(Rect(nav.right() - 1.0f, nav.y, 1.0f, nav.h), th.separator, 0.0f);
 
     // 品牌区。不用 vbox：这里只有两行固定位置，且 pad 会同时吃掉上下留白，
     // 两行在 78px 里会叠在一起。
-    ui.label("aino", Rect(nav.x + 20.0f, nav.y + 16.0f, nav.w - 40.0f, 26.0f),
-             Style().left().semi_bold().font(19.0f));
+    ui.label("aino", Rect(nav.x + 18.0f, nav.y + 14.0f, nav.w - 36.0f, 20.0f),
+             Style().left().semi_bold().font(15.0f));
     ui.muted_text("单头文件 GUI 库 · " + std::string(AINO_VERSION),
-                  Rect(nav.x + 20.0f, nav.y + 44.0f, nav.w - 40.0f, 16.0f),
-                  Style().left().font(10.5f));
+                  Rect(nav.x + 18.0f, nav.y + 34.0f, nav.w - 36.0f, 14.0f),
+                  Style().left().font(11.0f));
 
     // 底部工具条
     const float foot_h = 52.0f;
@@ -1507,8 +1509,8 @@ void draw_nav(Ui& ui, App& a, const Rect& nav) {
             // 自动落到行中心，和右边那个手工算中心点的折叠三角对齐。
             // 别再写 y + 12 这种固定偏移 —— 行高一改就偏，而且和三角不在一条线上。
             ui.muted_text(kPages[i].group,
-                          Rect(gh.x + 20.0f, gh.y, gh.w - 52.0f, gh.h),
-                          Style().left().font(10.5f));
+                          Rect(gh.x + 18.0f, gh.y, gh.w - 50.0f, gh.h),
+                          Style().left().font(11.0f));
             // 折叠标记：展开时朝下，折叠时朝右（两条线拼的尖角，不依赖字形）
             {
                 const float cx = gh.right() - 26.0f, cy = gh.y + gh.h * 0.5f;
@@ -1525,7 +1527,7 @@ void draw_nav(Ui& ui, App& a, const Rect& nav) {
         if (!open) continue;
         const Rect r = ui.row(kNavItemH);
         const bool active = (a.page == i);
-        if (ui.nav_item(kPages[i].name, active, Rect(r.x + 10.0f, r.y, r.w - 20.0f, r.h))) {
+        if (ui.nav_item(kPages[i].name, active, Rect(r.x + 8.0f, r.y, r.w - 16.0f, r.h))) {
             if (!active) a.page = i;
         }
     }
@@ -1562,11 +1564,10 @@ CardGeom card_geom(Ui& ui, const Demo& d, float card_w, float need_h) {
     g.code_w    = std::max(card_w * 0.42f, 280.0f);
     g.body_w    = card_w - 2.0f * g.pad;
     g.preview_w = g.body_w - g.code_w - 12.0f;
-    const float code_h = ui.code_block_height(d.code, Style().font(11.5f));
     g.inner_h = std::max(d.preview_h, need_h);
-    // 底板必须比内容高 2*kPlatePadY：内容盒是从底板内缩 kPlatePadY 开始的，
-    // 之前这里少算了这道留白，结果每条示例都往下溢 16px、压到标题条上。
-    g.body_h = std::max(g.inner_h + 2.0f * kPlatePadY, code_h);
+    // 行高只由**内容**决定，不再被源码块撑开 —— 之前代码一长，预览区就被拉出
+    // 一大片空白，整页看起来像文档站。源码超出就裁（code_block 按 box 高度自行截断）。
+    g.body_h = g.inner_h + 2.0f * kPlatePadY;
     return g;
 }
 
@@ -1582,38 +1583,30 @@ float demo_need_h(Ui& ui, App& a, const Demo& d, float inner_w) {
 
 void draw_demo_card(Ui& ui, App& a, const Demo& d, const Rect& card, const CardGeom& g) {
     const aino::Theme& th = ui.theme();
-    const float pad = g.pad;
     const float body_h = g.body_h;
 
-    ui.panel(card, Style().background(th.card).corner(th.radius_lg));
+    // ---- 标题在**上面**：macOS 的分组标题是"标题 + 右侧说明"，内容在下面。
+    // 之前把标题放在卡片底部、左边套一块带边框的底板，那是 Web 文档站的写法。
+    const Rect bar(card.x, card.y, g.body_w, 20.0f);
+    ui.label(d.name, Rect(bar.x, bar.y, bar.w * 0.45f, bar.h),
+             Style().left().semi_bold().font(13.0f));
+    ui.muted_text(d.note, Rect(bar.x, bar.y, bar.w, bar.h),
+                  Style().right().font(11.0f));
 
-    const Rect body(card.x + pad, card.y + pad, g.body_w, body_h);
+    const Rect body(card.x, bar.bottom() + 10.0f, g.body_w, body_h);
     const Rect pre(body.x, body.y, g.preview_w, body_h);
-    // 代码块背景拉到与预览区等高：左预览右源码，两条边对齐才像文档站
+    // 代码块与预览区等高：左右两条边对齐
     const Rect cod(body.right() - g.code_w, body.y, g.code_w, body_h);
 
-    // 预览：底板 + 内缩后的内容盒。内容盒从底板内缩 kPlatePadY 开始、高度是
-    // inner_h（声明高度与实测高度取大）；底板多出来的部分上下均分。
-    const Rect plate(pre.x, pre.y, pre.w, body_h);
-    const Rect content(plate.x + 20.0f,
-                       plate.y + kPlatePadY + (body_h - 2.0f * kPlatePadY - g.inner_h) * 0.5f,
-                       plate.w - 40.0f, g.inner_h);
-    // 底板必须是**纯背景色**，不能用 muted —— 浅色主题里 secondary / muted / accent
-    // 是同一个 #F4F4F5，若底板也偏灰（以前是 muted.mix(background, 0.12) = #F5F5F6），
-    // 二者只差 1 个色阶：头像的圆、Secondary 按钮、骨架、徽章、进度条轨道全部糊在
-    // 底板里看不见，只剩文字。shadcn 官网的预览区同样铺 --background，靠 1px 边框分层。
-    ui.fill_rect(plate, th.background, th.radius);
-    ui.stroke_rect(plate, th.border, th.radius, 1.0f);
+    // ---- 预览区：直接铺在窗口背景上，不套底板、不描边 ----
+    // macOS 的内容区就是"背景 + 内容"，分层靠明度差；一圈 1px 边框 + 圆角卡片
+    // 是 Web 语言，也是这套界面之前看起来"像网页"的主要原因之一。
+    const Rect content(pre.x + 20.0f,
+                       pre.y + kPlatePadY + (body_h - 2.0f * kPlatePadY - g.inner_h) * 0.5f,
+                       pre.w - 40.0f, g.inner_h);
     d.draw(ui, a, content);
 
     ui.code_block(d.code, cod, Style().font(11.5f));
-
-    // 标题条：名称在左，技术要点在右
-    const Rect bar(card.x + pad, card.y + pad + body_h + 10.0f, g.body_w, g.title_h);
-    ui.label(d.name, Rect(bar.x, bar.y, bar.w * 0.4f, g.title_h),
-             Style().left().semi_bold().font(12.5f));
-    ui.muted_text(d.note, Rect(bar.x + bar.w * 0.4f, bar.y, bar.w * 0.6f, g.title_h),
-                  Style().right().font(11.0f));
 }
 
 void draw_page(Ui& ui, App& a, const Rect& area) {
@@ -1622,13 +1615,16 @@ void draw_page(Ui& ui, App& a, const Rect& area) {
     // ---- 页头 ----
     {
         Stack h = ui.vbox(Rect(area.x, area.y, area.w, kHeaderH), 0.0f);
-        ui.heading(p.name, h.next(24.0f), Style().left().font(22.0f));
+        ui.heading(p.name, h.next(26.0f), Style().left().font(20.0f));
         ui.muted_text(p.desc, h.next(20.0f), Style().left().font(12.5f));
 
         if (std::string(p.shadcn) != "—") {
+            // 对应关系写成右上角的次要文字。原来是描边胶囊——那是最典型的 Web 徽章，
+            // macOS 的窗口里不会出现这种"标签条"。
             const std::string tag = "shadcn/ui · " + std::string(p.shadcn);
-            const float tw = ui.text_width(tag, 10.5f) + 18.0f;
-            ui.badge(tag, Rect(area.right() - tw, area.y + 4.0f, tw, 22.0f), Style().outline());
+            const float tw = ui.text_width(tag, 11.0f) + 4.0f;
+            ui.muted_text(tag, Rect(area.right() - tw, area.y + 6.0f, tw, 18.0f),
+                          Style().right().font(11.0f));
             // 交互回显：点过按钮之后在页头右侧显示最近一次动作，
             // 这样"点下去到底有没有触发回调"在画面上是可见的。
             if (a.hits > 0) {

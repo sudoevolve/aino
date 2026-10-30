@@ -216,6 +216,8 @@ struct Rect {
     }
     Rect inset(float d) const { return Rect(x + d, y + d, w - 2 * d, h - 2 * d); }
     Rect inset(float dx, float dy) const { return Rect(x + dx, y + dy, w - 2 * dx, h - 2 * dy); }
+    // 外扩（inset 的负数别名）：画焦点环、外层光晕时比写 inset(-d) 少一层心智负担
+    Rect outset(float d) const { return Rect(x - d, y - d, w + 2 * d, h + 2 * d); }
     // 交集。完全不相交时返回宽高都为 0 的矩形（empty() 为真）。
     // 裁剪区的交叠、以及"这个控件还剩多少可见"都靠它。
     Rect intersect(const Rect& o) const {
@@ -382,6 +384,10 @@ struct Theme {
     float size_padx[5]  = {7.0f, 10.0f, 16.0f, 16.0f, 16.0f};
     float size_pady[5]  = {2.0f, 3.0f, 4.0f, 6.0f, 10.0f};
 
+    // 连续圆角强度（Apple / Figma cornerSmoothing）。0 = 纯圆弧，1 = 最"方"的连续圆角。
+    // macOS 的控件、面板、菜单一律 0.6 —— 这一项不改，色值全对也还是 Web 味。
+    float corner_smoothing = 0.6f;
+
     std::string font_family;    // 空 = 用平台默认无衬线字体
     std::string font_family_mono;
 
@@ -427,7 +433,8 @@ struct Theme {
             && control_h == o.control_h && control_h_sm == o.control_h_sm
             && control_h_mini == o.control_h_mini && control_h_lg == o.control_h_lg
             && control_h_xl == o.control_h_xl && pad_x == o.pad_x && pad_y == o.pad_y
-            && font_family == o.font_family && font_family_mono == o.font_family_mono;
+            && font_family == o.font_family && font_family_mono == o.font_family_mono
+            && corner_smoothing == o.corner_smoothing;
     }
 
     // 浅色：窗口底 #ECECEC，文字 85% 黑，强调色 systemBlue
@@ -798,6 +805,18 @@ public:
     void clear(const Color& c);
     void fill_rect(const Rect& r, const Color& c, float radius = 0.0f);
     void stroke_rect(const Rect& r, const Color& c, float radius = 0.0f, float width = 1.0f);
+    // 显式指定连续圆角强度（smooth < 0 表示用主题里的 0.6）
+    void fill_rect_s(const Rect& r, const Color& c, float radius, float smooth);
+    void stroke_rect_s(const Rect& r, const Color& c, float radius, float width, float smooth);
+    // 竖直渐变填充（上 → 下）。macOS 的边框、进度、标题栏都是这种两色竖直渐变。
+    void fill_rect_grad(const Rect& r, const Color& top, const Color& bottom,
+                        float radius = 0.0f, float smooth = -1.0f);
+    // 只描上边（bezel 的顶部高光）：把描边裁到顶部 height 像素内
+    void stroke_rect_top(const Rect& r, const Color& c, float radius, float width, float height,
+                         float smooth = -1.0f);
+    // 内阴影：从内边缘向里衰减的一圈暗带。macOS 的输入框 / 复选框 / 表格靠它"凹"下去。
+    void inner_shadow(const Rect& r, const Color& c, float radius, float blur, float dy = 0.0f,
+                      float smooth = -1.0f);
     void fill_circle(float cx, float cy, float radius, const Color& c);
     // 月牙（图标用）：圆 (cx,cy,r) 减去圆 (cut_cx,cut_cy,cut_r)。
     // **不是**用背景色挖洞 —— 减法是几何上的，底下是什么色都不会穿帮。
@@ -1576,46 +1595,197 @@ struct Canvas {
 // --- 圆角矩形在给定 y 处的横跨区间 -------------------------------------------
 struct Span { float xl, xr; };
 
-inline Span rrect_span(float y, const Rect& r, float rad) {
-    Span s{r.x, r.right()};
-    if (y < r.y || y > r.bottom()) { s.xl = 1.0f; s.xr = 0.0f; return s; }  // 空
-    if (rad <= 0.0f) return s;
-    rad = std::min(rad, std::min(r.w, r.h) * 0.5f);
-    float top_center = r.y + rad;
-    float bot_center = r.bottom() - rad;
+// -----------------------------------------------------------------------------
+// 连续圆角（Apple continuous corner / Figma cornerSmoothing）
+//
+// 普通圆角是四段 1/4 圆弧直接接直线，曲率在切点处从 0 跳到 1/R —— 眼睛看得出来"发尖"，
+// 这也是"Web 味"最主要的来源。Apple 的圆角是**曲率连续**的：拐角由
+//     三次贝塞尔 → 圆弧 → 三次贝塞尔
+// 三段拼成，切点落在 (1+s)·R 处，圆弧只占 90(1−s) 度。macOS 控件一律 s = 0.6。
+//
+// 下面的常数与 Figma 的 figma-squircle 实现逐项对齐（已用 R=10,s=0.6 的官方路径校验）：
+//     p  = (1+s)R                       切点离拐角的距离
+//     a  = 2b,  b = (p − 弧长 − c − d)/3
+//     c  = R·tan(α/2)·cos(β),  d = c·tan(β),   α = β = 45s°
+//     弧长 = sin(45(1−s)°)·R·√2
+// 局部坐标：拐角在原点，u 沿水平边向里为负、v 沿竖直边向里为正。
+// -----------------------------------------------------------------------------
+struct CornerGeo {
+    float R = 0, s = 0;
+    float p = 0;        // 拐角带总高
+    float a = 0, b = 0, c = 0, d = 0;
+    float v1 = 0, v2 = 0;        // 圆弧起止的 v
+    float p1x = 0, p1y = 0;      // 第一段贝塞尔终点
+    float p2x = 0, p2y = 0;      // 圆弧终点
+    bool  ok = false;
+};
+
+inline CornerGeo corner_geo(float R, float s) {
+    CornerGeo g;
+    if (R <= 0.001f || s <= 0.001f) return g;
+    const float D2R = 3.14159265358979f / 180.0f;
+    g.R = R; g.s = s;
+    const float p      = (1.0f + s) * R;
+    const float am     = 90.0f * (1.0f - s) * D2R;          // 圆弧跨度
+    const float arcLen = std::sin(am * 0.5f) * R * 1.41421356f;
+    const float alpha  = 45.0f * s * D2R;
+    const float beta   = alpha;
+    const float p3p4   = R * std::tan(alpha * 0.5f);
+    const float c      = p3p4 * std::cos(beta);
+    const float d      = c * std::tan(beta);
+    const float b      = (p - arcLen - c - d) / 3.0f;
+    if (!(b >= 0.0f) || !(c >= 0.0f) || !(d >= 0.0f)) return g;   // 数值退化就退回圆弧
+    g.p = p; g.a = 2.0f * b; g.b = b; g.c = c; g.d = d;
+    const float th1 = -(45.0f + 90.0f * (1.0f - s) * 0.5f) * D2R;
+    const float th2 = -(45.0f - 90.0f * (1.0f - s) * 0.5f) * D2R;
+    g.v1 = R + R * std::sin(th1);
+    g.v2 = R + R * std::sin(th2);
+    g.p1x = -R + R * std::cos(th1); g.p1y = g.v1;
+    g.p2x = -R + R * std::cos(th2); g.p2y = g.v2;
+    g.ok = true;
+    return g;
+}
+
+// 距顶部切边 v 处，边界离竖直切边的水平内缩量
+inline float corner_inset(float v, const CornerGeo& g) {
+    if (v <= 0.0f) return g.p;
+    if (v >= g.p)  return 0.0f;
+    if (v <= g.v1) {
+        // 第一段：三个控制点 y 都是 0 → y(t) = p1y·t³，可以直接开立方求 t
+        const float t = std::cbrt(std::max(v / std::max(g.p1y, 1e-6f), 0.0f));
+        const float mt = 1.0f - t;
+        const float x = mt * mt * mt * (-g.p)
+                      + 3.0f * mt * mt * t * (-g.p + g.a)
+                      + 3.0f * mt * t * t * (-g.p + g.a + g.b)
+                      + t * t * t * g.p1x;
+        return -x;
+    }
+    if (v <= g.v2) {
+        const float dy = v - g.R;
+        return g.R - std::sqrt(std::max(0.0f, g.R * g.R - dy * dy));
+    }
+    // 第三段：y(t) 单调递增，二分 14 次足够（亚像素）
+    const float cy1 = g.p2y + g.c;
+    const float cy2 = g.p2y + g.c + g.b;
+    float lo = 0.0f, hi = 1.0f;
+    for (int i = 0; i < 14; ++i) {
+        const float t = (lo + hi) * 0.5f, mt = 1.0f - t;
+        const float y = mt * mt * mt * g.p2y
+                      + 3.0f * mt * mt * t * cy1
+                      + 3.0f * mt * t * t * cy2
+                      + t * t * t * g.p;
+        if (y < v) lo = t; else hi = t;
+    }
+    const float t = (lo + hi) * 0.5f, mt = 1.0f - t;
+    const float x = mt * mt * mt * g.p2x
+                  + 3.0f * mt * mt * t * (g.p2x + g.d)
+                  + 3.0f * mt * t * t * (g.p2x + g.d)
+                  + t * t * t * 0.0f;
+    return -x;
+}
+
+// 预计算好的圆角矩形几何（每帧每个矩形算一次，不要放进扫描线循环）
+struct RRectGeo {
+    float x0 = 0, x1 = 0, y0 = 0, y1 = 0;
+    float rad = 0, p = 0;
+    CornerGeo cg;
+    bool smooth = false;
+};
+
+inline RRectGeo make_rrgeo(const Rect& r, float rad, float smooth) {
+    RRectGeo g;
+    g.x0 = r.x; g.x1 = r.right(); g.y0 = r.y; g.y1 = r.bottom();
+    if (rad <= 0.0f || r.w <= 0.0f || r.h <= 0.0f) { g.rad = 0.0f; return g; }
+    g.rad = std::min(rad, std::min(r.w, r.h) * 0.5f);
+    if (smooth > 0.001f) {
+        // 拐角带不能超过半高：超出了就压低 smoothing（保持半径不变，形状不会突变）
+        float s = smooth;
+        const float half = std::min(r.w, r.h) * 0.5f;
+        if ((1.0f + s) * g.rad > half) s = std::max(0.0f, half / g.rad - 1.0f);
+        g.cg = corner_geo(g.rad, s);
+        if (g.cg.ok) { g.smooth = true; g.p = g.cg.p; }
+    }
+    return g;
+}
+
+inline Span rr_span(float y, const RRectGeo& g) {
+    Span s{g.x0, g.x1};
+    if (y < g.y0 || y > g.y1) { s.xl = 1.0f; s.xr = 0.0f; return s; }
+    if (g.rad <= 0.0f) return s;
+    if (g.smooth) {
+        float dx = 0.0f;
+        if (y < g.y0 + g.p)              dx = corner_inset(y - g.y0, g.cg);
+        else if (y > g.y1 - g.p)         dx = corner_inset(g.y1 - y, g.cg);
+        s.xl = g.x0 + dx; s.xr = g.x1 - dx;
+        return s;
+    }
+    const float top_center = g.y0 + g.rad;
+    const float bot_center = g.y1 - g.rad;
     if (y < top_center) {
-        float dy = top_center - y;
-        float dx = rad - std::sqrt(std::max(0.0f, rad * rad - dy * dy));
-        s.xl = r.x + dx; s.xr = r.right() - dx;
+        const float dy = top_center - y;
+        const float dx = g.rad - std::sqrt(std::max(0.0f, g.rad * g.rad - dy * dy));
+        s.xl = g.x0 + dx; s.xr = g.x1 - dx;
     } else if (y > bot_center) {
-        float dy = y - bot_center;
-        float dx = rad - std::sqrt(std::max(0.0f, rad * rad - dy * dy));
-        s.xl = r.x + dx; s.xr = r.right() - dx;
+        const float dy = y - bot_center;
+        const float dx = g.rad - std::sqrt(std::max(0.0f, g.rad * g.rad - dy * dy));
+        s.xl = g.x0 + dx; s.xr = g.x1 - dx;
     }
     return s;
+}
+
+// 兼容旧调用点：没有 smoothing 的纯圆弧
+inline Span rrect_span(float y, const Rect& r, float rad) {
+    if (rad <= 0.0f) {
+        Span s{r.x, r.right()};
+        if (y < r.y || y > r.bottom()) { s.xl = 1.0f; s.xr = 0.0f; }
+        return s;
+    }
+    RRectGeo g = make_rrgeo(r, rad, 0.0f);
+    return rr_span(y, g);
 }
 
 // 4 倍垂直子采样 × 水平解析覆盖 —— 半径 8px 的圆角能得到干净的边缘
 static const int AINO_SS = 4;
 
 // 在 outer 区域铺色，若 inner 非空则挖掉 inner（用于描边）
-inline void raster_rrect(Canvas& cv, const Rect& r, const Color& c, float rad) {
+// 竖直渐变：一列一色，所以整行仍然是同一个颜色 —— 快路径（整行铺色）照样能用。
+struct RowPaint {
+    Color c0, c1;
+    float y0 = 0, y1 = 0;
+    bool  grad = false;
+    Color at(float py) const {
+        if (!grad) return c0;
+        const float t = clampf((py + 0.5f - y0) / std::max(y1 - y0, 0.001f), 0.0f, 1.0f);
+        return c0.mix(c1, t);
+    }
+};
+
+inline void raster_rrect_paint(Canvas& cv, const Rect& r, const RowPaint& paint, float rad, float smooth);
+
+inline void raster_rrect(Canvas& cv, const Rect& r, const Color& c, float rad, float smooth = 0.0f) {
+    RowPaint rp; rp.c0 = c;
+    raster_rrect_paint(cv, r, rp, rad, smooth);
+}
+
+inline void raster_rrect_paint(Canvas& cv, const Rect& r, const RowPaint& paint, float rad, float smooth) {
     int y0 = (int)std::floor(r.y), y1 = (int)std::ceil(r.bottom());
     if (y1 > cv.h) y1 = cv.h;
     if (y0 < 0) y0 = 0;
     if (y1 <= y0) return;
     // 半径按短边折半，和 rrect_span 内部一致；先算好才能推出"必定被覆盖"的内区
-    const float rad_eff = (rad > 0.0f) ? std::min(rad, std::min(r.w, r.h) * 0.5f) : 0.0f;
+    const RRectGeo geo = make_rrgeo(r, rad, smooth);
 
     for (int py = y0; py < y1; ++py) {
         if (cv.clipped && (py < cv.clip_y0 || py >= cv.clip_y1)) continue;
+        const Color c = paint.at(float(py));
+        if (c.a == 0) continue;
         float xls[AINO_SS], xrs[AINO_SS];
         float mn = 1e9f, mx = -1e9f;
         float inl = -1e9f, inr = 1e9f;      // 4 条子采样线都覆盖到的区间
         bool all_inside = true;             // 4 条子采样线是否都落在矩形内
         for (int s = 0; s < AINO_SS; ++s) {
             float sy = float(py) + (float(s) + 0.5f) / float(AINO_SS);
-            Span sp = rrect_span(sy, r, rad_eff);
+            Span sp = rr_span(sy, geo);
             xls[s] = sp.xl; xrs[s] = sp.xr;
             // rrect_span 对"行在矩形外"返回空哨兵 (xl=1, xr=0)。哨兵会把
             // min/max 带偏，所以必须用「是否真落在矩形内」显式判定。
@@ -1666,10 +1836,12 @@ inline void raster_rrect(Canvas& cv, const Rect& r, const Color& c, float rad) {
 // 注意 rrect_span 对"行在矩形外"返回空哨兵 (xl=1, xr=0)，直接用 min/max 会被带偏
 // （内框在某行为空时 inr 会变成 0，右竖边下界退化成 0 → 整行被当成边框填满），
 // 所以下面一律按「有效样本」分别求边界。
-inline void raster_rrect_stroke(Canvas& cv, const Rect& r, const Color& c, float rad, float width) {
+inline void raster_rrect_stroke(Canvas& cv, const Rect& r, const Color& c, float rad, float width, float smooth = 0.0f) {
     float w = std::max(width, 0.5f);
     Rect inner = r.inset(w);
-    float inner_rad = std::max(0.0f, rad - w);
+    const RRectGeo go = make_rrgeo(r, rad, smooth);
+    const RRectGeo gi = make_rrgeo(inner, std::max(0.0f, go.rad - w), smooth);
+    float inner_rad = std::max(0.0f, go.rad - w);
     const bool has_inner = inner.w > 0.0f && inner.h > 0.0f;
     int y0 = (int)std::floor(r.y), y1 = (int)std::ceil(r.bottom());
     if (y1 > cv.h) y1 = cv.h;
@@ -1687,7 +1859,7 @@ inline void raster_rrect_stroke(Canvas& cv, const Rect& r, const Color& c, float
         float inl_min = 1e9f, inr_max = -1e9f;   // 内框有效样本的 min 左 / max 右
         for (int s = 0; s < AINO_SS; ++s) {
             float sy = float(py) + (float(s) + 0.5f) / float(AINO_SS);
-            Span so = rrect_span(sy, r, rad);
+            Span so = rr_span(sy, go);
             const bool ok = (so.xr > so.xl);
             ol[s] = so.xl; orr[s] = so.xr;
             if (!ok) outer_all = false;
@@ -1697,7 +1869,7 @@ inline void raster_rrect_stroke(Canvas& cv, const Rect& r, const Color& c, float
                 if (so.xl > oin_l) oin_l = so.xl;
                 if (so.xr < oin_r) oin_r = so.xr;
             }
-            Span si = has_inner ? rrect_span(sy, inner, inner_rad) : Span{1.0f, 0.0f};
+            Span si = has_inner ? rr_span(sy, gi) : Span{1.0f, 0.0f};
             const bool iok = has_inner && (si.xr > si.xl);
             il[s] = si.xl; irr[s] = si.xr;
             if (!iok) { inner_all = false; }
@@ -2140,6 +2312,28 @@ inline float rrect_sdf(float px, float py, const Rect& r, float rad) {
     const float qy = std::fabs(py - r.cy()) - (r.h * 0.5f - rr);
     const float mx = std::max(qx, 0.0f), my = std::max(qy, 0.0f);
     return std::sqrt(mx * mx + my * my) + std::min(std::max(qx, qy), 0.0f) - rr;
+}
+
+// 内阴影：沿内边缘向里衰减的一圈暗带。
+// macOS 的输入框、复选框、表格底都是"凹"下去的 —— 靠的就是这种内阴影，
+// 只描一圈边框是画不出凹陷感的（那只会像 Web 的 input）。
+inline void raster_rrect_inner(Canvas& cv, const Rect& r, float rad, float blur,
+                               const Color& c, float dy) {
+    if (c.a == 0 || blur <= 0.01f) return;
+    int y0 = std::max(0, (int)std::floor(r.y)), y1 = std::min(cv.h, (int)std::ceil(r.bottom()));
+    int x0 = std::max(0, (int)std::floor(r.x)), x1 = std::min(cv.w, (int)std::ceil(r.right()));
+    if (y1 <= y0 || x1 <= x0) return;
+    for (int py = y0; py < y1; ++py) {
+        if (cv.clipped && (py < cv.clip_y0 || py >= cv.clip_y1)) continue;
+        for (int px = x0; px < x1; ++px) {
+            const float d = -rrect_sdf(float(px) + 0.5f, float(py) + 0.5f - dy, r, rad);
+            if (d <= -1.0f) continue;                       // 完全在形状外
+            const float edge = clampf(d + 1.0f, 0.0f, 1.0f); // 边界抗锯齿
+            const float t = clampf(1.0f - std::max(d, 0.0f) / blur, 0.0f, 1.0f);
+            const float a = t * t * edge;
+            if (a > 0.002f) cv.blend(px, py, c, a);
+        }
+    }
 }
 
 // 阴影：对"外扩 blur"的包围盒逐像素求到圆角矩形边界的有符号距离，
@@ -3473,7 +3667,7 @@ inline void Ui::fill_rect(const Rect& r, const Color& c, float radius) {
         }
         return;
     }
-    detail::raster_rrect(*impl->canvas, p, c, rad);
+    detail::raster_rrect(*impl->canvas, p, c, rad, impl->theme.corner_smoothing);
 }
 
 inline void Ui::stroke_rect(const Rect& r, const Color& c, float radius, float width) {
@@ -3497,7 +3691,62 @@ inline void Ui::stroke_rect(const Rect& r, const Color& c, float radius, float w
     Rect p = impl->xf_phys(r);
     float rad = impl->xf_len(std::max(radius, 0.0f));
     rad = std::min(rad, std::min(p.w, p.h) * 0.5f);
-    detail::raster_rrect_stroke(*impl->canvas, p, c, rad, w);
+    detail::raster_rrect_stroke(*impl->canvas, p, c, rad, w, impl->theme.corner_smoothing);
+}
+
+inline void Ui::fill_rect_s(const Rect& r, const Color& c, float radius, float smooth) {
+    if (impl->measure_on) { if (c.a != 0 && !r.empty()) impl->measure_add(r); return; }
+    if (!impl->canvas || c.a == 0 || r.empty()) return;
+    detail::raster_rrect(*impl->canvas, impl->xf_phys(r), c,
+                         impl->xf_len(std::max(radius, 0.0f)),
+                         smooth < 0.0f ? impl->theme.corner_smoothing : smooth);
+}
+
+inline void Ui::stroke_rect_s(const Rect& r, const Color& c, float radius, float width, float smooth) {
+    if (impl->measure_on) { if (c.a != 0 && !r.empty()) impl->measure_add(r); return; }
+    if (!impl->canvas || c.a == 0 || r.empty()) return;
+    detail::raster_rrect_stroke(*impl->canvas, impl->xf_phys(r), c,
+                                impl->xf_len(std::max(radius, 0.0f)),
+                                std::max(impl->xf_len(width), 0.6f),
+                                smooth < 0.0f ? impl->theme.corner_smoothing : smooth);
+}
+
+inline void Ui::inner_shadow(const Rect& r, const Color& c, float radius, float blur, float dy,
+                             float smooth) {
+    if (impl->measure_on) return;          // 内阴影不占布局
+    if (!impl->canvas || c.a == 0 || r.empty()) return;
+    (void)smooth;                          // 阴影带用纯圆弧求距离场，差值在亚像素级
+    detail::raster_rrect_inner(*impl->canvas, impl->xf_phys(r), impl->xf_len(std::max(radius, 0.0f)),
+                               impl->xf_len(std::max(blur, 0.01f)), c, impl->xf_len(dy));
+}
+
+inline void Ui::fill_rect_grad(const Rect& r, const Color& top, const Color& bottom,
+                               float radius, float smooth) {
+    if (impl->measure_on) { if (!r.empty()) impl->measure_add(r); return; }
+    if (!impl->canvas || r.empty()) return;
+    if (top.a == 0 && bottom.a == 0) return;
+    const Rect p = impl->xf_phys(r);
+    detail::RowPaint rp;
+    rp.c0 = top; rp.c1 = bottom; rp.grad = true;
+    rp.y0 = p.y; rp.y1 = p.bottom();
+    detail::raster_rrect_paint(*impl->canvas, p, rp, impl->xf_len(std::max(radius, 0.0f)),
+                               smooth < 0.0f ? impl->theme.corner_smoothing : smooth);
+}
+
+// 顶部高光：bezel 的一条 1px 亮边只出现在上半圈，整圈描边会变成"描边感"。
+inline void Ui::stroke_rect_top(const Rect& r, const Color& c, float radius, float width, float height,
+                                float smooth) {
+    if (impl->measure_on) { if (c.a != 0 && !r.empty()) impl->measure_add(r); return; }
+    if (!impl->canvas || c.a == 0 || r.empty()) return;
+    Rect clip(r.x, r.y - width, r.w, height + width);
+    Rect inter = clip.intersect(r);
+    if (inter.empty()) return;
+    push_clip(inter);
+    detail::raster_rrect_stroke(*impl->canvas, impl->xf_phys(r), c,
+                                impl->xf_len(std::max(radius, 0.0f)),
+                                std::max(impl->xf_len(width), 0.6f),
+                                smooth < 0.0f ? impl->theme.corner_smoothing : smooth);
+    pop_clip();
 }
 
 inline void Ui::fill_circle(float cx, float cy, float radius, const Color& c) {
@@ -4233,10 +4482,13 @@ struct Skin {
     Color press  = Color::none();
     Color fg     = Color(0, 0, 0);
     Color border = Color::none();
+    Color rim    = Color::none();      // 顶部 1px 高光（bezel 的上亮边）
+    Color grad_bottom = Color::none(); // 非 none 时 base→grad_bottom 竖直渐变
     float border_w = 0.0f;
     float radius   = 8.0f;
     float font_size= 14.0f;
     int   weight   = 400;
+    int   size_class = 2;              // 0 mini 1 small 2 medium 3 large 4 xl
 };
 
 inline Skin make_skin(const Theme& th, const Style& st, int default_variant, float default_radius) {
@@ -4244,36 +4496,52 @@ inline Skin make_skin(const Theme& th, const Style& st, int default_variant, flo
     Skin sk;
     sk.radius    = st.radius >= 0.0f ? st.radius : default_radius;
     sk.font_size = st.font_size > 0.0f ? st.font_size : th.font_size;
-    sk.weight    = st.font_weight > 0 ? st.font_weight : 400;
+    sk.weight    = st.font_weight > 0 ? st.font_weight : 500;   // 官方 kit：推按钮标签是 SF Pro Medium
     sk.fg        = th.label;
 
-    // macOS 的按钮分三类，不是 shadcn 那套"主/次/描边"：
-    //   Default     —— Prominent：强调色实心 + 白字
-    //   Secondary   —— 标准推按钮：10% 半透明面 + 1px 极淡描边
-    //   Ghost/Link  —— 无面，只有文字
-    // hover / press 一律走"往上叠一层"（Fills - Opaque 的 5% / 8%），
-    // 不是把底色整体压暗 —— 半透明面压暗会把背后的底色一起算进去，暗色下发脏。
+    // macOS 27 的推按钮只有三种"面"，没有 shadcn 那套主/次/描边：
+    //   Default    Prominent    —— 强调色实心 + 白字 + 顶部 1px 亮边
+    //   Secondary  Bordered     —— 8% 黑半透明面，**没有描边**（官方 kit 里 BG 就一层 8%）
+    //   Ghost/Link Borderless   —— 无面
+    // 官方 kit 只有 Idle / Clicked / Disabled 三态：没有 hover 变色 —— 鼠标悬停不变色是
+    // macOS 的本来行为，之前那套"悬停变深"是 Web 习惯，会让界面立刻不像 macOS。
+    // 按下 = 8% → 16%（正好翻倍，官方 Clicked 值）。
     switch (v) {
-        case Style::Default:     sk.base = th.tint;        sk.fg = th.tint_foreground;         break;
-        case Style::Secondary:   sk.base = th.fill;        sk.fg = th.label;
-                                 sk.hover = th.fill_hover;  sk.press = th.fill_press;
-                                 sk.border = th.separator;  sk.border_w = 1.0f;                 break;
-        case Style::Outline:     sk.base = th.fill2;       sk.fg = th.label;
-                                 sk.hover = th.fill_hover;  sk.press = th.fill_press;
-                                 sk.border = th.separator;  sk.border_w = 1.0f;                 break;
-        case Style::Ghost:       sk.base = Color::none();  sk.fg = th.label;
-                                 sk.hover = th.fill3;       sk.press = th.fill2;                break;
-        case Style::Destructive: sk.base = th.destructive; sk.fg = th.destructive_foreground; break;
-        case Style::Link:        sk.base = Color::none();  sk.fg = th.tint;
-                                 sk.hover = Color::none();  sk.press = Color::none();            break;
-        default:                 sk.base = th.fill3;       sk.fg = th.label;                    break;
+        case Style::Default:
+            sk.base  = th.tint;  sk.fg = th.tint_foreground;
+            sk.hover = th.tint;
+            sk.press = th.tint.darken(0.12f);
+            sk.rim   = Color(255, 255, 255, 40);
+            break;
+        case Style::Secondary:
+            sk.base = th.fill;  sk.hover = th.fill;  sk.press = th.fill_press;
+            sk.fg   = th.label;
+            break;
+        case Style::Outline:
+            sk.base = th.fill2; sk.hover = th.fill2; sk.press = th.fill_press;
+            sk.fg   = th.label;
+            break;
+        case Style::Ghost:
+            sk.base = Color::none(); sk.hover = th.fill3; sk.press = th.fill2;
+            sk.fg   = th.label;
+            break;
+        case Style::Destructive:
+            sk.base  = th.destructive; sk.fg = Color(255, 255, 255);
+            sk.hover = th.destructive;
+            sk.press = th.destructive.darken(0.12f);
+            sk.rim   = Color(255, 255, 255, 36);
+            break;
+        case Style::Link:
+            sk.base = Color::none(); sk.hover = Color::none(); sk.press = Color::none();
+            sk.fg   = th.tint;
+            break;
+        default:
+            sk.base = th.fill; sk.hover = th.fill; sk.press = th.fill_press;
+            break;
     }
-    // 只有没显式给过 hover/press 的才按底色推
-    if (sk.hover.is_none()) sk.hover = sk.base.is_none() ? th.fill3 : hover_color(sk.base);
-    if (sk.press.is_none()) sk.press = sk.base.is_none() ? th.fill2 : press_color(sk.base);
 
     // 显式覆盖优先
-    if (!st.bg.is_none()) { sk.base = st.bg; sk.hover = hover_color(sk.base); sk.press = press_color(sk.base); }
+    if (!st.bg.is_none()) { sk.base = st.bg; sk.hover = st.bg; sk.press = press_color(st.bg); }
     if (!st.fg.is_none()) sk.fg = st.fg;
     if (st.muted) sk.fg = th.muted_foreground;
     if (!st.border_color.is_none()) { sk.border = st.border_color; if (sk.border_w <= 0.0f) sk.border_w = 1.0f; }
@@ -4285,12 +4553,27 @@ inline void paint_surface(Ui& ui, const Rect& r, const Skin& sk, float t_hover, 
                           bool disabled, float radius_override = -1.0f) {
     const float rad = radius_override >= 0.0f ? radius_override : sk.radius;
     Color bg = state_fill(sk.base, sk.hover, sk.press, t_hover, t_press);
-    if (disabled && bg.a > 0) bg.a = uint8_t(float(bg.a) * 0.45f);
-    if (bg.a > 0) ui.fill_rect(r, bg, rad);
+    const float dim = disabled ? 0.55f : 1.0f;
+    if (disabled && bg.a > 0 && bg.a < 255) bg.a = uint8_t(float(bg.a) * dim);
+    if (disabled && bg.a == 255) bg = bg.with_alpha(uint8_t(255.0f * 0.55f));
+
+    if (bg.a > 0 && !sk.grad_bottom.is_none()) {
+        Color top = bg, bot = sk.grad_bottom;
+        if (disabled) { bot.a = uint8_t(float(bot.a) * dim); }
+        ui.fill_rect_grad(r, top, bot, rad);
+    } else if (bg.a > 0) {
+        ui.fill_rect(r, bg, rad);
+    }
+    // 顶部高光：只在上半圈画 1px 亮边。整圈描边会立刻变成"描边框"的 Web 味。
+    if (!sk.rim.is_none() && bg.a > 0) {
+        Color rc = sk.rim;
+        if (disabled) rc.a = uint8_t(float(rc.a) * dim);
+        ui.stroke_rect_top(r, rc, rad, 1.0f, std::max(r.h * 0.5f, 2.0f));
+    }
     if (sk.border_w > 0.0f && !sk.border.is_none()) {
         Color bc = sk.border;
-        if (disabled) bc.a = uint8_t(float(bc.a) * 0.45f);
-        ui.stroke_rect(r, bc, rad, sk.border_w);
+        if (disabled) bc.a = uint8_t(float(bc.a) * dim);
+        ui.stroke_rect_s(r, bc, rad, sk.border_w, -1.0f);
     }
 }
 
@@ -4482,7 +4765,7 @@ inline void Ui::label(const std::string& text, const Rect& box, const Style& st)
 inline void Ui::heading(const std::string& text, const Rect& box, const Style& st) {
     Style s = st;
     if (s.font_size <= 0.0f) s.font_size = 24.0f;
-    if (s.font_weight <= 0) s.font_weight = 700;
+    if (s.font_weight <= 0) s.font_weight = 600;   // macOS 的标题是 semibold，不是 bold
     const Color c = !s.fg.is_none() ? s.fg
                   : (s.muted ? impl->theme.muted_foreground : impl->theme.foreground);
     draw_text(text, box, c, s);
@@ -4718,12 +5001,14 @@ inline void Ui::code_block(const std::string& code, const Rect& box, const Style
 
     const float fs   = st.font_size > 0.0f ? st.font_size : 12.5f;
     const float lh   = std::max(fs * 1.62f, 15.0f);
-    const float rad  = st.radius >= 0.0f ? st.radius : th.radius;
-    const Color bg   = !st.bg.is_none() ? st.bg : th.muted.mix(th.background, 0.3f);
+    const float rad  = st.radius >= 0.0f ? st.radius : 6.0f;
+    // macOS 的源码/文本块是"凹陷面"：比背景深一档的半透明黑，**没有描边**。
+    // 一圈 1px 边框是 Web 卡片语言，macOS 用明度差分层。
+    const Color bg   = !st.bg.is_none() ? st.bg
+                     : (th.window_bg.luminance() < 0.5f ? Color(255, 255, 255, 7) : Color(0, 0, 0, 7));
     const detail::CodeColors& cc = detail::code_colors(th);
 
     fill_rect(box, bg, rad);
-    stroke_rect(box, th.border, rad, 1.0f);
 
     const int total = detail::code_line_count(code);
     if (total <= 0) return;
@@ -4736,9 +5021,7 @@ inline void Ui::code_block(const std::string& code, const Rect& box, const Style
     const float gpad  = 12.0f;
     const float text_x0 = box.x + gpad + num_w;
 
-    // 行号列与代码之间一条竖线，比给行号区单独铺底色更容易跟圆角相处
-    const float sep_x = std::floor(text_x0 - 6.0f) + 0.5f;
-    fill_rect(Rect(sep_x, box.y + 1.0f, 1.0f, box.h - 2.0f), th.border, 0.0f);
+    // 行号只靠颜色区分，不画竖线 —— 竖线是文档站的分栏语汇，macOS 编辑器没有
 
     // 文本基线：行距减掉字高后居中留白，避免所有行都贴着格子顶边
     const float dy = (lh - fs * 1.22f) * 0.5f;
@@ -4822,12 +5105,23 @@ inline void Ui::badge(const std::string& text, const Rect& box, const Style& st)
 
 inline void Ui::progress(float value, const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
-    const float rad = st.radius >= 0.0f ? st.radius : 999.0f;
-    const Color track = !st.border_color.is_none() ? st.border_color : th.track;
-    const Color fill  = !st.bg.is_none() ? st.bg : th.primary;
-    fill_rect(box, track, rad);
+    const bool dark = th.window_bg.luminance() < 0.5f;
+    // 官方 Determinate/Medium：100×10，圆角 100（胶囊），cornerSmoothing 0.6。
+    // 轨道 = Fills 5% 半透明；填充 = 强调色胶囊。
+    const float h = st.radius >= 0.0f ? std::min(box.h, box.h) : std::min(box.h, 10.0f);
+    Rect bar(box.x, box.cy() - h * 0.5f, box.w, h);
+    const float rad = h * 0.5f;
+    const Color track = !st.border_color.is_none() ? st.border_color
+                      : (dark ? Color(255, 255, 255, 26) : Color(0, 0, 0, 13));
+    const Color fill  = !st.bg.is_none() ? st.bg : th.tint;
+    fill_rect_s(bar, track, rad, 0.0f);
     const float t = detail::clampf(value, 0.0f, 1.0f);
-    if (t > 0.0f) fill_rect(Rect(box.x, box.y, box.w * t, box.h), fill, rad);
+    if (t > 0.0f) {
+        // 胶囊填充有个最小宽度：官方 10% 时填充是 19px 而不是 10px ——
+        // 小于两端圆角的宽度会被圆角吃掉，看起来像"没有头"。
+        const float w = std::max(bar.w * t, h);
+        fill_rect_s(Rect(bar.x, bar.y, w, bar.h), fill, rad, 0.0f);
+    }
 }
 
 inline void Ui::skeleton(const Rect& box, const Style& st) {
@@ -4871,7 +5165,6 @@ inline bool Ui::button(const std::string& text, const Rect& box, const Style& st
     const float t_press = detail::animate_value(impl, id * 31u + 2u, (in.held && in.hovered) ? 1.0f : 0.0f, 34.0f);
 
     detail::Skin sk = detail::make_skin(impl->theme, s, Style::Default, impl->theme.radius);
-    if (s.font_weight <= 0) sk.weight = 400;   // macOS 按钮标签是 Regular，不是 Medium
 
     Rect r = box;
     if (s.press_scale > 0.0f && s.press_scale < 1.0f && t_press > 0.01f) {
@@ -4941,11 +5234,14 @@ inline bool Ui::nav_item(const std::string& label, bool active, const Rect& box,
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float pad = st.pad_x >= 0.0f ? st.pad_x : 8.0f;
 
-    // macOS 侧边栏的选中态是**整块**强调色圆角矩形，没有左侧指示条 ——
-    // 指示条是 Android/Material 的语言，放进 macOS 界面里一眼就不对。
+    // macOS 侧边栏（Item/Small/Selected，官方值是强调色 **23%** 的圆角块）：
+    // 选中态是"淡淡一层强调色 + 文字仍是 85% 黑"，**不是**实心蓝底白字 ——
+    // 实心蓝底白字是 iOS/Twitter 的语言，放到 macOS 侧边栏里一眼就假。
+    // 也没有左侧指示条（那是 Material 的语言）。
     if (t_active > 0.01f) {
         Color bg = !st.bg.is_none() ? st.bg : th.tint;
-        bg.a = uint8_t(clampf(float(bg.a) * t_active, 0.0f, 255.0f));
+        const uint8_t a = bg.a == 255 ? 59 : bg.a;   // 23% ≈ 59/255
+        bg.a = uint8_t(clampf(float(a) * t_active, 0.0f, 255.0f));
         fill_rect(box, bg, rad);
     }
     if (t_hover > 0.01f) {
@@ -4955,8 +5251,8 @@ inline bool Ui::nav_item(const std::string& label, bool active, const Rect& box,
     }
 
     // 字重固定 500：选中时换字重会让文字宽度跳一下，看着像整个侧边栏在抖。
-    // 选中感交给底色和前景色（选中 → 强调色上的白字）。
-    Color fg = !st.fg.is_none() ? st.fg : th.label.mix(th.tint_foreground, t_active);
+    // 选中只叠加底色，文字颜色不变（官方 Selected 的 Label 仍是 85% 黑）。
+    Color fg = !st.fg.is_none() ? st.fg : th.label;
     if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
     Style ts;
     ts.font_size = fs;
@@ -5227,11 +5523,21 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
     const bool bare = st.border_width == 0.0f && st.bg.is_none();
     if (st.disabled && bg.a > 0) bg.a = uint8_t(float(bg.a) * 0.45f);
     if (bg.a > 0 && !bare) fill_rect(box, bg, rad);
-    Color bd = !st.border_color.is_none() ? st.border_color : th.input;
-    if (focused) bd = th.ring;
-    else if (t_hover > 0.01f) bd = bd.mix(th.foreground.with_alpha(120), t_hover * 0.4f);
+    // 凹陷：官方 Text Field 的填色是纯白，靠**顶部内阴影 + 极淡描边**"陷"进背景。
+    // 只描一圈 1px 边框那是 Web 的 input，平的。
+    if (!bare) {
+        const Color ish = th.window_bg.luminance() < 0.5f ? Color(0, 0, 0, 70) : Color(0, 0, 0, focused ? 10 : 18);
+        inner_shadow(box, ish, rad, 1.8f, 1.0f);
+    }
+    Color bd = !st.border_color.is_none() ? st.border_color
+             : (th.window_bg.luminance() < 0.5f ? Color(255, 255, 255, 34) : Color(0, 0, 0, 32));
+    if (t_hover > 0.01f && !focused) bd = bd.mix(Color(0, 0, 0, 76), t_hover * 0.5f);
     float bw = st.border_width >= 0.0f ? st.border_width : 1.0f;
-    if (bw > 0.0f) stroke_rect(box, bd, rad, focused ? bw + 0.4f : bw);
+    if (bw > 0.0f) stroke_rect(box, bd, rad, bw);
+    // 焦点环：macOS 是**外面**一圈 3px 的强调色光晕，不是把边框染蓝变粗。
+    if (focused && !bare) {
+        stroke_rect(box.outset(3.0f), th.tint.with_alpha(90), rad + 3.0f, 2.5f);
+    }
 
     // IME 预编辑串（拼音）。它不是 value 的一部分，所以单独量宽、单独画：
     // 画在 caret 处、带下划线，caret 顺延到它后面，看上去才是"字还没定"。
@@ -5324,6 +5630,7 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
 inline bool Ui::checkbox(bool* value, const std::string& label_text, const Rect& box, const Style& st) {
     if (!value) return false;
     const Theme& th = impl->theme;
+    const bool dark = th.window_bg.luminance() < 0.5f;
     uint64_t id = detail::make_id("checkbox", box, detail::hash_string(label_text.c_str()));
     const bool enabled = !st.disabled;
 
@@ -5333,47 +5640,56 @@ inline bool Ui::checkbox(bool* value, const std::string& label_text, const Rect&
     if (in.clicked) { *value = !*value; changed = true; }
 
     const float t = detail::animate_value(impl, id * 37u + 1u, *value ? 1.0f : 0.0f, 20.0f);
-    const float t_hover = detail::animate_value(impl, id * 37u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
-    // macOS 27 Medium 档：复选框 16×16，圆角 5.5（Checkboxes/Width、Checkboxes/Radius）
-    const float box_size = st.font_size > 0.0f ? std::max(st.font_size + 3.0f, 14.0f) : 16.0f;
-    Rect box_r(box.x, box.cy() - box_size * 0.5f, box_size, box_size);
-    const float rad = box_size * 0.344f;   // 16 → 5.5
+    // ---- 官方 _Checkbox/_Checkbox Background：14×14，圆角 3.5，cornerSmoothing 0.6 ----
+    //   fill   #F6F6F6 @84%
+    //   stroke #000000 10% / 0.5px INSIDE
+    //   fx     内阴影 (dy 0,  blur 2.0, 8%)  +  内阴影 (dy 1.5, blur 1.6, 10%)
+    // 那两道内阴影就是"凹陷"的全部来源 —— 少掉它们，复选框就只是一个带边框的方块。
+    const float bs  = 14.0f;
+    const float rad = 3.5f;
+    const float sm  = 0.6f;
+    Rect box_r(box.x, box.cy() - bs * 0.5f, bs, bs);
 
-    Color off_bd = th.input;
-    if (t_hover > 0.01f) off_bd = off_bd.mix(th.foreground.with_alpha(110), t_hover * 0.55f);
-    Color fill_c = th.control_bg.mix(th.primary, t);
-    Color bd_c = off_bd.mix(th.primary, t);
-    if (st.disabled) { fill_c.a = uint8_t(float(fill_c.a) * 0.45f); bd_c.a = uint8_t(float(bd_c.a) * 0.45f); }
-
-    if (t > 0.02f) {
-        Color bg = fill_c;
-        bg.a = uint8_t(float(bg.a) * t);
-        fill_rect(box_r, bg, rad);
-    } else {
-        fill_rect(box_r, th.control_bg.with_alpha(255), rad);   // 未选中 = 控件底
+    if (t < 0.995f) {
+        const float k = 1.0f - t;                      // 未选中层的可见度
+        Color base = dark ? Color(60, 60, 60, 214) : Color(246, 246, 246, 214);
+        base.a = uint8_t(float(base.a) * k * (st.disabled ? 0.55f : 1.0f));
+        fill_rect_s(box_r, base, rad, sm);
+        if (k > 0.02f) {
+            inner_shadow(box_r, Color(0, 0, 0, uint8_t(20 * k)), rad, 2.0f, 0.0f);
+            inner_shadow(box_r, Color(0, 0, 0, uint8_t(26 * k)), rad, 1.6f, 1.5f);
+            stroke_rect_s(box_r, Color(0, 0, 0, uint8_t(26 * k)), rad, 0.5f, sm);
+        }
     }
-    stroke_rect(box_r, bd_c, rad, 1.0f);
+    if (t > 0.005f) {
+        Color acc = th.tint;
+        if (st.disabled) acc = acc.with_alpha(uint8_t(float(acc.a) * 0.5f));
+        if (t < 0.995f) acc.a = uint8_t(float(acc.a) * t);
+        fill_rect_s(box_r, acc, rad, sm);
+        // 强调色面上同样压一道顶部内阴影，避免"平涂色块"
+        inner_shadow(box_r, Color(0, 0, 0, uint8_t(28.0f * t)), rad, 1.8f, 0.0f);
+    }
 
     if (t > 0.30f) {
-        // 对勾用两条线自绘 —— 不依赖字体里是否有 ✓（很多中文字体没有这个字形）
-        Color fg = th.primary_foreground;
-        fg.a = uint8_t(float(fg.a) * detail::clampf((t - 0.30f) / 0.45f, 0.0f, 1.0f));
+        // 对勾自绘（不依赖字体里有没有 ✓），线宽与 14px 的方块成比例
+        Color fg(255, 255, 255);
+        fg.a = uint8_t(255.0f * detail::clampf((t - 0.30f) / 0.45f, 0.0f, 1.0f));
         const float cx = box_r.cx(), cy = box_r.cy();
-        const float s = box_size * 0.22f;
-        const float lw = std::max(1.4f, box_size * 0.11f);
-        draw_line(cx - s * 1.20f, cy + s * 0.05f, cx - s * 0.15f, cy + s * 0.90f, fg, lw);
-        draw_line(cx - s * 0.15f, cy + s * 0.90f, cx + s * 1.30f, cy - s * 0.85f, fg, lw);
+        const float s = bs * 0.205f;
+        const float lw = std::max(1.5f, bs * 0.115f);
+        draw_line(cx - s * 1.25f, cy + s * 0.02f, cx - s * 0.18f, cy + s * 0.86f, fg, lw);
+        draw_line(cx - s * 0.18f, cy + s * 0.86f, cx + s * 1.28f, cy - s * 0.80f, fg, lw);
     }
 
     if (!label_text.empty()) {
-        Rect lr(box.x + box_size + 8.0f, box.y, std::max(box.w - box_size - 8.0f, 1.0f), box.h);
+        Rect lr(box.x + bs + 6.0f, box.y, std::max(box.w - bs - 6.0f, 1.0f), box.h);
         Style ts;
         ts.font_size = st.font_size > 0.0f ? st.font_size : th.font_size;
-        ts.font_weight = 500;
+        ts.font_weight = 400;
         ts.align = Align::Left;
         ts.valign = VAlign::Middle;
-        Color c = !st.fg.is_none() ? st.fg : th.foreground;
+        Color c = !st.fg.is_none() ? st.fg : th.label;
         if (st.disabled) c.a = uint8_t(float(c.a) * 0.45f);
         draw_text(label_text, lr, c, ts);
     }
@@ -5389,6 +5705,7 @@ inline bool Ui::checkbox(bool* value, const std::string& label_text, const Rect&
 inline bool Ui::toggle(bool* value, const Rect& box, const Style& st) {
     if (!value) return false;
     const Theme& th = impl->theme;
+    const bool dark = th.window_bg.luminance() < 0.5f;
     uint64_t id = detail::make_id("toggle", box);
     const bool enabled = !st.disabled;
 
@@ -5397,27 +5714,35 @@ inline bool Ui::toggle(bool* value, const Rect& box, const Style& st) {
     bool changed = false;
     if (in.clicked) { *value = !*value; changed = true; }
 
-    const float t = detail::animate_value(impl, id * 41u + 1u, *value ? 1.0f : 0.0f, 22.0f);
-    const float t_hover = detail::animate_value(impl, id * 41u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
+    const float t       = detail::animate_value(impl, id * 41u + 1u, *value ? 1.0f : 0.0f, 22.0f);
+    const float t_press = detail::animate_value(impl, id * 41u + 2u, (in.held && in.hovered) ? 1.0f : 0.0f, 30.0f);
 
-    // macOS 27 Switch（Medium）：轨道 54×24 胶囊，滑块 20，内缩 2
-    const float track_h = 24.0f;
-    const float track_w = 54.0f;
+    // ---- 官方 Switch/Medium：轨道 54×24 胶囊（r=1000, cornerSmoothing 0.6）----
+    // 滑块不是圆点，是 32×20 的白色胶囊，四周内缩 2；按下时横向拉长到 50×31 的形变
+    // 这里不做玻璃/形变，只保留尺寸与位移，避免"液态玻璃"。
+    const float track_h = 24.0f, track_w = 54.0f;
     Rect track = Rect::centered(box.cx(), box.cy(), track_w, track_h);
     const float rad = track_h * 0.5f;
 
-    Color off = th.fill;                       // 关闭态 = Fills - Opaque/Primary
-    if (t_hover > 0.01f) off = off.mix(th.foreground.with_alpha(110), t_hover * 0.5f);
-    Color track_c = off.mix(th.primary, t);
-    if (st.disabled) track_c.a = uint8_t(float(track_c.a) * 0.45f);
-    fill_rect(track, track_c, rad);
+    // 关闭态 = Fills - Opaque 5%（官方 Idle/False 的 Black 层 op0.05）
+    // 打开态 = 强调色；按下再叠 13%（官方 Idle/Clicked 的 Black 层 op0.13）
+    const Color off_c = dark ? Color(255, 255, 255, 26) : Color(0, 0, 0, 13);
+    Color track_c = off_c.mix(th.tint, t);
+    if (*value && t_press > 0.01f) track_c = track_c.mix(Color(0, 0, 0, 33), t_press * 0.5f);
+    if (st.disabled) track_c = track_c.with_alpha(uint8_t(float(track_c.a) * 0.55f));
+    fill_rect_s(track, track_c, rad, 0.0f);   // 胶囊：半径已到短边一半，不用再压 smoothing
 
     const float inset = 2.0f;
-    const float knob_r = track_h * 0.5f - inset;
-    const float kx = detail::lerpf(track.x + inset + knob_r, track.right() - inset - knob_r, t);
+    const float knob_w = 32.0f, knob_h = 20.0f;
+    const float kx = detail::lerpf(track.x + inset, track.right() - inset - knob_w, t);
+    Rect knob_r(kx, track.cy() - knob_h * 0.5f, knob_w, knob_h);
+    // 官方 Knob 阴影：drop(y3 blur36 #0000000D) —— 36 是 Figma 的模糊半径，落到像素上取 7
+    drop_shadow(knob_r, knob_h * 0.5f, 7.0f, Color(0, 0, 0, 26), 1.5f);
     Color knob = Color(255, 255, 255);
-    if (st.disabled) knob.a = 200;
-    fill_circle(kx, track.cy(), knob_r, knob);
+    if (st.disabled) knob = knob.with_alpha(230);
+    fill_rect_s(knob_r, knob, knob_h * 0.5f, 0.0f);
+    // 极淡描边把白片从浅色轨道上"托"起来（否则关闭态白片会糊进 5% 灰里）
+    stroke_rect_s(knob_r, Color(0, 0, 0, 18), knob_h * 0.5f, 1.0f, 0.0f);
 
     if (in.pressed) detail::grab_focus(impl, id);
     if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, track, rad, th.ring);
@@ -5448,24 +5773,29 @@ inline bool Ui::slider(float* value, float min_value, float max_value, const Rec
     }
     const float t_hover = detail::animate_value(impl, id * 43u + 1u, (in.hovered || impl->active == id) ? 1.0f : 0.0f, 18.0f);
 
-    const float track_h = 4.0f;
-    Rect track(box.x + 7.0f, box.cy() - track_h * 0.5f, std::max(box.w - 14.0f, 1.0f), track_h);
+    // 官方 Slider：整体 100×24，轨道 **6px** 胶囊（不是 4），左右各留出把手的半宽。
+    // 把手是 20×16 的白色胶囊（不是圆点）—— 圆点会让它一眼看着像 HTML range。
+    const float track_h = 6.0f;
+    const float knob_w = 20.0f, knob_h = 16.0f;
+    const float half = knob_w * 0.5f;
+    Rect track(box.x + half, box.cy() - track_h * 0.5f,
+               std::max(box.w - knob_w, 1.0f), track_h);
     const float rad = track_h * 0.5f;
 
     Color track_c = !st.border_color.is_none() ? st.border_color : th.track;
-    fill_rect(track, track_c, rad);
-    Color fill_c = !st.bg.is_none() ? st.bg : th.primary;
+    fill_rect_s(track, track_c, rad, 0.0f);
+    Color fill_c = !st.bg.is_none() ? st.bg : th.tint;
     if (st.disabled) fill_c.a = uint8_t(float(fill_c.a) * 0.45f);
-    if (t > 0.0f) fill_rect(Rect(track.x, track.y, track.w * t, track.h), fill_c, rad);
+    if (t > 0.0f) fill_rect_s(Rect(track.x, track.y, std::max(track.w * t, track_h), track.h), fill_c, rad, 0.0f);
 
-    const float knob_r = detail::lerpf(8.0f, 10.0f, t_hover);   // macOS 27：20×16 → 按下 25×20
+    const float kw = knob_w + 2.0f * t_hover * 0.5f;   // 悬停时略微变宽，不是变大一圈
+    const float kh = knob_h + 2.0f * t_hover * 0.5f;
     const float kx = track.x + track.w * t;
     Color knob = Color(255, 255, 255);
-    // macOS 的滑块把手是白色圆片 + 极淡描边 + 一点投影，不是"强调色描边的空心圈"
-    const Rect knob_r_r = Rect::centered(kx, track.cy(), knob_r * 2.0f, knob_r * 2.0f);
-    drop_shadow(knob_r_r, knob_r, 4.0f, Color(0, 0, 0, 60), 0.5f);
-    fill_circle(kx, track.cy(), knob_r, knob);
-    stroke_rect(knob_r_r, th.separator, knob_r, 1.0f);
+    const Rect knob_r_r = Rect::centered(kx, track.cy(), kw, kh);
+    drop_shadow(knob_r_r, kh * 0.5f, 3.5f, Color(0, 0, 0, 70), 0.5f);
+    fill_rect_s(knob_r_r, knob, kh * 0.5f, 0.0f);
+    stroke_rect_s(knob_r_r, Color(0, 0, 0, 30), kh * 0.5f, 1.0f, 0.0f);
 
     if (in.pressed) detail::grab_focus(impl, id);
     return changed;
@@ -5486,16 +5816,17 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
     uint64_t base_id = detail::make_id("tabs", box);
     const bool pill = (st.variant == Style::Secondary || st.variant == Style::Outline);
     const float rad = st.radius >= 0.0f ? st.radius : th.radius;
-    const float inner_rad = std::max(0.0f, rad - 3.0f);
+    const float inner_rad = std::max(0.0f, rad - 2.0f);
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
 
     bool changed = false;
     Rect container(box.x, box.y, box.w, box.h);
-    const Rect inner = pill ? container.inset(3.0f, 3.0f) : container;
+    // 官方 Segmented Control：容器 8% 半透明底，选中段内缩 2px、圆角比容器小 2（同心圆角）
+    const Rect inner = pill ? container.inset(2.0f, 2.0f) : container;
     const float item_w = inner.w / float(labels.size());
 
     if (pill) {
-        Color container_bg = !st.bg.is_none() ? st.bg : th.muted;
+        Color container_bg = !st.bg.is_none() ? st.bg : th.fill;
         if (st.disabled) container_bg.a = uint8_t(float(container_bg.a) * 0.45f);
         fill_rect(container, container_bg, rad);
     } else {
@@ -5529,11 +5860,13 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
 
         if (pill) {
             if (t_sel > 0.02f) {
-                Color sel_bg = !st.border_color.is_none() ? st.border_color : th.background;
-                // 在深色主题里选中项要略亮才看得见
-                if (sel_bg.luminance() < 0.2f) sel_bg = sel_bg.lighten(0.07f);
+                // 官方选中段是**强调色实心 + 白字**（不是"白底黑字"）。
+                // BG 上还叠了 3% 黑，这里折进 sel 的颜色里。
+                Color sel_bg = !st.border_color.is_none() ? st.border_color : th.tint;
                 sel_bg.a = uint8_t(float(sel_bg.a) * t_sel);
                 fill_rect(item, sel_bg, inner_rad);
+                if (t_sel > 0.5f)
+                    inner_shadow(item, Color(0, 0, 0, uint8_t(8.0f * t_sel)), inner_rad, 1.6f, 0.0f);
             } else if (t_hov > 0.02f) {
                 fill_rect(item, th.foreground.with_alpha(uint8_t(14.0f * t_hov)), inner_rad);
             }
@@ -5544,10 +5877,12 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
 
         Style ts;
         ts.font_size = fs;
-        ts.font_weight = *index == int(i) ? 600 : 500;
+        ts.font_weight = 500;                 // 官方：选中/未选中都是 SF Pro Medium
         ts.align = Align::Center;
         ts.valign = VAlign::Middle;
-        Color c = (*index == int(i)) ? th.foreground : th.muted_foreground;
+        Color c = pill
+                ? ((*index == int(i)) ? th.tint_foreground : th.label)
+                : ((*index == int(i)) ? th.label : th.muted_foreground);
         if (st.disabled) c.a = uint8_t(float(c.a) * 0.45f);
         draw_text(labels[i], item, c, ts);
     }
@@ -5740,11 +6075,22 @@ inline bool Ui::radio_group(const std::vector<std::string>& items, int* index, c
         const float t_hov = detail::animate_value(impl, id * 59u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
         const Rect dot_r = Rect::centered(row.x + dot * 0.5f, row.cy(), dot, dot);
-        Color bd = th.input;
-        if (t < 0.5f && t_hov > 0.01f) bd = bd.mix(th.foreground.with_alpha(110), t_hov * 0.55f);
-        bd = bd.mix(th.primary, t);
-        if (st.disabled) bd.a = uint8_t(float(bd.a) * 0.45f);
-        stroke_rect(dot_r, bd, dot * 0.5f, detail::lerpf(1.0f, 1.8f, t));
+        // 和复选框同一套"凹陷"配方：浅底 + 极淡描边 + 两道内阴影，
+        // 选中时底下压一层强调色（圆点浮在上面）。
+        const bool dk = th.window_bg.luminance() < 0.5f;
+        if (t < 0.995f) {
+            Color base = dk ? Color(60, 60, 60, 214) : Color(246, 246, 246, 214);
+            base.a = uint8_t(float(base.a) * (1.0f - t) * (st.disabled ? 0.55f : 1.0f));
+            fill_rect_s(dot_r, base, dot * 0.5f, 0.0f);
+            inner_shadow(dot_r, Color(0, 0, 0, uint8_t(20 * (1.0f - t))), dot * 0.5f, 2.0f, 0.5f);
+            stroke_rect_s(dot_r, Color(0, 0, 0, 32), dot * 0.5f, 1.0f, 0.0f);
+        }
+        if (t > 0.005f) {
+            Color acc = th.tint;
+            if (st.disabled) acc = acc.with_alpha(uint8_t(float(acc.a) * 0.5f));
+            if (t < 0.995f) acc.a = uint8_t(float(acc.a) * t);
+            fill_rect_s(dot_r, acc, dot * 0.5f, 0.0f);
+        }
 
         if (t > 0.02f) {
             // 中心点用 t*(2-t) 做一次 ease-out，弹出感比线性更像"长出来"
@@ -6565,7 +6911,8 @@ inline void Ui::table(const std::vector<std::string>& headers,
     fill_rect(hr, !st.bg.is_none() ? st.bg : th.fill3, rad);
     for (size_t c = 0; c < cols; ++c) {
         const Rect cr(hr.x + col_w * float(c), hr.y, col_w, hr.h);
-        if (c > 0) fill_rect(Rect(cr.x, cr.y + 7.0f, 1.0f, std::max(cr.h - 14.0f, 1.0f)), th.border, 0.0f);
+        // 列之间不画竖线：macOS 的列表靠留白和行分隔线分列，竖线是 Excel/Web 的语汇
+        (void)c;
         if (c >= headers.size()) continue;
         Style ts;
         ts.font_size = std::max(fs - 1.0f, 8.0f);
@@ -6576,7 +6923,7 @@ inline void Ui::table(const std::vector<std::string>& headers,
         if (st.disabled) cc.a = uint8_t(float(cc.a) * 0.45f);
         draw_text(headers[c], cr.inset(cell_pad, 0.0f), cc, ts);
     }
-    fill_rect(Rect(box.x, hr.bottom() - 1.0f, box.w, 1.0f), th.border, 0.0f);
+    fill_rect(Rect(box.x, hr.bottom() - 1.0f, box.w, 1.0f), th.separator, 0.0f);
 
     for (size_t r = 0; r < rows.size(); ++r) {
         const Rect rr(box.x, hr.bottom() + row_h * float(r), box.w, row_h);
@@ -6595,7 +6942,7 @@ inline void Ui::table(const std::vector<std::string>& headers,
             draw_text(rows[r][c], Rect(rr.x + col_w * float(c), rr.y, col_w, rr.h).inset(cell_pad, 0.0f), cc, ts);
         }
         if (r + 1 < rows.size())
-            fill_rect(Rect(rr.x, rr.bottom() - 1.0f, rr.w, 1.0f), th.border, 0.0f);
+            fill_rect(Rect(rr.x, rr.bottom() - 1.0f, rr.w, 1.0f), th.separator, 0.0f);
     }
 
     pop_clip();
