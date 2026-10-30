@@ -1,0 +1,209 @@
+[
+ {
+  "name": "Shadows - Light/Primary",
+  "effects": [
+   {
+    "type": "DROP_SHADOW",
+    "radius": 3,
+    "spread": 0,
+    "offset": "0,0",
+    "color": "#0000008C",
+    "visible": true
+   },
+   {
+    "type": "DROP_SHADOW",
+    "radius": 100,
+    "spread": 0,
+    "offset": "0,36",
+    "color": "#00000066",
+    "visible": true
+   }
+  ]
+ },
+ {
+  "name": "Shadows - Light/Secondary",
+  "effects": [
+   {
+    "type": "DROP_SHADOW",
+    "radius": 3,
+    "spread": 0,
+    "offset": "0,0",
+    "color": "#0000008C",
+    "visible": true
+   },
+   {
+    "type": "DROP_SHADOW",
+    "radius": 40,
+    "spread": 0,
+    "offset": "0,8",
+    "color": "#00000040",
+    "visible": true
+   }
+  ]
+ },
+ {
+  "name": "Shadows - Light/Tertiary",
+  "effects": [
+   {
+    "type": "DROP_SHADOW",
+    "radius": 3,
+    "spread": 0,
+    "offset": "0,0",
+    "color": "#0000008C",
+    "visible": true
+   },
+   {
+    "type": "DROP_SHADOW",
+    "radius": 100,
+    "spread": 0,
+    "offset": "0,36",
+    "color": "#00000040",
+    "visible": true
+   }
+  ]
+ },
+ {
+  "name": "Shadows - Light/Quaternary",
+  "effects": [
+   {
+    "type": "DROP_SHADOW",
+    "radius": 3,
+    "spread": 0,
+    "offset": "0,0",
+    "color": "#0000008C",
+    "visible": true
+   },
+   {
+    "type": "DROP_SHADOW",
+    "radius": 20,
+    "spread": 0,
+    "offset": "0,4",
+    "color": "#00000040",
+    "visible": true
+   }
+  ]
+ },
+ {
+  "name": "Shadows - Light/WIndow Inner Shadow",
+  "effects": [
+   {
+    "type": "INNER_SHADOW",
+    "radius": 3,
+    "spread": 0,
+    "offset": "0,0",
+    "color": "#FFFFFF1A",
+    "visible": true
+   }
+  ]
+ },
+ {
+  "name": "Medium Background Blur",
+  "effects": [
+   {
+    "type": "BACKGROUND_BLUR",
+    "radius": 30,
+    "spread": 0,
+    "offset": "0,4",
+    "color": "#00000040",
+    "visible": true
+   }
+  ]
+ },
+ {
+  "name": "Shadows - Dark/Primary",
+  "effects": [
+   {
+    "type": "DROP_SHADOW",
+    "radius": 100,
+    "spread": 0,
+    "offset": "0,36",
+    "color": "#000000B2",
+    "visible": true
+   },
+   {
+    "type": "DROP_SHADOW",
+    "radius": 1,
+    "spread": 1,
+    "offset": "0,0",
+    "color": "#000000",
+    "visible": true
+   }
+  ]
+ },
+ {
+  "name": "Shadows - Dark/Secondary",
+  "effects": [
+   {
+    "type": "DROP_SHADOW",
+    "radius": 40,
+    "spread": 0,
+    "offset": "0,8",
+    "color": "#000000B2",
+    "visible": true
+   },
+   {
+    "type": "DROP_SHADOW",
+    "radius": 1,
+    "spread": 1,
+    "offset": "0,0",
+    "color": "#000000",
+    "visible": true
+   }
+  ]
+ },
+ {
+  "name": "Shadows - Dark/Tertiary",
+  "effects": [
+   {
+    "type": "DROP_SHADOW",
+    "radius": 100,
+    "spread": 0,
+    "offset": "0,36",
+    "color": "#00000073",
+    "visible": true
+   },
+   {
+    "type": "DROP_SHADOW",
+    "radius": 1,
+    "spread": 1,
+    "offset": "0,0",
+    "color": "#000000",
+    "visible": true
+   }
+  ]
+ },
+ {
+  "name": "Shadows - Dark/Quaternary",
+  "effects": [
+   {
+    "type": "DROP_SHADOW",
+    "radius": 20,
+    "spread": 0,
+    "offset": "0,4",
+    "color": "#00000073",
+    "visible": true
+   },
+   {
+    "type": "DROP_SHADOW",
+    "radius": 1,
+    "spread": 1,
+    "offset": "0,0",
+    "color": "#000000",
+    "visible": true
+   }
+  ]
+ },
+ {
+  "name": "Shadows - Dark/Window Inner Shadow",
+  "effects": [
+   {
+    "type": "INNER_SHADOW",
+    "radius": 1,
+    "spread": 1,
+    "offset": "0,0",
+    "color": "#FFFFFF33",
+    "visible": true
+   }
+  ]
+ }
+]

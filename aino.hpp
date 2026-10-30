@@ -265,9 +265,64 @@ enum Key {
 };
 
 // =============================================================================
-//  二、主题 —— 色值直接对标 shadcn/ui 的 CSS 变量（zinc 基调）
+//  二、主题 —— macOS 27 (Golden Gate) 语义色
+//
+//  两套字段并存是刻意的：
+//    · 上面一组是 macOS 原生语义色（label / separator / controlAccent…），
+//      用来把"系统色"和"控件表面"分开表达 —— macOS 的文字是 85% 黑而不是纯黑，
+//      分隔线是 10% 黑，这两件事在 shadcn 的 token 里没有对应物。
+//    · 下面一组沿用 shadcn 命名的旧字段（background / card / primary …），
+//      由 macos_light()/dark() 映射过来。组件代码里已经写了 th.primary 的地方
+//      不需要改，就能跟着换成系统强调色。
+//
+//  色值来源：HIG 只公开语义名与用途，明确不给 hex；具体数值取 macOS 26.6
+//  实机采样（NSAlert / 控件表面）转 sRGB，见 docs/13-macos27.md 的对照表。
 // =============================================================================
 struct Theme {
+    // ---- macOS 原生语义色 ----
+    Color tint;                  // controlAccentColor（系统强调色，默认蓝）
+    Color tint_foreground;       // 强调色上的文字（alternateSelectedControlText）
+
+    Color label;                 // labelColor        85% 前景
+    Color label2;                // secondaryLabelColor  50~55%
+    Color label3;                // tertiaryLabelColor   25%
+    Color label4;                // quaternaryLabelColor 10%
+
+    Color separator;             // separatorColor    10%
+    Color window_bg;             // windowBackgroundColor
+    Color control_bg;            // controlBackgroundColor（表格/浏览器等大面）
+    Color sidebar_bg;            // 侧边栏材质（本库不做玻璃，取不透明等价色）
+
+    Color label5;                // quinaryLabelColor   5%
+
+    // 控件表面的半透明填充 —— Apple 的 Fills - Opaque 五级（10 / 8 / 5 / 3 / 2%）
+    // 标准按钮面 = fill（10%），悬停/按下靠往上叠一层 fill3 / fill4，
+    // 这样任意底色上都成立，和系统控件的行为一致。
+    Color fill;                  // Fills - Opaque/Primary   10%
+    Color fill2;                 // Secondary                 8%
+    Color fill3;                 // Tertiary                  5%
+    Color fill4;                 // Quaternary                3%
+    Color fill5;                 // Quinary                   2%
+    Color fill_hover;
+    Color fill_press;
+    Color track;                 // 进度条/滑块轨道
+    Color shadow_color;          // 弹层投影
+
+    // ---- 其余系统面 ----
+    Color title_bg;              // 标题栏（Materials - Controls/Title Bar）
+    Color popover_bg;            // 弹层底（Materials/Thick）
+    Color tooltip_bg;            // 气泡底
+    Color tooltip_stroke;        // 气泡内描边（暗色才有）
+    Color scrollbar;             // 滚动条滑块
+    Color table_sel;             // 表格选中行（Active）
+    Color table_sel_inactive;    // 表格选中行（失焦）
+    Color row_alt;               // 表格隔行底色
+    Color overlay;               // 模态遮罩
+
+    // ---- 强调色板（macOS 27 Accents 变量集）----
+    Color blue, red, orange, yellow, green, mint, teal, cyan, indigo, purple, pink, brown, gray;
+
+    // ---- 旧字段（保持 API 兼容，由下面两个工厂映射）----
     // 语义色
     Color background;
     Color foreground;
@@ -297,16 +352,35 @@ struct Theme {
     Color input;
     Color ring;
 
-    // 度量 —— 对标 shadcn 的 --radius 与 tailwind 的间距刻度
-    float radius      = 8.0f;   // 基准圆角 (rounded-md ~ 6px / rounded-lg ~ 8px)
-    float radius_sm   = 4.0f;
-    float radius_lg   = 10.0f;
+    // 度量 —— macOS 27 控件刻度（官方 Sizes 变量集，Medium 为默认档）
+    //   圆角：Mini~Medium 是圆角矩形（4/5/6），Large/XL 的按钮与开关是胶囊（半径 1000）
+    //   字号：macOS 正文 13pt（不是 iOS 的 17pt），行高 16 = size + 3
+    //   控件高度：Global/Height = 16 / 20 / 24 / 28 / 36
+    //   按钮内边距：水平 7/10/16/16/16，垂直 2/3/4/6/10
+    float radius      = 6.0f;   // 标准控件圆角矩形（Medium）
+    float radius_sm   = 4.0f;   // 小徽标 / 迷你控件（Mini 4、Small 5、Medium 6）
+    float radius_lg   = 10.0f;  // 面板 / 菜单 / 弹层（同心 = 父半径 − 内边距）
     float radius_full = 9999.0f;
 
-    float font_size   = 14.0f;  // 基准字号 (text-sm)
-    float line_height = 20.0f;
-    float control_h   = 36.0f;  // 标准控件高度 (h-9 = 36px)
-    float control_h_sm= 32.0f;
+    float font_size   = 13.0f;  // Body
+    float line_height = 16.0f;
+    float control_h   = 24.0f;  // Medium（默认档）
+    float control_h_sm= 20.0f;  // Small
+    float control_h_mini = 16.0f;
+    float control_h_lg   = 28.0f;
+    float control_h_xl   = 36.0f;
+
+    float pad_x       = 16.0f;  // Button/Padding - Horizontal (Medium)
+    float pad_y       = 4.0f;   // Button/Vertical Padding (Medium)
+
+    // 5 档控制尺寸（Mini / Small / Medium / Large / XL），组件按尺寸查表用。
+    // 下标 0=mini 1=small 2=medium 3=large 4=xl
+    float size_h[5]     = {16.0f, 20.0f, 24.0f, 28.0f, 36.0f};
+    float size_radius[5]= {4.0f, 5.0f, 6.0f, 7.0f, 9.0f};
+    float size_font[5]  = {10.0f, 11.0f, 13.0f, 13.0f, 13.0f};
+    float size_line[5]  = {13.0f, 14.0f, 16.0f, 16.0f, 16.0f};
+    float size_padx[5]  = {7.0f, 10.0f, 16.0f, 16.0f, 16.0f};
+    float size_pady[5]  = {2.0f, 3.0f, 4.0f, 6.0f, 10.0f};
 
     std::string font_family;    // 空 = 用平台默认无衬线字体
     std::string font_family_mono;
@@ -327,17 +401,43 @@ struct Theme {
             && ceq(accent, o.accent) && ceq(accent_foreground, o.accent_foreground)
             && ceq(destructive, o.destructive) && ceq(destructive_foreground, o.destructive_foreground)
             && ceq(border, o.border) && ceq(input, o.input) && ceq(ring, o.ring)
+            // macOS 语义层：漏掉任何一个，改主题的那一帧就不会重绘
+            && ceq(tint, o.tint) && ceq(tint_foreground, o.tint_foreground)
+            && ceq(label, o.label) && ceq(label2, o.label2)
+            && ceq(label3, o.label3) && ceq(label4, o.label4)
+            && ceq(separator, o.separator) && ceq(window_bg, o.window_bg)
+            && ceq(control_bg, o.control_bg) && ceq(sidebar_bg, o.sidebar_bg)
+            && ceq(fill, o.fill) && ceq(fill_hover, o.fill_hover) && ceq(fill_press, o.fill_press)
+            && ceq(track, o.track) && ceq(shadow_color, o.shadow_color)
+            && ceq(label5, o.label5) && ceq(fill2, o.fill2) && ceq(fill3, o.fill3)
+            && ceq(fill4, o.fill4) && ceq(fill5, o.fill5)
+            && ceq(title_bg, o.title_bg) && ceq(popover_bg, o.popover_bg)
+            && ceq(tooltip_bg, o.tooltip_bg) && ceq(tooltip_stroke, o.tooltip_stroke)
+            && ceq(scrollbar, o.scrollbar) && ceq(table_sel, o.table_sel)
+            && ceq(table_sel_inactive, o.table_sel_inactive) && ceq(row_alt, o.row_alt)
+            && ceq(overlay, o.overlay)
+            && ceq(blue, o.blue) && ceq(red, o.red) && ceq(orange, o.orange)
+            && ceq(yellow, o.yellow) && ceq(green, o.green) && ceq(mint, o.mint)
+            && ceq(teal, o.teal) && ceq(cyan, o.cyan) && ceq(indigo, o.indigo)
+            && ceq(purple, o.purple) && ceq(pink, o.pink) && ceq(brown, o.brown)
+            && ceq(gray, o.gray)
             && radius == o.radius && radius_sm == o.radius_sm
             && radius_lg == o.radius_lg && radius_full == o.radius_full
             && font_size == o.font_size && line_height == o.line_height
             && control_h == o.control_h && control_h_sm == o.control_h_sm
+            && control_h_mini == o.control_h_mini && control_h_lg == o.control_h_lg
+            && control_h_xl == o.control_h_xl && pad_x == o.pad_x && pad_y == o.pad_y
             && font_family == o.font_family && font_family_mono == o.font_family_mono;
     }
 
-    // 浅色主题：白底 + 近黑前景，primary 是深灰(不是彩色)，这是 shadcn 的标志性做法
+    // 浅色：窗口底 #ECECEC，文字 85% 黑，强调色 systemBlue
     static Theme light();
-    // 深色主题：近黑底 + 近白前景
+    // 深色：窗口底 #1E1E1E，文字 85% 白
     static Theme dark();
+    // 显式别名 —— 分支之后 light()/dark() 本身就是 macOS 风，这两个名字只是
+    // 让调用方读起来不用猜。
+    static Theme macos_light() { return light(); }
+    static Theme macos_dark() { return dark(); }
 };
 
 // =============================================================================
@@ -2517,49 +2617,139 @@ void cocoa_destroy(Window* self);
 // =============================================================================
 inline Theme Theme::light() {
     Theme t;
-    t.background            = Color::hex(0xFFFFFF);
-    t.foreground            = Color::hex(0x09090B);
-    t.card                  = Color::hex(0xFFFFFF);
-    t.card_foreground       = Color::hex(0x09090B);
-    t.popover               = Color::hex(0xFFFFFF);
-    t.popover_foreground    = Color::hex(0x09090B);
-    t.primary               = Color::hex(0x18181B);
-    t.primary_foreground    = Color::hex(0xFAFAFA);
-    t.secondary             = Color::hex(0xF4F4F5);
-    t.secondary_foreground  = Color::hex(0x18181B);
-    t.muted                 = Color::hex(0xF4F4F5);
-    t.muted_foreground      = Color::hex(0x71717A);
-    t.accent                = Color::hex(0xF4F4F5);
-    t.accent_foreground     = Color::hex(0x18181B);
-    t.destructive           = Color::hex(0xEF4444);
-    t.destructive_foreground= Color::hex(0xFAFAFA);
-    t.border                = Color::hex(0xE4E4E7);
-    t.input                 = Color::hex(0xE4E4E7);
-    t.ring                  = Color::hex(0x18181B);
+    // ---- 标签 ----
+    t.label             = Color::rgba(0, 0, 0, 217);         // Labels/Primary      85%
+    t.label2            = Color::rgba(0, 0, 0, 128);         // Labels/Secondary    50%
+    t.label3            = Color::rgba(0, 0, 0, 64);          // Labels/Tertiary     25%
+    t.label4            = Color::rgba(0, 0, 0, 26);          // Labels/Quaternary   10%
+    t.label5            = Color::rgba(0, 0, 0, 13);          // Labels/Quinary       5%
+
+    // ---- 叠加填充（Fills - Opaque）----
+    t.fill              = Color::rgba(0, 0, 0, 26);          // Primary     10%
+    t.fill2             = Color::rgba(0, 0, 0, 20);          // Secondary    8%
+    t.fill3             = Color::rgba(0, 0, 0, 13);          // Tertiary     5%
+    t.fill4             = Color::rgba(0, 0, 0, 8);           // Quaternary   3%
+    t.fill5             = Color::rgba(0, 0, 0, 5);           // Quinary      2%
+    t.fill_hover        = Color::rgba(0, 0, 0, 38);          // 悬停 = fill 叠 fill3 (≈14.5%)
+    t.fill_press        = Color::rgba(0, 0, 0, 44);          // 按下 = fill 叠 fill2 (≈17%)
+    t.track             = Color::rgba(0, 0, 0, 18);          // Progress Bars/Track - Stroke
+    t.shadow_color      = Color::rgba(0, 0, 0, 64);
+
+    // ---- 表面 ----
+    t.window_bg         = Color::hex(0xFFFFFF);              // Window Background
+    t.control_bg        = Color::hex(0xFFFFFF);
+    t.sidebar_bg        = Color::hex(0xEAEAEA);              // Materials - Controls/Sidebar
+    t.title_bg          = Color::hex(0xEAEAEA);              // Materials - Controls/Title Bar
+    t.popover_bg        = Color::hex(0xF6F6F6);              // Materials/Thick
+    t.tooltip_bg        = Color::hex(0xF6F6F6);
+    t.tooltip_stroke    = Color::rgba(255, 255, 255, 0);
+    t.scrollbar         = Color::rgba(0, 0, 0, 128);         // Miscellaneous/Scrollbar
+    t.table_sel         = Color::hex(0x0165E2);
+    t.table_sel_inactive= Color::rgba(0, 0, 0, 36);
+    t.row_alt           = Color::rgba(0, 0, 0, 13);
+    t.overlay           = Color::rgba(171, 171, 171, 153);   // Miscellaneous/Alerts/Overlay
+
+    // ---- 强调色（macOS 27 Accents）----
+    t.blue   = Color::hex(0x0088FF); t.red    = Color::hex(0xFF383C);
+    t.orange = Color::hex(0xFF8D28); t.yellow = Color::hex(0xFFCC00);
+    t.green  = Color::hex(0x34C759); t.mint   = Color::hex(0x00C8B3);
+    t.teal   = Color::hex(0x00C3D0); t.cyan   = Color::hex(0x00C0E8);
+    t.indigo = Color::hex(0x6155F5); t.purple = Color::hex(0xCB30E0);
+    t.pink   = Color::hex(0xFF2D55); t.brown  = Color::hex(0xAC7F5E);
+    t.gray   = Color::hex(0x8E8E93);
+    t.tint              = t.blue;
+    t.tint_foreground   = Color::hex(0xFFFFFF);              // Labels/White
+    t.separator         = Color::rgba(0, 0, 0, 26);          // Column Separator
+
+    // ---- 旧字段映射 ----
+    t.background            = t.window_bg;
+    t.foreground            = t.label;
+    t.card                  = t.control_bg;
+    t.card_foreground       = t.label;
+    t.popover               = t.popover_bg;
+    t.popover_foreground    = t.label;
+    t.primary               = t.tint;
+    t.primary_foreground    = t.tint_foreground;
+    t.secondary             = t.fill;
+    t.secondary_foreground  = t.label;
+    t.muted                 = t.fill3;
+    t.muted_foreground      = t.label2;
+    t.accent                = t.fill3;
+    t.accent_foreground     = t.label;
+    t.destructive           = t.red;
+    t.destructive_foreground= Color::hex(0xFFFFFF);
+    t.border                = t.separator;
+    t.input                 = Color::rgba(0, 0, 0, 26);
+    t.ring                  = Color::rgba(0, 136, 255, 128);  // 焦点环 = 强调色 50%
     return t;
 }
 
 inline Theme Theme::dark() {
     Theme t;
-    t.background            = Color::hex(0x09090B);
-    t.foreground            = Color::hex(0xFAFAFA);
-    t.card                  = Color::hex(0x101012);   // 比背景微亮一点，卡片才有层次
-    t.card_foreground       = Color::hex(0xFAFAFA);
-    t.popover               = Color::hex(0x131316);
-    t.popover_foreground    = Color::hex(0xFAFAFA);
-    t.primary               = Color::hex(0xFAFAFA);
-    t.primary_foreground    = Color::hex(0x18181B);
-    t.secondary             = Color::hex(0x27272A);
-    t.secondary_foreground  = Color::hex(0xFAFAFA);
-    t.muted                 = Color::hex(0x27272A);
-    t.muted_foreground      = Color::hex(0xA1A1AA);
-    t.accent                = Color::hex(0x27272A);
-    t.accent_foreground     = Color::hex(0xFAFAFA);
-    t.destructive           = Color::hex(0xDC2626);
-    t.destructive_foreground= Color::hex(0xFAFAFA);
-    t.border                = Color::hex(0x27272A);
-    t.input                 = Color::hex(0x2E2E33);
-    t.ring                  = Color::hex(0xD4D4D8);
+    // ---- 标签 ----
+    t.label             = Color::rgba(255, 255, 255, 217);
+    t.label2            = Color::rgba(255, 255, 255, 140);   // 55%
+    t.label3            = Color::rgba(255, 255, 255, 64);
+    t.label4            = Color::rgba(255, 255, 255, 26);
+    t.label5            = Color::rgba(255, 255, 255, 13);
+
+    // ---- 叠加填充 ----
+    t.fill              = Color::rgba(255, 255, 255, 26);
+    t.fill2             = Color::rgba(255, 255, 255, 20);
+    t.fill3             = Color::rgba(255, 255, 255, 13);
+    t.fill4             = Color::rgba(255, 255, 255, 8);
+    t.fill5             = Color::rgba(255, 255, 255, 5);
+    t.fill_hover        = Color::rgba(255, 255, 255, 38);
+    t.fill_press        = Color::rgba(255, 255, 255, 44);
+    t.track             = Color::rgba(255, 255, 255, 10);
+    t.shadow_color      = Color::rgba(0, 0, 0, 150);
+
+    // ---- 表面 ----
+    t.window_bg         = Color::hex(0x1E1E1E);
+    t.control_bg        = Color::hex(0x282828);
+    t.sidebar_bg        = Color::hex(0x1E1E1E);
+    t.title_bg          = Color::hex(0x3C3C3C);
+    t.popover_bg        = Color::hex(0x282828);
+    t.tooltip_bg        = Color::hex(0x282828);
+    t.tooltip_stroke    = Color::rgba(255, 255, 255, 38);    // #FFFFFF26
+    t.scrollbar         = Color::rgba(255, 255, 255, 140);
+    t.table_sel         = Color::hex(0x0158D2);
+    t.table_sel_inactive= Color::rgba(255, 255, 255, 46);
+    t.row_alt           = Color::rgba(255, 255, 255, 13);
+    t.overlay           = Color::rgba(23, 23, 23, 158);
+
+    // ---- 强调色 ----
+    t.blue   = Color::hex(0x0091FF); t.red    = Color::hex(0xFF4245);
+    t.orange = Color::hex(0xFF9230); t.yellow = Color::hex(0xFFD600);
+    t.green  = Color::hex(0x30D158); t.mint   = Color::hex(0x00DAC3);
+    t.teal   = Color::hex(0x00D2E0); t.cyan   = Color::hex(0x3CD3FE);
+    t.indigo = Color::hex(0x6D7CFF); t.purple = Color::hex(0xDB34F2);
+    t.pink   = Color::hex(0xFF375F); t.brown  = Color::hex(0xB78A66);
+    t.gray   = Color::hex(0x98989F);
+    t.tint              = t.blue;
+    t.tint_foreground   = Color::hex(0xFFFFFF);
+    t.separator         = Color::rgba(255, 255, 255, 26);
+
+    // ---- 旧字段映射 ----
+    t.background            = t.window_bg;
+    t.foreground            = t.label;
+    t.card                  = Color::hex(0x252525);
+    t.card_foreground       = t.label;
+    t.popover               = t.popover_bg;
+    t.popover_foreground    = t.label;
+    t.primary               = t.tint;
+    t.primary_foreground    = t.tint_foreground;
+    t.secondary             = t.fill;
+    t.secondary_foreground  = t.label;
+    t.muted                 = t.fill3;
+    t.muted_foreground      = t.label2;
+    t.accent                = t.fill3;
+    t.accent_foreground     = t.label;
+    t.destructive           = t.red;
+    t.destructive_foreground= Color::hex(0xFFFFFF);
+    t.border                = t.separator;
+    t.input                 = Color::rgba(255, 255, 255, 26);
+    t.ring                  = Color::rgba(0, 145, 255, 140);
     return t;
 }
 
@@ -4055,20 +4245,32 @@ inline Skin make_skin(const Theme& th, const Style& st, int default_variant, flo
     sk.radius    = st.radius >= 0.0f ? st.radius : default_radius;
     sk.font_size = st.font_size > 0.0f ? st.font_size : th.font_size;
     sk.weight    = st.font_weight > 0 ? st.font_weight : 400;
-    sk.fg        = th.foreground;
+    sk.fg        = th.label;
 
+    // macOS 的按钮分三类，不是 shadcn 那套"主/次/描边"：
+    //   Default     —— Prominent：强调色实心 + 白字
+    //   Secondary   —— 标准推按钮：10% 半透明面 + 1px 极淡描边
+    //   Ghost/Link  —— 无面，只有文字
+    // hover / press 一律走"往上叠一层"（Fills - Opaque 的 5% / 8%），
+    // 不是把底色整体压暗 —— 半透明面压暗会把背后的底色一起算进去，暗色下发脏。
     switch (v) {
-        case Style::Default:     sk.base = th.primary;     sk.fg = th.primary_foreground;     break;
-        case Style::Secondary:   sk.base = th.secondary;   sk.fg = th.secondary_foreground;   break;
-        case Style::Outline:     sk.base = Color::none();  sk.fg = th.foreground;
-                                 sk.border = th.border;    sk.border_w = 1.0f;                 break;
-        case Style::Ghost:       sk.base = Color::none();  sk.fg = th.foreground;             break;
+        case Style::Default:     sk.base = th.tint;        sk.fg = th.tint_foreground;         break;
+        case Style::Secondary:   sk.base = th.fill;        sk.fg = th.label;
+                                 sk.hover = th.fill_hover;  sk.press = th.fill_press;
+                                 sk.border = th.separator;  sk.border_w = 1.0f;                 break;
+        case Style::Outline:     sk.base = th.fill2;       sk.fg = th.label;
+                                 sk.hover = th.fill_hover;  sk.press = th.fill_press;
+                                 sk.border = th.separator;  sk.border_w = 1.0f;                 break;
+        case Style::Ghost:       sk.base = Color::none();  sk.fg = th.label;
+                                 sk.hover = th.fill3;       sk.press = th.fill2;                break;
         case Style::Destructive: sk.base = th.destructive; sk.fg = th.destructive_foreground; break;
-        case Style::Link:        sk.base = Color::none();  sk.fg = th.primary;                break;
-        default:                 sk.base = th.secondary;   sk.fg = th.secondary_foreground;   break;
+        case Style::Link:        sk.base = Color::none();  sk.fg = th.tint;
+                                 sk.hover = Color::none();  sk.press = Color::none();            break;
+        default:                 sk.base = th.fill3;       sk.fg = th.label;                    break;
     }
-    sk.hover = sk.base.is_none() ? th.accent : hover_color(sk.base);
-    sk.press = sk.base.is_none() ? press_color(th.accent) : press_color(sk.base);
+    // 只有没显式给过 hover/press 的才按底色推
+    if (sk.hover.is_none()) sk.hover = sk.base.is_none() ? th.fill3 : hover_color(sk.base);
+    if (sk.press.is_none()) sk.press = sk.base.is_none() ? th.fill2 : press_color(sk.base);
 
     // 显式覆盖优先
     if (!st.bg.is_none()) { sk.base = st.bg; sk.hover = hover_color(sk.base); sk.press = press_color(sk.base); }
@@ -4089,6 +4291,25 @@ inline void paint_surface(Ui& ui, const Rect& r, const Skin& sk, float t_hover, 
         Color bc = sk.border;
         if (disabled) bc.a = uint8_t(float(bc.a) * 0.45f);
         ui.stroke_rect(r, bc, rad, sk.border_w);
+    }
+}
+
+// macOS 27 的弹层投影是**两层**：一层 0/0/3 的紧贴轮廓（把边缘压住），
+// 一层大范围的柔光（拉开层次）。只画一层柔光会显得飘，只画紧轮廓会显得脏。
+//   level 0 = Quaternary（菜单/右键菜单）  1 = Secondary（弹层/浮卡）  2 = Primary（模态）
+inline void pop_shadow(Ui& ui, const Rect& r, float rad, const Theme& th, int level = 1) {
+    const bool dark = th.window_bg.luminance() < 0.5f;
+    if (!dark) {
+        ui.drop_shadow(r, rad, 3.0f, Color(0, 0, 0, 140), 0.0f);
+        if (level >= 2)      ui.drop_shadow(r, rad, 100.0f, Color(0, 0, 0, 102), 36.0f);
+        else if (level == 1) ui.drop_shadow(r, rad, 40.0f,  Color(0, 0, 0, 64),  8.0f);
+        else                 ui.drop_shadow(r, rad, 20.0f,  Color(0, 0, 0, 64),  4.0f);
+    } else {
+        // 暗色下第一层是 1px 实心黑（不是柔光），靠它把面板从深色背景里"切"出来
+        ui.drop_shadow(r, rad, 1.0f, Color(0, 0, 0, 255), 0.0f);
+        if (level >= 2)      ui.drop_shadow(r, rad, 100.0f, Color(0, 0, 0, 179), 36.0f);
+        else if (level == 1) ui.drop_shadow(r, rad, 40.0f,  Color(0, 0, 0, 179), 8.0f);
+        else                 ui.drop_shadow(r, rad, 20.0f,  Color(0, 0, 0, 115), 4.0f);
     }
 }
 
@@ -4602,7 +4823,7 @@ inline void Ui::badge(const std::string& text, const Rect& box, const Style& st)
 inline void Ui::progress(float value, const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
     const float rad = st.radius >= 0.0f ? st.radius : 999.0f;
-    const Color track = !st.border_color.is_none() ? st.border_color : th.muted;
+    const Color track = !st.border_color.is_none() ? st.border_color : th.track;
     const Color fill  = !st.bg.is_none() ? st.bg : th.primary;
     fill_rect(box, track, rad);
     const float t = detail::clampf(value, 0.0f, 1.0f);
@@ -4649,8 +4870,8 @@ inline bool Ui::button(const std::string& text, const Rect& box, const Style& st
     const float t_hover = detail::animate_value(impl, id * 31u + 1u, in.hovered ? 1.0f : 0.0f, 18.0f);
     const float t_press = detail::animate_value(impl, id * 31u + 2u, (in.held && in.hovered) ? 1.0f : 0.0f, 34.0f);
 
-    detail::Skin sk = detail::make_skin(impl->theme, s, Style::Default, impl->theme.radius_sm);
-    if (s.font_weight <= 0) sk.weight = 500;   // shadcn 按钮默认 medium
+    detail::Skin sk = detail::make_skin(impl->theme, s, Style::Default, impl->theme.radius);
+    if (s.font_weight <= 0) sk.weight = 400;   // macOS 按钮标签是 Regular，不是 Medium
 
     Rect r = box;
     if (s.press_scale > 0.0f && s.press_scale < 1.0f && t_press > 0.01f) {
@@ -4716,31 +4937,26 @@ inline bool Ui::nav_item(const std::string& label, bool active, const Rect& box,
     const float t_hover  = detail::animate_value(impl, id * 31u + 1u, (in.hovered && !active) ? 1.0f : 0.0f, 20.0f);
     const float t_active = detail::animate_value(impl, id * 31u + 2u, active ? 1.0f : 0.0f, 24.0f);
 
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
-    const float pad = st.pad_x >= 0.0f ? st.pad_x : 14.0f;
+    const float pad = st.pad_x >= 0.0f ? st.pad_x : 8.0f;
 
-    // 底色：hover 是淡一层的 accent，选中是满 accent（两者可以叠加）
-    const float bg_t = clampf(t_hover * 0.6f + t_active, 0.0f, 1.0f);
-    if (bg_t > 0.01f) {
-        Color bg = !st.bg.is_none() ? st.bg : th.accent;
-        bg.a = uint8_t(clampf(float(bg.a) * bg_t, 0.0f, 255.0f));
+    // macOS 侧边栏的选中态是**整块**强调色圆角矩形，没有左侧指示条 ——
+    // 指示条是 Android/Material 的语言，放进 macOS 界面里一眼就不对。
+    if (t_active > 0.01f) {
+        Color bg = !st.bg.is_none() ? st.bg : th.tint;
+        bg.a = uint8_t(clampf(float(bg.a) * t_active, 0.0f, 255.0f));
+        fill_rect(box, bg, rad);
+    }
+    if (t_hover > 0.01f) {
+        Color bg = th.fill3;
+        bg.a = uint8_t(clampf(float(bg.a) * t_hover * 0.8f, 0.0f, 255.0f));
         fill_rect(box, bg, rad);
     }
 
-    // 选中态左侧一条 3px 竖条。只靠底色，深色主题下几乎看不出差别。
-    if (t_active > 0.02f) {
-        const float h = std::max(box.h - 12.0f, 4.0f);
-        fill_rect(Rect(box.x + 3.0f, box.cy() - h * 0.5f, 3.0f, h),
-                  (!st.fg.is_none() ? st.fg : th.primary).with_alpha(uint8_t(235.0f * t_active)),
-                  1.5f);
-    }
-
     // 字重固定 500：选中时换字重会让文字宽度跳一下，看着像整个侧边栏在抖。
-    // 选中感交给底色 + 竖条 + 前景色。
-    Color fg = !st.fg.is_none()
-             ? st.fg
-             : th.muted_foreground.mix(th.foreground, clampf(t_active + t_hover * 0.35f, 0.0f, 1.0f));
+    // 选中感交给底色和前景色（选中 → 强调色上的白字）。
+    Color fg = !st.fg.is_none() ? st.fg : th.label.mix(th.tint_foreground, t_active);
     if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
     Style ts;
     ts.font_size = fs;
@@ -4786,8 +5002,8 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
         focused = true;
     }
 
-    const float rad  = st.radius >= 0.0f ? st.radius : th.radius_sm;
-    const float pad  = st.pad_x >= 0.0f ? st.pad_x : 12.0f;
+    const float rad  = st.radius >= 0.0f ? st.radius : th.radius;      // macOS 27 Medium 圆角 6
+    const float pad  = st.pad_x >= 0.0f ? st.pad_x : 8.0f;             // Fields/Inset - Left = 8
     const float fs   = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float tw   = text_width(*value, fs, 400);
     const float avail = std::max(box.w - pad * 2.0f, 1.0f);
@@ -5119,13 +5335,14 @@ inline bool Ui::checkbox(bool* value, const std::string& label_text, const Rect&
     const float t = detail::animate_value(impl, id * 37u + 1u, *value ? 1.0f : 0.0f, 20.0f);
     const float t_hover = detail::animate_value(impl, id * 37u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
-    const float box_size = st.font_size > 0.0f ? st.font_size + 4.0f : 16.0f;
+    // macOS 27 Medium 档：复选框 16×16，圆角 5.5（Checkboxes/Width、Checkboxes/Radius）
+    const float box_size = st.font_size > 0.0f ? std::max(st.font_size + 3.0f, 14.0f) : 16.0f;
     Rect box_r(box.x, box.cy() - box_size * 0.5f, box_size, box_size);
-    const float rad = 4.0f;
+    const float rad = box_size * 0.344f;   // 16 → 5.5
 
     Color off_bd = th.input;
     if (t_hover > 0.01f) off_bd = off_bd.mix(th.foreground.with_alpha(110), t_hover * 0.55f);
-    Color fill_c = th.primary.mix(th.primary, t);
+    Color fill_c = th.control_bg.mix(th.primary, t);
     Color bd_c = off_bd.mix(th.primary, t);
     if (st.disabled) { fill_c.a = uint8_t(float(fill_c.a) * 0.45f); bd_c.a = uint8_t(float(bd_c.a) * 0.45f); }
 
@@ -5133,6 +5350,8 @@ inline bool Ui::checkbox(bool* value, const std::string& label_text, const Rect&
         Color bg = fill_c;
         bg.a = uint8_t(float(bg.a) * t);
         fill_rect(box_r, bg, rad);
+    } else {
+        fill_rect(box_r, th.control_bg.with_alpha(255), rad);   // 未选中 = 控件底
     }
     stroke_rect(box_r, bd_c, rad, 1.0f);
 
@@ -5181,21 +5400,22 @@ inline bool Ui::toggle(bool* value, const Rect& box, const Style& st) {
     const float t = detail::animate_value(impl, id * 41u + 1u, *value ? 1.0f : 0.0f, 22.0f);
     const float t_hover = detail::animate_value(impl, id * 41u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
-    const float track_h = st.font_size > 0.0f ? st.font_size + 6.0f : 20.0f;
-    const float track_w = track_h * 1.8f;
+    // macOS 27 Switch（Medium）：轨道 54×24 胶囊，滑块 20，内缩 2
+    const float track_h = 24.0f;
+    const float track_w = 54.0f;
     Rect track = Rect::centered(box.cx(), box.cy(), track_w, track_h);
     const float rad = track_h * 0.5f;
 
-    Color off = th.input;
+    Color off = th.fill;                       // 关闭态 = Fills - Opaque/Primary
     if (t_hover > 0.01f) off = off.mix(th.foreground.with_alpha(110), t_hover * 0.5f);
     Color track_c = off.mix(th.primary, t);
     if (st.disabled) track_c.a = uint8_t(float(track_c.a) * 0.45f);
     fill_rect(track, track_c, rad);
 
-    const float knob_r = track_h * 0.5f - 2.5f;
-    const float kx = detail::lerpf(track.x + track_h * 0.5f, track.right() - track_h * 0.5f, t);
+    const float inset = 2.0f;
+    const float knob_r = track_h * 0.5f - inset;
+    const float kx = detail::lerpf(track.x + inset + knob_r, track.right() - inset - knob_r, t);
     Color knob = Color(255, 255, 255);
-    if (th.primary.luminance() > 0.6f && t > 0.5f) knob = Color(0x18, 0x18, 0x1B);
     if (st.disabled) knob.a = 200;
     fill_circle(kx, track.cy(), knob_r, knob);
 
@@ -5232,20 +5452,20 @@ inline bool Ui::slider(float* value, float min_value, float max_value, const Rec
     Rect track(box.x + 7.0f, box.cy() - track_h * 0.5f, std::max(box.w - 14.0f, 1.0f), track_h);
     const float rad = track_h * 0.5f;
 
-    Color track_c = !st.border_color.is_none() ? st.border_color : th.muted;
+    Color track_c = !st.border_color.is_none() ? st.border_color : th.track;
     fill_rect(track, track_c, rad);
     Color fill_c = !st.bg.is_none() ? st.bg : th.primary;
     if (st.disabled) fill_c.a = uint8_t(float(fill_c.a) * 0.45f);
     if (t > 0.0f) fill_rect(Rect(track.x, track.y, track.w * t, track.h), fill_c, rad);
 
-    const float knob_r = detail::lerpf(7.0f, 8.0f, t_hover);
+    const float knob_r = detail::lerpf(8.0f, 10.0f, t_hover);   // macOS 27：20×16 → 按下 25×20
     const float kx = track.x + track.w * t;
-    Color knob = th.background;
-    if (knob.luminance() < 0.5f) knob = th.foreground;
-    knob = th.background;
+    Color knob = Color(255, 255, 255);
+    // macOS 的滑块把手是白色圆片 + 极淡描边 + 一点投影，不是"强调色描边的空心圈"
+    const Rect knob_r_r = Rect::centered(kx, track.cy(), knob_r * 2.0f, knob_r * 2.0f);
+    drop_shadow(knob_r_r, knob_r, 4.0f, Color(0, 0, 0, 60), 0.5f);
     fill_circle(kx, track.cy(), knob_r, knob);
-    stroke_rect(Rect::centered(kx, track.cy(), knob_r * 2.0f, knob_r * 2.0f),
-                fill_c.is_none() ? th.primary : fill_c, knob_r, 2.0f);
+    stroke_rect(knob_r_r, th.separator, knob_r, 1.0f);
 
     if (in.pressed) detail::grab_focus(impl, id);
     return changed;
@@ -5457,8 +5677,8 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
             const int sel_now = *index;
             const std::vector<std::string> items_copy = items;
             deferred([this, list, items_copy, rects, ids, hov, sel_now, rad, fs, th]() {
-                drop_shadow(list, rad, 10.0f, Color(0, 0, 0, 34), 3.0f);
-                fill_rect(list, th.popover, rad);
+                detail::pop_shadow(*this, list, rad, th, 0);
+                fill_rect(list, th.popover_bg, rad);
                 stroke_rect(list, th.border, rad, 1.0f);
                 push_clip(list);
                 for (size_t i = 0; i < rects.size(); ++i) {
@@ -6334,14 +6554,15 @@ inline void Ui::table(const std::vector<std::string>& headers,
     const float rad = st.radius >= 0.0f ? st.radius : th.radius;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float head_h = std::max(fs + 18.0f, 36.0f);
-    const float row_h  = std::max(fs + 16.0f, 34.0f);
+    // macOS 的表格行是紧的：正文 13pt + 7 → 20pt 行高，不是 Web 表格那种 34
+    const float row_h  = std::max(fs + 7.0f, 20.0f);
     const float col_w  = box.w / float(cols);
     const float cell_pad = st.pad_x >= 0.0f ? st.pad_x : 12.0f;
 
     push_clip(box);
 
     const Rect hr(box.x, box.y, box.w, head_h);
-    fill_rect(hr, !st.bg.is_none() ? st.bg : th.muted, rad);
+    fill_rect(hr, !st.bg.is_none() ? st.bg : th.fill3, rad);
     for (size_t c = 0; c < cols; ++c) {
         const Rect cr(hr.x + col_w * float(c), hr.y, col_w, hr.h);
         if (c > 0) fill_rect(Rect(cr.x, cr.y + 7.0f, 1.0f, std::max(cr.h - 14.0f, 1.0f)), th.border, 0.0f);
@@ -6360,7 +6581,9 @@ inline void Ui::table(const std::vector<std::string>& headers,
     for (size_t r = 0; r < rows.size(); ++r) {
         const Rect rr(box.x, hr.bottom() + row_h * float(r), box.w, row_h);
         if (rr.y >= box.bottom()) break;
-        if (r % 2 == 1) fill_rect(rr, th.muted.scaled_alpha(0.5f), 0.0f);
+        // macOS 表格默认不画斑马纹。要隔行底色得显式传 Style().bg(...)。
+        // 系统自己只在「交替行」打开时才画（Miscellaneous/Tables/Alternating Row Color）。
+        if (r % 2 == 1 && !st.bg.is_none()) fill_rect(rr, th.row_alt, 0.0f);
         for (size_t c = 0; c < cols && c < rows[r].size(); ++c) {
             Style ts;
             ts.font_size = fs;
@@ -6480,9 +6703,9 @@ inline void Ui::tooltip(const Rect& anchor, const std::string& text, const Style
     const Style st_copy = st;
     deferred([this, x, y, w, h, text, fs, th, st_copy]() mutable {
         const Rect box(x, y, w, h);
-        drop_shadow(box, 6.0f, 10.0f, Color(0, 0, 0, 34), 3.0f);
-        fill_rect(box, !st_copy.bg.is_none() ? st_copy.bg : th.popover, 6.0f);
-        stroke_rect(box, th.border, 6.0f, 1.0f);
+        detail::pop_shadow(*this, box, 6.0f, th, 0);
+        fill_rect(box, !st_copy.bg.is_none() ? st_copy.bg : th.tooltip_bg, 6.0f);
+        stroke_rect(box, th.tooltip_stroke.is_none() ? th.border : th.tooltip_stroke, 6.0f, 1.0f);
         Style ts;
         ts.font_size = fs;
         ts.font_weight = 500;
@@ -6579,8 +6802,8 @@ inline bool Ui::menu(const std::string& label, const std::vector<std::string>& i
 
         std::vector<std::string> items_copy = items;
         deferred([this, list, rad, item_h, rects, ids, hov, items_copy, th, fs]() mutable {
-            drop_shadow(list, rad, 10.0f, Color(0, 0, 0, 34), 3.0f);
-            fill_rect(list, th.popover, rad);
+            detail::pop_shadow(*this, list, rad, th, 0);
+            fill_rect(list, th.popover_bg, rad);
             stroke_rect(list, th.border, rad, 1.0f);
             push_clip(list);
             for (size_t i = 0; i < rects.size(); ++i) {
@@ -6743,8 +6966,8 @@ inline MenuPick Ui::menubar(const std::vector<std::string>& labels,
 
         std::vector<std::string> litems = src;
         deferred([this, list, rad, rects, ids, lhov, litems, th, fs]() mutable {
-            drop_shadow(list, rad, 10.0f, Color(0, 0, 0, 34), 3.0f);
-            fill_rect(list, th.popover, rad);
+            detail::pop_shadow(*this, list, rad, th, 0);
+            fill_rect(list, th.popover_bg, rad);
             stroke_rect(list, th.border, rad, 1.0f);
             push_clip(list);
             for (size_t i = 0; i < rects.size(); ++i) {
@@ -6802,9 +7025,9 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
     const float ct = detail::animate_value(impl, cid * 79u + 1u, cin.hovered ? 1.0f : 0.0f, 18.0f);
 
     // 绘制：遮罩 → 面板
-    fill_rect(Rect(0, 0, width(), height()), Color(0, 0, 0, 110), 0.0f);
-    drop_shadow(box, rad, 22.0f, Color(0, 0, 0, 46), 8.0f);
-    fill_rect(box, !st.bg.is_none() ? st.bg : th.background, rad);
+    fill_rect(Rect(0, 0, width(), height()), th.overlay, 0.0f);
+    detail::pop_shadow(*this, box, rad, th, 2);
+    fill_rect(box, !st.bg.is_none() ? st.bg : th.popover_bg, rad);
     stroke_rect(box, th.border, rad, 1.0f);
 
     // 文字必须裁在面板里 —— 正文一长就会横着爬出去（溢出到遮罩上的字最难发现，
@@ -6861,7 +7084,7 @@ inline void Ui::toast(const std::string& text, const Rect& box, const Style& st)
     Color bd = !st.border_color.is_none() ? st.border_color : th.border;
     if (st.disabled) { bg.a = uint8_t(float(bg.a) * 0.6f); fg.a = uint8_t(float(fg.a) * 0.6f); }
 
-    drop_shadow(box, rad, 14.0f, Color(0, 0, 0, 38), 5.0f);
+    detail::pop_shadow(*this, box, rad, th, 0);
     fill_rect(box, bg, rad);
     stroke_rect(box, bd, rad, 1.0f);
     float text_x = box.x + 14.0f;
@@ -7726,8 +7949,8 @@ inline bool Ui::popover(const std::string& label, bool* open, const Rect& box,
 
     deferred([this, panel, inner, rad, draw]() {
         const Theme& t2 = impl->theme;
-        drop_shadow(panel, rad, 16.0f, Color(0, 0, 0, 40), 5.0f);
-        fill_rect(panel, t2.popover, rad);
+        detail::pop_shadow(*this, panel, rad, t2, 1);
+        fill_rect(panel, t2.popover_bg, rad);
         stroke_rect(panel, t2.border, rad, 1.0f);
         push_clip(panel);
         if (draw) draw(inner);          // 内容自己画，可以继续调 ui.* 组件
@@ -7764,8 +7987,8 @@ inline void Ui::hover_card(const Rect& anchor, Vec2 content,
     const Rect inner = panel.inset(pad, pad);
     deferred([this, panel, inner, rad, draw]() {
         const Theme& t2 = impl->theme;
-        drop_shadow(panel, rad, 18.0f, Color(0, 0, 0, 44), 6.0f);
-        fill_rect(panel, t2.popover, rad);
+        detail::pop_shadow(*this, panel, rad, t2, 1);
+        fill_rect(panel, t2.popover_bg, rad);
         stroke_rect(panel, t2.border, rad, 1.0f);
         push_clip(panel);
         draw(inner);
@@ -7820,9 +8043,9 @@ inline bool Ui::alert_dialog(const std::string& title, const std::string& body,
     const float no_t = detail::animate_value(impl, no_id * 127u + 1u, no_in.hovered ? 1.0f : 0.0f, 20.0f);
 
     // ---- 画 ----
-    fill_rect(Rect(0, 0, width(), height()), Color(0, 0, 0, 110), 0.0f);
-    drop_shadow(box, rad, 22.0f, Color(0, 0, 0, 46), 8.0f);
-    fill_rect(box, !st.bg.is_none() ? st.bg : th.background, rad);
+    fill_rect(Rect(0, 0, width(), height()), th.overlay, 0.0f);
+    detail::pop_shadow(*this, box, rad, th, 2);
+    fill_rect(box, !st.bg.is_none() ? st.bg : th.popover_bg, rad);
     stroke_rect(box, th.border, rad, 1.0f);
 
     push_clip(box);

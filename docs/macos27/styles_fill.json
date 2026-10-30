@@ -1,0 +1,1097 @@
+[
+ {
+  "name": "Accents/Default",
+  "type": "FILL",
+  "paints": [
+   "#007AFF"
+  ]
+ },
+ {
+  "name": "Accents/Blue",
+  "type": "FILL",
+  "paints": [
+   "#007AFF"
+  ]
+ },
+ {
+  "name": "Accents/Brown",
+  "type": "FILL",
+  "paints": [
+   "#A2845E"
+  ]
+ },
+ {
+  "name": "Accents/Cyan",
+  "type": "FILL",
+  "paints": [
+   "#55BEF0"
+  ]
+ },
+ {
+  "name": "Accents/Gray",
+  "type": "FILL",
+  "paints": [
+   "#8E8E93"
+  ]
+ },
+ {
+  "name": "Accents/Green",
+  "type": "FILL",
+  "paints": [
+   "#28CD41"
+  ]
+ },
+ {
+  "name": "Accents/Indigo",
+  "type": "FILL",
+  "paints": [
+   "#5856D6"
+  ]
+ },
+ {
+  "name": "Accents/Mint",
+  "type": "FILL",
+  "paints": [
+   "#00C7BE"
+  ]
+ },
+ {
+  "name": "Accents/Orange",
+  "type": "FILL",
+  "paints": [
+   "#FF9500"
+  ]
+ },
+ {
+  "name": "Accents/Pink",
+  "type": "FILL",
+  "paints": [
+   "#FF2D55"
+  ]
+ },
+ {
+  "name": "Accents/Purple",
+  "type": "FILL",
+  "paints": [
+   "#AF52DE"
+  ]
+ },
+ {
+  "name": "Accents/Red",
+  "type": "FILL",
+  "paints": [
+   "#FF3B30"
+  ]
+ },
+ {
+  "name": "Accents/Teal",
+  "type": "FILL",
+  "paints": [
+   "#59ADC4"
+  ]
+ },
+ {
+  "name": "Accents/Yellow",
+  "type": "FILL",
+  "paints": [
+   "#FFCC00"
+  ]
+ },
+ {
+  "name": "Accents/Default - Dark",
+  "type": "FILL",
+  "paints": [
+   "#0A84FF"
+  ]
+ },
+ {
+  "name": "Accents/Blue - Dark",
+  "type": "FILL",
+  "paints": [
+   "#0A84FF"
+  ]
+ },
+ {
+  "name": "Accents/Brown - Dark",
+  "type": "FILL",
+  "paints": [
+   "#AC8E68"
+  ]
+ },
+ {
+  "name": "Accents/Cyan - Dark",
+  "type": "FILL",
+  "paints": [
+   "#5AC8F5"
+  ]
+ },
+ {
+  "name": "Accents/Gray - Dark",
+  "type": "FILL",
+  "paints": [
+   "#98989D"
+  ]
+ },
+ {
+  "name": "Accents/Green - Dark",
+  "type": "FILL",
+  "paints": [
+   "#32D74B"
+  ]
+ },
+ {
+  "name": "Accents/Indigo- Dark",
+  "type": "FILL",
+  "paints": [
+   "#5E5CE6"
+  ]
+ },
+ {
+  "name": "Accents/Mint - Dark",
+  "type": "FILL",
+  "paints": [
+   "#66D4CF"
+  ]
+ },
+ {
+  "name": "Accents/Orange - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FF9F0A"
+  ]
+ },
+ {
+  "name": "Accents/Pink - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FF375F"
+  ]
+ },
+ {
+  "name": "Accents/Purple - Dark",
+  "type": "FILL",
+  "paints": [
+   "#BF5AF2"
+  ]
+ },
+ {
+  "name": "Accents/Red - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FF453A"
+  ]
+ },
+ {
+  "name": "Accents/Teal - Dark",
+  "type": "FILL",
+  "paints": [
+   "#6AC4DC"
+  ]
+ },
+ {
+  "name": "Accents/Yellow - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FFD60A"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Default",
+  "type": "FILL",
+  "paints": [
+   "#0070F5"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Blue",
+  "type": "FILL",
+  "paints": [
+   "#0070F5",
+   "#0070F5"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Brown",
+  "type": "FILL",
+  "paints": [
+   "#987A54",
+   "#987A54"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Cyan",
+  "type": "FILL",
+  "paints": [
+   "#41AFDC",
+   "#41AFDC"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Gray",
+  "type": "FILL",
+  "paints": [
+   "#848489",
+   "#848489"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Green",
+  "type": "FILL",
+  "paints": [
+   "#1EC337",
+   "#1EC337"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Indigo",
+  "type": "FILL",
+  "paints": [
+   "#5452CC",
+   "#5452CC"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Mint",
+  "type": "FILL",
+  "paints": [
+   "#00BDB4",
+   "#00BDB4"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Orange",
+  "type": "FILL",
+  "paints": [
+   "#F58B00",
+   "#F58B00"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Pink",
+  "type": "FILL",
+  "paints": [
+   "#F5234B",
+   "#F5234B"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Purple",
+  "type": "FILL",
+  "paints": [
+   "#9F4BC9",
+   "#9F4BC9"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Red",
+  "type": "FILL",
+  "paints": [
+   "#F53126",
+   "#F53126"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Teal",
+  "type": "FILL",
+  "paints": [
+   "#2EA7BD",
+   "#2EA7BD"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Yellow",
+  "type": "FILL",
+  "paints": [
+   "#F5C200",
+   "#F5C200"
+  ]
+ },
+ {
+  "name": "Accents (Vibrant) - Dark/Default",
+  "type": "FILL",
+  "paints": [
+   "#148EFF"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Blue - Dark",
+  "type": "FILL",
+  "paints": [
+   "#148EFF"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Brown - Dark",
+  "type": "FILL",
+  "paints": [
+   "#B69872"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Cyan - Dark",
+  "type": "FILL",
+  "paints": [
+   "#5ACDFA"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Gray - Dark",
+  "type": "FILL",
+  "paints": [
+   "#A2A2A7"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Green - Dark",
+  "type": "FILL",
+  "paints": [
+   "#3CE155"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Indigo - Dark",
+  "type": "FILL",
+  "paints": [
+   "#6361F2"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Mint - Dark",
+  "type": "FILL",
+  "paints": [
+   "#6CE0DB"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Orange - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FFA914"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Pink - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FF4169"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Purple - Dark",
+  "type": "FILL",
+  "paints": [
+   "#CC65FF"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Red - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FF4F44"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Teal - Dark",
+  "type": "FILL",
+  "paints": [
+   "#44D4FA"
+  ]
+ },
+ {
+  "name": "Accents - Vibrant/Yellow - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FFE014"
+  ]
+ },
+ {
+  "name": "Fills/Primary",
+  "type": "FILL",
+  "paints": [
+   "#FF0000"
+  ]
+ },
+ {
+  "name": "Fills/Secondary",
+  "type": "FILL",
+  "paints": [
+   "#FF0000"
+  ]
+ },
+ {
+  "name": "Fills/Tertiary",
+  "type": "FILL",
+  "paints": [
+   "#FF0000"
+  ]
+ },
+ {
+  "name": "Fills/Quaternary",
+  "type": "FILL",
+  "paints": [
+   "#FF0000"
+  ]
+ },
+ {
+  "name": "Fills/Quinary",
+  "type": "FILL",
+  "paints": [
+   "#FF0000"
+  ]
+ },
+ {
+  "name": "Fills/Primary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FFFF00"
+  ]
+ },
+ {
+  "name": "Fills/Secondary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FFFF00"
+  ]
+ },
+ {
+  "name": "Fills/Tertiary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FFFF00"
+  ]
+ },
+ {
+  "name": "Fills/Quaternary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FFFF00"
+  ]
+ },
+ {
+  "name": "Fills/Quinary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FFFF00"
+  ]
+ },
+ {
+  "name": "Fills - Vibrant/Primary",
+  "type": "FILL",
+  "paints": [
+   "#FFAA00"
+  ]
+ },
+ {
+  "name": "Fills - Vibrant/Secondary",
+  "type": "FILL",
+  "paints": [
+   "#FFAA00"
+  ]
+ },
+ {
+  "name": "Fills - Vibrant/Tertiary",
+  "type": "FILL",
+  "paints": [
+   "#FFAA00"
+  ]
+ },
+ {
+  "name": "Fills - Vibrant/Quaternary",
+  "type": "FILL",
+  "paints": [
+   "#FFAA00"
+  ]
+ },
+ {
+  "name": "Fills - Vibrant/Quinary",
+  "type": "FILL",
+  "paints": [
+   "#FFAA00"
+  ]
+ },
+ {
+  "name": "Fills - Vibrant/Primary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#8239FF"
+  ]
+ },
+ {
+  "name": "Fills - Vibrant/Secondary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#8239FF"
+  ]
+ },
+ {
+  "name": "Fills - Vibrant/Tertiary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#8239FF"
+  ]
+ },
+ {
+  "name": "Fills - Vibrant/Quaternary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#8239FF"
+  ]
+ },
+ {
+  "name": "Fills - Vibrant/Quinary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#8239FF"
+  ]
+ },
+ {
+  "name": "Text/Primary",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Text/Secondary",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Text/Tertiary",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Text/Primary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FFFFFF"
+  ]
+ },
+ {
+  "name": "Text/Secondary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FFFFFF"
+  ]
+ },
+ {
+  "name": "Text/Tertiary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FFFFFF"
+  ]
+ },
+ {
+  "name": "Text - Vibrant/Primary",
+  "type": "FILL",
+  "paints": [
+   "#4D4D4D"
+  ]
+ },
+ {
+  "name": "Text - Vibrant/Secondary",
+  "type": "FILL",
+  "paints": [
+   "#808080"
+  ]
+ },
+ {
+  "name": "Text - Vibrant/Tertiary",
+  "type": "FILL",
+  "paints": [
+   "#C6C6C6"
+  ]
+ },
+ {
+  "name": "Text - Vibrant/Primary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#E5E5E5"
+  ]
+ },
+ {
+  "name": "Text - Vibrant/Secondary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#7C7C7C"
+  ]
+ },
+ {
+  "name": "Text - Vibrant/Tertiary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#414141"
+  ]
+ },
+ {
+  "name": "Medium",
+  "type": "FILL",
+  "paints": [
+   "#F6F6F6"
+  ]
+ },
+ {
+  "name": "Text/Quinary",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Text/Quaternary",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Text/Quaternary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FFFFFF"
+  ]
+ },
+ {
+  "name": "Text/Quinary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FFFFFF"
+  ]
+ },
+ {
+  "name": "Text - Vibrant/Quaternary",
+  "type": "FILL",
+  "paints": [
+   "#BFBFBF"
+  ]
+ },
+ {
+  "name": "Text - Vibrant/Quinary",
+  "type": "FILL",
+  "paints": [
+   "#BFBFBF"
+  ]
+ },
+ {
+  "name": "Text - Vibrant/Quaternary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#414141"
+  ]
+ },
+ {
+  "name": "Text - Vibrant/Quinary - Dark",
+  "type": "FILL",
+  "paints": [
+   "#414141"
+  ]
+ },
+ {
+  "name": "Colors/Black",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Colors/Blue",
+  "type": "FILL",
+  "paints": [
+   "#0A84FF"
+  ]
+ },
+ {
+  "name": "Labels/Primary",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Colors/Gray",
+  "type": "FILL",
+  "paints": [
+   "#98989D"
+  ]
+ },
+ {
+  "name": "_Template/Section Fill",
+  "type": "FILL",
+  "paints": [
+   "#FF99FF"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Header View",
+  "type": "FILL",
+  "paints": [
+   "#FFFFFF"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Header View - Dark",
+  "type": "FILL",
+  "paints": [
+   "#1E1E1E",
+   "#2852AD"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Menu - Dark",
+  "type": "FILL",
+  "paints": [
+   "#F6F6F6"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Menu",
+  "type": "FILL",
+  "paints": [
+   "#282828"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Popover - Dark",
+  "type": "FILL",
+  "paints": [
+   "#F6F6F6"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Popover",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Fullscreen - Dark",
+  "type": "FILL",
+  "paints": [
+   "#282828"
+  ]
+ },
+ {
+  "name": "Materials - Controls/HUD - Dark",
+  "type": "FILL",
+  "paints": [
+   "#282828"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Selection Focused - Dark",
+  "type": "FILL",
+  "paints": [
+   "#0A82FF",
+   "#0A82FF"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Selection Focused",
+  "type": "FILL",
+  "paints": [
+   "#0069F9"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Selection Unfocused",
+  "type": "FILL",
+  "paints": [
+   "#F6F6F6",
+   "#000000"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Selection Unfocused - Dark",
+  "type": "FILL",
+  "paints": [
+   "#282828",
+   "#FFFFFF"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Sidebar",
+  "type": "FILL",
+  "paints": [
+   "#EAEAEA"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Sidebar - Dark",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Title Bar",
+  "type": "FILL",
+  "paints": [
+   "#EAEAEA"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Title Bar - Dark",
+  "type": "FILL",
+  "paints": [
+   "#3C3C3C"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Tooltip",
+  "type": "FILL",
+  "paints": [
+   "#FF0000"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Tooltip - Dark",
+  "type": "FILL",
+  "paints": [
+   "#FF0000"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Under Window Background",
+  "type": "FILL",
+  "paints": [
+   "#F6F6F6"
+  ]
+ },
+ {
+  "name": "Materials - Controls/Under Window Background - Dark",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Materials/Ultrathick",
+  "type": "FILL",
+  "paints": [
+   "#333333",
+   "#ECECEC"
+  ]
+ },
+ {
+  "name": "Materials/Ultrathick - Dark",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Materials/Thick",
+  "type": "FILL",
+  "paints": [
+   "#F6F6F6"
+  ]
+ },
+ {
+  "name": "Materials/Thick - Dark",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Materials/Medium",
+  "type": "FILL",
+  "paints": [
+   "#F6F6F6"
+  ]
+ },
+ {
+  "name": "Materials/Medium - Dark",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Materials/Thin",
+  "type": "FILL",
+  "paints": [
+   "#F6F6F6"
+  ]
+ },
+ {
+  "name": "Materials/Thin - Dark",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Materials/Ultrathin",
+  "type": "FILL",
+  "paints": [
+   "#F6F6F6"
+  ]
+ },
+ {
+  "name": "Materials/Ultrathin - Dark",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Material - Light/Material - Dark",
+  "type": "FILL",
+  "paints": [
+   "#D9D9D9"
+  ]
+ },
+ {
+  "name": "White",
+  "type": "FILL",
+  "paints": [
+   "#FFFFFF"
+  ]
+ },
+ {
+  "name": "Materials - Controls",
+  "type": "FILL",
+  "paints": [
+   "#D9D9D9"
+  ]
+ },
+ {
+  "name": "Text - Vibrant/Primary",
+  "type": "FILL",
+  "paints": [
+   "#4C4C4C"
+  ]
+ },
+ {
+  "name": "Text - Vibrant/Secondary",
+  "type": "FILL",
+  "paints": [
+   "#808080"
+  ]
+ },
+ {
+  "name": "Text - Vibrant/Tertiary",
+  "type": "FILL",
+  "paints": [
+   "#BFBFBF"
+  ]
+ },
+ {
+  "name": "aaa Test",
+  "type": "FILL",
+  "paints": [
+   "#FF00FF",
+   "#00FFFF"
+  ]
+ },
+ {
+  "name": "Content Area/Bordered Neutral/On, Disabled",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Content Area/Bordered Neutral/Off, Idle",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Content Area/Bordered Neutral/On, Clicked",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Content Area/Bordered Neutral/On, Idle",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Content Area/Bordered Neutral/Off, Disabled",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Content Area/Bordered Neutral/Off, Clicked",
+  "type": "FILL",
+  "paints": [
+   "#000000"
+  ]
+ },
+ {
+  "name": "Content Area/Bordered Colored/Active, On, Disabled",
+  "type": "FILL",
+  "paints": [
+   "#E6E6E6",
+   "#0088FF"
+  ]
+ },
+ {
+  "name": "Content Area/Bordered Colored/Inactive, On, Idle",
+  "type": "FILL",
+  "paints": [
+   "#0088FF",
+   "#0088FF",
+   "#0088FF"
+  ]
+ },
+ {
+  "name": "Content Area/Bordered Colored/Inactive, On, Clicked",
+  "type": "FILL",
+  "paints": [
+   "#0088FF",
+   "#0088FF",
+   "#000000",
+   "#0088FF"
+  ]
+ },
+ {
+  "name": "Content Area/Bordered Colored/Inactive, On, Disabled",
+  "type": "FILL",
+  "paints": [
+   "#0088FF"
+  ]
+ },
+ {
+  "name": "Content Area/Bordered Colored/Active, On, Idle",
+  "type": "FILL",
+  "paints": [
+   "#0088FF",
+   "#0088FF",
+   "#000000",
+   "#0088FF"
+  ]
+ },
+ {
+  "name": "Content Area/Bordered Colored/Active, On, Clicked",
+  "type": "FILL",
+  "paints": [
+   "#0088FF",
+   "#0088FF",
+   "#000000",
+   "#0088FF"
+  ]
+ },
+ {
+  "name": "Colors/Blue",
+  "type": "FILL",
+  "paints": [
+   "#0091FF"
+  ]
+ }
+]

@@ -1,5 +1,10 @@
 # 02 · 样式与主题
 
+> **本分支是 macOS 27 风（`macos27`）。** 本文里的 shadcn 语义名（`--radius`、`primary`、`muted`…）仍然有效，
+> 但 `Theme::light()` / `Theme::dark()` 返回的是 Apple 官方 macOS 27 参数，数值全部来自
+> Apple Figma kit 的变量集（`Colors` / `Sizes`）。完整参数表见 **[`macos27/README.md`](macos27/README.md)**。
+> 旧的 shadcn 字段为兼容保留，内部已映射到 macOS 语义层（`label` / `fill` / `tint` / `separator` …）。
+
 `Style` 是每个组件的可选最后一个参数，`Theme` 是全局配色与度量。
 本篇把两者的**全部字段**逐项列出，并给出每个字段的默认值与生效规则。
 

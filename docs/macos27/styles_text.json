@@ -1,0 +1,217 @@
+[
+ {
+  "name": "Large Title/Regular",
+  "font": "SF Pro Regular",
+  "size": 26,
+  "lineHeight": 32,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Regular"
+ },
+ {
+  "name": "Large Title/Emphasized",
+  "font": "SF Pro Bold",
+  "size": 26,
+  "lineHeight": 32,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Bold"
+ },
+ {
+  "name": "Title 1/Regular",
+  "font": "SF Pro Regular",
+  "size": 22,
+  "lineHeight": 26,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Regular"
+ },
+ {
+  "name": "Title 1/Emphasized",
+  "font": "SF Pro Bold",
+  "size": 22,
+  "lineHeight": 26,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Bold"
+ },
+ {
+  "name": "Title 2/Regular",
+  "font": "SF Pro Regular",
+  "size": 17,
+  "lineHeight": 22,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Regular"
+ },
+ {
+  "name": "Title 2/Emphasized",
+  "font": "Inter Bold",
+  "size": 17,
+  "lineHeight": 22,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Bold"
+ },
+ {
+  "name": "Title 3/Regular",
+  "font": "SF Pro Regular",
+  "size": 15,
+  "lineHeight": 20,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Regular"
+ },
+ {
+  "name": "Title 3/Emphasized",
+  "font": "SF Pro Semibold",
+  "size": 15,
+  "lineHeight": 20,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Semibold"
+ },
+ {
+  "name": "Headline/Regular",
+  "font": "SF Pro Bold",
+  "size": 13,
+  "lineHeight": 16,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Bold"
+ },
+ {
+  "name": "Headline/Emphasized",
+  "font": "SF Pro Heavy",
+  "size": 13,
+  "lineHeight": 16,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Heavy"
+ },
+ {
+  "name": "Body/Regular",
+  "font": "SF Pro Regular",
+  "size": 13,
+  "lineHeight": 16,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Regular"
+ },
+ {
+  "name": "Body/Emphasized",
+  "font": "SF Pro Semibold",
+  "size": 13,
+  "lineHeight": 16,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Semibold"
+ },
+ {
+  "name": "Callout/Regular",
+  "font": "SF Pro Regular",
+  "size": 12,
+  "lineHeight": 15,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Regular"
+ },
+ {
+  "name": "Callout/Emphasized",
+  "font": "SF Pro Semibold",
+  "size": 12,
+  "lineHeight": 15,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Semibold"
+ },
+ {
+  "name": "Subheadline/Regular",
+  "font": "SF Pro Regular",
+  "size": 11,
+  "lineHeight": 14,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Regular"
+ },
+ {
+  "name": "Subheadline/Emphasized",
+  "font": "SF Pro Semibold",
+  "size": 11,
+  "lineHeight": 14,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Semibold"
+ },
+ {
+  "name": "Footnote/Regular",
+  "font": "SF Pro Regular",
+  "size": 10,
+  "lineHeight": 13,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Regular"
+ },
+ {
+  "name": "Footnote/Emphasized",
+  "font": "SF Pro Semibold",
+  "size": 10,
+  "lineHeight": 13,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Semibold"
+ },
+ {
+  "name": "Caption 1/Regular",
+  "font": "SF Pro Regular",
+  "size": 10,
+  "lineHeight": 13,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Regular"
+ },
+ {
+  "name": "Caption 1/Emphasized",
+  "font": "SF Pro Medium",
+  "size": 10,
+  "lineHeight": 13,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Medium"
+ },
+ {
+  "name": "Caption 2/Regular",
+  "font": "SF Pro Medium",
+  "size": 10,
+  "lineHeight": 13,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Medium"
+ },
+ {
+  "name": "Caption 2/Emphasized",
+  "font": "SF Pro Semibold",
+  "size": 10,
+  "lineHeight": 13,
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Semibold"
+ },
+ {
+  "name": "Large Title/2",
+  "font": "Inter Regular",
+  "size": 12,
+  "lineHeight": "100%",
+  "letterSpacing": "0%",
+  "tracking": 0,
+  "weight": "Regular"
+ },
+ {
+  "name": "XLTitle1",
+  "font": "SF Pro Bold",
+  "size": 48,
+  "lineHeight": 56,
+  "letterSpacing": 0,
+  "weight": "Bold"
+ }
+]

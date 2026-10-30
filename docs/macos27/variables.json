@@ -1,0 +1,3172 @@
+[
+ {
+  "set": "Colors",
+  "name": "Accents/Red",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#FF383C"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FF4245"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents/Orange",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#FF8D28"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FF9230"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents/Yellow",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#FFCC00"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFD600"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents/Green",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#34C759"
+   },
+   {
+    "mode": "Dark",
+    "value": "#30D158"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents/Mint",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#00C8B3"
+   },
+   {
+    "mode": "Dark",
+    "value": "#00DAC3"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents/Teal",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#00C3D0"
+   },
+   {
+    "mode": "Dark",
+    "value": "#00D2E0"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents/Cyan",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#00C0E8"
+   },
+   {
+    "mode": "Dark",
+    "value": "#3CD3FE"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents/Blue",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#0088FF"
+   },
+   {
+    "mode": "Dark",
+    "value": "#0091FF"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents/Indigo",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#6155F5"
+   },
+   {
+    "mode": "Dark",
+    "value": "#6D7CFF"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents/Purple",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#CB30E0"
+   },
+   {
+    "mode": "Dark",
+    "value": "#DB34F2"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents/Pink",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#FF2D55"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FF375F"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents/Brown",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#AC7F5E"
+   },
+   {
+    "mode": "Dark",
+    "value": "#B78A66"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Fills - Opaque/Primary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#0000001A"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF1A"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Fills - Opaque/Secondary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#00000014"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF14"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Fills - Opaque/Tertiary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#0000000D"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF0D"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Fills - Opaque/Quaternary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#00000008"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF08"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Fills - Opaque/Quinary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#00000005"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF05"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Fills - Vibrant (Use Plus Lighter | Darker)/Primary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#D9D9D9"
+   },
+   {
+    "mode": "Dark",
+    "value": "#242424"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Fills - Vibrant (Use Plus Lighter | Darker)/Secondary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#E6E6E6"
+   },
+   {
+    "mode": "Dark",
+    "value": "#141414"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Fills - Vibrant (Use Plus Lighter | Darker)/Tertiary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#F2F2F2"
+   },
+   {
+    "mode": "Dark",
+    "value": "#0D0D0D"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Fills - Vibrant (Use Plus Lighter | Darker)/Quaternary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#F7F7F7"
+   },
+   {
+    "mode": "Dark",
+    "value": "#090909"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Fills - Vibrant (Use Plus Lighter | Darker)/Quinary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#FBFBFB"
+   },
+   {
+    "mode": "Dark",
+    "value": "#070707"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Labels/Primary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#000000D9"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFFD9"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Labels/Secondary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#00000080"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF8C"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Labels/Tertiary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#00000040"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF40"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Labels/Quaternary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#0000001A"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF1A"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Labels/Quinary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#0000000D"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF0D"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Labels/White",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#FFFFFF"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Labels - Vibrant (Use Plus Lighter | Darker)/Primary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#1A1A1A"
+   },
+   {
+    "mode": "Dark",
+    "value": "#F5F5F5"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Labels - Vibrant (Use Plus Lighter | Darker)/Secondary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#727272"
+   },
+   {
+    "mode": "Dark",
+    "value": "#8A8A8A"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Labels - Vibrant (Use Plus Lighter | Darker)/Tertiary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#BFBFBF"
+   },
+   {
+    "mode": "Dark",
+    "value": "#404040"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Labels - Vibrant (Use Plus Lighter | Darker)/Quaternary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#D9D9D9"
+   },
+   {
+    "mode": "Dark",
+    "value": "#262626"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Labels - Vibrant (Use Plus Lighter | Darker)/Quinary",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#E6E6E6"
+   },
+   {
+    "mode": "Dark",
+    "value": "#111111"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Material/Ultra Thick",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#F6F6F6D6"
+   },
+   {
+    "mode": "Dark",
+    "value": "#282828CC"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Material/Thin",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#F6F6F67A"
+   },
+   {
+    "mode": "Dark",
+    "value": "#28282880"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "❌Checkbox/Checkbox Disabled",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#FF9900"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FF9900"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "❌Miscellaneous/Arrow Button Background - Enabled",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#FF0000"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FF0000"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "❌Miscellaneous/Arrow Button Background - Disabled",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#FF0000"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FF0000"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Mode",
+  "type": "STRING",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "{\"textValue\":\"Light\"}"
+   },
+   {
+    "mode": "Dark",
+    "value": "{\"textValue\":\"Dark\"}"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Grays/Black",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#000000"
+   },
+   {
+    "mode": "Dark",
+    "value": "#000000"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Grays/White",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#FFFFFF"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Labels/Seximal",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#00000008"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF08"
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Global/Height",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 16
+   },
+   {
+    "mode": "Small",
+    "value": 20
+   },
+   {
+    "mode": "Medium",
+    "value": 24
+   },
+   {
+    "mode": "Large",
+    "value": 28
+   },
+   {
+    "mode": "XL",
+    "value": 36
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Global/Radius",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 4
+   },
+   {
+    "mode": "Small",
+    "value": 5
+   },
+   {
+    "mode": "Medium",
+    "value": 6
+   },
+   {
+    "mode": "Large",
+    "value": 7
+   },
+   {
+    "mode": "XL",
+    "value": 9
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Button/Padding - Horizontal",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 7
+   },
+   {
+    "mode": "Small",
+    "value": 10
+   },
+   {
+    "mode": "Medium",
+    "value": 16
+   },
+   {
+    "mode": "Large",
+    "value": 16
+   },
+   {
+    "mode": "XL",
+    "value": 16
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Button/Vertical Padding",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 2
+   },
+   {
+    "mode": "Small",
+    "value": 3
+   },
+   {
+    "mode": "Medium",
+    "value": 4
+   },
+   {
+    "mode": "Large",
+    "value": 6
+   },
+   {
+    "mode": "XL",
+    "value": 10
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Button/Radius",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": "{\"alias\":{\"guid\":{\"sessionID\":465,\"localID\":62}}}"
+   },
+   {
+    "mode": "Small",
+    "value": "{\"alias\":{\"guid\":{\"sessionID\":465,\"localID\":62}}}"
+   },
+   {
+    "mode": "Medium",
+    "value": "{\"alias\":{\"guid\":{\"sessionID\":465,\"localID\":62}}}"
+   },
+   {
+    "mode": "Large",
+    "value": 1000
+   },
+   {
+    "mode": "XL",
+    "value": 1000
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Grays/Gray",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#8E8E93"
+   },
+   {
+    "mode": "Dark",
+    "value": "#98989F"
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Toggle (Switch)/Track - Height",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": "{\"alias\":{\"guid\":{\"sessionID\":465,\"localID\":61}}}"
+   },
+   {
+    "mode": "Small",
+    "value": "{\"alias\":{\"guid\":{\"sessionID\":465,\"localID\":61}}}"
+   },
+   {
+    "mode": "Medium",
+    "value": "{\"alias\":{\"guid\":{\"sessionID\":465,\"localID\":61}}}"
+   },
+   {
+    "mode": "Large",
+    "value": "{\"alias\":{\"guid\":{\"sessionID\":465,\"localID\":61}}}"
+   },
+   {
+    "mode": "XL",
+    "value": "{\"alias\":{\"guid\":{\"sessionID\":465,\"localID\":61}}}"
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Toggle (Switch)/Track - Width",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 36
+   },
+   {
+    "mode": "Small",
+    "value": 44
+   },
+   {
+    "mode": "Medium",
+    "value": 54
+   },
+   {
+    "mode": "Large",
+    "value": 64
+   },
+   {
+    "mode": "XL",
+    "value": 80
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Toggle (Switch)/Knob - Inset",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 1.5
+   },
+   {
+    "mode": "Small",
+    "value": 2
+   },
+   {
+    "mode": "Medium",
+    "value": 2
+   },
+   {
+    "mode": "Large",
+    "value": 2
+   },
+   {
+    "mode": "XL",
+    "value": 3
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Toggle (Switch)/Knob - Width",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 21
+   },
+   {
+    "mode": "Small",
+    "value": 26
+   },
+   {
+    "mode": "Medium",
+    "value": 32
+   },
+   {
+    "mode": "Large",
+    "value": 38
+   },
+   {
+    "mode": "XL",
+    "value": 47
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Component Fill",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": "#0000001A"
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Component Stroke",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": "#C399FF"
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Subcomponent Fill",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": "#0000001A"
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Subcomponent Stroke",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": "#00000066"
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Section Fill",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": "#0000001A"
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Section Stroke",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": "#00000066"
+   }
+  ]
+ },
+ {
+  "set": "Context",
+  "name": "Mode",
+  "type": "STRING",
+  "values": [
+   {
+    "mode": "Content Area",
+    "value": "{\"textValue\":\"Content Area\"}"
+   },
+   {
+    "mode": "Over-glass",
+    "value": "{\"textValue\":\"Over-glass\"}"
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Cursor/Height",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 14
+   },
+   {
+    "mode": "Small",
+    "value": 16
+   },
+   {
+    "mode": "Medium",
+    "value": 18
+   },
+   {
+    "mode": "Large",
+    "value": 18
+   },
+   {
+    "mode": "XL",
+    "value": 18
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Global/Font Size",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 10
+   },
+   {
+    "mode": "Small",
+    "value": 11
+   },
+   {
+    "mode": "Medium",
+    "value": 13
+   },
+   {
+    "mode": "Large",
+    "value": 13
+   },
+   {
+    "mode": "XL",
+    "value": 13
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Fields/Inset - Left",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 6
+   },
+   {
+    "mode": "Small",
+    "value": 6
+   },
+   {
+    "mode": "Medium",
+    "value": 8
+   },
+   {
+    "mode": "Large",
+    "value": 8
+   },
+   {
+    "mode": "XL",
+    "value": 10
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Fields/Inset - Right",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 6
+   },
+   {
+    "mode": "Small",
+    "value": 6
+   },
+   {
+    "mode": "Medium",
+    "value": 8
+   },
+   {
+    "mode": "Large",
+    "value": 8
+   },
+   {
+    "mode": "XL",
+    "value": 10
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Fields/Font Size - Search Glyph",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 11
+   },
+   {
+    "mode": "Small",
+    "value": 13
+   },
+   {
+    "mode": "Medium",
+    "value": 13
+   },
+   {
+    "mode": "Large",
+    "value": 13
+   },
+   {
+    "mode": "XL",
+    "value": 13
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Fields/Leading - Search Glyph",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 13
+   },
+   {
+    "mode": "Small",
+    "value": 15
+   },
+   {
+    "mode": "Medium",
+    "value": 15
+   },
+   {
+    "mode": "Large",
+    "value": 15
+   },
+   {
+    "mode": "XL",
+    "value": 15
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Glyphs/Primary - Idle",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#FFFFFF"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Glyphs/Primary - Disabled",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#FFFFFF80"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF80"
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Dial/Height - Knob",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 4
+   },
+   {
+    "mode": "Small",
+    "value": 5
+   },
+   {
+    "mode": "Medium",
+    "value": 6
+   },
+   {
+    "mode": "Large",
+    "value": 6
+   },
+   {
+    "mode": "XL",
+    "value": 7
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Dial/Inset - Knob",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 2
+   },
+   {
+    "mode": "Small",
+    "value": 2.5
+   },
+   {
+    "mode": "Medium",
+    "value": 3
+   },
+   {
+    "mode": "Large",
+    "value": 3
+   },
+   {
+    "mode": "XL",
+    "value": 3
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Disclosure/Font Size",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 10
+   },
+   {
+    "mode": "Small",
+    "value": 10
+   },
+   {
+    "mode": "Medium",
+    "value": 13
+   },
+   {
+    "mode": "Large",
+    "value": 13
+   },
+   {
+    "mode": "XL",
+    "value": 13
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Disclosure/Height - Symbol",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 16
+   },
+   {
+    "mode": "Small",
+    "value": 21
+   },
+   {
+    "mode": "Medium",
+    "value": 25
+   },
+   {
+    "mode": "Large",
+    "value": 29
+   },
+   {
+    "mode": "XL",
+    "value": 38
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Arrow Button/Font Size",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 11
+   },
+   {
+    "mode": "Small",
+    "value": 13
+   },
+   {
+    "mode": "Medium",
+    "value": 13
+   },
+   {
+    "mode": "Large",
+    "value": 13
+   },
+   {
+    "mode": "XL",
+    "value": 13
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Popup/Font Size - Chevron",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 10
+   },
+   {
+    "mode": "Small",
+    "value": 11
+   },
+   {
+    "mode": "Medium",
+    "value": 11
+   },
+   {
+    "mode": "Large",
+    "value": 13
+   },
+   {
+    "mode": "XL",
+    "value": 13
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Popup/Inset - Left",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 7
+   },
+   {
+    "mode": "Small",
+    "value": 10
+   },
+   {
+    "mode": "Medium",
+    "value": 12
+   },
+   {
+    "mode": "Large",
+    "value": 14
+   },
+   {
+    "mode": "XL",
+    "value": 18
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Menu/Height",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 19
+   },
+   {
+    "mode": "Small",
+    "value": 22
+   },
+   {
+    "mode": "Medium",
+    "value": 24
+   },
+   {
+    "mode": "Large",
+    "value": 24
+   },
+   {
+    "mode": "XL",
+    "value": 24
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Menu/Font Size",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 10
+   },
+   {
+    "mode": "Small",
+    "value": 11
+   },
+   {
+    "mode": "Medium",
+    "value": 13
+   },
+   {
+    "mode": "Large",
+    "value": 13
+   },
+   {
+    "mode": "XL",
+    "value": 13
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Menu/Font Size - Symbol",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 11
+   },
+   {
+    "mode": "Small",
+    "value": 11
+   },
+   {
+    "mode": "Medium",
+    "value": 13
+   },
+   {
+    "mode": "Large",
+    "value": 13
+   },
+   {
+    "mode": "XL",
+    "value": 13
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Menu/Width - Symbol",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 6
+   },
+   {
+    "mode": "Small",
+    "value": 10
+   },
+   {
+    "mode": "Medium",
+    "value": 12
+   },
+   {
+    "mode": "Large",
+    "value": 12
+   },
+   {
+    "mode": "XL",
+    "value": 12
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Menu/Inset - Top - Header",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 3
+   },
+   {
+    "mode": "Small",
+    "value": 4
+   },
+   {
+    "mode": "Medium",
+    "value": 5
+   },
+   {
+    "mode": "Large",
+    "value": 5
+   },
+   {
+    "mode": "XL",
+    "value": 5
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Menu/Inset - Bottom - Header",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 2
+   },
+   {
+    "mode": "Small",
+    "value": 3
+   },
+   {
+    "mode": "Medium",
+    "value": 4
+   },
+   {
+    "mode": "Large",
+    "value": 4
+   },
+   {
+    "mode": "XL",
+    "value": 4
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents - Vibrant/Red",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#F52F32"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FF4747"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents - Vibrant/Orange",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#F58625"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FF9E33"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents - Vibrant/Yellow",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#F5C200"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFE014"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents - Vibrant/Green",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#26BF4D"
+   },
+   {
+    "mode": "Dark",
+    "value": "#3BDB63"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents - Vibrant/Mint",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#00BDA9"
+   },
+   {
+    "mode": "Dark",
+    "value": "#2DE0CD"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents - Vibrant/Teal",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#00B3BF"
+   },
+   {
+    "mode": "Dark",
+    "value": "#2DD7E0"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents - Vibrant/Cyan",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#00ABCF"
+   },
+   {
+    "mode": "Dark",
+    "value": "#47D8FC"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents - Vibrant/Blue",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#0078F0"
+   },
+   {
+    "mode": "Dark",
+    "value": "#0A99FF"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents - Vibrant/Indigo",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#5C50E6"
+   },
+   {
+    "mode": "Dark",
+    "value": "#7163FF"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents - Vibrant/Purple",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#B72BC9"
+   },
+   {
+    "mode": "Dark",
+    "value": "#E647FC"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents - Vibrant/Pink",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#F5234B"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FF4169"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Accents - Vibrant/Brown",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#9E7354"
+   },
+   {
+    "mode": "Dark",
+    "value": "#C29672"
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Menu/Inset - Left - Header",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 14
+   },
+   {
+    "mode": "Small",
+    "value": 18
+   },
+   {
+    "mode": "Medium",
+    "value": 20
+   },
+   {
+    "mode": "Large",
+    "value": 20
+   },
+   {
+    "mode": "XL",
+    "value": 20
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Radio Button/Width",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 12
+   },
+   {
+    "mode": "Small",
+    "value": 14
+   },
+   {
+    "mode": "Medium",
+    "value": 16
+   },
+   {
+    "mode": "Large",
+    "value": 18
+   },
+   {
+    "mode": "XL",
+    "value": 18
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Radio Button/Width - Dot",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 4
+   },
+   {
+    "mode": "Small",
+    "value": 4.800000190734863
+   },
+   {
+    "mode": "Medium",
+    "value": 4.800000190734863
+   },
+   {
+    "mode": "Large",
+    "value": 5
+   },
+   {
+    "mode": "XL",
+    "value": 5
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Radio Button/Width - Dash",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 5.5
+   },
+   {
+    "mode": "Small",
+    "value": 6.5
+   },
+   {
+    "mode": "Medium",
+    "value": 6.5
+   },
+   {
+    "mode": "Large",
+    "value": 8
+   },
+   {
+    "mode": "XL",
+    "value": 8
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Radio Button/Height - Dash",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 1.7000000476837158
+   },
+   {
+    "mode": "Small",
+    "value": 2
+   },
+   {
+    "mode": "Medium",
+    "value": 2
+   },
+   {
+    "mode": "Large",
+    "value": 2
+   },
+   {
+    "mode": "XL",
+    "value": 2
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Radio Button/Spacing",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 3
+   },
+   {
+    "mode": "Small",
+    "value": 3
+   },
+   {
+    "mode": "Medium",
+    "value": 3
+   },
+   {
+    "mode": "Large",
+    "value": 5
+   },
+   {
+    "mode": "XL",
+    "value": 7
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Checkboxes/Width",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": "{\"alias\":{\"guid\":{\"sessionID\":495,\"localID\":5579}}}"
+   },
+   {
+    "mode": "Small",
+    "value": "{\"alias\":{\"guid\":{\"sessionID\":495,\"localID\":5579}}}"
+   },
+   {
+    "mode": "Medium",
+    "value": "{\"alias\":{\"guid\":{\"sessionID\":495,\"localID\":5579}}}"
+   },
+   {
+    "mode": "Large",
+    "value": "{\"alias\":{\"guid\":{\"sessionID\":495,\"localID\":5579}}}"
+   },
+   {
+    "mode": "XL",
+    "value": "{\"alias\":{\"guid\":{\"sessionID\":495,\"localID\":5579}}}"
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Checkboxes/Width - Checkmark",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 7.78000020980835
+   },
+   {
+    "mode": "Small",
+    "value": 9.3100004196167
+   },
+   {
+    "mode": "Medium",
+    "value": 9.3100004196167
+   },
+   {
+    "mode": "Large",
+    "value": 11.720000267028809
+   },
+   {
+    "mode": "XL",
+    "value": 11.720000267028809
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Checkboxes/Height - Checkmark",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 7.550000190734863
+   },
+   {
+    "mode": "Small",
+    "value": 8.930000305175781
+   },
+   {
+    "mode": "Medium",
+    "value": 8.930000305175781
+   },
+   {
+    "mode": "Large",
+    "value": 11.300000190734863
+   },
+   {
+    "mode": "XL",
+    "value": 11.300000190734863
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Checkboxes/Radius",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 3.5
+   },
+   {
+    "mode": "Small",
+    "value": 4.5
+   },
+   {
+    "mode": "Medium",
+    "value": 5.5
+   },
+   {
+    "mode": "Large",
+    "value": 6.5
+   },
+   {
+    "mode": "XL",
+    "value": 6.5
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Segmented Control/Margins",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 6
+   },
+   {
+    "mode": "Small",
+    "value": 8
+   },
+   {
+    "mode": "Medium",
+    "value": 10
+   },
+   {
+    "mode": "Large",
+    "value": 12
+   },
+   {
+    "mode": "XL",
+    "value": 14
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Segmented Control/Height - Separator",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 10
+   },
+   {
+    "mode": "Small",
+    "value": 12
+   },
+   {
+    "mode": "Medium",
+    "value": 14
+   },
+   {
+    "mode": "Large",
+    "value": 18
+   },
+   {
+    "mode": "XL",
+    "value": 20
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Combo Button/Inset",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 2
+   },
+   {
+    "mode": "Small",
+    "value": 2
+   },
+   {
+    "mode": "Medium",
+    "value": 2
+   },
+   {
+    "mode": "Large",
+    "value": 2
+   },
+   {
+    "mode": "XL",
+    "value": 3
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Combo Button/Width - Button",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 16
+   },
+   {
+    "mode": "Small",
+    "value": 20
+   },
+   {
+    "mode": "Medium",
+    "value": 24
+   },
+   {
+    "mode": "Large",
+    "value": 24
+   },
+   {
+    "mode": "XL",
+    "value": 30
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Combo Button/Radius - Button",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 2.5
+   },
+   {
+    "mode": "Small",
+    "value": 3.5
+   },
+   {
+    "mode": "Medium",
+    "value": 4.5
+   },
+   {
+    "mode": "Large",
+    "value": 5.5
+   },
+   {
+    "mode": "XL",
+    "value": 6.5
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Combo Button/Font Size - Chevron",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 9
+   },
+   {
+    "mode": "Small",
+    "value": 10
+   },
+   {
+    "mode": "Medium",
+    "value": 11
+   },
+   {
+    "mode": "Large",
+    "value": 12.5
+   },
+   {
+    "mode": "XL",
+    "value": 13
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Slider/Knob - Non-ticked Slider/Width",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 16
+   },
+   {
+    "mode": "Small",
+    "value": 18
+   },
+   {
+    "mode": "Medium",
+    "value": 20
+   },
+   {
+    "mode": "Large",
+    "value": 24
+   },
+   {
+    "mode": "XL",
+    "value": 24
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Slider/Track/Inset - Vertical",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 1
+   },
+   {
+    "mode": "Small",
+    "value": 1
+   },
+   {
+    "mode": "Medium",
+    "value": 1
+   },
+   {
+    "mode": "Large",
+    "value": 0
+   },
+   {
+    "mode": "XL",
+    "value": 0
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Slider/Track/Inset - Horizontal",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 1
+   },
+   {
+    "mode": "Small",
+    "value": 1
+   },
+   {
+    "mode": "Medium",
+    "value": 1
+   },
+   {
+    "mode": "Large",
+    "value": 0
+   },
+   {
+    "mode": "XL",
+    "value": 0
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Slider/Knob - Non-ticked Slider/Inset",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 2
+   },
+   {
+    "mode": "Small",
+    "value": 1
+   },
+   {
+    "mode": "Medium",
+    "value": 0
+   },
+   {
+    "mode": "Large",
+    "value": -2
+   },
+   {
+    "mode": "XL",
+    "value": -2
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Slider/Knob - Non-ticked Slider/Height",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 12
+   },
+   {
+    "mode": "Small",
+    "value": 14
+   },
+   {
+    "mode": "Medium",
+    "value": 16
+   },
+   {
+    "mode": "Large",
+    "value": 20
+   },
+   {
+    "mode": "XL",
+    "value": 20
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Slider/Knob - Ticked Slider/Height - Clicked",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 20
+   },
+   {
+    "mode": "Small",
+    "value": 23
+   },
+   {
+    "mode": "Medium",
+    "value": 20
+   },
+   {
+    "mode": "Large",
+    "value": 25
+   },
+   {
+    "mode": "XL",
+    "value": 25
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Slider/Knob - Ticked Slider/Width - Clicked",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 10
+   },
+   {
+    "mode": "Small",
+    "value": 13
+   },
+   {
+    "mode": "Medium",
+    "value": 25
+   },
+   {
+    "mode": "Large",
+    "value": 30
+   },
+   {
+    "mode": "XL",
+    "value": 30
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Slider/Knob - Ticked Slider/Width",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 8
+   },
+   {
+    "mode": "Small",
+    "value": 10
+   },
+   {
+    "mode": "Medium",
+    "value": 20
+   },
+   {
+    "mode": "Large",
+    "value": 24
+   },
+   {
+    "mode": "XL",
+    "value": 24
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Slider/Knob - Ticked Slider/Height",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 16
+   },
+   {
+    "mode": "Small",
+    "value": 18
+   },
+   {
+    "mode": "Medium",
+    "value": 16
+   },
+   {
+    "mode": "Large",
+    "value": 20
+   },
+   {
+    "mode": "XL",
+    "value": 20
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Slider/Track/Tick Spacing",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 2
+   },
+   {
+    "mode": "Small",
+    "value": 2
+   },
+   {
+    "mode": "Medium",
+    "value": 2
+   },
+   {
+    "mode": "Large",
+    "value": 3
+   },
+   {
+    "mode": "XL",
+    "value": 3
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Stepper/Width",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 13
+   },
+   {
+    "mode": "Small",
+    "value": 17
+   },
+   {
+    "mode": "Medium",
+    "value": 20
+   },
+   {
+    "mode": "Large",
+    "value": 23
+   },
+   {
+    "mode": "XL",
+    "value": 30
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Stepper/Radius",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 4
+   },
+   {
+    "mode": "Small",
+    "value": 5
+   },
+   {
+    "mode": "Medium",
+    "value": 6
+   },
+   {
+    "mode": "Large",
+    "value": 7
+   },
+   {
+    "mode": "XL",
+    "value": 9
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Stepper/Font Size",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 8
+   },
+   {
+    "mode": "Small",
+    "value": 9
+   },
+   {
+    "mode": "Medium",
+    "value": 12
+   },
+   {
+    "mode": "Large",
+    "value": 12
+   },
+   {
+    "mode": "XL",
+    "value": 12
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Stepper/Width - Separator",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 9
+   },
+   {
+    "mode": "Small",
+    "value": 11
+   },
+   {
+    "mode": "Medium",
+    "value": 14
+   },
+   {
+    "mode": "Large",
+    "value": 15
+   },
+   {
+    "mode": "XL",
+    "value": 20
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Controls/Tint",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#FF00AA"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FF00AA"
+   }
+  ]
+ },
+ {
+  "set": null,
+  "name": "Accents/Blue",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "404:0",
+    "value": "#0088FF"
+   },
+   {
+    "mode": "404:1",
+    "value": "#0091FF"
+   },
+   {
+    "mode": "3081:0",
+    "value": "#1E6EF4"
+   },
+   {
+    "mode": "3081:1",
+    "value": "#5CB8FF"
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Liquid Glass/Depth - Regular",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": 30
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Liquid Glass/Dispersion",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": 20
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Liquid Glass/Frost - Regular",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": 6
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Liquid Glass/Splay - Regular",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": 20
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Liquid Glass/Light Angle",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": 0
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Liquid Glass/Refraction",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": 70
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Liquid Glass/Frost - Medium",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": 16
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Liquid Glass/Depth - Medium and Large",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": 30
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Liquid Glass/Frost - Large",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": 16
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Liquid Glass/Splay - Medium and Large",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": 20
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Liquid Glass/Opacity",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": 25
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Window Background",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#FFFFFF"
+   },
+   {
+    "mode": "Dark",
+    "value": "#1E1E1E"
+   }
+  ]
+ },
+ {
+  "set": "Kit",
+  "name": "Link",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Mode 1",
+    "value": "#98CCFF"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Miscellaneous/Tooltips/Inner Stroke",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#FFFFFF00"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF26"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Miscellaneous/Alerts/Overlay",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#ABABAB99"
+   },
+   {
+    "mode": "Dark",
+    "value": "#1717179E"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Miscellaneous/Scrollbar",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#00000080"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF8C"
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Color Well/Width",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 32
+   },
+   {
+    "mode": "Small",
+    "value": 40
+   },
+   {
+    "mode": "Medium",
+    "value": 48
+   },
+   {
+    "mode": "Large",
+    "value": 56
+   },
+   {
+    "mode": "XL",
+    "value": 72
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Color Well/Height",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 16
+   },
+   {
+    "mode": "Small",
+    "value": 20
+   },
+   {
+    "mode": "Medium",
+    "value": 24
+   },
+   {
+    "mode": "Large",
+    "value": 28
+   },
+   {
+    "mode": "XL",
+    "value": 36
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Disclosure/Radius",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 4
+   },
+   {
+    "mode": "Small",
+    "value": 5
+   },
+   {
+    "mode": "Medium",
+    "value": 6
+   },
+   {
+    "mode": "Large",
+    "value": 1000
+   },
+   {
+    "mode": "XL",
+    "value": 1000
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Miscellaneous/Progress Bars/Track - Stroke",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#00000012"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF0A"
+   }
+  ]
+ },
+ {
+  "set": null,
+  "name": "Liquid Glass/Light Angle",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "5565:0",
+    "value": 0
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Toggle (Switch)/Knob - Height",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 13
+   },
+   {
+    "mode": "Small",
+    "value": 16
+   },
+   {
+    "mode": "Medium",
+    "value": 20
+   },
+   {
+    "mode": "Large",
+    "value": 24
+   },
+   {
+    "mode": "XL",
+    "value": 30
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Toggle (Switch)/Knob - Clicked - Height",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 20
+   },
+   {
+    "mode": "Small",
+    "value": 26
+   },
+   {
+    "mode": "Medium",
+    "value": 31
+   },
+   {
+    "mode": "Large",
+    "value": 37
+   },
+   {
+    "mode": "XL",
+    "value": 46
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Toggle (Switch)/Knob - Clicked - Width",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 33
+   },
+   {
+    "mode": "Small",
+    "value": 40
+   },
+   {
+    "mode": "Medium",
+    "value": 50
+   },
+   {
+    "mode": "Large",
+    "value": 59
+   },
+   {
+    "mode": "XL",
+    "value": 73
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Mode",
+  "type": "STRING",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": "{\"textValue\":\"Mini\"}"
+   },
+   {
+    "mode": "Small",
+    "value": "{\"textValue\":\"Small\"}"
+   },
+   {
+    "mode": "Medium",
+    "value": "{\"textValue\":\"Medium\"}"
+   },
+   {
+    "mode": "Large",
+    "value": "{\"textValue\":\"Large\"}"
+   },
+   {
+    "mode": "XL",
+    "value": "{\"textValue\":\"XL\"}"
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Slider/Knob - Non-ticked Slider/Height - Clicked",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 15
+   },
+   {
+    "mode": "Small",
+    "value": 18
+   },
+   {
+    "mode": "Medium",
+    "value": 20
+   },
+   {
+    "mode": "Large",
+    "value": 25
+   },
+   {
+    "mode": "XL",
+    "value": 25
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Slider/Knob - Non-ticked Slider/Width - Clicked",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 20
+   },
+   {
+    "mode": "Small",
+    "value": 23
+   },
+   {
+    "mode": "Medium",
+    "value": 25
+   },
+   {
+    "mode": "Large",
+    "value": 30
+   },
+   {
+    "mode": "XL",
+    "value": 30
+   }
+  ]
+ },
+ {
+  "set": "Sizes",
+  "name": "Combo Button/Text - Inset - Right",
+  "type": "FLOAT",
+  "values": [
+   {
+    "mode": "Mini",
+    "value": 20
+   },
+   {
+    "mode": "Small",
+    "value": 24
+   },
+   {
+    "mode": "Medium",
+    "value": 28
+   },
+   {
+    "mode": "Large",
+    "value": 28
+   },
+   {
+    "mode": "XL",
+    "value": 34
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Miscellaneous/Tables/BG - Selected + Inactive",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#00000024"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF2E"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Miscellaneous/Tables/Alternating Row Color",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#0000000D"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF0D"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Miscellaneous/Tables/BG - Selected + Active",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#0165E2"
+   },
+   {
+    "mode": "Dark",
+    "value": "#0158D2"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Miscellaneous/Tables/Column Separator",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#0000001A"
+   },
+   {
+    "mode": "Dark",
+    "value": "#FFFFFF1A"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Miscellaneous/Tooltips/Sidebar - BG - Active",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#DAE6F2"
+   },
+   {
+    "mode": "Dark",
+    "value": "#141517"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Miscellaneous/Tooltips/Sidebar - BG - Inactive",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#EDF4FA"
+   },
+   {
+    "mode": "Dark",
+    "value": "#131414"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "Miscellaneous/Sidebar/Label - Inactive",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "#878787"
+   },
+   {
+    "mode": "Dark",
+    "value": "#666666"
+   }
+  ]
+ },
+ {
+  "set": "Colors",
+  "name": "String",
+  "type": "STRING",
+  "values": [
+   {
+    "mode": "Light",
+    "value": "{\"textValue\":\"String value\"}"
+   },
+   {
+    "mode": "Dark",
+    "value": "{\"textValue\":\"String value\"}"
+   }
+  ]
+ },
+ {
+  "set": null,
+  "name": "Component Fill",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "5565:0",
+    "value": "#0000001A"
+   }
+  ]
+ },
+ {
+  "set": null,
+  "name": "Component Stroke",
+  "type": "COLOR",
+  "values": [
+   {
+    "mode": "5565:0",
+    "value": "#C399FF"
+   }
+  ]
+ }
+]
