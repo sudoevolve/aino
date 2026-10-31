@@ -374,6 +374,16 @@ void draw_overview(Ui& ui, App& a, const Rect& area) {
 // =============================================================================
 //  基础
 // =============================================================================
+
+// 示例内容的栏宽。macOS 的表单/设置面板里，一个输入框、一条进度条、一组分段
+// 控件都是**内容宽度**，不会被拉到 800px 满宽 —— 满宽的单控件是 Web 演示页的
+// 做法（shadcn 的 demo 就是铺满的）。需要整宽的示例（表格、日历、图表、分割
+// 面板、虚拟列表）直接用 box，不走这个函数。
+constexpr float kDemoW = 400.0f;
+Stack demo_col(Ui& ui, const Rect& box, float gap) {
+    return ui.vbox(Rect(box.x, box.y, std::min(box.w, kDemoW), box.h), gap);
+}
+
 void d_btn_variants(Ui& ui, App& a, const Rect& box) {
     auto c = ui.vbox(box, 8.0f);
     const Style::Variant vs[] = {Style::Default, Style::Secondary, Style::Outline,
@@ -449,7 +459,7 @@ void d_avatar(Ui& ui, App& a, const Rect& box) {
 }
 
 void d_progress(Ui& ui, App& a, const Rect& box) {
-    Stack c = ui.vbox(box, 8.0f);
+    Stack c = demo_col(ui, box, 8.0f);
     ui.progress(0.24f, c.next(8.0f));
     ui.progress(0.58f, c.next(8.0f));
     ui.progress(0.92f, c.next(8.0f));
@@ -464,7 +474,7 @@ void d_progress(Ui& ui, App& a, const Rect& box) {
 //  表单
 // =============================================================================
 void d_input(Ui& ui, App& a, const Rect& box) {
-    Stack c = ui.vbox(box, 10.0f);
+    Stack c = demo_col(ui, box, 10.0f);
     ui.input(&a.email, c.next(24.0f), Style().hint("you@example.com"));
     ui.input(&a.keyword, c.next(24.0f), Style().hint("搜索…"));
     ui.muted_text("焦点、选中、剪贴板、IME 组合串都由库处理。", c.next(18.0f),
@@ -472,11 +482,13 @@ void d_input(Ui& ui, App& a, const Rect& box) {
 }
 
 void d_textarea(Ui& ui, App& a, const Rect& box) {
-    ui.textarea(&a.note, box, Style().font(13.0f));
+    // 多行框给 520：macOS 的文本视图也不会横着铺满整个窗口
+    ui.textarea(&a.note, Rect(box.x, box.y, std::min(box.w, 520.0f), box.h),
+                Style().font(13.0f));
 }
 
 void d_input_group(Ui& ui, App& a, const Rect& box) {
-    Stack c = ui.vbox(box, 10.0f);
+    Stack c = demo_col(ui, box, 10.0f);
     ui.input_group(&a.amount, "¥", "元", c.next(24.0f));
     ui.input_group(&a.phone, "+86", "", c.next(24.0f));
     ui.muted_text("前后缀区域同属输入框热区，点击任意位置都能落光标。", c.next(18.0f),
@@ -488,7 +500,7 @@ void d_otp(Ui& ui, App& a, const Rect& box) {
 }
 
 void d_checkbox(Ui& ui, App& a, const Rect& box) {
-    Stack c = ui.vbox(box, 10.0f);
+    Stack c = demo_col(ui, box, 10.0f);
     ui.checkbox(&a.remember, "记住这台设备", c.next(22.0f));
     ui.checkbox(&a.autosave, "自动保存", c.next(22.0f));
     Style dis;
@@ -498,7 +510,7 @@ void d_checkbox(Ui& ui, App& a, const Rect& box) {
 }
 
 void d_switch(Ui& ui, App& a, const Rect& box) {
-    Stack c = ui.vbox(box, 10.0f);
+    Stack c = demo_col(ui, box, 10.0f);
     {
         const Rect rr = c.next(26.0f);
         ui.label("Wi-Fi", rr, Style().left().font(12.5f));
@@ -518,7 +530,7 @@ void d_radio(Ui& ui, App& a, const Rect& box) {
 }
 
 void d_slider(Ui& ui, App& a, const Rect& box) {
-    Stack c = ui.vbox(box, 12.0f);
+    Stack c = demo_col(ui, box, 12.0f);
     ui.slider(&a.vol, 0.0f, 1.0f, c.next(26.0f));
     char buf[64];
     std::snprintf(buf, sizeof buf, "vol = %.2f", double(a.vol));
@@ -539,7 +551,7 @@ void demo_force_open(Ui& ui, const char* kind, const Rect& box) {
 }
 
 void d_select(Ui& ui, App& a, const Rect& box) {
-    Stack c = ui.vbox(box, 10.0f);
+    Stack c = demo_col(ui, box, 10.0f);
     const Rect sr = c.next(24.0f);
     demo_force_open(ui, "select", sr);        // AINO_OPEN=select 时强制展开（截图用）
     ui.select(kPlans, &a.plan, sr, Style().hint("选择套餐"));
@@ -548,7 +560,7 @@ void d_select(Ui& ui, App& a, const Rect& box) {
 }
 
 void d_combobox(Ui& ui, App& a, const Rect& box) {
-    Stack c = ui.vbox(box, 10.0f);
+    Stack c = demo_col(ui, box, 10.0f);
     const Rect cr = c.next(24.0f);
     demo_force_open(ui, "combobox", cr);      // AINO_OPEN=combobox 时强制展开
     ui.combobox(kLangs, &a.combo, cr);
@@ -557,7 +569,7 @@ void d_combobox(Ui& ui, App& a, const Rect& box) {
 }
 
 void d_toggle(Ui& ui, App& a, const Rect& box) {
-    Stack c = ui.vbox(box, 12.0f);
+    Stack c = demo_col(ui, box, 12.0f);
     {
         Stack r = c.hbox(34.0f, 8.0f);
         ui.toggle_button("粗体", &a.bold, r.next(84.0f));
@@ -569,7 +581,7 @@ void d_toggle(Ui& ui, App& a, const Rect& box) {
 }
 
 void d_button_group(Ui& ui, App& a, const Rect& box) {
-    Stack c = ui.vbox(box, 12.0f);
+    Stack c = demo_col(ui, box, 12.0f);
     ui.button_group({"复制", "粘贴", "剪切"}, &a.bg_click, c.next(24.0f));
     ui.toggle_group_multi({"B", "I", "U"}, &a.tgm, c.next(24.0f));
     ui.muted_text("前者互斥、相邻共享边框；后者用位掩码表示任意组合。", c.next(18.0f),
@@ -577,7 +589,7 @@ void d_button_group(Ui& ui, App& a, const Rect& box) {
 }
 
 void d_stepper_rating(Ui& ui, App& a, const Rect& box) {
-    Stack c = ui.vbox(box, 14.0f);
+    Stack c = demo_col(ui, box, 14.0f);
     // 官方步进器是"数值框 + 右边缘竖条"，整个控件只有 ~60-140 宽。
     // 拉满整列会变成一条巨大的空输入框，看着像没画完。
     const Rect srow = c.next(24.0f);
@@ -589,7 +601,7 @@ void d_stepper_rating(Ui& ui, App& a, const Rect& box) {
 }
 
 void d_field(Ui& ui, App& a, const Rect& box) {
-    Stack c = ui.vbox(box, 14.0f);
+    Stack c = demo_col(ui, box, 14.0f);
     {
         const float h = ui.field_height("邮箱", "用于接收通知", "", 24.0f);
         ui.field("邮箱", "用于接收通知", "", c.next(h), [&](const Rect& r) {
@@ -612,11 +624,11 @@ void d_calendar(Ui& ui, App& a, const Rect& box) {
 //  数据展示
 // =============================================================================
 void d_tabs(Ui& ui, App& a, const Rect& box) {
-    Stack c = ui.vbox(box, 14.0f);
+    Stack c = demo_col(ui, box, 14.0f);
     ui.tabs(kViews, &a.tab, c.next(24.0f));
-    ui.segmented(kPlans, &a.seg, c.next(32.0f));
-    ui.muted_text("下划线式与胶囊式：两套视觉，同一套索引语义。", c.next(18.0f),
-                  Style().left().font(11.5f));
+    ui.segmented(kPlans, &a.seg, c.next(24.0f));
+    ui.muted_text("标签栏（无下划线）与胶囊分段：两套视觉，同一套索引语义。",
+                  c.next(18.0f), Style().left().font(11.5f));
 }
 
 void d_table(Ui& ui, App& a, const Rect& box) {
@@ -667,7 +679,7 @@ void d_accordion(Ui& ui, App& a, const Rect& box) {
 }
 
 void d_alert(Ui& ui, App& a, const Rect& box) {
-    Stack c = ui.vbox(box, 10.0f);
+    Stack c = demo_col(ui, box, 10.0f);
     const float w = c.area.w;
     {
         const char* t = "布局器已生效";
@@ -1167,9 +1179,9 @@ const Demo kCalendar[] = {
 };
 
 const Demo kTabs[] = {
-    {"标签页与胶囊", "两套视觉，同一套索引语义",
+    {"标签栏与分段控件", "选中项浮一层淡底 vs 凹槽里浮起一块",
      R"cpp(ui.tabs({"概览", "分析", "设置"}, &a.tab, c.next(24.0f));
-ui.segmented({"免费版", "专业版", "企业版"}, &a.seg, c.next(32.0f));)cpp",
+ui.segmented({"免费版", "专业版", "企业版"}, &a.seg, c.next(24.0f));)cpp",
      120.0f, d_tabs},
 };
 
@@ -1188,7 +1200,7 @@ ui.item("张伟", "zhangwei@example.com", "管理员", c.next(50.0f));)cpp",
 };
 
 const Demo kEmpty[] = {
-    {"空状态", "虚线框内居中排版，标题与描述分层",
+    {"空状态", "居中排版：标题 13 Semibold，描述 11 次要色",
      R"cpp(ui.empty_state("还没有通知", "有新消息时会出现在这里", box);)cpp",
      112.0f, d_empty},
 };
@@ -1426,7 +1438,7 @@ const Page kPages[] = {
      kField, COUNT(kField)},
     {"表单", "Calendar", "月视图日期选择。", "NSDatePicker",
      kCalendar, COUNT(kCalendar)},
-    {"数据展示", "Tabs", "标签页与胶囊分段。", "NSTabView",
+    {"数据展示", "Tabs", "标签栏与胶囊分段。", "NSTabView",
      kTabs, COUNT(kTabs)},
     {"数据展示", "Table", "只读表格。", "NSTableView",
      kTable, COUNT(kTable)},
@@ -1639,10 +1651,12 @@ void draw_nav(Ui& ui, App& a, const Rect& nav) {
     ui.fill_rect(Rect(nav.right() - 1.0f, nav.y, 1.0f, nav.h), th.separator, 0.0f);
     if (nav.w < 60.0f) return;                 // 收起来了：只留一条材质，别画内容
 
-    // 搜索框。侧边栏搜索 = 圆角 6 的输入框 + 左侧放大镜，没有"搜索"按钮。
+    // 搜索框。macOS 的 NSSearchField 是**胶囊**（Figma `Search` 符号 r=100），
+    // 放大镜在框内左端 6px 处，文字从 22 起排。之前这里画的是 r6 的方角输入框 +
+    // 框外一个放大镜 —— 那是 Web 的搜索框。
     const Rect sf(nav.x + 10.0f, kTitleH + 8.0f, nav.w - 20.0f, 24.0f);
-    ui.input(&a.query, sf, Style().padding(24.0f).hint("搜索"));
-    magnifier(ui, sf.x + 10.0f, sf.cy(), 4.4f, th.label3);
+    ui.input(&a.query, sf, Style().corner(12.0f).padded(26.0f, 3.0f).hint("搜索"));
+    magnifier(ui, sf.x + 12.0f, sf.cy(), 4.4f, th.label2);
 
     const float list_y = sf.bottom() + 10.0f;
     const Rect list(nav.x, list_y, nav.w, std::max(nav.bottom() - list_y - 6.0f, 1.0f));

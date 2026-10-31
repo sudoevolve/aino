@@ -4,14 +4,16 @@
 //  设计取向
 //    · 思路来自 FLTK   : 无第三方依赖、事件驱动、空闲 0% CPU、静态链接极小
 //    · 写法来自 eui-neo: 链式语义化组件 + 主题 token + hover/pressed 自动状态
-//    · 视觉来自 shadcn : 扁平、极简、中性色板、8px 圆角、克制的描边
+//    · 视觉参照 macOS 27（Figma `macOS 27` UI kit，参数逐项对齐）：语义色板
+//      + 4/6/8/10/12 圆角档位 + 连续圆角（squircle 0.6）+ 24 高的 Medium 控件
+//      + Group Box 分组语汇。不引入 Web 的"卡片 + 描边 + 投影"那一套。
 //
 //  核心取舍
 //    · 立即模式(immediate mode)：UI 每帧重建，状态由调用方的变量持有。
 //      没有控件树、没有场景图、没有每控件状态机 —— 这是"体积小"的根本原因。
 //      布局只有一层顺序切分器(Stack)，边画边切，不做约束求解。
 //    · 几何图形自绘  ：圆角矩形/圆/线由本库 CPU 光栅化，带覆盖率抗锯齿
-//                      （GDI/Qt 的 RoundRect 都不抗锯齿，shadcn 的圆角会糊）。
+//                      （GDI/Qt 的 RoundRect 都不抗锯齿，小圆角会糊成一坨）。
 //    · 文字交给系统  ：Win32=GDI / Linux=X11 / macOS=CoreGraphics，
 //                      天然支持中文与系统字体回退，不需要内嵌字体引擎。
 //
@@ -378,6 +380,7 @@ struct Theme {
     float radius      = 6.0f;   // 标准控件圆角矩形（Medium）
     float radius_sm   = 4.0f;   // 小徽标 / 迷你控件（Mini 4、Small 5、Medium 6）
     float radius_lg   = 10.0f;  // 面板 / 菜单 / 弹层（同心 = 父半径 − 内边距）
+    float radius_xl   = 12.0f;  // Group Box / Sheet（Figma 的 Group Box 是 r12）
     float radius_full = 9999.0f;
 
     float font_size   = 13.0f;  // Body
@@ -451,7 +454,8 @@ struct Theme {
             && ceq(purple, o.purple) && ceq(pink, o.pink) && ceq(brown, o.brown)
             && ceq(gray, o.gray)
             && radius == o.radius && radius_sm == o.radius_sm
-            && radius_lg == o.radius_lg && radius_full == o.radius_full
+            && radius_lg == o.radius_lg && radius_xl == o.radius_xl
+            && radius_full == o.radius_full
             && font_size == o.font_size && line_height == o.line_height
             && control_h == o.control_h && control_h_sm == o.control_h_sm
             && control_h_mini == o.control_h_mini && control_h_lg == o.control_h_lg
@@ -4685,8 +4689,23 @@ inline void pop_shadow(Ui& ui, const Rect& r, float rad, const Theme& th, int le
     }
 }
 
+// NSPopUpButton 右侧的"上下双箭头"。这是 mac 下拉按钮最容易被忽略的一处特征：
+// 一个向下箭头是 Web 的 <select>，一上一下两个才是 Pop-Up Button。
+inline void paint_popup_chevrons(Ui& ui, const Rect& box, float pad, const Color& c) {
+    const float cx = box.right() - pad - 3.0f;
+    const float cy = box.cy();
+    const float s = 3.0f, gap = 3.6f, k = s * 0.62f;
+    ui.draw_line(cx - s, cy - gap + k, cx, cy - gap - k, c, 1.2f);
+    ui.draw_line(cx, cy - gap - k, cx + s, cy - gap + k, c, 1.2f);
+    ui.draw_line(cx - s, cy + gap - k, cx, cy + gap + k, c, 1.2f);
+    ui.draw_line(cx, cy + gap + k, cx + s, cy + gap - k, c, 1.2f);
+}
+
 inline void paint_focus_ring(Ui& ui, const Rect& r, float radius, const Color& ring) {
-    ui.stroke_rect(r.expand(1.5f), ring.scaled_alpha(0.55f), radius + 1.5f, 2.0f);
+    // HIG：焦点环 3pt 宽、画在控件**外面**（不占控件自身的空间）。之前是
+    // 2px / 外扩 1.5，叠上 55% 的衰减后只有 27% 的强调色 —— 浅色下几乎看不见，
+    // 焦点跑到哪全靠猜。外扩 2 + 宽 3 才是系统那圈"贴边一圈蓝"。
+    ui.stroke_rect(r.expand(2.0f), ring.scaled_alpha(0.85f), radius + 2.0f, 3.0f);
 }
 
 // 叠加色（th.accent / th.fill 这类自带 alpha 的"面"）按 t 淡入。
@@ -4712,16 +4731,19 @@ inline void paint_menu(Ui& ui, const Rect& list,
                        const std::vector<uint8_t>& hov,
                        int selected, bool show_check, float fs) {
     const Theme& th = ui.theme();
-    const float r = 10.0f;
+    const float r = 12.0f;
     pop_shadow(ui, list, r, th, 0);          // 菜单 = Quaternary 投影
     ui.fill_rect(list, th.popover_bg, r);
     ui.stroke_rect(list, th.separator, r, 1.0f);
     ui.push_clip(list);
-    const Color on = on_color(th.tint);
+    // 菜单行的悬停高亮在 macOS 26/27 是**中性灰**（Figma：r8、#E6E6E6 / #141414），
+    // 不是强调色蓝条。蓝色高亮 + 白字是 Big Sur 之前的老观感，也是 Web 下拉框的
+    // 默认写法；mac 现在整块界面都是灰阶层次，蓝色只留给"当前选中/主操作"。
+    const Color hover_bg = th.is_dark() ? Color::hex(0x141414) : Color::hex(0xE6E6E6);
     for (size_t i = 0; i < rects.size() && i < items.size(); ++i) {
         const float t_h = animate_value(ui.impl, ids[i] * 83u + 1u, hov[i] ? 1.0f : 0.0f, 20.0f);
-        if (t_h > 0.02f) ui.fill_rect_s(rects[i], th.tint.scaled_alpha(t_h), 5.0f, 0.35f);
-        const Color fg = th.popover_foreground.mix(on, t_h);
+        if (t_h > 0.02f) ui.fill_rect_s(rects[i], hover_bg.scaled_alpha(t_h), 8.0f, 0.35f);
+        const Color fg = th.popover_foreground;
         const float left = rects[i].x + (show_check ? 24.0f : 10.0f);
         if (show_check && selected == int(i)) {
             const float ccx = rects[i].x + 11.0f, ccy = rects[i].cy(), sc = 3.1f;
@@ -4730,7 +4752,7 @@ inline void paint_menu(Ui& ui, const Rect& list,
         }
         Style its;
         its.font_size = fs;
-        its.font_weight = (selected == int(i)) ? 600 : 500;
+        its.font_weight = 500;                 // kit：选中与未选中都是 Medium 13
         its.align = Align::Left;
         its.valign = VAlign::Middle;
         ui.draw_text(items[i], Rect(left, rects[i].y, std::max(rects[i].right() - left - 8.0f, 1.0f),
@@ -5218,13 +5240,15 @@ inline void Ui::panel(const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
     const Color bg = !st.bg.is_none() ? st.bg : th.card;
     const Color bd = !st.border_color.is_none() ? st.border_color : th.separator;
-    // macOS 的 Group Box 是**一圈 1px 细线 + r10，内部不铺底**（内容直接坐在窗口底
-    // 上）。Web 那种"白卡片 + 灰背景 + 阴影"在 mac 里根本不存在 —— 之前每个示例块
-    // 都套一层描边白卡，整页因此像后台管理系统。
+    // macOS 的 Group Box 是**一圈 1px 细线 + r12，内部几乎不铺底**（Figma 的
+    // Group Box 符号：r12、#00000008 再乘 50% 不透明度 ≈ 1.5%）。Web 那种
+    // "白卡片 + 灰背景 + 阴影"在 mac 里根本不存在 —— 之前每个示例块都套
+    // 一层描边白卡，整页因此像后台管理系统。
     const float bw = st.border_width >= 0.0f ? st.border_width : 1.0f;
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius_lg;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius_xl;
     if (!st.bg.is_none())      fill_rect(box, bg, rad);
     else if (st.muted)         fill_rect(box, th.fill4, rad);
+    else                       fill_rect(box, th.fill5, rad);   // 1.5~2%，不抢层次
     if (bw > 0.0f && bd.a > 0) stroke_rect(box, bd, rad, bw);
 }
 
@@ -5870,7 +5894,7 @@ inline bool Ui::checkbox(bool* value, const std::string& label_text, const Rect&
 }
 
 // -----------------------------------------------------------------------------
-//  toggle —— shadcn 的 Switch
+//  toggle —— NSSwitch（54×24 轨道 + 32×20 白胶囊滑块）
 // -----------------------------------------------------------------------------
 inline bool Ui::toggle(bool* value, const Rect& box, const Style& st) {
     if (!value) return false;
@@ -5981,8 +6005,8 @@ inline bool Ui::slider(float* value, float min_value, float max_value, const Rec
 
 // -----------------------------------------------------------------------------
 //  tabs —— 两套视觉，同一套索引语义
-//    Style()           → 下划线式（shadcn Tabs）：无容器底色，选中项下面一条
-//                        会滑动的高亮横线，其余项只变文字颜色
+//    Style()           → 标签栏（Tabs）：无容器底色，选中项浮一层 3% 圆角底，
+//                        项宽按文字宽度；其余项文字 50%
 //    Style().secondary()/outline() → 胶囊式（Segmented）：整条是一个凹槽，
 //                        选中项是浮起的一块圆角块
 //  以前 segmented() 直接转调 tabs，两者画出来一模一样，而示例文案还写着
@@ -5993,7 +6017,9 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
     const Theme& th = impl->theme;
     uint64_t base_id = detail::make_id("tabs", box);
     const bool pill = (st.variant == Style::Secondary || st.variant == Style::Outline);
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius;
+    // 官方 Segmented Control 是**胶囊**（Figma 里 r=1000，按钮 r=100），不是
+    // r6 的圆角矩形：24 高的控件整个是圆的，选中段内缩 2 之后也是胶囊。
+    const float rad = st.radius >= 0.0f ? st.radius : (pill ? box.h * 0.5f : 6.0f);
     const float inner_rad = std::max(0.0f, rad - 2.0f);
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
 
@@ -6001,7 +6027,20 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
     Rect container(box.x, box.y, box.w, box.h);
     // 官方 Segmented Control：容器 8% 半透明底，选中段内缩 2px、圆角比容器小 2（同心圆角）
     const Rect inner = pill ? container.inset(2.0f, 2.0f) : container;
-    const float item_w = inner.w / float(labels.size());
+    const float equal_w = inner.w / float(labels.size());
+
+    // 每段的横向位置：胶囊段控件等分；标签栏**按文字宽度**排（官方 44×29 的
+    // Item 就是按内容定宽）。之前标签栏也等分，一个三字标签独占 273px 的淡底，
+    // 看着像三块错位的色块。
+    std::vector<float> xs(labels.size(), 0.0f), ws(labels.size(), equal_w);
+    {
+        float x = inner.x;
+        for (size_t i = 0; i < labels.size(); ++i) {
+            if (!pill) ws[i] = text_width(labels[i], fs, 500) + 36.0f;
+            xs[i] = x;
+            x += ws[i];
+        }
+    }
 
     if (pill) {
         // 官方 Segmented Control 的轨道是一层**凹槽**（8%），没有描边；和
@@ -6012,29 +6051,17 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
         // 段间细缝：1×14 的 25% 标签色。必须先画，选中的滑块（内缩 2）才会盖住它。
         const float ph = std::min(14.0f, std::max(inner.h - 10.0f, 1.0f));
         for (size_t i = 1; i < labels.size(); ++i)
-            fill_rect(Rect(inner.x + item_w * float(i), inner.y + (inner.h - ph) * 0.5f, 1.0f, ph),
+            fill_rect(Rect(inner.x + equal_w * float(i), inner.y + (inner.h - ph) * 0.5f, 1.0f, ph),
                       th.label3, 0.0f);
     } else {
-        // 下划线式：不铺底色，只在底下画一条 1px 的分隔线（shadcn 就是这样）
-        Color line = !st.border_color.is_none() ? st.border_color : th.border;
-        if (st.disabled) line.a = uint8_t(float(line.a) * 0.45f);
-        fill_rect(Rect(box.x, box.bottom() - 1.0f, box.w, 1.0f), line, 0.0f);
-        // 选中横线是**一条**会滑动的线，不是每项各自淡入淡出 —— 后者会让人
-        // 看到"两条线同时在"的中间帧。
-        const uint64_t ind_id = base_id * 47u + 9u;
-        const float pad_x = std::min(item_w * 0.20f, 24.0f);
-        const float ind_w = std::max(item_w - pad_x * 2.0f, 6.0f);
-        const float target_x = inner.x + item_w * float(*index) + pad_x;
-        if (!impl->measure_on && impl->anim.find(ind_id) == impl->anim.end())
-            impl->anim[ind_id] = target_x;                 // 首帧直接就位，别从 0 飞进来
-        const float ind_x = detail::animate_value(impl, ind_id, target_x, 26.0f);
-        Color ic = !st.fg.is_none() ? st.fg : th.primary;
-        if (st.disabled) ic.a = uint8_t(float(ic.a) * 0.45f);
-        fill_rect(Rect(ind_x, box.bottom() - 2.0f, ind_w, 2.0f), ic, 1.0f);
+        // macOS 27 的标签栏（Figma `Tabs` / `Utility Panel/Tabs`）：**没有下划线**。
+        // 一整条下划线 + 会滑动的指示器是 shadcn / Material 的语汇；AppKit 的
+        // tab bar 是"选中项浮一层 2~3% 的圆角底 + 文字回到主标签色"，其余 50%。
+        // 选中块画在下面的循环里（每项自己一块 r6 的淡底）。
     }
 
     for (size_t i = 0; i < labels.size(); ++i) {
-        Rect item(inner.x + item_w * float(i), inner.y, item_w, inner.h);
+        Rect item(xs[i], inner.y, ws[i], inner.h);
         uint64_t id = detail::make_id("tab", item, base_id + i);
         detail::Interact in = detail::interact(impl, id, item, !st.disabled);
         if (in.hovered) set_cursor(Cursor::Hand);
@@ -6044,20 +6071,28 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
         const float t_hov = detail::animate_value(impl, id * 47u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
         if (pill) {
-            // 选中滑块内缩 2、圆角比轨道小 2（同心圆角），强调色**实心**
+            // 选中的那一段是**白色胶囊**（暗色是比轨道亮一档的灰），文字回到主
+            // 标签色。强调色实心 + 白字是 iOS / Web 的分段控件；macOS 从 Big Sur
+            // 起一直是"凹槽里浮起一块"，Figma 的选中段是 #E6E6E6 / #141414 的实体。
             const Rect seg = item.inset(2.0f, 2.0f);
-            const float sr = std::max(0.0f, rad - 2.0f);
+            const float sr = std::max(0.0f, seg.h * 0.5f);
             if (t_sel > 0.02f) {
-                Color sel_bg = !st.border_color.is_none() ? st.border_color : th.tint;
-                sel_bg.a = uint8_t(255.0f * t_sel + 0.5f);
+                Color sel_bg = !st.border_color.is_none()
+                             ? st.border_color
+                             : (th.is_dark() ? Color(255, 255, 255, 46)
+                                             : Color(255, 255, 255, 255));
+                sel_bg.a = uint8_t(float(sel_bg.a) * t_sel + 0.5f);
                 fill_rect_s(seg, sel_bg, sr, 0.35f);
             } else if (t_hov > 0.02f) {
                 // 悬停只浮一层 3%（官方 Idle 没有 hover 态，这层是给指针的反馈下限）
                 fill_rect_s(seg, th.fill4.scaled_alpha(t_hov), sr, 0.35f);
             }
-        } else if (t_hov > 0.02f) {
-            // 下划线式没有"滑块"，悬停只能靠一层极淡的底：再重就变成胶囊了
-            fill_rect(item, th.foreground.with_alpha(uint8_t(9.0f * t_hov)), th.radius_sm);
+        } else {
+            // 标签栏：选中 = 3% 圆角底（官方 44×29 的 Item 就是 r6 + #00000008），
+            // 悬停 = 同款更淡的一层。没有下划线、没有滑块。
+            const Rect seg = item.inset(2.0f, 2.0f);
+            if (t_sel > 0.02f) fill_rect_s(seg, th.fill4.scaled_alpha(t_sel), 6.0f, 0.35f);
+            else if (t_hov > 0.02f) fill_rect_s(seg, th.fill5.scaled_alpha(t_hov), 6.0f, 0.35f);
         }
 
         Style ts;
@@ -6066,8 +6101,8 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
         ts.align = Align::Center;
         ts.valign = VAlign::Middle;
         Color c = pill
-                ? ((*index == int(i)) ? th.tint_foreground : th.label)
-                : ((*index == int(i)) ? th.label : th.muted_foreground);
+                ? ((*index == int(i)) ? th.label : th.label2)
+                : ((*index == int(i)) ? th.label : th.label2);
         if (st.disabled) c.a = uint8_t(float(c.a) * 0.45f);
         draw_text(labels[i], item, c, ts);
     }
@@ -6110,12 +6145,14 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
     const float t_hover = detail::animate_value(impl, id * 53u + 1u, (in.hovered || open) ? 1.0f : 0.0f, 18.0f);
 
     // --- 主体 ---
-    Color bg = !st.bg.is_none() ? st.bg : th.background;
-    if (bg.a > 0) fill_rect(box, bg, rad);
-    Color bd = !st.border_color.is_none() ? st.border_color : th.input;
-    if (open) bd = th.ring;
-    else if (t_hover > 0.01f) bd = bd.mix(th.foreground.with_alpha(120), t_hover * 0.4f);
-    stroke_rect(box, bd, rad, st.border_width >= 0.0f ? st.border_width : 1.0f);
+    // NSPopUpButton 是**8% 的实心圆角块 + 无描边**（Figma `_Alert Button/Pop-Up
+    // Button`），不是"白底 + 1px 边框"的输入框。之前给它套了输入框的皮，于是
+    // 和旁边的 Text Field 长得一样 —— 但一个是能打字的，一个只能选。
+    Color bg = !st.bg.is_none() ? st.bg : th.fill2;
+    if (t_hover > 0.01f) bg = bg.mix(th.foreground.with_alpha(38), t_hover * 0.55f);
+    if (bg.a > 0) fill_rect_s(box, bg, rad, 0.35f);
+    Color bd = !st.border_color.is_none() ? st.border_color : Color(0, 0, 0, 0);
+    if (bd.a > 0) stroke_rect(box, bd, rad, st.border_width >= 0.0f ? st.border_width : 1.0f);
 
     const float pad = 12.0f;
     const std::string cur = (*index >= 0 && *index < int(items.size())) ? items[size_t(*index)] : std::string();
@@ -6128,15 +6165,9 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
     Color fg = !st.fg.is_none() ? st.fg : (cur.empty() ? th.muted_foreground : th.foreground);
     draw_text(cur.empty() && !st.placeholder.empty() ? st.placeholder : cur, label_box, fg, ts);
 
-    // 下拉箭头自绘（不依赖字体字形）
-    {
-        const float ccx = box.right() - pad - 5.0f;
-        const float ccy = box.cy() + 0.5f;
-        const float s = 3.6f;
-        const Color cc = th.muted_foreground;
-        draw_line(ccx - s, ccy - s * 0.45f, ccx, ccy + s * 0.55f, cc, 1.6f);
-        draw_line(ccx, ccy + s * 0.55f, ccx + s, ccy - s * 0.45f, cc, 1.6f);
-    }
+    // 右侧是**上下两个小三角**（NSPopUpButton 的经典标记）。单个向下箭头是
+    // Web 的 <select>；mac 的下拉按钮从上世纪到现在都是"上下"两个箭头。
+    detail::paint_popup_chevrons(*this, box, pad, th.label2);
 
     if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, box, rad, th.ring);
 
@@ -6212,7 +6243,7 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
 
 // -----------------------------------------------------------------------------
 //  radio_group —— 单选组
-//  纵向等分 box.h，每行"圆环 + 标签"。选中态是 shadcn 的做法：外圈描边变粗
+//  纵向等分 box.h，每行"圆环 + 标签"。选中态：圆环外圈加粗 + 内点
 //  并转成 primary，中心长出一个实心点（靠一个动画量 t 同时驱动两者）。
 // -----------------------------------------------------------------------------
 inline bool Ui::radio_group(const std::vector<std::string>& items, int* index, const Rect& box, const Style& st) {
@@ -7047,12 +7078,15 @@ inline bool Ui::accordion(const std::string& title, bool* open, const Rect& box,
     ts.valign = VAlign::Middle;
     Color c = !st.fg.is_none() ? st.fg : th.foreground;
     if (st.disabled) c.a = uint8_t(float(c.a) * 0.45f);
-    draw_text(title, Rect(head.x + 12.0f, head.y, std::max(head.w - 44.0f, 1.0f), head.h), c, ts);
+    // 三角在**行首**（NSDisclosureGroup / 系统设置的披露行都这样），标题跟在它
+    // 后面缩进 22。把三角放到行尾是 Web 手风琴的写法（右侧 chevron），在 mac
+    // 界面里会让"这一行能不能展开"变得很不显眼。
+    draw_text(title, Rect(head.x + 22.0f, head.y, std::max(head.w - 34.0f, 1.0f), head.h), c, ts);
 
     // 官方 Disclosure Button：**实心小三角**，折叠朝右、展开朝下（不是 V 形箭头）
     {
         const float s = fs * 0.42f;      // 官方 Disclosure 三角约 8px，太小就看不出可点
-        const float mx = head.right() - 16.0f, my = head.cy();
+        const float mx = head.x + 10.0f, my = head.cy();
         const Color ac = th.muted_foreground;
         if (impl->canvas) {
             auto P = [&](float x, float y) { return Vec2(impl->px(x), impl->px(y)); };
@@ -7228,8 +7262,10 @@ inline void Ui::tooltip(const Rect& anchor, const std::string& text, const Style
     }
 
     const Theme& th = impl->theme;
-    const float fs = st.font_size > 0.0f ? st.font_size : th.font_size - 1.0f;
-    const float padx = 8.0f, pady = 5.0f;
+    // 官方 Tooltip：49×18、r5、内边距 6/3、标签 11 Medium。之前是 12 号 + 8/5
+    // 的内边距，气泡比方框大一圈 —— 系统 tooltip 是很小的。
+    const float fs = st.font_size > 0.0f ? st.font_size : 11.0f;
+    const float padx = 6.0f, pady = 3.0f;
     const float w = text_width(text, fs, 500) + padx * 2.0f;
     const float h = std::max(line_height(fs), fs * 1.2f) + pady * 2.0f;
     float x = anchor.cx() - w * 0.5f;
@@ -7240,9 +7276,10 @@ inline void Ui::tooltip(const Rect& anchor, const std::string& text, const Style
     const Style st_copy = st;
     deferred([this, x, y, w, h, text, fs, th, st_copy]() mutable {
         const Rect box(x, y, w, h);
-        detail::pop_shadow(*this, box, 6.0f, th, 0);
-        fill_rect(box, !st_copy.bg.is_none() ? st_copy.bg : th.tooltip_bg, 6.0f);
-        stroke_rect(box, th.tooltip_stroke.is_none() ? th.border : th.tooltip_stroke, 6.0f, 1.0f);
+        detail::pop_shadow(*this, box, 5.0f, th, 0);
+        fill_rect(box, !st_copy.bg.is_none() ? st_copy.bg : th.tooltip_bg, 5.0f);
+        if (!th.tooltip_stroke.is_none() && th.tooltip_stroke.a > 0)
+            stroke_rect(box, th.tooltip_stroke, 5.0f, 0.6f);
         Style ts;
         ts.font_size = fs;
         ts.font_weight = 500;
@@ -7604,7 +7641,7 @@ inline void Ui::toast(const std::string& text, const Rect& box, const Style& st)
 }
 
 // =============================================================================
-//  8.16  对齐 shadcn/ui 的基础控件（0.3.0 / 0.3.1）
+//  8.16  对齐 macOS 的基础控件（含 kit 里没有对应物的推导）
 //
 //  这一节的控件都遵守同一套约定，以后加组件照抄即可：
 //    1) 交互一律走 detail::interact()，动画一律走 detail::animate_value()；
@@ -8670,22 +8707,14 @@ inline bool Ui::drawer(const std::string& title, bool* open, int side, const Rec
     if (cin.clicked) dismiss = true;
     const float ct = detail::animate_value(impl, cid * 131u + 1u, cin.hovered ? 1.0f : 0.0f, 18.0f);
 
-    // 遮罩：alpha 跟着 t 一起进来
-    fill_rect(Rect(0, 0, width(), height()), Color(0, 0, 0, uint8_t(90.0f * t + 0.5f)), 0.0f);
-
-    // 面板：右侧内缘投一道阴影，看起来才是"贴边滑出"的
+    // 不铺整屏黑遮罩：macOS 的 sheet / 检查器面板**不会把窗口压黑**（窗口只是
+    // 失去焦点），整屏 35% 黑幕是 Radix / shadcn 的 Dialog Overlay。层次交给
+    // 圆角 + Primary 投影。
     const Color bg = !st.bg.is_none() ? st.bg : th.background;
-    if (side == 0)      drop_shadow(Rect(box.x - 10.0f, box.y, box.w + 10.0f, box.h), 0.0f, 22.0f, Color(0, 0, 0, 40), 0.0f);
-    else if (side == 1) drop_shadow(Rect(box.x, box.y, box.w + 10.0f, box.h), 0.0f, 22.0f, Color(0, 0, 0, 40), 0.0f);
-    else if (side == 2) drop_shadow(Rect(box.x, box.y - 10.0f, box.w, box.h + 10.0f), 0.0f, 22.0f, Color(0, 0, 0, 40), 0.0f);
-    else                drop_shadow(Rect(box.x, box.y, box.w, box.h + 10.0f), 0.0f, 22.0f, Color(0, 0, 0, 40), 0.0f);
 
-    fill_rect(box, bg, 0.0f);
-    // 只有"侧边"那一条画分隔线（贴窗口边的那侧不需要）
-    if (side == 0)      fill_rect(Rect(box.x, box.y, 1.0f, box.h), th.border, 0.0f);
-    else if (side == 1) fill_rect(Rect(box.right() - 1.0f, box.y, 1.0f, box.h), th.border, 0.0f);
-    else if (side == 2) fill_rect(Rect(box.x, box.y, box.w, 1.0f), th.border, 0.0f);
-    else                fill_rect(Rect(box.x, box.bottom() - 1.0f, box.w, 1.0f), th.border, 0.0f);
+    // 面板：r10 + 二级投影，不描边（描边会把它读成"网页侧边栏"）
+    detail::pop_shadow(*this, box, 10.0f, th, 2);
+    fill_rect(box, bg, 10.0f);
 
     Style hs;
     hs.font_size = fs + 2.0f;
@@ -8836,6 +8865,7 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
     const float t_h = detail::animate_value(impl, id * 137u + 1u, (in.hovered || open) ? 1.0f : 0.0f, 18.0f);
 
     // ---- 触发器 ----
+    // 可编辑的 NSComboBox = 输入框的皮（白底 + 阴影）+ 右侧上下箭头按钮
     fill_rect(box, !st.bg.is_none() ? st.bg : th.background, rad);
     Color bd = !st.border_color.is_none() ? st.border_color : th.input;
     if (focused) bd = th.ring;
@@ -8852,11 +8882,7 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
     draw_text(has_sel ? items[size_t(*index)]
                       : (st.placeholder.empty() ? std::string("选择...") : st.placeholder),
               Rect(box.x + pad, box.y, std::max(box.w - pad * 2.0f - 18.0f, 1.0f), box.h), fg, ts);
-    {
-        const float ccx = box.right() - pad - 5.0f, ccy = box.cy() + 0.5f, s = 3.6f;
-        draw_line(ccx - s, ccy - s * 0.45f, ccx, ccy + s * 0.55f, th.muted_foreground, 1.6f);
-        draw_line(ccx, ccy + s * 0.55f, ccx + s, ccy - s * 0.45f, th.muted_foreground, 1.6f);
-    }
+    detail::paint_popup_chevrons(*this, box, pad, th.label2);
 
     if (!open) return false;
 
@@ -9069,23 +9095,37 @@ inline bool Ui::split_pane(float* ratio, const Rect& box, Rect* first, Rect* sec
 //  滚动条、裁剪、滚轮都只有一套 —— 不会出现"两个滚动区各自记位置"的怪事。
 // =============================================================================
 namespace detail {
-// 滚动条几何。视觉上只有 3px 宽，但**热区给到 11px** —— 3px 是画给人看的，
-// 不是点得中的尺寸（原来它连命中都没有，纯装饰，所以"拖不动"）。
+// 滚动条几何。视觉上只有 7px 宽（macOS 的 overlay 滑块），热区给到 15px ——
+// 7px 是画给人看的，不是点得中的尺寸。
 struct ScrollbarGeom {
-    Rect track;     // 命中区（右侧 11px 竖条）
-    Rect thumb;     // 滑块（3px 宽，贴右边）
+    Rect track;     // 命中区（右侧 15px 竖条）
+    Rect thumb;     // 滑块（7px 宽，距右边缘 2.5px）
     float travel;   // 滑块可移动的行程 = box.h - thumb.h
 };
 
 inline ScrollbarGeom scrollbar_geom(const Rect& box, float offset, float max_offset) {
     ScrollbarGeom g;
-    g.track = Rect(box.right() - 11.0f, box.y, 11.0f, box.h);
+    g.track = Rect(box.right() - 15.0f, box.y, 15.0f, box.h);
     const float mo = std::max(max_offset, 0.0f);
-    const float thumb_h = std::max(24.0f, box.h * (box.h / (box.h + mo)));
+    const float thumb_h = std::max(28.0f, box.h * (box.h / (box.h + mo)));
     const float t = mo > 0.0f ? clampf(offset / mo, 0.0f, 1.0f) : 0.0f;
-    g.thumb = Rect(box.right() - 5.0f, box.y + (box.h - thumb_h) * t, 3.0f, thumb_h);
+    g.thumb = Rect(box.right() - 9.5f, box.y + (box.h - thumb_h) * t, 7.0f, thumb_h);
     g.travel = std::max(box.h - thumb_h, 0.0f);
     return g;
+}
+
+// macOS 的滚动条是 **overlay**：只在滚动 / 悬停时出现，停手约 0.9 秒后淡出。
+// 常驻的细条是 Windows 与浏览器的习惯 —— 一条永远挂在那里的 3px 竖线，是
+// "这是个网页控件"最直白的提示。activity 记在 flags 里（按 box 区分）。
+inline float scrollbar_alpha(Ui::Impl* ui, const Rect& box, bool hot, bool moved) {
+    const uint64_t aid = make_id("scrollact", box);
+    float& act = ui->flags[aid];
+    if (hot || moved) act = ui->clock;
+    if (act <= 0.0f) return 0.0f;                 // 还没滚过：一帧都不画
+    const float age = ui->clock - act;
+    if (hot) return 0.80f;
+    if (age >= 0.9f) return 0.0f;
+    return 0.62f * (1.0f - clampf(age / 0.9f, 0.0f, 1.0f));
 }
 
 // 滚动条交互：按下滑块 → 拖动；按下轨道 → 滑块中心跳到点击处（Windows 传统行为，
@@ -9228,9 +9268,16 @@ inline void Ui::end_scroll() {
         off = detail::clampf(off, 0.0f, ctx.max_offset);
         const bool hot = detail::scrollbar_interact(impl, ctx.box, ctx.max_offset, off);
         off = detail::clampf(off, 0.0f, ctx.max_offset);
-        const detail::ScrollbarGeom g = detail::scrollbar_geom(ctx.box, off, ctx.max_offset);
-        const float a = (hot || impl->active == detail::make_id("scrollbar-grab", ctx.box)) ? 0.78f : 0.45f;
-        fill_rect(g.thumb, impl->theme.muted_foreground.scaled_alpha(a), 1.5f);
+        // "刚才滚过没有"：和上一帧的偏移比。滚轮、拖动、程序调用都算。
+        float& prev = impl->flags[detail::make_id("scrollprev", ctx.box)];
+        const bool moved = std::fabs(off - prev) > 0.01f;
+        prev = off;
+        const float a = detail::scrollbar_alpha(impl, ctx.box, hot, moved);
+        if (a > 0.01f) {
+            const detail::ScrollbarGeom g = detail::scrollbar_geom(ctx.box, off, ctx.max_offset);
+            fill_rect(g.thumb, impl->theme.scrollbar.scaled_alpha(a), 3.5f);
+            if (a < 0.79f) repaint();      // 淡出要帧推进，否则停在半透明上
+        }
         impl->last_scroll = off;
     }
 
@@ -9298,9 +9345,14 @@ inline void Ui::scroll_bar(const Rect& box, float content_h) {
     off = detail::clampf(off, 0.0f, max_off);
     const bool hot = detail::scrollbar_interact(impl, box, max_off, off);
     off = detail::clampf(off, 0.0f, max_off);
+    float& prev = impl->flags[detail::make_id("scrollprev", box)];
+    const bool moved = std::fabs(off - prev) > 0.01f;
+    prev = off;
+    const float a = detail::scrollbar_alpha(impl, box, hot, moved);
+    if (a <= 0.01f) return;
     const detail::ScrollbarGeom g = detail::scrollbar_geom(box, off, max_off);
-    const float a = (hot || impl->active == detail::make_id("scrollbar-grab", box)) ? 0.78f : 0.45f;
-    fill_rect(g.thumb, impl->theme.muted_foreground.scaled_alpha(a), 1.5f);
+    fill_rect(g.thumb, impl->theme.scrollbar.scaled_alpha(a), 3.5f);
+    if (a < 0.79f) repaint();
 }
 
 inline float Ui::scroll_offset(const Rect& box) const {

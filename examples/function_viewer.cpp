@@ -887,8 +887,11 @@ float eval_F(const Ctx& c, float x, float y) {
 // 网格和坐标轴：画在曲线下面
 void draw_grid(aino::Ui& ui, const View& v, const aino::Theme& th) {
     const Rect& px = v.px;
-    const Color grid = th.border.with_alpha(150);
-    const Color axis = th.muted_foreground.with_alpha(190);
+    // ⚠ `with_alpha` 是**替换** alpha，不是按比例缩。`th.border` 是 10% 黑，
+    // 替换成 150 之后就是 59% 的深灰 —— 网格线看起来像用尺子画的 Excel 表。
+    // 官方图表（含 Swift Charts）的网格是 8~12% 的黑，坐标轴稍深一档。
+    const Color grid = th.border;
+    const Color axis = th.label3;
 
     const float step = nice_step(v.half_w * 2.0f / 8.0f);
     const float step_y = nice_step(v.half_h * 2.0f / 6.0f);

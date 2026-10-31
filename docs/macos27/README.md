@@ -563,3 +563,65 @@ Color fg = eff.luminance() > 0.55f ? th.foreground : Color(255, 255, 255);
 | 侧边栏示例 | 同一个 `mix` 写法；条目 34 高 | `sidebar_bg`；11 Semibold 分组标题 + 26 高条目 |
 
 SSH 客户端本来就是深色 + 卡片，没有这个 token 误用，未改动。
+
+---
+
+## 十三、第七轮：全量复检（组件 + 版式）
+
+这一轮不看"像不像"，而是把 kit 的符号逐个 digest 出来对参数。工具：
+`tools/catalog.js`（列出 kit 里 3429 个符号的顶层分类）与
+`tools/digest.js`（打印某个符号的尺寸/圆角/填充/描边/阴影 + 前两层子图层）。
+
+```bash
+NODE_PATH=.workbuddy/figma/node_modules node docs/macos27/tools/catalog.js Slider
+NODE_PATH=.workbuddy/figma/node_modules node docs/macos27/tools/digest.js "Window/Segmented Control/Medium/3/2"
+```
+
+> 注意 `node_modules` 在 `.workbuddy/figma/`，直接 `node tools/digest.js` 会报
+> `Cannot find module 'kiwi-schema'`。
+
+### 13.1 仍然带 Web 味的 13 处（已改）
+
+| # | 组件 | kit 依据 | 之前（Web / shadcn） | 现在（macOS 27） |
+|---|---|---|---|---|
+| 1 | 标签栏 `tabs()` | `Tabs/8`、`Utility Panel/Tabs` | 整条 1px 下划线 + 会滑动的 2px 蓝色指示条，项等分 | 无下划线；选中项浮一层 3% r6 圆角底，项宽按文字宽 |
+| 2 | 分段控件 | `Window/Segmented Control/Medium` | 强调色实心 + 白字，r6 方角 | 胶囊轨道（r = h/2）+ 白色胶囊（暗色 #2E2E2E 级）+ 主标签字 |
+| 3 | 搜索框 | `Search/Medium`（r=100） | r6 方角输入框 + 框外放大镜 | 胶囊 + 放大镜在框内 12px 处 |
+| 4 | 滚动条 | — | 3px 常驻细条，永远挂着 | 7px 圆头 overlay：滚动/悬停出现，0.9s 淡出（`scrollbar_alpha`） |
+| 5 | 菜单行悬停 | `Menu Item … State=Hover` | 强调色 5% + 文字转白 | 中性灰 r8（`#E6E6E6` / `#141414`），文字不变 |
+| 6 | 菜单面板 | 同上 | r10 | r12（与行 r8 同心） |
+| 7 | 下拉按钮 `select()` | `_Alert Button/Pop-Up Button` | 白底 + 1px 边框 + 单个向下箭头 | 8% 实心、无描边 + **上下双箭头** |
+| 8 | 折叠面板 | `NSDisclosureGroup` | 三角在行尾（Web 手风琴） | 三角在**行首**，标题缩进 22 |
+| 9 | 焦点环 | HIG：3pt、画在控件外 | 2px、外扩 1.5、实际只有 27% 强调色 | 3px、外扩 2、42% |
+| 10 | 提示气泡 | `Tooltip 49×18` | 12px + 8/5 内边距 + r6 + 1px 边 | 11px + 6/3 + r5，浅色无描边 |
+| 11 | 抽屉 `drawer()` | `Sheet`（r10） | 整屏 35% 黑幕 + 方角 + 1px 边 | **无黑幕** + r10 + 二级投影 |
+| 12 | Group Box | `Group Box`（r12、1.5% 底） | r10、不铺底 | r12 + 2% 底 + 1px 细线 |
+| 13 | 示例栏宽 | — | 单控件被拉满 ~790px | 表单类 400（`demo_col`），表格/日历/图表仍整宽 |
+
+第 11 条要单独说明：macOS 的 sheet / 检查器**不会把窗口压黑**（窗口只是失去
+焦点），整屏半透明黑是 Radix / shadcn 的 Dialog Overlay。层级交给圆角 + 投影。
+
+### 13.2 又一个 `with_alpha` 的受害者
+
+函数显示器的网格线之前是 `th.border.with_alpha(150)`。`th.border` 是 10% 黑，
+`with_alpha` **替换** alpha → 59% 的深灰，图纸上像用尺子画的 Excel 表。
+改成直接用 `th.border`（10%）+ 坐标轴 `th.label3`（25%）之后，才像 Swift Charts。
+
+这是同一个陷阱的第三次出现（前两次：头像白字、空星隐形）。判断"多深"时只能
+用 `scaled_alpha`，`with_alpha` 只适合"我就是要这个绝对值"。
+
+### 13.3 版式上确认"对"的几处
+
+- 侧边栏条目：`Item/Small/Selected` = 24 高、r5、**强调色 23%** 底、字仍 85%
+  —— 之前一度被写成"实心蓝 + 白字"（那是 iOS），现在与 kit 一致。
+- 表格：表头 11 Semibold 50%、行高 20、只有行分隔线、数字列连表头一起右对齐。
+- 日历：选中日是正圆（不是圆角方块），表头 13 Semibold 居中。
+- 按钮：24 高、8% 底、无描边、13 Medium 85%（`Buttons/Bordered`）。
+- 文字层级：22 Bold / 15 Semibold / 13 Regular / 11 / 10。
+
+### 13.4 还差的（有意为之）
+
+- 液态玻璃：`Liquid Glass` 符号是整块玻璃材质（多层填充 + GLASS 效果），
+  本库没有背景模糊，按最初的约定跳过。因此分段控件用 8% 灰轨道替代玻璃轨道。
+- 侧边栏还没有 SF Symbols 图标（纯文字）。kit 里每个 `Item` 都带 18×18 图标，
+  这块要一张图标表，没在本轮做。
