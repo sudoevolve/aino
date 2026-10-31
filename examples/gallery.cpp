@@ -1,10 +1,12 @@
 ﻿// =============================================================================
 //  aino 组件画廊
 //
-//  版式参照 Fluent UI Gallery 与 shadcn/ui 组件文档：
-//    左侧  分组导航，一个组件一项
-//    右侧  页头（组件名 + 说明 + 对应 shadcn 名称），下面是若干示例卡片
-//    卡片  左预览（可直接交互），右源码（等宽、带行号与着色）
+//  版式参照 macOS 的 App 窗口，不是 Web 文档站：
+//    标题栏  红绿灯浮在侧边栏顶部，标题居中，右侧是外观分段控件
+//    侧边栏  整窗高；顶部搜索框，下面是 source list（分组 + 可折叠条目）
+//    内容区  Title 1 + Body 副标（右上角标对应的 AppKit 控件），
+//            下面每条示例 = 13 Semibold 小标题 + 左预览 / 右源码
+//  示例区的"分组标题 + 1px 细线 Group Box"来自 macOS 的设置类界面。
 //
 //  数据驱动。一个组件就是 kPages 里的一项，一项挂 N 个 Demo；
 //  Demo = { 名称, 说明, 源码, 预览高度, 绘制函数 }。
@@ -54,6 +56,12 @@ struct App {
     // AINO_DARK=1 直接以深色启动 —— 截图脚本没法在首帧前点按钮
     bool dark = std::getenv("AINO_DARK") != nullptr;
     int  page = 0;
+
+    // ---- 窗口外壳 ----
+    std::string query;             // 侧边栏搜索
+    bool  nav_open = true;         // 侧边栏展开 / 收起（工具栏按钮）
+    float nav_w    = 220.0f;       // 当前宽度，由 tween 驱动
+    bool  quit     = false;        // 红绿灯的"红"按下
 
     // 反馈计数：按钮类示例共用，点完在卡片标题条里显示
     int         hits = 0;
@@ -139,7 +147,10 @@ struct Page {
     const char* group;
     const char* name;
     const char* desc;
-    const char* shadcn;      // 对应 shadcn/ui 的组件名；"—" 表示没有对应项
+    // 对应的 AppKit 控件。放在页头右侧当元信息 —— 这是本库唯一需要"对外解释
+    // 自己是谁"的地方：一个 C++ 自绘控件长什么样，最省事的说法是"它等于哪个
+    // 系统控件"。
+    const char* appkit;
     const Demo* demos;
     int         n;
     // 本页的模态浮层。必须在这里画、而不是在卡片里画：dialog / drawer 是立即
@@ -208,111 +219,143 @@ void open_quickstart_window() {
     }).detach();
 }
 
+// 概览页的正片代码。抽出来是因为要用它量高度（code_block_height 和绘制必须
+// 是同一份字符串，否则框会短一截）。
+const char* kQuickstart =
+    "#define AINO_IMPLEMENTATION\n"
+    "#include \"aino.hpp\"\n"
+    "#include <string>\n"
+    "\n"
+    "int main() {\n"
+    "    aino::Window win(880, 560, \"aino\");\n"
+    "    if (!win.ok()) return 1;\n"
+    "    std::string email;\n"
+    "    bool notify = true;\n"
+    "    win.run([&](aino::Ui& ui) {\n"
+    "        ui.panel({24, 24, 400, 240});\n"
+    "        auto c = ui.vbox({24, 24, 400, 240}, 10, 18);\n"
+    "        ui.heading(\"设置\", c.next(34));\n"
+    "        ui.input(&email, c.next(36));\n"
+    "        ui.checkbox(&notify, \"邮件通知\", c.next(22));\n"
+    "        ui.button(\"保存\", c.next(36), Style().primary());\n"
+    "    });\n"
+    "}";
+
+// 概览页 = "关于 + 快速开始" 两段，右边 "分类 + 实测" 两段。
+// macOS 的分组语汇是：11 Semibold 的灰色小标题 + 下面一个 1px 细线、r10 的
+// Group Box。之前这里是 2×2 的白卡片 + 描边 + 品牌色块，那是最典型的
+// dashboard，macOS 的窗口里没有这种"卡片墙"。
 void draw_overview(Ui& ui, App& a, const Rect& area) {
-    // 栅格是两级的：左边一半放介绍 + 完整可编译的 Quick Start，右边一半再切成
-    // 分类索引与实测表。早期是三等分，左栏只有 240px 宽，代码示例 32 个字符就得
-    // 断行，卡片下半截还会空出一大块 —— 两栏才能同时装下文字和代码。
-    auto cols = ui.hbox(area, 18.0f);
-
-    {
-        const Rect cp = cols.part(0, 2);
-        ui.panel(cp);
-        Stack c = ui.vbox(cp, 9.0f, 20.0f);
-        ui.subheading("a 单头文件 GUI 库", c.next(26.0f), Style().left());
-        ui.separator(c.next(1.0f));
-        ui.label("立即模式：每帧重建界面，控件在按下那一帧直接改变量。", c.next(20.0f),
-                 Style().left().font(12.5f));
-        ui.label("空闲 0 帧：没有动画时不 repaint，CPU 占用 0.00%。", c.next(20.0f),
-                 Style().left().font(12.5f));
-        ui.label("单文件：include 一个 .hpp，静态链接后无第三方依赖。", c.next(20.0f),
-                 Style().left().font(12.5f));
-        c.skip(6.0f);
-        const char* code =
-            "#define AINO_IMPLEMENTATION\n"
-            "#include \"aino.hpp\"\n"
-            "#include <string>\n"
-            "\n"
-            "int main() {\n"
-            "    aino::Window win(880, 560, \"aino\");\n"
-            "    if (!win.ok()) return 1;\n"
-            "\n"
-            "    std::string email;\n"
-            "    bool notify = true;\n"
-            "\n"
-            "    win.run([&](aino::Ui& ui) {\n"
-            "        ui.panel({24, 24, 400, 240});\n"
-            "        auto c = ui.vbox({24, 24, 400, 240}, 10, 18);\n"
-            "        ui.heading(\"设置\", c.next(34));\n"
-            "        ui.input(&email, c.next(36));\n"
-            "        ui.checkbox(&notify, \"邮件通知\", c.next(22));\n"
-            "        ui.button(\"保存\", c.next(36), Style().primary());\n"
-            "    });\n"
-            "}";
-        ui.code_block(code, c.next(ui.code_block_height(code, Style().font(11.5f))),
-                      Style().font(11.5f));
-        // 代码不是用来读的，是用来跑的：点一下开一个真窗口。
-        c.skip(4.0f);
-        {
-            Stack row = c.hbox(34.0f);
-            if (ui.button("在新窗口运行这段代码", row.part(0, 2), Style().outline()))
-                open_quickstart_window();
-            ui.muted_text("独立窗口 · 独立消息循环", row.part(1, 2),
-                          Style().right().font(11.5f));
-        }
-    }
-
-    {
-        const Rect right = cols.part(1, 2);
-        auto sub = ui.hbox(right, 18.0f);
-
-        {
-            const Rect cp = sub.part(0, 2);
-            ui.panel(cp);
-            Stack c = ui.vbox(cp, 8.0f, 20.0f);
-            ui.subheading("分类", c.next(26.0f), Style().left());
-            // 从 kPages 现算，不手写数字：加页之后统计自动跟上
-            const auto& gs = group_stats();
-            for (size_t gi = 1; gi < gs.size(); ++gi) {
-                Stack r = c.hbox(26.0f);
-                ui.label(gs[gi].first, r.part(0, 2), Style().left().font(12.5f));
-                ui.muted_text(std::to_string(gs[gi].second) + " 页", r.part(1, 2),
-                              Style().right().font(12.0f));
-            }
-            c.skip(4.0f);
-            // 这两行要短：右半边的卡片只有 ~176px 可用，长一句就被裁在边框上。
-            ui.muted_text("左侧导航按分类分组。", c.next(18.0f),
-                          Style().left().font(11.5f));
-            ui.muted_text("示例可操作，源码在右。", c.next(18.0f),
-                          Style().left().font(11.5f));
-            // 品牌块贴在卡片底部。不用 c.fill() 把它顶下去 —— fill() 会吃掉
-            // 全部剩余空间，后面的 next(78) 就只剩 0 高，块直接消失。
-            const Rect tb(cp.x + 20.0f, cp.bottom() - 20.0f - 78.0f, cp.w - 40.0f, 78.0f);
-            ui.fill_rect(tb, ui.theme().primary, ui.theme().radius);
-            ui.label("aino", tb, Style().center().semi_bold().font(20.0f)
-                     .color(ui.theme().primary_foreground));
-        }
-
-        {
-            const Rect cp = sub.part(1, 2);
-            ui.panel(cp);
-            Stack c = ui.vbox(cp, 8.0f, 20.0f);
-            ui.subheading("实测", c.next(26.0f), Style().left());
-            const std::vector<std::string> h = {"指标", "值"};
-            const std::vector<std::vector<std::string>> rows = {
-                {"第三方依赖", "0"},
-                {"空闲 CPU", "0.00%"},
-                {"指针移动", "变化才画"},
-                {"动画", "60 fps"},
-                {"组件", "47 个"},
-                {"回归断言", "45 项"},
-                {"文字", "系统字体"},
-                {"几何", "自绘 AA"},
-                {"DLL", "仅系统库"},
-            };
-            ui.table(h, rows, c.fill(), Style().font(12.0f));
-        }
-    }
     (void)a;
+    // 60 / 40 两栏。不用 Stack::part(i, n) —— 那是"n 等分里的第 i 份"，
+    // 想给 3:2 只能自己算（写成 part(0,3)/part(1,3) 会各拿到 1/3，右栏空出一截）。
+    const float GAP  = 26.0f;
+    const float lw   = (area.w - GAP) * 0.62f;
+    const Rect  left_col(area.x, area.y, lw, area.h);
+    const Rect  right_col(area.x + lw + GAP, area.y, area.w - lw - GAP, area.h);
+    const float HEAD = 18.0f;    // 分组标题行高
+    const float GAPY = 24.0f;    // 两个分组之间
+
+    auto section = [&](const char* text, float x, float y, float w) {
+        ui.muted_text(text, Rect(x, y, w, HEAD), Style().left().semi_bold().font(11.0f));
+    };
+
+    // ---------------- 左栏：关于 + 快速开始 ----------------
+    {
+        const Rect col = left_col;
+        float y = col.y;
+
+        section("关于", col.x, y, col.w);
+        y += HEAD + 6.0f;
+
+        const Rect about(col.x, y, col.w, 128.0f);
+        ui.panel(about);
+        {
+            Stack c = ui.vbox(Rect(about.x + 18.0f, about.y + 16.0f,
+                                   about.w - 36.0f, about.h - 32.0f), 6.0f);
+            {
+                Stack r = c.hbox(24.0f);
+                ui.subheading("aino", r.part(0, 2));
+                ui.muted_text("v" AINO_VERSION, r.part(1, 2), Style().right().font(11.0f));
+            }
+            ui.muted_text("立即模式：每帧重建界面，控件在按下那一帧直接改变量。",
+                          c.next(19.0f), Style().left().font(13.0f));
+            ui.muted_text("空闲 0 帧：没有动画时不 repaint，CPU 占用 0.00%。",
+                          c.next(19.0f), Style().left().font(13.0f));
+            ui.muted_text("单文件：include 一个 .hpp，静态链接后无第三方依赖。",
+                          c.next(19.0f), Style().left().font(13.0f));
+        }
+        y += about.h + GAPY;
+
+        section("快速开始", col.x, y, col.w);
+        y += HEAD + 6.0f;
+
+        // 框高 = 代码实测高 + 底部动作条。窗口矮的时候按剩余高度收 —— 代码块
+        // 自己会按 box 高度截断，不会顶穿页底（概览页不滚动）。
+        const float code_h = ui.code_block_height(kQuickstart, Style().font(11.5f));
+        const Rect box(col.x, y, col.w, std::min(area.bottom() - y, code_h + 8.0f + 8.0f + 46.0f));
+        ui.panel(box);
+        ui.code_block(kQuickstart, Rect(box.x + 8.0f, box.y + 8.0f, box.w - 16.0f, code_h),
+                      Style().font(11.5f));
+        // 框底那一条：动作 + 说明，中间一条内缩的细线（Group Box 里的分隔行）
+        ui.fill_rect(Rect(box.x + 1.0f, box.bottom() - 46.0f, box.w - 2.0f, 1.0f),
+                     ui.theme().separator, 0.0f);
+        {
+            Stack r = ui.hbox(Rect(box.x + 14.0f, box.bottom() - 46.0f, box.w - 28.0f, 46.0f), 12.0f);
+            const Rect bb = r.next(168.0f).center_y(24.0f);
+            if (ui.button("在新窗口运行这段代码", bb, Style().primary()))
+                open_quickstart_window();
+            ui.muted_text("独立窗口 · 独立消息循环", r.rest(),
+                          Style().left().font(11.0f));
+        }
+    }
+
+    // ---------------- 右栏：分类 + 实测 ----------------
+    {
+        const Rect col = right_col;
+        float y = col.y;
+
+        section("分类", col.x, y, col.w);
+        y += HEAD + 6.0f;
+
+        const auto& gs = group_stats();
+        const float row_h = 26.0f;
+        const Rect cat(col.x, y, col.w, 10.0f + row_h * float(gs.size() - 1) + 10.0f);
+        ui.panel(cat);
+        for (size_t i = 1; i < gs.size(); ++i) {
+            const float ry = cat.y + 10.0f + row_h * float(i - 1);
+            if (i > 1)
+                ui.fill_rect(Rect(cat.x + 12.0f, ry, cat.w - 24.0f, 1.0f),
+                             ui.theme().separator, 0.0f);
+            Stack r = ui.hbox(Rect(cat.x + 14.0f, ry, cat.w - 28.0f, row_h));
+            ui.label(gs[i].first, r.part(0, 2), Style().left().font(13.0f));
+            ui.muted_text(std::to_string(gs[i].second) + " 页", r.part(1, 2),
+                          Style().right().font(12.0f));
+        }
+        y += cat.h + GAPY;
+
+        section("实测", col.x, y, col.w);
+        y += HEAD + 6.0f;
+
+        const std::vector<std::string> h = {"指标", "值"};
+        const std::vector<std::vector<std::string>> rows = {
+            {"第三方依赖", "0"},
+            {"空闲 CPU", "0.00%"},
+            {"指针移动", "变化才画"},
+            {"动画", "60 fps"},
+            {"组件", "47 个"},
+            {"回归断言", "45 项"},
+            {"文字", "系统字体"},
+            {"几何", "自绘 AA"},
+            {"DLL", "仅系统库"},
+        };
+        // 表格自己会算行高（表头 24 + 行 20），框按内容定高，别撑到页底 ——
+        // 之前给的是 area.bottom()，框里于是留了一大片空白的"卡片"。
+        const Rect tbl(col.x, y, col.w, 24.0f + 20.0f * float(rows.size()) + 16.0f);
+        ui.panel(tbl);
+        ui.table(h, rows, Rect(tbl.x + 10.0f, tbl.y + 8.0f, tbl.w - 20.0f, tbl.h - 16.0f),
+                 Style().font(12.0f));
+    }
 }
 
 // =============================================================================
@@ -1334,87 +1377,87 @@ t.rotate = -12.0f + 24.0f * k;)cpp",
 
 const Page kPages[] = {
     {"入门", "概览", "库的定位、结构与实测数据。", "—", nullptr, 0},
-    {"基础", "Button", "触发一个动作。六种语义变体，统一 24 高度（Medium 档）。", "Button",
+    {"基础", "Button", "触发一个动作。六种语义变体，统一 24 高度（Medium 档）。", "NSButton",
      kBasic, COUNT(kBasic)},
-    {"基础", "Badge", "状态标记与键帽。", "Badge / Kbd",
+    {"基础", "Badge", "状态标记与键帽。", "—",
      kBadge, COUNT(kBadge)},
-    {"基础", "Avatar", "以首字成像的圆形头像。", "Avatar",
+    {"基础", "Avatar", "以首字成像的圆形头像。", "NSImage",
      kAvatar, COUNT(kAvatar)},
-    {"基础", "Progress", "进度、骨架与加载指示。", "Progress / Skeleton / Spinner",
+    {"基础", "Progress", "进度、骨架与加载指示。", "NSProgressIndicator",
      kProgress, COUNT(kProgress)},
-    {"表单", "Input", "单行与多行文本输入。", "Input / Textarea",
+    {"表单", "Input", "单行与多行文本输入。", "NSTextField / NSTextView",
      kInput, COUNT(kInput)},
-    {"表单", "Input Group", "带前后缀的输入框。", "Input Group",
+    {"表单", "Input Group", "带前后缀的输入框。", "NSTextField",
      kInputGroup, COUNT(kInputGroup)},
-    {"表单", "Input OTP", "定长数字验证码。", "Input OTP",
+    {"表单", "Input OTP", "定长数字验证码。", "NSSecureTextField",
      kOtp, COUNT(kOtp)},
-    {"表单", "Checkbox", "多选，整行可点。", "Checkbox",
+    {"表单", "Checkbox", "多选，整行可点。", "NSButton · switch",
      kCheckbox, COUNT(kCheckbox)},
-    {"表单", "Switch", "二态开关。", "Switch",
+    {"表单", "Switch", "二态开关。", "NSSwitch",
      kSwitch, COUNT(kSwitch)},
-    {"表单", "Radio Group", "互斥单选。", "Radio Group",
+    {"表单", "Radio Group", "互斥单选。", "NSButton · radio",
      kRadio, COUNT(kRadio)},
-    {"表单", "Slider", "连续值区间选择。", "Slider",
+    {"表单", "Slider", "连续值区间选择。", "NSSlider",
      kSlider, COUNT(kSlider)},
-    {"表单", "Select", "下拉单选。", "Select",
+    {"表单", "Select", "下拉单选。", "NSPopUpButton",
      kSelect, COUNT(kSelect)},
-    {"表单", "Combobox", "可键入过滤的下拉。", "Combobox",
+    {"表单", "Combobox", "可键入过滤的下拉。", "NSComboBox",
      kCombobox, COUNT(kCombobox)},
-    {"表单", "Toggle", "按下态按钮与分组。", "Toggle / Toggle Group",
+    {"表单", "Toggle", "按下态按钮与分组。", "NSSegmentedControl",
      kToggle, COUNT(kToggle)},
-    {"表单", "Button Group", "相邻按钮共享边框，支持多选。", "Button Group",
+    {"表单", "Button Group", "相邻按钮共享边框，支持多选。", "NSSegmentedControl",
      kButtonGroup, COUNT(kButtonGroup)},
     {"表单", "Stepper", "数值步进与星级评分。", "—",
      kStepper, COUNT(kStepper)},
-    {"表单", "Form Field", "标签、说明、错误的纵向组合。", "Field",
+    {"表单", "Form Field", "标签、说明、错误的纵向组合。", "—",
      kField, COUNT(kField)},
-    {"表单", "Calendar", "月视图日期选择。", "Calendar",
+    {"表单", "Calendar", "月视图日期选择。", "NSDatePicker",
      kCalendar, COUNT(kCalendar)},
-    {"数据展示", "Tabs", "标签页与胶囊分段。", "Tabs / Toggle Group",
+    {"数据展示", "Tabs", "标签页与胶囊分段。", "NSTabView",
      kTabs, COUNT(kTabs)},
-    {"数据展示", "Table", "只读表格。", "Table",
+    {"数据展示", "Table", "只读表格。", "NSTableView",
      kTable, COUNT(kTable)},
-    {"数据展示", "Card", "容器与带插槽的列表项。", "Card / Item",
+    {"数据展示", "Card", "容器与带插槽的列表项。", "NSBox",
      kCard, COUNT(kCard)},
-    {"数据展示", "Empty", "空状态占位。", "Empty",
+    {"数据展示", "Empty", "空状态占位。", "—",
      kEmpty, COUNT(kEmpty)},
-    {"数据展示", "Pagination", "页码导航。", "Pagination",
+    {"数据展示", "Pagination", "页码导航。", "—",
      kPagination, COUNT(kPagination)},
-    {"数据展示", "Accordion", "单段折叠。", "Accordion",
+    {"数据展示", "Accordion", "单段折叠。", "NSDisclosureGroup",
      kAccordion, COUNT(kAccordion)},
-    {"数据展示", "Alert", "提示条。", "Alert",
+    {"数据展示", "Alert", "提示条。", "—",
      kAlert, COUNT(kAlert)},
-    {"数据展示", "Breadcrumb", "路径导航。", "Breadcrumb",
+    {"数据展示", "Breadcrumb", "路径导航。", "NSPathControl",
      kBreadcrumb, COUNT(kBreadcrumb)},
-    {"数据展示", "Chart", "折线与柱状。", "Chart",
+    {"数据展示", "Chart", "折线与柱状。", "Swift Charts",
      kChart, COUNT(kChart)},
-    {"浮层", "Menu", "锚定下拉菜单。", "Dropdown Menu",
+    {"浮层", "Menu", "锚定下拉菜单。", "NSMenu",
      kMenu, COUNT(kMenu)},
-    {"浮层", "Menubar", "窗口级菜单栏。", "Menubar",
+    {"浮层", "Menubar", "窗口级菜单栏。", "NSMenu · main",
      kMenubar, COUNT(kMenubar)},
-    {"浮层", "Popover", "任意内容的浮出面板。", "Popover",
+    {"浮层", "Popover", "任意内容的浮出面板。", "NSPopover",
      kPopover, COUNT(kPopover)},
-    {"浮层", "Hover Card", "悬停预览卡片。", "Hover Card",
+    {"浮层", "Hover Card", "悬停预览卡片。", "NSPopover · transient",
      kHoverCard, COUNT(kHoverCard)},
-    {"浮层", "Dialog", "模态对话框与确认弹层。", "Dialog / Alert Dialog",
+    {"浮层", "Dialog", "模态对话框与确认弹层。", "NSAlert",
      kDialog, COUNT(kDialog), o_dialog},
-    {"浮层", "Drawer", "侧边抽屉。", "Sheet / Drawer",
+    {"浮层", "Drawer", "侧边抽屉。", "NSWindow · sheet",
      kDrawer, COUNT(kDrawer), o_drawer},
-    {"浮层", "Toast", "短暂的操作反馈。", "Toast / Sonner",
+    {"浮层", "Toast", "短暂的操作反馈。", "—",
      kToast, COUNT(kToast)},
-    {"浮层", "Tooltip", "悬停说明。", "Tooltip",
+    {"浮层", "Tooltip", "悬停说明。", "NSView.toolTip",
      kTooltip, COUNT(kTooltip)},
-    {"浮层", "Context Menu", "右键菜单。", "Context Menu",
+    {"浮层", "Context Menu", "右键菜单。", "NSMenu · context",
      kContextMenu, COUNT(kContextMenu)},
     {"布局", "Layout", "Stack 与均分。", "—",
      kLayout, COUNT(kLayout)},
-    {"布局", "Scroll", "通用滚动与虚拟列表。", "Scroll Area",
+    {"布局", "Scroll", "通用滚动与虚拟列表。", "NSScrollView",
      kScroll, COUNT(kScroll)},
-    {"布局", "Split Pane", "可拖动的分割面板。", "Resizable",
+    {"布局", "Split Pane", "可拖动的分割面板。", "NSSplitView",
      kSplit, COUNT(kSplit)},
     {"布局", "Clip", "矩形裁剪。", "—",
      kClip, COUNT(kClip)},
-    {"布局", "Aspect Ratio", "按比例推导高度。", "Aspect Ratio",
+    {"布局", "Aspect Ratio", "按比例推导高度。", "—",
      kAspect, COUNT(kAspect)},
     {"图形与动效", "Primitives", "八个绘制图元。", "—",
      kPrimitives, COUNT(kPrimitives)},
@@ -1457,114 +1500,185 @@ const int kGroupCount = kPageGroup.empty() ? 0 : kPageGroup.back() + 1;
 // =============================================================================
 //  导航
 // =============================================================================
-constexpr float kNavW = 232.0f;
-constexpr float kNavItemH = 24.0f;
-constexpr float kNavGroupH = 26.0f;
-constexpr float kHeaderH = 92.0f;
+constexpr float kNavW      = 220.0f;
+constexpr float kNavItemH  = 26.0f;
+constexpr float kNavGroupH = 24.0f;
+constexpr float kTitleH    = 52.0f;
+constexpr float kPageHeadH = 74.0f;   // 页头（Title 1 + 副标）占的高度
+constexpr std::uint64_t kNavTweenId = 0x6e61765f7731ull;
 
-// 折叠状态下的列表高度也要算准：滚动条的 max_offset 直接用它，
-// 少算了下半截就滚不到，多算了就是一片空白。
-float nav_content_height(const App& a) {
-    float h = 0.0f;
-    for (int i = 0; i < kPageCount; ++i) {
-        if (i == 0 || std::string(kPages[i].group) != std::string(kPages[i - 1].group))
-            h += kNavGroupH;
-        if (!(a.nav_closed & (1u << unsigned(kPageGroup[size_t(i)])))) h += kNavItemH;
-    }
-    return h + 8.0f;
+// ---------------------------------------------------------------- 侧边栏的行表
+// 行表是导航的**唯一真相**：高度、滚动范围、命中判定全从它来。以前高度由
+// nav_content_height() 另算一遍，加一行搜索过滤就得同时改两个地方。
+struct NavRow { int kind; int page; int group; };   // 0 = 分组头，1 = 条目
+
+std::string lower_ascii(std::string s) {
+    for (char& c : s)
+        if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
+    return s;
 }
 
-void draw_nav(Ui& ui, App& a, const Rect& nav) {
-    const aino::Theme& th = ui.theme();
-    // 侧边栏是 macOS 的 source list 面：比内容区深一档的整片浅灰（暗色下更暗），
-    // 不是"背景色 + 一点点灰"。
-    ui.fill_rect(nav, th.sidebar_bg, 0.0f);
-    ui.fill_rect(Rect(nav.right() - 1.0f, nav.y, 1.0f, nav.h), th.separator, 0.0f);
+// 搜索非空时只留命中的条目；整组都没命中的，分组头也一起消失。
+// 搜索期间强制展开 —— 否则"搜到了却在折叠组里看不见"。
+std::vector<NavRow> nav_rows(const App& a) {
+    const std::string q = lower_ascii(a.query);
+    std::vector<char> hit(size_t(kPageCount), 0);
+    for (int i = 0; i < kPageCount; ++i)
+        hit[size_t(i)] = q.empty() || lower_ascii(kPages[i].name).find(q) != std::string::npos;
 
-    // 品牌区。不用 vbox：这里只有两行固定位置，且 pad 会同时吃掉上下留白，
-    // 两行在 78px 里会叠在一起。
-    ui.label("aino", Rect(nav.x + 18.0f, nav.y + 14.0f, nav.w - 36.0f, 20.0f),
-             Style().left().semi_bold().font(15.0f));
-    ui.muted_text("单头文件 GUI 库 · " + std::string(AINO_VERSION),
-                  Rect(nav.x + 18.0f, nav.y + 34.0f, nav.w - 36.0f, 14.0f),
-                  Style().left().font(11.0f));
-
-    // 底部工具条
-    const float foot_h = 52.0f;
-    const Rect foot(nav.x, nav.bottom() - foot_h, nav.w, foot_h);
-    ui.fill_rect(Rect(foot.x, foot.y, foot.w - 1.0f, 1.0f), th.border, 0.0f);
-    {
-        Stack f = ui.hbox(Rect(foot.x + 16.0f, foot.y, foot.w - 32.0f, foot_h), 10.0f);
-        const Rect tb = f.next(34.0f);
-        // hbox 切出来的横切片是**整行高**（52），而按钮是 34×34 的正方形。
-        // 用 center_y 在行里居中，别写 tb.y + 9 —— 行高一改就和右边的字错位。
-        const Rect ib = tb.center_y(34.0f);
-        if (ui.icon_button("", ib, Style().outline()))
-            a.dark = !a.dark;
-        // 太阳 / 月亮自绘：字体里的这两个符号在部分系统缺字形，会显示成方块
-        {
-            const Color ic = th.foreground;
-            const float bx = ib.cx(), by = ib.cy();
-            if (a.dark) {
-                ui.fill_circle(bx, by, 5.0f, ic);
-                for (int k = 0; k < 8; ++k) {
-                    const float ang = float(k) * 3.14159265f / 4.0f;
-                    ui.draw_line(bx + std::cos(ang) * 7.4f, by + std::sin(ang) * 7.4f,
-                                 bx + std::cos(ang) * 10.0f, by + std::sin(ang) * 10.0f, ic, 1.5f);
-                }
-            } else {
-                // 月牙 = 圆减圆。用底色挖洞的做法在换主题后会露出错色。
-                ui.fill_crescent(bx + 0.8f, by, 7.6f, bx + 4.4f, by - 2.6f, 8.2f, ic);
-            }
-        }
-        // 同理：文字盒子直接给整行，垂直居中交给 Style 的 valign。
-        ui.muted_text(a.dark ? "深色" : "浅色", f.rest(), Style().left().font(11.5f));
-    }
-
-    // 列表
-    const Rect list(nav.x, 78.0f, nav.w, nav.bottom() - foot_h - 78.0f);
-    auto sc = ui.scroll(list, nav_content_height(a));
-    (void)sc;
+    std::vector<NavRow> v;
     for (int i = 0; i < kPageCount; ++i) {
         const int gi = kPageGroup[size_t(i)];
-        const bool open = !(a.nav_closed & (1u << unsigned(gi)));
-        if (i == 0 || std::string(kPages[i].group) != std::string(kPages[i - 1].group)) {
+        if (i == 0 || gi != kPageGroup[size_t(i - 1)]) {
+            bool any = false;
+            for (int k = i; k < kPageCount && kPageGroup[size_t(k)] == gi; ++k)
+                any = any || hit[size_t(k)] != 0;
+            if (!any) continue;
+            v.push_back({0, i, gi});
+            if (q.empty() && (a.nav_closed & (1u << unsigned(gi)))) {
+                while (i + 1 < kPageCount && kPageGroup[size_t(i + 1)] == gi) ++i;
+                continue;
+            }
+        }
+        if (hit[size_t(i)]) v.push_back({1, i, gi});
+    }
+    return v;
+}
+
+// 圆环（图元只有实心圆，放大镜得自己拼）。20 段折线，半径 5 时每段 1.5px，
+// 肉眼看不出棱角。
+void circle_ring(Ui& ui, float cx, float cy, float r, const Color& c, float w) {
+    const int n = 20;
+    for (int i = 0; i < n; ++i) {
+        const float a0 = 6.2831853f * float(i) / float(n);
+        const float a1 = 6.2831853f * float(i + 1) / float(n);
+        ui.draw_line(cx + std::cos(a0) * r, cy + std::sin(a0) * r,
+                     cx + std::cos(a1) * r, cy + std::sin(a1) * r, c, w);
+    }
+}
+
+void magnifier(Ui& ui, float cx, float cy, float r, const Color& c) {
+    circle_ring(ui, cx, cy, r, c, 1.3f);
+    const float k = 0.70710678f;
+    ui.draw_line(cx + r * k, cy + r * k, cx + r * k + 2.6f, cy + r * k + 2.6f, c, 1.4f);
+}
+
+// 侧边栏开关的 SF 形状："sidebar.left" —— 圆角矩形 + 左侧一列实心。
+void sidebar_glyph(Ui& ui, float cx, float cy, const Color& c) {
+    const Rect r(cx - 7.5f, cy - 6.0f, 15.0f, 12.0f);
+    ui.fill_rect(Rect(r.x + 1.6f, r.y + 1.6f, 4.2f, r.h - 3.2f), c.scaled_alpha(0.5f), 1.6f);
+    ui.stroke_rect(r, c, 3.0f, 1.2f);
+}
+
+// -----------------------------------------------------------------------------
+//  标题栏
+// -----------------------------------------------------------------------------
+// macOS 11 之后侧边栏是**整窗高**的：红绿灯浮在侧边栏顶部，标题栏只横跨内容区。
+// 之前这里从 y=0 直接铺内容 —— 没有标题栏、没有红绿灯，整页于是像网页而不像 App。
+void draw_titlebar(Ui& ui, App& a) {
+    const aino::Theme& th = ui.theme();
+    const float w  = ui.width();
+    const float cy = 26.0f;
+
+    ui.fill_rect(Rect(a.nav_w, 0.0f, w - a.nav_w, kTitleH), th.window_bg, 0.0f);
+    ui.fill_rect(Rect(a.nav_w, kTitleH - 1.0f, w - a.nav_w, 1.0f), th.separator, 0.0f);
+
+    // 红绿灯：直径 12、间距 8（官方 Traffic Light 就是这个数）。纯色圆在浅灰
+    // 侧边栏上会发飘，所以先垫一层 12% 的暗底当 0.5px 边。
+    const Color lights[3] = {Color::hex(0xFF5F57), Color::hex(0xFEBC2E),
+                             Color::hex(0x28C840)};
+    const auto& in = ui.input();
+    for (int i = 0; i < 3; ++i) {
+        const float cx = 22.0f + 20.0f * float(i);
+        ui.fill_circle(cx, cy, 6.3f, lights[i].mix(Color(0, 0, 0, 255), 0.18f));
+        ui.fill_circle(cx, cy, 6.0f, lights[i]);
+        // 红 = 关闭（真关：Window::close 让消息循环收尾）。黄/绿不假装能点：
+        // 这个库没有最小化/全屏接口，画个能点的按钮却什么都不做更糟。
+        if (i == 0 && in.pressed[0] &&
+            Rect(cx - 6.0f, cy - 6.0f, 12.0f, 12.0f).contains(in.mouse.x, in.mouse.y))
+            a.quit = true;
+    }
+
+    // 侧边栏开关。侧边栏收起时让到红绿灯右边 —— 否则正好压在红绿灯上。
+    const float toggle_x = std::max(a.nav_w + 14.0f, 92.0f);
+    const Rect toggle(toggle_x, cy - 12.0f, 24.0f, 24.0f);
+    if (ui.icon_button("", toggle, Style().ghost())) a.nav_open = !a.nav_open;
+    sidebar_glyph(ui, toggle.cx(), toggle.cy(), th.label2);
+
+    // 窗口标题：居中在内容区上（不是整个窗口 —— 侧边栏那边是红绿灯的地盘）
+    ui.label("aino 组件画廊",
+             Rect(a.nav_w, 0.0f, w - a.nav_w, kTitleH),
+             Style().center().semi_bold().font(13.0f));
+
+    // 外观：外观切换在 macOS 里是"选一个值"，用分段控件，不是开关。
+    const Rect seg(w - 16.0f - 108.0f, cy - 11.0f, 108.0f, 22.0f);
+    int mode = a.dark ? 1 : 0;
+    if (ui.segmented({"浅色", "深色"}, &mode, seg, Style().font(11.5f)))
+        a.dark = (mode == 1);
+}
+
+// -----------------------------------------------------------------------------
+//  侧边栏
+// -----------------------------------------------------------------------------
+void draw_nav(Ui& ui, App& a, const Rect& nav) {
+    const aino::Theme& th = ui.theme();
+    ui.fill_rect(nav, th.sidebar_bg, 0.0f);
+    ui.fill_rect(Rect(nav.right() - 1.0f, nav.y, 1.0f, nav.h), th.separator, 0.0f);
+    if (nav.w < 60.0f) return;                 // 收起来了：只留一条材质，别画内容
+
+    // 搜索框。侧边栏搜索 = 圆角 6 的输入框 + 左侧放大镜，没有"搜索"按钮。
+    const Rect sf(nav.x + 10.0f, kTitleH + 8.0f, nav.w - 20.0f, 24.0f);
+    ui.input(&a.query, sf, Style().padding(24.0f).hint("搜索"));
+    magnifier(ui, sf.x + 10.0f, sf.cy(), 4.4f, th.label3);
+
+    const float list_y = sf.bottom() + 10.0f;
+    const Rect list(nav.x, list_y, nav.w, std::max(nav.bottom() - list_y - 6.0f, 1.0f));
+    const std::vector<NavRow> rows = nav_rows(a);
+    float total = 6.0f;
+    for (const NavRow& r : rows) total += (r.kind == 0 ? kNavGroupH : kNavItemH);
+    total += 10.0f;
+
+    auto sc = ui.scroll(list, total);
+    (void)sc;
+    for (const NavRow& r : rows) {
+        if (r.kind == 0) {
             const Rect gh = ui.row(kNavGroupH);
-            // 组头本身就是折叠开关。用空的 ghost 按钮占位 —— 它不画文字，
-            // 只在悬停时给一层底色，点击热区就是整行。
-            // 折叠不改变当前页：导航收起不等于离开这一页（和编辑器折叠目录一样）。
-            if (ui.button("", Rect(gh.x + 10.0f, gh.y, gh.w - 20.0f, gh.h), Style().ghost())) {
-                a.nav_closed ^= (1u << unsigned(gi));
-                // 按钮点完会拿到键盘焦点，焦点环留在行上像"这行被选中了"。
-                // 组头只是折叠开关，立刻交还焦点。
+            // 搜索时强制展开（否则"搜到了却在折叠组里看不见"），三角也跟着朝下
+            const bool open = !a.query.empty() ||
+                              !(a.nav_closed & (1u << unsigned(r.group)));
+            // 组头整行可点（官方只有三角可点，但整行热区更好使，且不额外画东西）
+            if (ui.button("", Rect(gh.x + 6.0f, gh.y, gh.w - 12.0f, gh.h), Style().ghost())) {
+                if (a.query.empty()) a.nav_closed ^= (1u << unsigned(r.group));
                 ui.set_focus(nullptr);
             }
-            // 文字的盒子就是整行：Style 的 valign 默认就是 Middle，所以它会
-            // 自动落到行中心，和右边那个手工算中心点的折叠三角对齐。
-            // 别再写 y + 12 这种固定偏移 —— 行高一改就偏，而且和三角不在一条线上。
-            ui.muted_text(kPages[i].group,
-                          Rect(gh.x + 18.0f, gh.y, gh.w - 50.0f, gh.h),
-                          Style().left().font(11.0f));
-            // 折叠标记：展开时朝下，折叠时朝右（两条线拼的尖角，不依赖字形）
+            // 披露三角在**左**边（Finder / Xcode 的 navigator 都是这个位置）
             {
-                const float cx = gh.right() - 26.0f, cy = gh.y + gh.h * 0.5f;
-                const Color cc = th.muted_foreground;
+                const float cx = gh.x + 15.0f, cy = gh.cy();
+                const Color cc = th.label2;
                 if (open) {
-                    ui.draw_line(cx - 4.0f, cy - 2.0f, cx, cy + 2.0f, cc, 1.4f);
-                    ui.draw_line(cx, cy + 2.0f, cx + 4.0f, cy - 2.0f, cc, 1.4f);
+                    ui.draw_line(cx - 4.0f, cy - 2.0f, cx, cy + 2.0f, cc, 1.3f);
+                    ui.draw_line(cx, cy + 2.0f, cx + 4.0f, cy - 2.0f, cc, 1.3f);
                 } else {
-                    ui.draw_line(cx - 2.0f, cy - 4.0f, cx + 2.0f, cy, cc, 1.4f);
-                    ui.draw_line(cx + 2.0f, cy, cx - 2.0f, cy + 4.0f, cc, 1.4f);
+                    ui.draw_line(cx - 2.0f, cy - 4.0f, cx + 2.0f, cy, cc, 1.3f);
+                    ui.draw_line(cx + 2.0f, cy, cx - 2.0f, cy + 4.0f, cc, 1.3f);
                 }
             }
+            ui.muted_text(kPages[r.page].group,
+                          Rect(gh.x + 25.0f, gh.y, gh.w - 35.0f, gh.h),
+                          Style().left().semi_bold().font(11.0f));
+            continue;
         }
-        if (!open) continue;
-        const Rect r = ui.row(kNavItemH);
-        const bool active = (a.page == i);
-        if (ui.nav_item(kPages[i].name, active, Rect(r.x + 8.0f, r.y, r.w - 16.0f, r.h))) {
-            if (!active) a.page = i;
-        }
+        const Rect rw = ui.row(kNavItemH);
+        const bool active = (a.page == r.page);
+        // 内缩 8、文字再缩进 18 —— 条目文字和分组头文字落在同一条竖线上
+        if (ui.nav_item(kPages[r.page].name, active,
+                        Rect(rw.x + 8.0f, rw.y, rw.w - 16.0f, rw.h),
+                        Style().font(13.0f).padding(18.0f)))
+            a.page = r.page;
     }
+    if (rows.empty())
+        ui.muted_text("没有匹配的组件", Rect(list.x, list.y + 8.0f, list.w, 20.0f),
+                      Style().center().font(11.0f));
 }
 
 // =============================================================================
@@ -1598,7 +1712,9 @@ CardGeom card_geom(Ui& ui, const Demo& d, float card_w, float need_h) {
     g.code_w    = std::max(card_w * 0.42f, 280.0f);
     g.body_w    = card_w - 2.0f * g.pad;
     g.preview_w = g.body_w - g.code_w - 12.0f;
-    g.inner_h = std::max(d.preview_h, need_h);
+    // 只用**实测**高度。声明值当上限用会留下大片空白（50 条示例里 37 条声明值
+    // 偏大，最多多出 72px）—— 声明值现在只当"没量出来时的兜底"。
+    g.inner_h = need_h > 1.0f ? need_h : d.preview_h;
     // 行高只由**内容**决定，不再被源码块撑开 —— 之前代码一长，预览区就被拉出
     // 一大片空白，整页看起来像文档站。源码超出就裁（code_block 按 box 高度自行截断）。
     g.body_h = g.inner_h + 2.0f * kPlatePadY;
@@ -1629,8 +1745,11 @@ void draw_demo_card(Ui& ui, App& a, const Demo& d, const Rect& card, const CardG
 
     const Rect body(card.x, bar.bottom() + 10.0f, g.body_w, body_h);
     const Rect pre(body.x, body.y, g.preview_w, body_h);
-    // 代码块与预览区等高：左右两条边对齐
-    const Rect cod(body.right() - g.code_w, body.y, g.code_w, body_h);
+    // 源码块按**内容**定高，不跟预览区硬凑等高：一行代码撑一块 200px 的灰面，
+    // 空出来的部分只会显得"没写完"。左边缘仍然对齐。
+    const float cod_h = std::min(body_h,
+        ui.code_block_height(d.code, Style().font(11.5f)) + 12.0f);
+    const Rect cod(body.right() - g.code_w, body.y, g.code_w, cod_h);
 
     // ---- 预览区：直接铺在窗口背景上，不套底板、不描边 ----
     // macOS 的内容区就是"背景 + 内容"，分层靠明度差；一圈 1px 边框 + 圆角卡片
@@ -1647,32 +1766,28 @@ void draw_page(Ui& ui, App& a, const Rect& area) {
     const Page& p = kPages[a.page];
 
     // ---- 页头 ----
-    {
-        Stack h = ui.vbox(Rect(area.x, area.y, area.w, kHeaderH), 0.0f);
-        ui.heading(p.name, h.next(26.0f), Style().left().font(20.0f));
-        ui.muted_text(p.desc, h.next(20.0f), Style().left().font(12.5f));
+    // macOS 的窗口标题下面没有分隔线：Title 1 (22 Bold) + Body (13) 副标，
+    // 靠留白分级。之前这里画了一条贯穿内容区的 1px 线，是文档站的写法。
+    ui.heading(p.name, Rect(area.x, area.y, area.w, 30.0f), Style().left());
+    ui.muted_text(p.desc, Rect(area.x, area.y + 31.0f, area.w * 0.72f, 20.0f),
+                  Style().left().font(13.0f));
 
-        if (std::string(p.shadcn) != "—") {
-            // 对应关系写成右上角的次要文字。原来是描边胶囊——那是最典型的 Web 徽章，
-            // macOS 的窗口里不会出现这种"标签条"。
-            const std::string tag = "shadcn/ui · " + std::string(p.shadcn);
-            const float tw = ui.text_width(tag, 11.0f) + 4.0f;
-            ui.muted_text(tag, Rect(area.right() - tw, area.y + 6.0f, tw, 18.0f),
-                          Style().right().font(11.0f));
-            // 交互回显：点过按钮之后在页头右侧显示最近一次动作，
-            // 这样"点下去到底有没有触发回调"在画面上是可见的。
-            if (a.hits > 0) {
-                ui.muted_text("最近 · " + a.last, Rect(area.x, area.y + 34.0f,
-                                                      area.w - tw - 12.0f, 18.0f),
-                              Style().right().font(11.0f));
-            }
-        }
+    // 右上角：对应的 AppKit 控件（本库唯一需要"对外解释自己"的元信息）
+    if (std::string(p.appkit) != "—") {
+        const std::string tag = "AppKit · " + std::string(p.appkit);
+        const float tw = ui.text_width(tag, 11.0f) + 4.0f;
+        ui.muted_text(tag, Rect(area.right() - tw, area.y + 8.0f, tw, 16.0f),
+                      Style().right().font(11.0f));
     }
-    const Rect rule(area.x, area.y + kHeaderH - 14.0f, area.w, 1.0f);
-    ui.separator(rule);
+    // 交互回显：点过按钮之后显示最近一次动作，"到底有没有触发回调"是可见的
+    if (a.hits > 0)
+        ui.muted_text("最近 · " + a.last,
+                      Rect(area.x + area.w * 0.72f, area.y + 31.0f, area.w * 0.28f, 20.0f),
+                      Style().right().font(11.0f));
 
     // ---- 内容 ----
-    const Rect content(area.x, area.y + kHeaderH + 6.0f, area.w, area.bottom() - area.y - kHeaderH - 6.0f);
+    const Rect content(area.x, area.y + kPageHeadH, area.w,
+                       area.bottom() - area.y - kPageHeadH);
     if (a.page == 0) {
         draw_overview(ui, a, content);
         return;
@@ -1768,9 +1883,16 @@ void build_ui(Ui& ui, App& a) {
         ui.repaint();     // 全窗口唯一的常驻动画；没有 toast 时这一行不执行
     }
 
-    draw_nav(ui, a, Rect(0.0f, 0.0f, kNavW, ui.height()));
-    const Rect area(kNavW + 24.0f, 24.0f, ui.width() - kNavW - 56.0f,
-                    std::max(ui.height() - 48.0f, 1.0f));
+    // 侧边栏宽度：收起/展开走补间，内容区跟着一起动（不是"瞬间换一张图"）
+    a.nav_w = ui.tween(kNavTweenId, a.nav_open ? kNavW : 0.0f, 0.2f,
+                       aino::easing::out_cubic);
+
+    if (a.nav_w > 1.0f) draw_nav(ui, a, Rect(0.0f, 0.0f, a.nav_w, ui.height()));
+    draw_titlebar(ui, a);
+
+    const Rect area(a.nav_w + 28.0f, kTitleH + 20.0f,
+                    std::max(ui.width() - a.nav_w - 56.0f, 1.0f),
+                    std::max(ui.height() - kTitleH - 40.0f, 1.0f));
     draw_page(ui, a, area);
     draw_overlays(ui, a);
 }
@@ -1833,6 +1955,10 @@ int main() {
     if (!win.ok()) return 1;
     App app;
     app.page = start_page_from_env();
+    // 截图钩子：搜索框预置关键字 / 侧边栏预置收起，省得脚本去点
+    if (const char* q = std::getenv("AINO_QUERY")) app.query = q;
+    if (const char* n = std::getenv("AINO_NAV")) app.nav_open = std::atoi(n) != 0;
+    app.nav_w = app.nav_open ? 220.0f : 0.0f;
     bool dumped = false;
     int frames = 0;
     // 截图钩子：在**下一帧开头**取上一帧的后备缓冲。
@@ -1852,6 +1978,7 @@ int main() {
             shot_pending = false;
         }
         build_ui(ui, app);
+        if (app.quit) win.close();     // 红绿灯的红
         ++frames;
         shot_pending = true;
     });
