@@ -496,7 +496,8 @@ void d_input_group(Ui& ui, App& a, const Rect& box) {
 }
 
 void d_otp(Ui& ui, App& a, const Rect& box) {
-    ui.input_otp(&a.otp, 6, box);
+    // 只占 24 高：验证码每格就是一个 Text Field，不是 48 高的大方块
+    ui.input_otp(&a.otp, 6, Rect(box.x, box.y, box.w, 24.0f));
 }
 
 void d_checkbox(Ui& ui, App& a, const Rect& box) {
@@ -571,7 +572,7 @@ void d_combobox(Ui& ui, App& a, const Rect& box) {
 void d_toggle(Ui& ui, App& a, const Rect& box) {
     Stack c = demo_col(ui, box, 12.0f);
     {
-        Stack r = c.hbox(34.0f, 8.0f);
+        Stack r = c.hbox(24.0f, 8.0f);
         ui.toggle_button("粗体", &a.bold, r.next(84.0f));
         ui.toggle_button("斜体", &a.italic, r.next(84.0f));
     }
@@ -858,13 +859,13 @@ void d_context_menu(Ui& ui, App& a, const Rect& box) {
 void d_layout(Ui& ui, App& a, const Rect& box) {
     auto c = ui.vbox(box, 10.0f);
     {
-        Stack r = c.hbox(36.0f, 8.0f);
+        Stack r = c.hbox(24.0f, 8.0f);      // 控件高 24 是 Medium 档，36 是 Web 的默认
         if (ui.button("等分 1/3", r.part(0, 3), Style().outline())) ++a.hits;
         if (ui.button("2/3", r.part(1, 3), Style().outline())) ++a.hits;
         if (ui.button("3/3", r.part(2, 3), Style().outline())) ++a.hits;
     }
     {
-        Stack r = c.hbox(36.0f, 10.0f);
+        Stack r = c.hbox(24.0f, 10.0f);
         const Rect b1 = r.next_text("好", 34.0f);
         const Rect b2 = r.next_text("取消", 34.0f);
         const Rect b3 = r.next_text("保存并关闭", 34.0f, 13.0f, 400);
@@ -1009,7 +1010,7 @@ void d_tween(Ui& ui, App& a, const Rect& box) {
     ui.panel(kn, Style().background(ui.theme().primary).corner(8.0f));
     ui.label("aino", kn, Style().center().font(12.0f).color(ui.theme().primary_foreground));
     ui.pop_transform();
-    if (ui.button(a.motion ? "复位" : "播放", c.next(34.0f), Style().outline()))
+    if (ui.button(a.motion ? "复位" : "播放", c.next(24.0f), Style().outline()))
         a.motion = !a.motion;
     char buf[48];
     std::snprintf(buf, sizeof buf, "t = %.3f", double(k));
@@ -1099,7 +1100,7 @@ ui.input_group(&a.phone, "+86", "", c.next(24.0f));)cpp",
 const Demo kOtp[] = {
     {"六位验证码", "只收数字，自动前进，退格回退",
      R"cpp(ui.input_otp(&a.otp, 6, box);)cpp",
-     48.0f, d_otp},
+     24.0f, d_otp},
 };
 
 const Demo kCheckbox[] = {
@@ -1145,14 +1146,14 @@ const Demo kToggle[] = {
     {"切换按钮与分组", "分组为单选；再点当前项会取消（index = -1）",
      R"cpp(ui.toggle_button("粗体", &a.bold, r.next(84.0f));
 ui.toggle_button("斜体", &a.italic, r.next(84.0f));
-ui.toggle_group({"日", "周", "月"}, &a.tg, c.next(34.0f));)cpp",
+ui.toggle_group({"日", "周", "月"}, &a.tg, c.next(24.0f));)cpp",
      118.0f, d_toggle},
 };
 
 const Demo kButtonGroup[] = {
     {"按钮组", "相邻共享边框；多选用位掩码",
-     R"cpp(ui.button_group({"复制", "粘贴", "剪切"}, &a.bg_click, c.next(34.0f));
-ui.toggle_group_multi({"B", "I", "U"}, &a.tgm, c.next(34.0f));)cpp",
+     R"cpp(ui.button_group({"复制", "粘贴", "剪切"}, &a.bg_click, c.next(24.0f));
+ui.toggle_group_multi({"B", "I", "U"}, &a.tgm, c.next(24.0f));)cpp",
      116.0f, d_button_group},
 };
 
@@ -1315,11 +1316,11 @@ const Demo kContextMenu[] = {
 
 const Demo kLayout[] = {
     {"Stack 布局", "只给高度，位置由布局器推导；part 均分、next_text 按文字宽量",
-     R"cpp(Stack r = c.hbox(36.0f, 8.0f);
+     R"cpp(Stack r = c.hbox(24.0f, 8.0f);
 ui.button("等分 1/3", r.part(0, 3), Style().outline());
 ui.button("2/3", r.part(1, 3), Style().outline());
 
-Stack b = c.hbox(36.0f, 10.0f);
+Stack b = c.hbox(24.0f, 10.0f);
 ui.button("保存并关闭", b.next_text("保存并关闭", 34.0f),
           Style().primary());)cpp",
      156.0f, d_layout},

@@ -7995,12 +7995,16 @@ inline bool Ui::input_otp(std::string* value, int length, const Rect& box, const
     if (length > 12) length = 12;
     const Theme& th = impl->theme;
     const uint64_t id = detail::make_id("otp", box);
-    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size + 2.0f;
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
-    const float gap = 8.0f;
-    const float cell = std::max(1.0f, std::min(box.h, (box.w - gap * float(length - 1)) / float(length)));
+    // 每格就是一个 Text Field：**24 高、r5、13 号字**。之前按 box 高撑到 36，
+    // 数字还是 15 号 —— 那是 Web 的六宫格验证码，比正常的输入框高半截。
+    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
+    const float rad = st.radius >= 0.0f ? st.radius : 5.0f;
+    const float gap = 6.0f;
+    const float cell = std::max(1.0f, std::min(std::min(box.h, 24.0f),
+                                               (box.w - gap * float(length - 1)) / float(length)));
     const float total = cell * float(length) + gap * float(length - 1);
     const float x0 = box.x + (box.w - total) * 0.5f;
+    const float cy = box.cy() - cell * 0.5f;
 
     // 当前格存在 flags 里：必须夹住，length 改小以后旧值会越界。
     float& cur_f = impl->flags[id * 103u + 1u];
@@ -8041,7 +8045,7 @@ inline bool Ui::input_otp(std::string* value, int length, const Rect& box, const
     cur_f = float(cur);
 
     for (int i = 0; i < length; ++i) {
-        const Rect r(x0 + (cell + gap) * float(i), box.y, cell, box.h);
+        const Rect r(x0 + (cell + gap) * float(i), cy, cell, cell);
         const bool active = focused && i == cur;
         fill_rect(r, !st.bg.is_none() ? st.bg : th.background, rad);
         stroke_rect(r, active ? th.ring : th.input, rad, active ? 1.6f : 1.0f);
