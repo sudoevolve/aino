@@ -198,9 +198,9 @@ void open_quickstart_window() {
             auto c = ui.vbox(Rect(0.0f, 0.0f, ui.width(), ui.height()), 10.0f, 20.0f);
             ui.heading("设置", c.next(34.0f));
             ui.separator(c.next(1.0f));
-            ui.input(&email, c.next(28.0f));
+            ui.input(&email, c.next(24.0f));
             ui.checkbox(&notify, "邮件通知", c.next(22.0f));
-            if (ui.button("保存", c.next(28.0f), Style().primary())) ++saved;
+            if (ui.button("保存", c.next(24.0f), Style().primary())) ++saved;
             ui.muted_text(email.empty() ? std::string("输入邮箱后点保存")
                                         : "已保存 " + std::to_string(saved) + " 次：" + email,
                           c.next(20.0f), Style().left().font(11.5f));
@@ -326,19 +326,19 @@ void d_btn_variants(Ui& ui, App& a, const Rect& box) {
     for (int i = 0; i < 6; ++i) {
         Style st;
         st.variant = vs[i];
-        if (ui.button(names[i], cell(c, 132.0f, 28.0f), st)) { ++a.hits; a.last = names[i]; }
+        if (ui.button(names[i], cell(c, 132.0f, 24.0f), st)) { ++a.hits; a.last = names[i]; }
     }
 }
 
 void d_btn_states(Ui& ui, App& a, const Rect& box) {
     Style dis;
     dis.disabled = true;
-    ui.button("禁用", Rect(box.x, box.y, 96.0f, 28.0f), dis);
+    ui.button("禁用", Rect(box.x, box.y, 96.0f, 24.0f), dis);
 
     Style pressy;
     pressy.variant = Style::Secondary;
     pressy.press_scale = 0.94f;
-    if (ui.button("按压缩放", Rect(box.x + 106.0f, box.y, 108.0f, 28.0f), pressy)) {
+    if (ui.button("按压缩放", Rect(box.x + 106.0f, box.y, 108.0f, 24.0f), pressy)) {
         ++a.hits;
         a.last = "press_scale";
     }
@@ -348,7 +348,7 @@ void d_btn_icon(Ui& ui, App& a, const Rect& box) {
     auto r = ui.hbox(box, 8.0f);
     const char* g[] = {"+", "−", "×", "⋯"};
     for (int i = 0; i < 4; ++i) {
-        if (ui.icon_button(g[i], r.next(28.0f), Style().outline())) {
+        if (ui.icon_button(g[i], r.next(24.0f))) {
             ++a.hits; a.last = std::string("icon ") + g[i];
         }
     }
@@ -385,8 +385,8 @@ void d_kbd_sep(Ui& ui, App& a, const Rect& box) {
 
 void d_avatar(Ui& ui, App& a, const Rect& box) {
     auto r = ui.hbox(box, 12.0f);
-    ui.avatar("张", r.next(28.0f));
-    ui.avatar("李四", r.next(28.0f));
+    ui.avatar("张", r.next(24.0f));
+    ui.avatar("李四", r.next(24.0f));
     ui.avatar("王", r.next(48.0f));
     ui.avatar("A", r.next(64.0f));
     (void)a;
@@ -398,9 +398,9 @@ void d_progress(Ui& ui, App& a, const Rect& box) {
     ui.progress(0.58f, c.next(8.0f));
     ui.progress(0.92f, c.next(8.0f));
     c.skip(4.0f);
-    Stack r = c.hbox(28.0f, 10.0f);
+    Stack r = c.hbox(24.0f, 10.0f);
     ui.skeleton(r.next(120.0f));
-    ui.spinner(r.next(28.0f));
+    ui.spinner(r.next(24.0f));
     (void)a;
 }
 
@@ -522,8 +522,11 @@ void d_button_group(Ui& ui, App& a, const Rect& box) {
 
 void d_stepper_rating(Ui& ui, App& a, const Rect& box) {
     Stack c = ui.vbox(box, 14.0f);
-    ui.stepper(&a.step, 1.0f, 0.0f, 99.0f, c.next(28.0f));
-    ui.rating(&a.stars, 5, c.next(28.0f));
+    // 官方步进器是"数值框 + 右边缘竖条"，整个控件只有 ~60-140 宽。
+    // 拉满整列会变成一条巨大的空输入框，看着像没画完。
+    const Rect srow = c.next(24.0f);
+    ui.stepper(&a.step, 1.0f, 0.0f, 99.0f, Rect(srow.x, srow.y, 96.0f, srow.h));
+    ui.rating(&a.stars, 5, c.next(24.0f));
     char buf[64];
     std::snprintf(buf, sizeof buf, "step = %.0f · rating = %d", double(a.step), a.stars);
     ui.muted_text(buf, c.next(18.0f), Style().left().font(11.5f));
@@ -574,8 +577,9 @@ void d_card(Ui& ui, App& a, const Rect& box) {
         ui.label("panel", in.next(18.0f), Style().left().semi_bold().font(12.5f));
         ui.muted_text("卡片底色、边框、圆角来自主题", in.next(16.0f), Style().left().font(11.5f));
     }
-    ui.item("张伟", "zhangwei@example.com", "管理员", c.next(50.0f));
-    ui.item("李娜", "lina@example.com", "只读", c.next(50.0f));
+    // 两行条目：macOS 列表里 44 高（不是 Web 的 50），行间一条 1px 分隔线
+    ui.item("张伟", "zhangwei@example.com", "管理员", c.next(44.0f), Style().row_lines());
+    ui.item("李娜", "lina@example.com", "只读", c.next(44.0f), Style().row_lines());
     (void)a;
 }
 
@@ -586,7 +590,7 @@ void d_empty(Ui& ui, App& a, const Rect& box) {
 
 void d_pagination(Ui& ui, App& a, const Rect& box) {
     Stack c = ui.vbox(box, 10.0f);
-    ui.pagination(&a.page_no, 20, c.next(32.0f));
+    ui.pagination(&a.page_no, 20, c.next(24.0f));
     char buf[64];
     std::snprintf(buf, sizeof buf, "第 %d / 20 页", a.page_no + 1);
     ui.muted_text(buf, c.next(18.0f), Style().left().font(11.5f));
@@ -594,12 +598,12 @@ void d_pagination(Ui& ui, App& a, const Rect& box) {
 
 void d_accordion(Ui& ui, App& a, const Rect& box) {
     Stack c = ui.vbox(box, 4.0f);
-    ui.accordion("渲染管线", &a.acc1, c.next(40.0f));
+    ui.accordion("渲染管线", &a.acc1, c.next(24.0f));
     if (a.acc1) {
         ui.muted_text("几何自绘并做抗锯齿，文字交给系统字体引擎。", c.next(20.0f),
                       Style().left().font(11.5f));
     }
-    ui.accordion("输入分发", &a.acc2, c.next(40.0f));
+    ui.accordion("输入分发", &a.acc2, c.next(24.0f));
     if (a.acc2) {
         ui.muted_text("浮层通过输入闸门按位置与层级放行，不靠控件树。", c.next(20.0f),
                       Style().left().font(11.5f));
@@ -640,7 +644,9 @@ void d_chart(Ui& ui, App& a, const Rect& box) {
 //  浮层
 // =============================================================================
 void d_menu(Ui& ui, App& a, const Rect& box) {
-    if (ui.menu("操作", kOps, &a.menu_pick, Rect(box.x, box.y, 132.0f, 28.0f), Style().outline())) {
+    const Rect mr(box.x, box.y, 132.0f, 24.0f);
+    demo_force_open(ui, "menu", mr);          // AINO_OPEN=menu 时强制展开（截图用）
+    if (ui.menu("操作", kOps, &a.menu_pick, mr, Style().outline())) {
         a.last = kOps[size_t(a.menu_pick)];
         a.toast_msg = "已选择：" + a.last;
         a.toast_left = 2.4f;
@@ -674,11 +680,11 @@ void d_menubar(Ui& ui, App& a, const Rect& box) {
 
 void d_popover(Ui& ui, App& a, const Rect& box) {
     demo_set_open("popover", &a.pop);
-    ui.popover("排序", &a.pop, Rect(box.x, box.y, 120.0f, 28.0f), Vec2(190.0f, 104.0f),
+    ui.popover("排序", &a.pop, Rect(box.x, box.y, 120.0f, 24.0f), Vec2(190.0f, 104.0f),
                [&](const Rect& c) {
-                   ui.item("按名称", "", "", Rect(c.x, c.y, c.w, 30.0f));
-                   ui.item("按时间", "", "", Rect(c.x, c.y + 32.0f, c.w, 30.0f));
-                   ui.item("按大小", "", "", Rect(c.x, c.y + 64.0f, c.w, 30.0f));
+                   ui.item("按名称", "", "", Rect(c.x, c.y, c.w, 24.0f));
+                   ui.item("按时间", "", "", Rect(c.x, c.y + 26.0f, c.w, 24.0f));
+                   ui.item("按大小", "", "", Rect(c.x, c.y + 52.0f, c.w, 24.0f));
                });
     ui.muted_text("锚点由调用方给，内容由回调画，点外部或 Esc 关闭。",
                   Rect(box.x, box.y + 46.0f, box.w, 18.0f), Style().left().font(11.5f));
@@ -699,7 +705,7 @@ void d_hover_card(Ui& ui, App& a, const Rect& box) {
 
 void d_dialog(Ui& ui, App& a, const Rect& box) {
     demo_set_open("dialog", &a.dlg);
-    if (ui.button("打开对话框", Rect(box.x, box.y, 132.0f, 28.0f), Style().primary()))
+    if (ui.button("打开对话框", Rect(box.x, box.y, 132.0f, 24.0f), Style().primary()))
         a.dlg = true;
     ui.muted_text("面板由 o_dialog() 在页面末尾绘制，遮罩覆盖整窗。",
                   Rect(box.x, box.y + 46.0f, box.w, 18.0f), Style().left().font(11.5f));
@@ -713,8 +719,8 @@ void o_dialog(Ui& ui, App& a) {
         // macOS 告警的按钮是**右下角右对齐、按内容定宽**的两个小按钮；
         // 把面板底边二分之一二分之一地摊开是 Web 模态的做法，一眼就不是 mac。
         const float bw = 86.0f, gap = 10.0f, by = d.bottom() - 58.0f;
-        if (ui.button("删除", Rect(d.right() - 22.0f - bw, by, bw, 28.0f), Style().destructive())) a.dlg = false;
-        if (ui.button("取消", Rect(d.right() - 22.0f - bw * 2.0f - gap, by, bw, 28.0f), Style().outline())) a.dlg = false;
+        if (ui.button("删除", Rect(d.right() - 22.0f - bw, by, bw, 24.0f), Style().destructive())) a.dlg = false;
+        if (ui.button("取消", Rect(d.right() - 22.0f - bw * 2.0f - gap, by, bw, 24.0f), Style().outline())) a.dlg = false;
     }
     ui.alert_dialog("删除这个文件？", "删除后无法恢复，这份数据没有其他备份。",
                     "删除", "取消", &a.confirm,
@@ -723,7 +729,7 @@ void o_dialog(Ui& ui, App& a) {
 }
 
 void d_alert_dialog(Ui& ui, App& a, const Rect& box) {
-    if (ui.button("删除…", Rect(box.x, box.y, 120.0f, 28.0f), Style().destructive()))
+    if (ui.button("删除…", Rect(box.x, box.y, 120.0f, 24.0f), Style().destructive()))
         a.confirm = true;
     ui.muted_text("确认弹层与上一个示例共用同一套面板绘制。",
                   Rect(box.x, box.y + 46.0f, box.w, 18.0f), Style().left().font(11.5f));
@@ -731,7 +737,7 @@ void d_alert_dialog(Ui& ui, App& a, const Rect& box) {
 
 void d_drawer(Ui& ui, App& a, const Rect& box) {
     demo_set_open("drawer", &a.drawer);
-    if (ui.button("打开抽屉", Rect(box.x, box.y, 120.0f, 28.0f), Style().outline()))
+    if (ui.button("打开抽屉", Rect(box.x, box.y, 120.0f, 24.0f), Style().outline()))
         a.drawer = true;
     ui.muted_text("抽屉贴窗口边缘，所以同样在页面末尾绘制。",
                   Rect(box.x, box.y + 46.0f, box.w, 18.0f), Style().left().font(11.5f));
@@ -741,7 +747,7 @@ void o_drawer(Ui& ui, App& a) {
     ui.drawer("详情", &a.drawer, 0,
               Rect(ui.width() - 300.0f, 0.0f, 300.0f, ui.height()), [&](const Rect& c) {
         ui.label("详情面板", Rect(c.x, c.y, c.w, 22.0f), Style().left().semi_bold());
-        ui.muted_text("遮罩淡入，面板不做位移动画", Rect(c.x, c.y + 28.0f, c.w, 18.0f),
+        ui.muted_text("遮罩淡入，面板不做位移动画", Rect(c.x, c.y + 24.0f, c.w, 18.0f),
                       Style().left().font(11.5f));
         ui.muted_text("点遮罩、Esc 或右上角关闭", Rect(c.x, c.y + 48.0f, c.w, 18.0f),
                       Style().left().font(11.5f));
@@ -749,7 +755,7 @@ void o_drawer(Ui& ui, App& a) {
 }
 
 void d_toast(Ui& ui, App& a, const Rect& box) {
-    if (ui.button("弹出提示", Rect(box.x, box.y, 120.0f, 28.0f), Style().secondary())) {
+    if (ui.button("弹出提示", Rect(box.x, box.y, 120.0f, 24.0f), Style().secondary())) {
         a.toast_msg = "操作已完成";
         a.toast_left = 2.4f;
     }
@@ -758,10 +764,10 @@ void d_toast(Ui& ui, App& a, const Rect& box) {
 }
 
 void d_tooltip(Ui& ui, App& a, const Rect& box) {
-    const Rect t(box.x, box.y, 150.0f, 28.0f);
+    const Rect t(box.x, box.y, 150.0f, 24.0f);
     ui.button("悬停查看", t, Style().outline());
     ui.tooltip(t, "tooltip 在悬停约 0.4 秒后出现，移开即消失");
-    const Rect b2(t.right() + 10.0f, t.y, 62.0f, 28.0f);
+    const Rect b2(t.right() + 10.0f, t.y, 62.0f, 24.0f);
     ui.badge("New", b2);
     ui.tooltip(b2, "任意矩形都能作为锚点");
     (void)a;
@@ -811,12 +817,12 @@ void d_layout(Ui& ui, App& a, const Rect& box) {
 void d_scroll(Ui& ui, App& a, const Rect& box) {
     Stack c = ui.vbox(box, 8.0f);
     {
-        Stack r = c.hbox(28.0f, 8.0f);
+        Stack r = c.hbox(24.0f, 8.0f);
         if (ui.button("回顶", r.part(0, 2), Style().outline())) a.scroll_cmd = 1;
         if (ui.button("到底", r.part(1, 2), Style().outline())) a.scroll_cmd = 2;
     }
     const Rect vp = c.fill();
-    const float ih = 28.0f;
+    const float ih = 24.0f;
     const int   n = 20;
     auto sc = ui.scroll(vp, ih * float(n));
     if (a.scroll_cmd == 1) { sc.to(0.0f); a.scroll_cmd = 0; }
@@ -832,7 +838,7 @@ void d_scroll(Ui& ui, App& a, const Rect& box) {
 
 void d_virtual(Ui& ui, App& a, const Rect& box) {
     Stack c = ui.vbox(box, 8.0f);
-    if (ui.button("跳到底部", c.next(28.0f), Style().outline())) a.jump = 1;
+    if (ui.button("跳到底部", c.next(24.0f), Style().outline())) a.jump = 1;
     const Rect vp = c.fill();
     const float ih = 26.0f;
     const int   n = 100000;
@@ -949,10 +955,10 @@ const Demo kBasic[] = {
     {"六种语义变体", "Style::Variant 决定配色，高度由 box 决定",
      R"cpp(Style st;
 st.variant = Style::Default;
-ui.button("Default", c.next(28.0f), st);
+ui.button("Default", c.next(24.0f), st);
 
 st.variant = Style::Link;
-ui.button("Link", c.next(28.0f), st);)cpp",
+ui.button("Link", c.next(24.0f), st);)cpp",
      256.0f, d_btn_variants},
     {"禁用与按压缩放", "disabled 不参与命中；press_scale 只影响按下帧",
      R"cpp(Style dis;
@@ -965,9 +971,9 @@ pressy.press_scale = 0.94f;
 ui.button("按压缩放", r, pressy);)cpp",
      40.0f, d_btn_states},
     {"图标按钮", "宽度由 box 决定，字形居中",
-     R"cpp(ui.icon_button("+", r.next(28.0f), Style().outline());
-ui.icon_button("-", r.next(28.0f), Style().outline());
-ui.icon_button("x", r.next(28.0f), Style().outline());)cpp",
+     R"cpp(ui.icon_button("+", r.next(24.0f), Style().outline());
+ui.icon_button("-", r.next(24.0f), Style().outline());
+ui.icon_button("x", r.next(24.0f), Style().outline());)cpp",
      36.0f, d_btn_icon},
 };
 
@@ -978,7 +984,7 @@ Style sec; sec.variant = Style::Secondary;
 ui.badge("Secondary", r.next(84.0f), sec);
 Style out; out.variant = Style::Outline;
 ui.badge("Outline", r.next(70.0f), out);)cpp",
-     28.0f, d_badge},
+     24.0f, d_badge},
     {"键帽与分隔线", "kbd 的宽度按文字实测，不按字符数估",
      R"cpp(ui.kbd("Ctrl", r.next_text("Ctrl", 16.0f, 11.0f, 500));
 ui.muted_text("+", r.next(10.0f), Style().center());
@@ -989,8 +995,8 @@ ui.separator(c.next(1.0f));)cpp",
 
 const Demo kAvatar[] = {
     {"头像", "圆形；文字取首字，尺寸由 box 决定",
-     R"cpp(ui.avatar("张", r.next(28.0f));
-ui.avatar("李四", r.next(28.0f));
+     R"cpp(ui.avatar("张", r.next(24.0f));
+ui.avatar("李四", r.next(24.0f));
 ui.avatar("A", r.next(64.0f));)cpp",
      64.0f, d_avatar},
 };
@@ -1000,7 +1006,7 @@ const Demo kProgress[] = {
      R"cpp(ui.progress(0.24f, c.next(8.0f));
 ui.progress(0.92f, c.next(8.0f));
 ui.skeleton(r.next(120.0f));
-ui.spinner(r.next(28.0f));)cpp",
+ui.spinner(r.next(24.0f));)cpp",
      88.0f, d_progress},
 };
 
@@ -1084,8 +1090,8 @@ ui.toggle_group_multi({"B", "I", "U"}, &a.tgm, c.next(34.0f));)cpp",
 
 const Demo kStepper[] = {
     {"步进器与评分", "两者都会夹取到合法区间",
-     R"cpp(ui.stepper(&a.step, 1.0f, 0.0f, 99.0f, c.next(28.0f));
-ui.rating(&a.stars, 5, c.next(28.0f));)cpp",
+     R"cpp(ui.stepper(&a.step, 1.0f, 0.0f, 99.0f, c.next(24.0f));
+ui.rating(&a.stars, 5, c.next(24.0f));)cpp",
      118.0f, d_stepper_rating},
 };
 
@@ -1133,13 +1139,13 @@ const Demo kEmpty[] = {
 
 const Demo kPagination[] = {
     {"分页", "槽位数量恒定，翻页时整排不会左右跳",
-     R"cpp(ui.pagination(&a.page_no, 20, c.next(32.0f));)cpp",
+     R"cpp(ui.pagination(&a.page_no, 20, c.next(24.0f));)cpp",
      64.0f, d_pagination},
 };
 
 const Demo kAccordion[] = {
     {"折叠面板", "展开区域由调用方绘制，控件只负责标题行",
-     R"cpp(ui.accordion("渲染管线", &a.acc1, c.next(40.0f));
+     R"cpp(ui.accordion("渲染管线", &a.acc1, c.next(24.0f));
 if (a.acc1) ui.muted_text("...", c.next(20.0f));)cpp",
      114.0f, d_accordion},
 };
@@ -1167,7 +1173,7 @@ ui.bars(bars, c.next(72.0f));)cpp",
 const Demo kMenu[] = {
     {"下拉菜单", "选中项写入 index 并返回 true",
      R"cpp(if (ui.menu("操作", items, &a.menu_pick,
-                 Rect(box.x, box.y, 132.0f, 28.0f), Style().outline())) {
+                 Rect(box.x, box.y, 132.0f, 24.0f), Style().outline())) {
     a.last = items[a.menu_pick];
 })cpp",
      72.0f, d_menu},
@@ -1201,7 +1207,7 @@ const Demo kDialog[] = {
     {"对话框", "遮罩、面板、折行、关闭按钮由 dialog 负责；按钮调用方续画",
      R"cpp(if (ui.dialog("确认删除", body, &a.dlg, d)) {
     Stack b = ui.hbox(Rect(d.x + 22.0f, d.bottom() - 58.0f,
-                           d.w - 44.0f, 28.0f), 10.0f);
+                           d.w - 44.0f, 24.0f), 10.0f);
     if (ui.button("取消", b.part(0, 2), Style().outline())) a.dlg = false;
 })cpp",
      72.0f, d_dialog},
@@ -1328,7 +1334,7 @@ t.rotate = -12.0f + 24.0f * k;)cpp",
 
 const Page kPages[] = {
     {"入门", "概览", "库的定位、结构与实测数据。", "—", nullptr, 0},
-    {"基础", "Button", "触发一个动作。六种语义变体，统一 28 高度。", "Button",
+    {"基础", "Button", "触发一个动作。六种语义变体，统一 24 高度（Medium 档）。", "Button",
      kBasic, COUNT(kBasic)},
     {"基础", "Badge", "状态标记与键帽。", "Badge / Kbd",
      kBadge, COUNT(kBadge)},
@@ -1581,7 +1587,7 @@ constexpr float kPlatePadY = 16.0f;
 // 测量和绘制都必须用这一个函数，否则量出来的高度和画出来的不一样。
 float preview_inner_w(float card_w) {
     const float code_w = std::max(card_w * 0.42f, 280.0f);
-    const float body_w = card_w - 28.0f;
+    const float body_w = card_w - 24.0f;
     return body_w - code_w - 12.0f - 40.0f;
 }
 
@@ -1763,7 +1769,7 @@ void build_ui(Ui& ui, App& a) {
     }
 
     draw_nav(ui, a, Rect(0.0f, 0.0f, kNavW, ui.height()));
-    const Rect area(kNavW + 28.0f, 24.0f, ui.width() - kNavW - 56.0f,
+    const Rect area(kNavW + 24.0f, 24.0f, ui.width() - kNavW - 56.0f,
                     std::max(ui.height() - 48.0f, 1.0f));
     draw_page(ui, a, area);
     draw_overlays(ui, a);

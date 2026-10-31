@@ -275,6 +275,71 @@ fill_rect(r, th.accent.with_alpha(uint8_t(255.0f * t + 0.5f)));   // t=1 时 →
 
 ### 还没做
 
-- 数字列右对齐（表格目前一律左对齐）
-- `avatar` / `tooltip` / `toast` 的内边距与阴影层级尚未逐个对官方值
+- ~~数字列右对齐~~（第八节已做）
 - 液态玻璃按约定跳过
+
+---
+
+## 八、第三轮：全量对齐（逐控件，含没有对应物的）
+
+这一轮的原则变了：不再"挑几个明显的改"，而是**把库里每个控件都过一遍**，
+能在一一映射到 kit 符号的就照符号画；kit 里没有对应物的（alert 条、badge、
+pagination、empty、kbd、toast、drawer、hover card……），按**同一套语法**推导：
+同一个半径尺度、同一套叠加填充档位、同一套文字样式、同一条分隔线。
+
+### 8.1 先把重复的画法收成一处
+
+对齐做不到位的真正原因是**同一个控件在五个地方各画一遍**：菜单面板在
+`menu` / `menubar` / `context_menu` / `select` / `combobox` 里各有一份，
+行高 32 / 24 不一、悬停有的 5% 灰有的实心蓝、有的有勾有的没有。
+这一轮抽出 `detail::paint_menu()`，五处全部改调它，参数只剩"行矩形 + 悬停位"。
+
+同理，分段控件（`segmented` → `tabs(pill)`）和 Toggle 组（`group_cell`）现在
+共用一套轨道 + 内缩 2 的滑块 + 1×14 段间细缝；它们在 AppKit 里本来就是同一个控件。
+
+### 8.2 逐控件改了什么
+
+| 控件 | 官方来源 / 推导依据 | 关键数值 |
+|---|---|---|
+| `heading` | Title 1 | 22 / **Bold**（原 24 semibold，两个值都不是官方值） |
+| `subheading` | Title 3 | 15 / Semibold（原 18） |
+| `label` / `muted_text` | Body | 13 Regular；次要色 50%/55% |
+| `badge` | 推导（tag） | 高 16、r**4.5**（不是胶囊）、字 10、左右 6 |
+| `kbd` | 推导（快捷键提示） | 5% 面 + r4 + 11px，去掉"机械键帽"的立体下沿 |
+| `panel` / `card` | Group Box | **1px 细线 + r10，内部不铺底**（Web 的白卡片+灰底+阴影在 mac 里不存在） |
+| `button` · Outline | Bordered | 8% 面 **+ 1px 细线**（原与 Secondary 完全同形，六个变体只剩五种视觉） |
+| `button` 全体系 | Push Button | 高度 24（Medium），r6，标签 13 Medium |
+| `input` / `textarea` | Text Field/Rounded | 暗色下面比窗口**亮一档**（原来直接用 window_bg，暗色等于没有框）；描边 = 分隔线色；焦点环 3px @25% |
+| `tabs(pill)` / `segmented` | Segmented Control | 轨道 = 凹槽 8%，选中 = 强调色实心内缩 2、同心圆角，段间 1×14 @25% |
+| `slider` | Slider/Non-ticked | 轨道 6、把手 20×16；**悬停不变形**，按下才 25×20 |
+| `stepper` | Stepper/No Field | **20 宽竖条**：上下两个半高按钮 + 实心小三角，数值右对齐（原来是 `[−] 值 [+]` 的 Web Number Input） |
+| `table` | Column Header + List | 表头 11 Semibold @50%；行高 20；**数字列右对齐**（含表头，按列首个非空单元格判定，支持 `12 ms` 这种带单位的值） |
+| `menu` / `menubar` / `context menu` / `select` / `combobox` | Menu Item | 容器 r10 + Quaternary 投影；行高 **24**（原 32）；悬停 = 强调色实心 + 反色文字 r5；选中勾在**行首勾位**，未选中行也留位 |
+| `combobox` 搜索框 | Text Field | r5、5% 面、行首放大镜、占位 25%（原来是全宽灰条 + 1px 边框） |
+| `dialog` / `alert_dialog` | Alert | r12、**无描边**、无右上角 ×；标题 Headline 13 **Bold**；正文 13 |
+| `toast` | 推导（通知条） | r10 + Secondary 投影；去掉左侧色带，告警改用文字颜色 |
+| `accordion` | Disclosure Button | 行高 24（原 38），**实心三角**（折叠朝右/展开朝下），悬停 5% |
+| `empty_state` | 推导 | 去掉虚线占位框，只留居中说明 |
+| `item` | List Item | 行内边距 10、r5、副标题 11px；新增 `Style().row_lines()` 画行底线 |
+| `nav_item` | Item/Small/Selected | 选中 = 强调色 23% 叠加（实测像素 `#173852`，深色窗口上正是 23% 蓝） |
+| `pagination` | 推导 | 当前页 = 强调色胶囊 + 反色字；行高 24 |
+| `calendar` | 推导 | 选中/悬停正圆（上一轮已改），本轮机检无回归 |
+
+### 8.3 示例本身也是"参数"
+
+控件改对了，示例还写着 28 高度、40 行的手风琴、50 行的列表项，整页仍然不像 mac。
+本轮把示例里的控件高度统一到 `Global/Height Medium = 24`，列表项 44（两行）/
+24（单行），弹层触发器 24，代码块里的示例代码同步更新。
+
+### 8.4 新增的工具
+
+- `tools/digest.js`：给定符号名，直接打印"尺寸/圆角/平滑/填充/描边/阴影 + 前两层
+  子图层的相对几何与文字"，输出控制在一屏内，供逐控件比对时随手查。
+- `.workbuddy/px.py`：读 gallery 的 PNG（filter 全 0）按坐标取色，用来验证
+  "23% 而不是实心蓝"这类肉眼看不出的事。
+
+### 8.5 仍与官方有差距的地方
+
+- kit 里的 `Push Button` 有 5 档尺寸（Mini…XL），本库只按 box 高度取 Medium 一档
+- `Switch` 的按下形变（滑块横向拉长到 50×31）未做
+- 液态玻璃（按约定跳过）

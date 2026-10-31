@@ -494,6 +494,10 @@ struct Style {
     // 空闲 0% CPU"，所以"持续 repaint"必须由调用方点名要求，不能由组件偷偷加。
     bool  animated = false;
 
+    // 行底线：列表里相邻的 item 之间画一条 1px 分隔线（macOS 的 source list /
+    // 表格行都有，但菜单和单独一张卡片没有）。默认关，由调用方点名要。
+    bool  row_sep = false;
+
     // --- 交互 ---
     float press_scale = 1.0f;     // 按压缩放，1.0 = 不缩放
 
@@ -507,6 +511,8 @@ struct Style {
     Style& padded(float x, float y) { pad_x = x; pad_y = y; return *this; }
     Style& padding(float v) { pad_x = v; pad_y = v; return *this; }
     Style& font(float size) { font_size = size; return *this; }
+    // 列表行之间画分隔线（见 row_sep 的注释）
+    Style& row_lines() { row_sep = true; return *this; }
     Style& weight(int w) { font_weight = w; return *this; }
     Style& bold() { font_weight = 700; return *this; }
     Style& semi_bold() { font_weight = 600; return *this; }
@@ -1329,6 +1335,30 @@ namespace detail {
 // =============================================================================
 
 inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+// 表格单元格是不是"数字"：可选正负号 + 数字 + 小数点 + 千分位 + 结尾的 %/单位。
+// macOS 的表格里数字列一律右对齐，靠这个判断，调用方不用为每列再传一次对齐方式。
+inline bool looks_numeric(const std::string& s) {
+    size_t i = 0, n = s.size();
+    while (i < n && (s[i] == ' ' || s[i] == '\t')) ++i;
+    if (i < n && (s[i] == '-' || s[i] == '+')) ++i;
+    bool digit = false, dot = false;
+    for (; i < n; ++i) {
+        const char c = s[i];
+        if (c >= '0' && c <= '9') { digit = true; continue; }
+        if (c == '.' && !dot) { dot = true; continue; }
+        if (c == ',' || c == ' ' || c == '\'') continue;          // 千分位
+        if (c == '%' || c == '\xC2' /* ¥ 的前导字节 */) continue;
+        if (c == '$' || c == '\xE2' /* € 的前导字节 */) continue;
+        if (c == 'Y' || c == 'K' || c == 'M') continue;            // ¥ / KB / MB 之类
+        break;
+    }
+    if (!digit) return false;
+    // 尾部允许单位（ms / 秒 / px / KB），但不允许再出现数字 —— "第 3 项" 不是数字列
+    for (size_t k = i; k < n; ++k)
+        if ((s[k] >= '0' && s[k] <= '9') || s[k] == '.') return false;
+    return true;
+}
 inline int   clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 inline float lerpf(float a, float b, float t) { return a + (b - a) * t; }
 
@@ -4525,8 +4555,12 @@ inline Skin make_skin(const Theme& th, const Style& st, int default_variant, flo
             sk.fg   = th.label;
             break;
         case Style::Outline:
+            // Bordered：8% 面 + **1px 细线**。macOS 里"有框"和"无框"是两种控件，
+            // 之前 Outline 和 Secondary 都只铺 8%、都不描边，画出来一模一样 ——
+            // 六个变体实际只有五种视觉，调用方没法靠它表达区别。
             sk.base = th.fill2; sk.hover = th.fill2; sk.press = th.fill_press;
             sk.fg   = th.label;
+            sk.border = th.separator; sk.border_w = 1.0f;
             break;
         case Style::Ghost:
             sk.base = Color::none(); sk.hover = th.fill3; sk.press = th.fill2;
@@ -4611,6 +4645,53 @@ inline void paint_focus_ring(Ui& ui, const Rect& r, float radius, const Color& r
 // 叠加色（th.accent / th.fill 这类自带 alpha 的"面"）按 t 淡入。
 // ⚠ 不能用 with_alpha(255*t)：那是**替换** alpha，会把 13% 的叠加色变成 100%
 // 不透明 —— 深色主题下直接变成一块纯白实心矩形把文字盖死。必须缩现有 alpha。
+inline Color on_color(const Color& bg);   // 反色文字（定义在后面）
+
+// -----------------------------------------------------------------------------
+//  统一的菜单面板
+//
+//  menu / menubar / context_menu / select / combobox 五处弹层共用这一个画法。
+//  以前各写一份：行高 32、悬停 5% 灰、容器圆角 6、有的有勾有的没有 —— 同一个
+//  AppKit 控件在五个地方长得不一样，凑在一屏里就露馅。
+//
+//  官方参数：容器 r10（Group Box 同半径）、行高 24（Menu/Height Medium）、
+//  高亮 = 强调色实心 r5 + 反色文字、选中标记在**行首勾位**（所有行都留这个位，
+//  不选中的行也留，否则勾一出现整列文字就横跳）。
+// -----------------------------------------------------------------------------
+inline void paint_menu(Ui& ui, const Rect& list,
+                       const std::vector<std::string>& items,
+                       const std::vector<Rect>& rects,
+                       const std::vector<uint64_t>& ids,
+                       const std::vector<uint8_t>& hov,
+                       int selected, bool show_check, float fs) {
+    const Theme& th = ui.theme();
+    const float r = 10.0f;
+    pop_shadow(ui, list, r, th, 0);          // 菜单 = Quaternary 投影
+    ui.fill_rect(list, th.popover_bg, r);
+    ui.stroke_rect(list, th.separator, r, 1.0f);
+    ui.push_clip(list);
+    const Color on = on_color(th.tint);
+    for (size_t i = 0; i < rects.size() && i < items.size(); ++i) {
+        const float t_h = animate_value(ui.impl, ids[i] * 83u + 1u, hov[i] ? 1.0f : 0.0f, 20.0f);
+        if (t_h > 0.02f) ui.fill_rect_s(rects[i], th.tint.scaled_alpha(t_h), 5.0f, 0.35f);
+        const Color fg = th.popover_foreground.mix(on, t_h);
+        const float left = rects[i].x + (show_check ? 24.0f : 10.0f);
+        if (show_check && selected == int(i)) {
+            const float ccx = rects[i].x + 11.0f, ccy = rects[i].cy(), sc = 3.1f;
+            ui.draw_line(ccx - sc, ccy, ccx - sc * 0.15f, ccy + sc * 0.8f, fg, 1.6f);
+            ui.draw_line(ccx - sc * 0.15f, ccy + sc * 0.8f, ccx + sc * 1.1f, ccy - sc * 0.85f, fg, 1.6f);
+        }
+        Style its;
+        its.font_size = fs;
+        its.font_weight = (selected == int(i)) ? 600 : 500;
+        its.align = Align::Left;
+        its.valign = VAlign::Middle;
+        ui.draw_text(items[i], Rect(left, rects[i].y, std::max(rects[i].right() - left - 8.0f, 1.0f),
+                                    rects[i].h), fg, its);
+    }
+    ui.pop_clip();
+}
+
 inline Color fade(const Color& c, float t) {
     return c.scaled_alpha(t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t));
 }
@@ -4785,8 +4866,10 @@ inline void Ui::label(const std::string& text, const Rect& box, const Style& st)
 
 inline void Ui::heading(const std::string& text, const Rect& box, const Style& st) {
     Style s = st;
-    if (s.font_size <= 0.0f) s.font_size = 24.0f;
-    if (s.font_weight <= 0) s.font_weight = 600;   // macOS 的标题是 semibold，不是 bold
+    // kit 的文字样式表：Title 1 = 22/26 **Bold**。以前写 24 semibold，两个值都不是
+    // 官方值 —— 大一号加半粗，看着像网页标题而不是 Mac 的窗口标题。
+    if (s.font_size <= 0.0f) s.font_size = 22.0f;
+    if (s.font_weight <= 0) s.font_weight = 700;
     const Color c = !s.fg.is_none() ? s.fg
                   : (s.muted ? impl->theme.muted_foreground : impl->theme.foreground);
     draw_text(text, box, c, s);
@@ -4794,7 +4877,8 @@ inline void Ui::heading(const std::string& text, const Rect& box, const Style& s
 
 inline void Ui::subheading(const std::string& text, const Rect& box, const Style& st) {
     Style s = st;
-    if (s.font_size <= 0.0f) s.font_size = 18.0f;
+    // Title 3 = 15/20 Semibold
+    if (s.font_size <= 0.0f) s.font_size = 15.0f;
     if (s.font_weight <= 0) s.font_weight = 600;
     const Color c = !s.fg.is_none() ? s.fg
                   : (s.muted ? impl->theme.muted_foreground : impl->theme.foreground);
@@ -5086,11 +5170,14 @@ inline void Ui::code_block(const std::string& code, const Rect& box, const Style
 inline void Ui::panel(const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
     const Color bg = !st.bg.is_none() ? st.bg : th.card;
-    const Color bd = !st.border_color.is_none() ? st.border_color : th.border;
+    const Color bd = !st.border_color.is_none() ? st.border_color : th.separator;
+    // macOS 的 Group Box 是**一圈 1px 细线 + r10，内部不铺底**（内容直接坐在窗口底
+    // 上）。Web 那种"白卡片 + 灰背景 + 阴影"在 mac 里根本不存在 —— 之前每个示例块
+    // 都套一层描边白卡，整页因此像后台管理系统。
     const float bw = st.border_width >= 0.0f ? st.border_width : 1.0f;
     const float rad = st.radius >= 0.0f ? st.radius : th.radius_lg;
-    if (st.muted) fill_rect(box, th.muted, rad);
-    else          fill_rect(box, bg, rad);
+    if (!st.bg.is_none())      fill_rect(box, bg, rad);
+    else if (st.muted)         fill_rect(box, th.fill4, rad);
     if (bw > 0.0f && bd.a > 0) stroke_rect(box, bd, rad, bw);
 }
 
@@ -5106,8 +5193,10 @@ inline void Ui::separator(const Rect& box, const Style& st) {
 
 inline void Ui::badge(const std::string& text, const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
-    const float rad = st.radius >= 0.0f ? st.radius : 999.0f;
-    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size - 3.0f;
+    // 官方标记是小圆角矩形（r4.5 = Global/Radius 的 3/4），不是胶囊；
+    // 字号 Caption 1 = 10/13。
+    const float rad = st.radius >= 0.0f ? st.radius : 4.5f;
+    const float fs  = st.font_size > 0.0f ? st.font_size : 10.0f;
     // 默认变体是 Default（primary 底 + primary_foreground 字），与 shadcn 的 <Badge>
     // 一致。以前这里把 bg / fg 硬编码成 secondary，`make_skin` 算出来的配色只被取了
     // 字重 —— 于是 Default 和 Secondary 画出来一模一样，"四种变体"实际只有两种视觉。
@@ -5129,7 +5218,7 @@ inline void Ui::badge(const std::string& text, const Rect& box, const Style& st)
     ts.font_weight = sk.weight;
     ts.align = Align::Center;
     ts.valign = VAlign::Middle;
-    draw_text(text, box, sk.fg, ts);
+    draw_text(text, box.inset(6.0f, 0.0f), sk.fg, ts);
 }
 
 inline void Ui::progress(float value, const Rect& box, const Style& st) {
@@ -5548,7 +5637,10 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
     // 用户看到的是"两个输入框中间那条横线没了"。
     //
     // 判据：border_width == 0 且没给 bg = 调用方在说"外壳我自己画，你别画"。
-    Color bg = !st.bg.is_none() ? st.bg : th.background;
+    // 官方 Text Field/Rounded 的面：浅色纯白，暗色比窗口**亮一档**（不然黑框在黑窗上
+    // 完全看不出边界）。之前直接用 th.background，暗色下等于"没有输入框"。
+    Color bg = !st.bg.is_none() ? st.bg
+             : (th.is_dark() ? Color(255, 255, 255, 20) : th.window_bg);
     const bool bare = st.border_width == 0.0f && st.bg.is_none();
     if (st.disabled && bg.a > 0) bg.a = uint8_t(float(bg.a) * 0.45f);
     if (bg.a > 0 && !bare) fill_rect(box, bg, rad);
@@ -5558,14 +5650,16 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
         const Color ish = th.window_bg.luminance() < 0.5f ? Color(0, 0, 0, 70) : Color(0, 0, 0, focused ? 10 : 18);
         inner_shadow(box, ish, rad, 1.8f, 1.0f);
     }
-    Color bd = !st.border_color.is_none() ? st.border_color
-             : (th.window_bg.luminance() < 0.5f ? Color(255, 255, 255, 34) : Color(0, 0, 0, 32));
-    if (t_hover > 0.01f && !focused) bd = bd.mix(Color(0, 0, 0, 76), t_hover * 0.5f);
+    // 描边就是分隔线色（10%），悬停抬到 25% —— 官方输入框只有这两级，没有"变粗"
+    Color bd = !st.border_color.is_none() ? st.border_color : th.separator;
+    if (t_hover > 0.01f && !focused) bd = bd.mix(th.label3, t_hover);
     float bw = st.border_width >= 0.0f ? st.border_width : 1.0f;
     if (bw > 0.0f) stroke_rect(box, bd, rad, bw);
     // 焦点环：macOS 是**外面**一圈 3px 的强调色光晕，不是把边框染蓝变粗。
     if (focused && !bare) {
-        stroke_rect(box.outset(3.0f), th.tint.with_alpha(90), rad + 3.0f, 2.5f);
+        // 3px、强调色 25%（th.ring 就是 50%，这里再压一半）—— 系统焦点环比 Web 的
+        // box-shadow 更收敛，一眼能分出"这是 mac 的蓝圈"
+        stroke_rect(box.outset(3.0f), th.ring.scaled_alpha(0.5f), rad + 3.0f, 3.0f);
     }
 
     // IME 预编辑串（拼音）。它不是 value 的一部分，所以单独量宽、单独画：
@@ -5822,8 +5916,11 @@ inline bool Ui::slider(float* value, float min_value, float max_value, const Rec
     if (st.disabled) fill_c.a = uint8_t(float(fill_c.a) * 0.45f);
     if (t > 0.0f) fill_rect_s(Rect(track.x, track.y, std::max(track.w * t, track_h), track.h), fill_c, rad, 0.0f);
 
-    const float kw = knob_w + 2.0f * t_hover * 0.5f;   // 悬停时略微变宽，不是变大一圈
-    const float kh = knob_h + 2.0f * t_hover * 0.5f;
+    // 官方只有 Non-ticked 20×16 与 Clicked 25×20 两态：悬停不变形，按下才拉长
+    const float t_press = detail::animate_value(impl, id * 43u + 2u,
+                                                (impl->active == id) ? 1.0f : 0.0f, 24.0f);
+    const float kw = knob_w + (25.0f - 20.0f) * t_press;
+    const float kh = knob_h + (20.0f - 16.0f) * t_press;
     const float kx = track.x + track.w * t;
     Color knob = Color(255, 255, 255);
     const Rect knob_r_r = Rect::centered(kx, track.cy(), kw, kh);
@@ -5860,9 +5957,16 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
     const float item_w = inner.w / float(labels.size());
 
     if (pill) {
-        Color container_bg = !st.bg.is_none() ? st.bg : th.fill;
+        // 官方 Segmented Control 的轨道是一层**凹槽**（8%），没有描边；和
+        // toggle_group 用的是同一个画法 —— 它们在 AppKit 里本来就是同一个控件。
+        Color container_bg = !st.bg.is_none() ? st.bg : th.track_well();
         if (st.disabled) container_bg.a = uint8_t(float(container_bg.a) * 0.45f);
-        fill_rect(container, container_bg, rad);
+        fill_rect_s(container, container_bg, rad, 0.35f);
+        // 段间细缝：1×14 的 25% 标签色。必须先画，选中的滑块（内缩 2）才会盖住它。
+        const float ph = std::min(14.0f, std::max(inner.h - 10.0f, 1.0f));
+        for (size_t i = 1; i < labels.size(); ++i)
+            fill_rect(Rect(inner.x + item_w * float(i), inner.y + (inner.h - ph) * 0.5f, 1.0f, ph),
+                      th.label3, 0.0f);
     } else {
         // 下划线式：不铺底色，只在底下画一条 1px 的分隔线（shadcn 就是这样）
         Color line = !st.border_color.is_none() ? st.border_color : th.border;
@@ -5893,16 +5997,16 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
         const float t_hov = detail::animate_value(impl, id * 47u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
         if (pill) {
+            // 选中滑块内缩 2、圆角比轨道小 2（同心圆角），强调色**实心**
+            const Rect seg = item.inset(2.0f, 2.0f);
+            const float sr = std::max(0.0f, rad - 2.0f);
             if (t_sel > 0.02f) {
-                // 官方选中段是**强调色实心 + 白字**（不是"白底黑字"）。
-                // BG 上还叠了 3% 黑，这里折进 sel 的颜色里。
                 Color sel_bg = !st.border_color.is_none() ? st.border_color : th.tint;
-                sel_bg.a = uint8_t(float(sel_bg.a) * t_sel);
-                fill_rect(item, sel_bg, inner_rad);
-                if (t_sel > 0.5f)
-                    inner_shadow(item, Color(0, 0, 0, uint8_t(8.0f * t_sel)), inner_rad, 1.6f, 0.0f);
+                sel_bg.a = uint8_t(255.0f * t_sel + 0.5f);
+                fill_rect_s(seg, sel_bg, sr, 0.35f);
             } else if (t_hov > 0.02f) {
-                fill_rect(item, th.foreground.with_alpha(uint8_t(14.0f * t_hov)), inner_rad);
+                // 悬停只浮一层 3%（官方 Idle 没有 hover 态，这层是给指针的反馈下限）
+                fill_rect_s(seg, th.fill4.scaled_alpha(t_hov), sr, 0.35f);
             }
         } else if (t_hov > 0.02f) {
             // 下划线式没有"滑块"，悬停只能靠一层极淡的底：再重就变成胶囊了
@@ -5991,7 +6095,7 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
 
     // --- 弹层 ---
     if (open) {
-        const float item_h = std::max(box.h, 32.0f);
+        const float item_h = std::max(box.h, 24.0f);   // kit Menu/Height Medium = 24
         const float list_h = item_h * float(items.size()) + 8.0f;
         float ly = box.bottom() + 4.0f;
         if (ly + list_h > height() - 4.0f) ly = std::max(4.0f, box.y - 4.0f - list_h);
@@ -6045,36 +6149,8 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
         if (clicked_index < 0 && !click_outside) {
             const int sel_now = *index;
             const std::vector<std::string> items_copy = items;
-            deferred([this, list, items_copy, rects, ids, hov, sel_now, rad, fs, th]() {
-                const float lrad = rad + 2.0f;
-                detail::pop_shadow(*this, list, lrad, th, 0);
-                fill_rect(list, th.popover_bg, lrad);
-                stroke_rect(list, th.border, lrad, 1.0f);
-                push_clip(list);
-                for (size_t i = 0; i < rects.size(); ++i) {
-                    const Rect& item = rects[i];
-                    const float t_h = detail::animate_value(impl, ids[i] * 97u + 1u, hov[i] ? 1.0f : 0.0f, 20.0f);
-                    // 官方弹出菜单：高亮 = 强调色实心 + 白字。灰底那一套是 Web 习惯，
-                    // 在 macOS 上看着"淡得像没选中"。
-                    if (t_h > 0.02f) fill_rect_s(item, th.tint.scaled_alpha(t_h), 5.0f, 0.35f);
-                    const Color fg = (t_h > 0.5f) ? detail::on_color(th.tint) : th.popover_foreground;
-
-                    // 对勾在行首（官方菜单的 Selection 是左边一列勾位），不在行尾
-                    if (sel_now == int(i)) {
-                        const float ccx = item.x + 10.0f, ccy = item.cy();
-                        const float s = 3.2f;
-                        draw_line(ccx - s, ccy, ccx - s * 0.15f, ccy + s * 0.85f, fg, 1.8f);
-                        draw_line(ccx - s * 0.15f, ccy + s * 0.85f, ccx + s * 1.15f, ccy - s * 0.9f, fg, 1.8f);
-                    }
-
-                    Style its;
-                    its.font_size = fs;
-                    its.font_weight = (sel_now == int(i)) ? 600 : 500;
-                    its.align = Align::Left;
-                    its.valign = VAlign::Middle;
-                    draw_text(items_copy[i], Rect(item.x + 24.0f, item.y, item.w - 30.0f, item.h), fg, its);
-                }
-                pop_clip();
+            deferred([this, list, items_copy, rects, ids, hov, sel_now, fs]() {
+                detail::paint_menu(*this, list, items_copy, rects, ids, hov, sel_now, true, fs);
             });
         }
         repaint();
@@ -6161,41 +6237,50 @@ inline bool Ui::stepper(float* value, float step, float min_value, float max_val
     if (!value || box.w <= 12.0f) return false;
     const Theme& th = impl->theme;
     uint64_t base = detail::make_id("stepper", box);
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
-    const float btn_w = std::min(box.h, 34.0f);
 
-    const Rect minus_r(box.x, box.y, btn_w, box.h);
-    const Rect plus_r(box.right() - btn_w, box.y, btn_w, box.h);
-    const Rect value_r(box.x + btn_w, box.y, std::max(box.w - btn_w * 2.0f, 1.0f), box.h);
+    // 官方 Stepper（Stepper/No Field，Medium）：**20 宽的竖条**，上下两个半高按钮，
+    // 各自带上下小三角；它贴在数值框的右边缘，不是"[−] 值 [+]"这种横向三段。
+    // 横向那套是 Web 的 Number Input，放在 mac 界面里一眼就不对。
+    const float btn_w = std::min(std::max(box.h * 0.83f, 16.0f), 20.0f);
+    const Rect minus_r(box.right() - btn_w, box.y, btn_w, box.h * 0.5f);
+    const Rect plus_r (box.right() - btn_w, box.y + box.h * 0.5f, btn_w, box.h - box.h * 0.5f);
+    const Rect value_r(box.x, box.y, std::max(box.w - btn_w, 1.0f), box.h);
+    const float br = std::min(rad, box.h * 0.5f);
 
-    // 底 + 框（整块画一次，按钮只画自己的 hover 底）
-    Color bg = !st.bg.is_none() ? st.bg : th.background;
+    // 数值框 + 步进条：两者拼成一个整体，只有最外侧四角是圆的（同心）
+    Color bg = !st.bg.is_none() ? st.bg
+             : (th.is_dark() ? Color(255, 255, 255, 20) : th.window_bg);
     if (st.disabled && bg.a > 0) bg.a = uint8_t(float(bg.a) * 0.45f);
-    if (bg.a > 0) fill_rect(box, bg, rad);
-    Color bd = !st.border_color.is_none() ? st.border_color : th.input;
+    if (bg.a > 0) fill_rect_s(box, bg, br, 0.35f);
+    // 竖条底色：中性可点面（8%），比数值框亮/暗各一档
+    fill_rect_s(Rect(plus_r.x, box.y, btn_w, box.h), th.fill2, br, 0.35f);
+    Color bd = !st.border_color.is_none() ? st.border_color : th.separator;
     if (st.disabled) bd.a = uint8_t(float(bd.a) * 0.45f);
-    stroke_rect(box, bd, rad, st.border_width >= 0.0f ? st.border_width : 1.0f);
+    stroke_rect_s(box, bd, br, st.border_width >= 0.0f ? st.border_width : 1.0f, 0.35f);
+    fill_rect(Rect(plus_r.x, box.cy() - 0.5f, btn_w, 1.0f), bd, 0.0f);
 
-    auto draw_btn = [&](const Rect& r, uint64_t id, bool plus) -> bool {
+    auto draw_btn = [&](const Rect& r, uint64_t id, bool up) -> bool {
         detail::Interact in = detail::interact(impl, id, r, !st.disabled);
         if (in.hovered) set_cursor(Cursor::Hand);
         if (in.pressed) detail::grab_focus(impl, id);
-        const float t_h = detail::animate_value(impl, id * 61u + 1u, in.hovered ? 1.0f : 0.0f, 18.0f);
         const float t_p = detail::animate_value(impl, id * 61u + 2u, (in.held && in.hovered) ? 1.0f : 0.0f, 30.0f);
-        const float a = std::max(t_h * 0.85f, t_p * 0.6f);
-        if (a > 0.02f) {
-            Color hl = th.accent.mix(th.foreground.with_alpha(12), t_p * 0.5f);
-            hl.a = uint8_t(float(hl.a) * a);
-            fill_rect(r.inset(3.0f), hl, std::max(0.0f, rad - 2.0f));
-        }
-        Color c = !st.fg.is_none() ? st.fg : th.foreground;
+        if (t_p > 0.02f)
+            fill_rect_s(r.inset(0.5f), th.fill_press.scaled_alpha(t_p), std::max(0.0f, br - 1.0f), 0.35f);
+        // 小三角（不是 +/-）：官方步进器的指示符是 3px 半径的实心三角形
+        Color c = !st.fg.is_none() ? st.fg : th.label;
         if (st.disabled) c.a = uint8_t(float(c.a) * 0.45f);
-        const float lw = std::max(1.5f, fs * 0.13f);
-        const float s  = fs * 0.34f;
-        draw_line(r.cx() - s, r.cy(), r.cx() + s, r.cy(), c, lw);
-        if (plus) draw_line(r.cx(), r.cy() - s, r.cx(), r.cy() + s, c, lw);
-        if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, r.inset(3.0f), rad, th.ring);
+        const float s = std::min(r.w, r.h) * 0.22f;
+        const float cy = r.cy() + (up ? s * 0.34f : -s * 0.34f);
+        if (impl->canvas) {
+            auto P = [&](float x, float y) { return Vec2(impl->px(x), impl->px(y)); };
+            const std::vector<Vec2> tri = up
+                ? std::vector<Vec2>{ P(r.cx() - s, cy + s * 0.6f), P(r.cx() + s, cy + s * 0.6f), P(r.cx(), cy - s * 0.6f) }
+                : std::vector<Vec2>{ P(r.cx() - s, cy - s * 0.6f), P(r.cx() + s, cy - s * 0.6f), P(r.cx(), cy + s * 0.6f) };
+            detail::raster_poly(*impl->canvas, tri, c);
+        }
+        if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, r, br, th.ring);
         return in.clicked;
     };
 
@@ -6209,10 +6294,6 @@ inline bool Ui::stepper(float* value, float step, float min_value, float max_val
         if (nv != *value) { *value = nv; changed = true; }
     }
 
-    // 分隔线 + 数值
-    fill_rect(Rect(minus_r.right(), box.y + 4.0f, 1.0f, box.h - 8.0f), th.border, 0.0f);
-    fill_rect(Rect(plus_r.x - 1.0f, box.y + 4.0f, 1.0f, box.h - 8.0f), th.border, 0.0f);
-
     char buf[64];
     if (std::fabs(*value - std::floor(*value + 0.5f)) < 0.0005f)
         std::snprintf(buf, sizeof(buf), "%.0f", double(*value));
@@ -6221,13 +6302,13 @@ inline bool Ui::stepper(float* value, float step, float min_value, float max_val
 
     Style ts;
     ts.font_size = fs;
-    ts.font_weight = 500;
-    ts.align = Align::Center;
+    ts.font_weight = 400;
+    ts.align = Align::Right;      // macOS 的数值框数字靠右
     ts.valign = VAlign::Middle;
     Color fc = !st.fg.is_none() ? st.fg : th.foreground;
     if (st.disabled) fc.a = uint8_t(float(fc.a) * 0.45f);
     push_clip(value_r);
-    draw_text(buf, value_r, fc, ts);
+    draw_text(buf, value_r.inset(8.0f, 0.0f), fc, ts);
     pop_clip();
     return changed;
 }
@@ -6865,16 +6946,17 @@ inline void Ui::breadcrumb(const std::vector<std::string>& items, const Rect& bo
 // 按键提示键帽
 inline void Ui::kbd(const std::string& text, const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
+    // macOS 的快捷键提示就是一行 11px 的灰字（⌘K），没有键帽。
+    // 这里保留一个极轻的 5% 底 + r4 让它在正文里可辨识，但去掉"机械键帽"那圈
+    // 立体下沿 —— 那是网页键盘图的画法。
     const float rad = st.radius >= 0.0f ? st.radius : 4.0f;
-    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size - 2.0f;
-    Color bg = !st.bg.is_none() ? st.bg : th.muted;
-    Color bd = !st.border_color.is_none() ? st.border_color : th.border;
-    Color fg = !st.fg.is_none() ? st.fg : th.muted_foreground;
-    if (st.disabled) { bg.a = uint8_t(float(bg.a) * 0.45f); bd.a = uint8_t(float(bd.a) * 0.45f); fg.a = uint8_t(float(fg.a) * 0.45f); }
-    fill_rect(box, bg, rad);
-    // 底边加厚一点，做出"键帽下沿"的立体感
-    fill_rect(Rect(box.x + rad, box.bottom() - 2.0f, std::max(box.w - rad * 2.0f, 1.0f), 2.0f), bd, 1.0f);
-    stroke_rect(box, bd, rad, 1.0f);
+    const float fs  = st.font_size > 0.0f ? st.font_size : 11.0f;
+    Color bg = !st.bg.is_none() ? st.bg : th.fill3;
+    Color fg = !st.fg.is_none() ? st.fg : th.label2;
+    if (st.disabled) { bg.a = uint8_t(float(bg.a) * 0.45f); fg.a = uint8_t(float(fg.a) * 0.45f); }
+    if (bg.a > 0) fill_rect(box, bg, rad);
+    if (!st.border_color.is_none())
+        stroke_rect(box, st.border_color, rad, st.border_width >= 0.0f ? st.border_width : 1.0f);
     Style ts;
     ts.font_size = fs;
     ts.font_weight = 500;
@@ -6890,7 +6972,8 @@ inline bool Ui::accordion(const std::string& title, bool* open, const Rect& box,
     const Theme& th = impl->theme;
     uint64_t id = detail::make_id("accordion", box, detail::hash_string(title.c_str()));
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
-    const float head_h = std::min(box.h, std::max(fs + 22.0f, 38.0f));
+    // 折叠行是列表行：24 高（= Global/Height Medium），不是 Web 手风琴的 38
+    const float head_h = std::min(box.h, std::max(fs + 8.0f, 24.0f));
     const Rect head(box.x, box.y, box.w, head_h);
     const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
 
@@ -6901,7 +6984,7 @@ inline bool Ui::accordion(const std::string& title, bool* open, const Rect& box,
     if (in.clicked) { *open = !*open; changed = true; }
 
     const float t_h = detail::animate_value(impl, id * 71u + 1u, in.hovered ? 1.0f : 0.0f, 18.0f);
-    if (t_h > 0.02f) fill_rect(head, th.foreground.with_alpha(uint8_t(10.0f * t_h)), rad);
+    if (t_h > 0.02f) fill_rect(head, th.fill3.scaled_alpha(t_h), rad);
 
     Style ts;
     ts.font_size = fs;
@@ -6912,16 +6995,18 @@ inline bool Ui::accordion(const std::string& title, bool* open, const Rect& box,
     if (st.disabled) c.a = uint8_t(float(c.a) * 0.45f);
     draw_text(title, Rect(head.x + 12.0f, head.y, std::max(head.w - 44.0f, 1.0f), head.h), c, ts);
 
-    // 箭头只做上下两态（不做旋转矩阵，省代码也够表达）
-    const float s = fs * 0.28f;
-    const float mx = head.right() - 20.0f, my = head.cy();
-    const Color ac = th.muted_foreground;
-    if (*open) {
-        draw_line(mx - s, my + s * 0.5f, mx, my - s * 0.55f, ac, 1.6f);
-        draw_line(mx, my - s * 0.55f, mx + s, my + s * 0.5f, ac, 1.6f);
-    } else {
-        draw_line(mx - s, my - s * 0.5f, mx, my + s * 0.55f, ac, 1.6f);
-        draw_line(mx, my + s * 0.55f, mx + s, my - s * 0.5f, ac, 1.6f);
+    // 官方 Disclosure Button：**实心小三角**，折叠朝右、展开朝下（不是 V 形箭头）
+    {
+        const float s = fs * 0.42f;      // 官方 Disclosure 三角约 8px，太小就看不出可点
+        const float mx = head.right() - 16.0f, my = head.cy();
+        const Color ac = th.muted_foreground;
+        if (impl->canvas) {
+            auto P = [&](float x, float y) { return Vec2(impl->px(x), impl->px(y)); };
+            const std::vector<Vec2> tri = *open
+                ? std::vector<Vec2>{ P(mx - s, my - s * 0.62f), P(mx + s, my - s * 0.62f), P(mx, my + s * 0.62f) }
+                : std::vector<Vec2>{ P(mx - s * 0.62f, my - s), P(mx - s * 0.62f, my + s), P(mx + s * 0.62f, my) };
+            detail::raster_poly(*impl->canvas, tri, ac);
+        }
     }
 
     if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, head, rad, th.ring);
@@ -6947,6 +7032,15 @@ inline void Ui::table(const std::vector<std::string>& headers,
 
     push_clip(box);
 
+    // 每列是不是数字列：看该列第一个非空单元格。表头要跟着数据一起右对齐，
+    // 否则"耗时"贴在左边、"12 ms"贴在右边，看着像两列。
+    std::vector<bool> num_col(cols, false);
+    for (size_t c = 0; c < cols; ++c) {
+        for (const auto& row : rows) {
+            if (c < row.size() && !row[c].empty()) { num_col[c] = detail::looks_numeric(row[c]); break; }
+        }
+    }
+
     const Rect hr(box.x, box.y, box.w, head_h);
     // 表头不铺底色（macOS 列表的表头就是一行灰字 + 一条分隔线），传了 bg 才铺
     if (!st.bg.is_none()) fill_rect(hr, st.bg, rad);
@@ -6956,11 +7050,11 @@ inline void Ui::table(const std::vector<std::string>& headers,
         (void)c;
         if (c >= headers.size()) continue;
         Style ts;
-        ts.font_size = std::max(fs - 1.0f, 8.0f);
+        ts.font_size = 11.0f;               // Subheadline 11/14
         ts.font_weight = 600;
-        ts.align = Align::Left;
+        ts.align = num_col[c] ? Align::Right : Align::Left;
         ts.valign = VAlign::Middle;
-        Color cc = th.muted_foreground;
+        Color cc = th.label2;
         if (st.disabled) cc.a = uint8_t(float(cc.a) * 0.45f);
         draw_text(headers[c], cr.inset(cell_pad, 0.0f), cc, ts);
     }
@@ -6976,7 +7070,8 @@ inline void Ui::table(const std::vector<std::string>& headers,
             Style ts;
             ts.font_size = fs;
             ts.font_weight = 400;
-            ts.align = Align::Left;
+            // macOS 表格的数字列一律右对齐（小数点对齐是 Finder 的规矩）。
+            ts.align = detail::looks_numeric(rows[r][c]) ? Align::Right : Align::Left;
             ts.valign = VAlign::Middle;
             Color cc = !st.fg.is_none() ? st.fg : th.foreground;
             if (st.disabled) cc.a = uint8_t(float(cc.a) * 0.45f);
@@ -7151,7 +7246,7 @@ inline bool Ui::menu(const std::string& label, const std::vector<std::string>& i
     int chosen = -1;
     bool closing = false;
     if (open && !items.empty()) {
-        const float item_h = std::max(box.h, 32.0f);
+        const float item_h = std::max(box.h, 24.0f);   // kit Menu/Height Medium = 24
         float list_w = box.w;
         for (const auto& it : items) list_w = std::max(list_w, text_width(it, fs, 500) + 34.0f);
         const float list_h = item_h * float(items.size()) + 8.0f;
@@ -7189,26 +7284,8 @@ inline bool Ui::menu(const std::string& label, const std::vector<std::string>& i
                && !box.contains(impl->input.mouse.x, impl->input.mouse.y);
 
         std::vector<std::string> items_copy = items;
-        deferred([this, list, rad, item_h, rects, ids, hov, items_copy, th, fs]() mutable {
-            const float lrad = rad + 2.0f;
-            detail::pop_shadow(*this, list, lrad, th, 0);
-            fill_rect(list, th.popover_bg, lrad);
-            stroke_rect(list, th.border, lrad, 1.0f);
-            push_clip(list);
-            for (size_t i = 0; i < rects.size(); ++i) {
-                const float t_h = detail::animate_value(impl, ids[i] * 83u + 1u, hov[i] ? 1.0f : 0.0f, 20.0f);
-                // 官方菜单项 Hover = 强调色实心 + 白字，圆角 5（kit: Menu Item r=5）
-                if (t_h > 0.02f) fill_rect_s(rects[i], th.tint.scaled_alpha(t_h), 5.0f, 0.35f);
-                Style its;
-                its.font_size = fs;
-                its.font_weight = 500;
-                its.align = Align::Left;
-                its.valign = VAlign::Middle;
-                draw_text(items_copy[i], rects[i].inset(10.0f, 0.0f),
-                          t_h > 0.5f ? detail::on_color(th.tint) : th.popover_foreground, its);
-            }
-            pop_clip();
-            (void)item_h;
+        deferred([this, list, rects, ids, hov, items_copy, fs]() mutable {
+            detail::paint_menu(*this, list, items_copy, rects, ids, hov, -1, false, fs);
         });
     }
 
@@ -7315,7 +7392,7 @@ inline MenuPick Ui::menubar(const std::vector<std::string>& labels,
     if (open_idx >= 0 && open_idx < int(labels.size()) && open_idx < int(items.size())
         && !items[size_t(open_idx)].empty()) {
         const std::vector<std::string>& src = items[size_t(open_idx)];
-        const float item_h = std::max(box.h, 32.0f);
+        const float item_h = std::max(box.h, 24.0f);   // kit Menu/Height Medium = 24
         float list_w = std::max(trg[size_t(open_idx)].w, 140.0f);
         for (const auto& it : src) list_w = std::max(list_w, text_width(it, fs, 500) + 34.0f);
         const float list_h = item_h * float(src.size()) + 8.0f;
@@ -7354,25 +7431,8 @@ inline MenuPick Ui::menubar(const std::vector<std::string>& labels,
                           && !in_list && !in_bar;
 
         std::vector<std::string> litems = src;
-        deferred([this, list, rad, rects, ids, lhov, litems, th, fs]() mutable {
-            const float lrad = rad + 2.0f;
-            detail::pop_shadow(*this, list, lrad, th, 0);
-            fill_rect(list, th.popover_bg, lrad);
-            stroke_rect(list, th.border, lrad, 1.0f);
-            push_clip(list);
-            for (size_t i = 0; i < rects.size(); ++i) {
-                const float t_h = detail::animate_value(impl, ids[i] * 83u + 1u, lhov[i] ? 1.0f : 0.0f, 20.0f);
-                if (t_h > 0.02f)
-                    fill_rect(rects[i], th.accent.mix(th.foreground.with_alpha(10), t_h * 0.3f),
-                              std::max(0.0f, rad - 2.0f));
-                Style its;
-                its.font_size = fs;
-                its.font_weight = 500;
-                its.align = Align::Left;
-                its.valign = VAlign::Middle;
-                draw_text(litems[i], rects[i].inset(10.0f, 0.0f), th.popover_foreground, its);
-            }
-            pop_clip();
+        deferred([this, list, rects, ids, lhov, litems, fs]() mutable {
+            detail::paint_menu(*this, list, litems, rects, ids, lhov, -1, false, fs);
         });
 
         if (chosen >= 0) {
@@ -7398,9 +7458,11 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
     // 关闭按钮在下面 claim 之前就 interact 了，所以层级号必须在入口处取，
     // 否则它会被自己的闸门挡住（点了没反应，看着像"按钮坏了"）。
     const uint64_t z_first = impl->seq + 1;
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius_lg;
+    // 官方 Alert 面板：r12、无描边（层次全靠 Primary 投影）、标题 Headline 13 Bold、
+    // 正文 13、四周留 20。之前 r10 + 1px 边框 + 16px 标题，是"网页模态框"的配比。
+    const float rad = st.radius >= 0.0f ? st.radius : 12.0f;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
-    const float pad = st.pad_x >= 0.0f ? st.pad_x : 24.0f;
+    const float pad = st.pad_x >= 0.0f ? st.pad_x : 20.0f;
     const Input& kin = impl->input;
 
     // 交互：点外部 / Esc / 右上角 × 都算关闭
@@ -7418,15 +7480,15 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
     fill_rect(Rect(0, 0, width(), height()), th.overlay, 0.0f);
     detail::pop_shadow(*this, box, rad, th, 2);
     fill_rect(box, !st.bg.is_none() ? st.bg : th.popover_bg, rad);
-    stroke_rect(box, th.border, rad, 1.0f);
+    // 面板不描边：macOS 靠投影与底色分层，一圈 1px 会让它看起来像 Web 的卡片
 
     // 文字必须裁在面板里 —— 正文一长就会横着爬出去（溢出到遮罩上的字最难发现，
     // 因为遮罩本身是半透明黑，看起来只是"有点脏"）。
     push_clip(box);
-    const float title_lh = line_height(fs + 3.0f);
+    const float title_lh = line_height(fs);
     Style hs;
-    hs.font_size = fs + 3.0f;
-    hs.font_weight = 600;
+    hs.font_size = fs;          // Headline 13 Bold
+    hs.font_weight = 700;
     hs.align = Align::Left;
     hs.valign = VAlign::Top;
     hs.wrap = true;
@@ -7446,13 +7508,9 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
     }
     pop_clip();
 
-    if (ct > 0.02f) fill_rect(close_r, th.foreground.with_alpha(uint8_t(12.0f * ct)), 6.0f);
-    {
-        const float s = 4.6f;
-        const Color cc = th.muted_foreground;
-        draw_line(close_r.cx() - s, close_r.cy() - s, close_r.cx() + s, close_r.cy() + s, cc, 1.6f);
-        draw_line(close_r.cx() + s, close_r.cy() - s, close_r.cx() - s, close_r.cy() + s, cc, 1.6f);
-    }
+    // 右上角不画 ×：macOS 的告警面板只有底部按钮组，没有关闭键。
+    // 热区还在（close_r），所以点那个位置仍然能关，只是不露出字形。
+    (void)ct;
 
     // 登记下一帧的输入闸门：面板自己接收输入，遮罩上的点击、以及被面板
     // 盖住的控件都不许响应（层级由 z_first 判定，不只是位置）。
@@ -7465,23 +7523,22 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
 // 轻提示条
 inline void Ui::toast(const std::string& text, const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius;
+    const float rad = st.radius >= 0.0f ? st.radius : 10.0f;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const bool danger = (st.variant == Style::Destructive);
 
-    Color bg = !st.bg.is_none() ? st.bg : th.popover;
+    Color bg = !st.bg.is_none() ? st.bg : th.popover_bg;
     Color fg = !st.fg.is_none() ? st.fg : th.popover_foreground;
-    Color bd = !st.border_color.is_none() ? st.border_color : th.border;
+    Color bd = !st.border_color.is_none() ? st.border_color : th.separator;
     if (st.disabled) { bg.a = uint8_t(float(bg.a) * 0.6f); fg.a = uint8_t(float(fg.a) * 0.6f); }
+    if (danger) fg = th.destructive;
 
-    detail::pop_shadow(*this, box, rad, th, 0);
+    // 浮起的通知条：r10 + Secondary 投影 + 一根描边。Web 那种"左边一条色带"
+    // 在 macOS 里不存在，告警用**文字颜色**表达。
+    detail::pop_shadow(*this, box, rad, th, 1);
     fill_rect(box, bg, rad);
     stroke_rect(box, bd, rad, 1.0f);
-    float text_x = box.x + 14.0f;
-    if (danger) {
-        fill_rect(Rect(box.x + 8.0f, box.y + 8.0f, 3.0f, std::max(box.h - 16.0f, 1.0f)), th.destructive, 1.5f);
-        text_x = box.x + 18.0f;
-    }
+    const float text_x = box.x + 14.0f;
     Style ts;
     ts.font_size = fs;
     ts.font_weight = 500;
@@ -7983,17 +8040,18 @@ inline bool Ui::item(const std::string& title, const std::string& description,
     const Theme& th = impl->theme;
     const uint64_t id = detail::make_id("item", box, detail::hash_string(title.c_str()));
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float rad = st.radius >= 0.0f ? st.radius : 5.0f;
 
     detail::Interact in = detail::interact(impl, id, box, !st.disabled);
     if (in.hovered) set_cursor(Cursor::Hand);
     if (in.pressed) detail::grab_focus(impl, id);
     const float t_h = detail::animate_value(impl, id * 107u + 1u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
+    // 列表行悬停只浮 5% 一层（官方 List Item 的 hover），选中才是 23% 强调色
     if (t_h > 0.01f)
-        fill_rect(box, th.accent.scaled_alpha(t_h), rad);
+        fill_rect(box, th.fill3.scaled_alpha(t_h), rad);
 
-    const float pad = st.pad_x >= 0.0f ? st.pad_x : 12.0f;
+    const float pad = st.pad_x >= 0.0f ? st.pad_x : 10.0f;
     const float trail_w = trailing.empty() ? 0.0f : text_width(trailing, fs - 1.0f, 400) + 12.0f;
     const Rect text_box(box.x + pad, box.y, std::max(box.w - pad * 2.0f - trail_w, 1.0f), box.h);
 
@@ -8006,7 +8064,7 @@ inline bool Ui::item(const std::string& title, const std::string& description,
         draw_text(title, text_box, !st.fg.is_none() ? st.fg : th.foreground, ts);
     } else {
         const float lh1 = line_height(fs);
-        const float lh2 = line_height(fs - 1.0f);
+        const float lh2 = line_height(11.0f);
         const float total = lh1 + 2.0f + lh2;
         const float y0 = box.cy() - total * 0.5f;
         Style ts;
@@ -8017,12 +8075,12 @@ inline bool Ui::item(const std::string& title, const std::string& description,
         draw_text(title, Rect(text_box.x, y0, text_box.w, lh1), !st.fg.is_none() ? st.fg : th.foreground, ts);
 
         Style ds;
-        ds.font_size = fs - 1.0f;
+        ds.font_size = 11.0f;      // Subheadline：列表副标题
         ds.font_weight = 400;
         ds.align = Align::Left;
         ds.valign = VAlign::Top;
         draw_text(description, Rect(text_box.x, y0 + lh1 + 2.0f, text_box.w, lh2),
-                  th.muted_foreground, ds);
+                  th.label2, ds);
     }
 
     if (!trailing.empty()) {
@@ -8034,6 +8092,11 @@ inline bool Ui::item(const std::string& title, const std::string& description,
         draw_text(trailing, Rect(box.right() - pad - trail_w, box.y, trail_w, box.h),
                   th.muted_foreground, tr);
     }
+
+    // 行底线内缩到文字起点，和 macOS 列表一致（通栏的线会显得像分隔条）
+    if (st.row_sep && box.h >= 8.0f)
+        fill_rect(Rect(box.x + pad, box.bottom() - 1.0f, std::max(box.w - pad, 1.0f), 1.0f),
+                  th.separator, 0.0f);
 
     if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, box, rad, th.ring);
     return in.clicked;
@@ -8048,7 +8111,8 @@ inline void Ui::empty_state(const std::string& title, const std::string& descrip
     const Theme& th = impl->theme;
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
 
-    detail::dash_rect(*this, box, th.border, 7.0f, 5.0f, 1.0f);
+    // 不画虚线框：虚线占位框是 Web / 表单设计器的语汇。macOS 的空状态就是
+    // 一段居中的灰色说明，连容器都没有。
 
     const float lh1 = line_height(fs + 1.0f);
     const float lh2 = description.empty() ? 0.0f : line_height(fs - 1.0f) + 4.0f;
@@ -8419,9 +8483,11 @@ inline bool Ui::alert_dialog(const std::string& title, const std::string& body,
     if (!open || !*open) return false;
     const Theme& th = impl->theme;
     const uint64_t z_first = impl->seq + 1;
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius_lg;
+    // 官方 Alert 面板：r12、无描边（层次全靠 Primary 投影）、标题 Headline 13 Bold、
+    // 正文 13、四周留 20。之前 r10 + 1px 边框 + 16px 标题，是"网页模态框"的配比。
+    const float rad = st.radius >= 0.0f ? st.radius : 12.0f;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
-    const float pad = st.pad_x >= 0.0f ? st.pad_x : 24.0f;
+    const float pad = st.pad_x >= 0.0f ? st.pad_x : 20.0f;
     const bool danger = (st.variant == Style::Destructive);
 
     const Input& kin = impl->input;
@@ -8456,13 +8522,13 @@ inline bool Ui::alert_dialog(const std::string& title, const std::string& body,
     fill_rect(Rect(0, 0, width(), height()), th.overlay, 0.0f);
     detail::pop_shadow(*this, box, rad, th, 2);
     fill_rect(box, !st.bg.is_none() ? st.bg : th.popover_bg, rad);
-    stroke_rect(box, th.border, rad, 1.0f);
+    // 面板不描边：macOS 靠投影与底色分层，一圈 1px 会让它看起来像 Web 的卡片
 
     push_clip(box);
-    const float title_lh = line_height(fs + 3.0f);
+    const float title_lh = line_height(fs);
     Style hs;
-    hs.font_size = fs + 3.0f;
-    hs.font_weight = 600;
+    hs.font_size = fs;          // Headline 13 Bold
+    hs.font_weight = 700;
     hs.align = Align::Left;
     hs.valign = VAlign::Top;
     hs.wrap = true;
@@ -8575,12 +8641,8 @@ inline bool Ui::drawer(const std::string& title, bool* open, int side, const Rec
     draw_text(title, Rect(box.x + pad, box.y, std::max(box.w - pad * 2.0f - 30.0f, 1.0f), head_h),
               !st.fg.is_none() ? st.fg : th.foreground, hs);
 
-    if (ct > 0.02f) fill_rect(close_r, th.accent.scaled_alpha(ct), 6.0f);
-    {
-        const float s = 4.6f;
-        draw_line(close_r.cx() - s, close_r.cy() - s, close_r.cx() + s, close_r.cy() + s, th.muted_foreground, 1.6f);
-        draw_line(close_r.cx() + s, close_r.cy() - s, close_r.cx() - s, close_r.cy() + s, th.muted_foreground, 1.6f);
-    }
+    // Sheet 同样不画 ×：macOS 的 sheet 用底部按钮（取消/好）关闭。
+    (void)ct;
     fill_rect(Rect(box.x, box.y + head_h - 1.0f, box.w, 1.0f), th.border, 0.0f);
 
     const Rect content(box.x + pad, box.y + head_h + pad * 0.5f,
@@ -8607,7 +8669,7 @@ inline bool Ui::context_menu(const Rect& area, const std::vector<std::string>& i
     const uint64_t z_first = impl->seq + 1;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
-    const float item_h = std::max(fs + 16.0f, 32.0f);
+    const float item_h = std::max(fs + 10.0f, 24.0f);   // kit Menu/Height Medium = 24
     const Input& kin = impl->input;
 
     bool open = impl->flags[id] > 0.5f;
@@ -8663,24 +8725,8 @@ inline bool Ui::context_menu(const Rect& area, const std::vector<std::string>& i
     if (kin.key_pressed[KEY_ESC]) close = true;
 
     std::vector<std::string> items_copy = items;
-    deferred([this, list, rad, rects, ids, hov, items_copy, th, fs]() mutable {
-        drop_shadow(list, rad, 12.0f, Color(0, 0, 0, 38), 3.0f);
-        fill_rect(list, th.popover, rad);
-        stroke_rect(list, th.border, rad, 1.0f);
-        push_clip(list);
-        for (size_t i = 0; i < rects.size(); ++i) {
-            const float t_h = detail::animate_value(impl, ids[i] * 83u + 1u, hov[i] ? 1.0f : 0.0f, 20.0f);
-            if (t_h > 0.02f)
-                fill_rect(rects[i], th.accent.scaled_alpha(t_h),
-                          std::max(0.0f, rad - 2.0f));
-            Style its;
-            its.font_size = fs;
-            its.font_weight = 500;
-            its.align = Align::Left;
-            its.valign = VAlign::Middle;
-            draw_text(items_copy[i], rects[i].inset(10.0f, 0.0f), th.popover_foreground, its);
-        }
-        pop_clip();
+    deferred([this, list, rects, ids, hov, items_copy, fs]() mutable {
+        detail::paint_menu(*this, list, items_copy, rects, ids, hov, -1, false, fs);
     });
 
     if (close) {
@@ -8840,23 +8886,29 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
     const int hi_c = hi;
     const int sel_c = *index;
     deferred([this, list, sr, rad, item_h, fs, th_c, items_c, vis_c, query_c, hi_c, sel_c, rows]() {
-        const float lrad = rad + 2.0f;         // 弹层容器比触发器再圆一点（6 → 8）
-        drop_shadow(list, lrad, 12.0f, Color(0, 0, 0, 38), 3.0f);
-        fill_rect(list, th_c.popover, lrad);
-        stroke_rect(list, th_c.border, lrad, 1.0f);
+        // 容器和 menu 是同一套：r10、Quaternary 投影、1px 分隔线
+        const float lrad = 10.0f;
+        detail::pop_shadow(*this, list, lrad, th_c, 0);
+        fill_rect(list, th_c.popover_bg, lrad);
+        stroke_rect(list, th_c.separator, lrad, 1.0f);
         push_clip(list);
 
-        // 搜索框（只是画出来，输入由上面那段代码负责 —— 不套 input()，
-        // 因为 input() 自己会拿一个焦点，和 combobox 的焦点打架）
-        fill_rect(sr, th_c.background, std::max(0.0f, rad - 2.0f));
-        stroke_rect(sr, th_c.input, std::max(0.0f, rad - 2.0f), 1.0f);
+        // 搜索框：官方 Text Field 语法（r5、5% 面、无描边、行首放大镜），
+        // 之前是全宽灰条 + 1px 边框，像浏览器里那种搜索条。
+        const float search_r = 5.0f;
+        fill_rect_s(sr, th_c.is_dark() ? Color(255, 255, 255, 18) : Color(0, 0, 0, 13), search_r, 0.35f);
+        {
+            const float gx = sr.x + 9.0f, gy = sr.cy();
+            stroke_rect(Rect(gx - 3.5f, gy - 3.5f, 7.0f, 7.0f), th_c.label2, 3.5f, 1.2f);
+            draw_line(gx + 2.2f, gy + 2.2f, gx + 5.2f, gy + 5.2f, th_c.label2, 1.3f);
+        }
         Style ss;
         ss.font_size = fs;
         ss.font_weight = 400;
         ss.align = Align::Left;
         ss.valign = VAlign::Middle;
-        draw_text(query_c.empty() ? std::string("搜索...") : query_c, sr.inset(10.0f, 0.0f),
-                  query_c.empty() ? th_c.muted_foreground : th_c.foreground, ss);
+        draw_text(query_c.empty() ? std::string("搜索") : query_c, sr.inset(20.0f, 0.0f),
+                  query_c.empty() ? th_c.label3 : th_c.foreground, ss);
 
         for (int r = 0; r < rows; ++r) {
             const int ii = vis_c[size_t(r)];
@@ -8874,7 +8926,7 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
             }
             Style its;
             its.font_size = fs;
-            its.font_weight = on ? 600 : 400;
+            its.font_weight = on ? 600 : 500;
             its.align = Align::Left;
             its.valign = VAlign::Middle;
             draw_text(items_c[size_t(ii)], Rect(rr.x + 24.0f, rr.y, rr.w - 30.0f, rr.h), fg, its);
