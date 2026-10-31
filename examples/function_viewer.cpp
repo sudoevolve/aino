@@ -1251,51 +1251,65 @@ void draw_sidebar(aino::Ui& ui, UiState& st, const aino::Theme& th) {
     const float W = ui.width(), H = ui.height();
     const float SIDE = 232.0f;
 
-    ui.fill_rect(Rect(0.0f, 0.0f, SIDE, H), th.background.mix(th.muted, 0.55f));
-    ui.fill_rect(Rect(SIDE - 1.0f, 0.0f, 1.0f, H), th.border);
+    // 侧边栏材质 = Materials/Controls/Sidebar（不透明等价色，亮 #EAEAEA / 暗 #1E1E1E）。
+    //
+    // 之前这里写的是 `th.background.mix(th.muted, 0.55f)`：`muted` 不是"浅一档的
+    // 灰"，是**带 alpha 的填充色** rgba(0,0,0,13)。和一个不透明色 mix 之后得到
+    // "45% 白 + 55% 黑"再带 ~48% alpha，压在窗口上就是 #BBBBBB 的中灰 ——
+    // 又暗又脏。有专门的 token 就用 token，别拿两个颜色现调。
+    ui.fill_rect(Rect(0.0f, 0.0f, SIDE, H), th.sidebar_bg);
+    ui.fill_rect(Rect(SIDE - 1.0f, 0.0f, 1.0f, H), th.separator);
 
-    aino::Stack col = ui.vbox(Rect(0.0f, 0.0f, SIDE, H), 6.0f, 18.0f);
-    ui.heading("函数显示器", col.next(28.0f), Style().font(17.0f).left());
-    ui.muted_text("aino · 单文件绘图", col.next(16.0f), Style().font(11.5f).left());
-    col.skip(8.0f);
-
-    int cat = a.cat;
-    std::vector<std::string> cats(kCatNames, kCatNames + 6);
-    if (ui.select(cats, &cat, col.next(34.0f))) {
-        a.cat = cat;
-        a.sel = 0;
-        st.reset_view();
-        st.refresh();
-        st.reset_params();
+    // 顶部是"类别"选择器，位置等于画廊侧边栏里的搜索框。侧边栏里不重复 App 名 ——
+    // 那是标题栏干的事（之前这里顶着 17pt 的"函数显示器" + 副标题，占掉三行）。
+    const Rect top(10.0f, 14.0f, SIDE - 20.0f, 24.0f);
+    {
+        int cat = a.cat;
+        std::vector<std::string> cats(kCatNames, kCatNames + 6);
+        if (ui.select(cats, &cat, top, Style().font(12.5f))) {
+            a.cat = cat;
+            a.sel = 0;
+            st.reset_view();
+            st.refresh();
+            st.reset_params();
+        }
     }
-    col.skip(6.0f);
-    ui.separator(col.next(1.0f));
-    col.skip(4.0f);
+    const float list_y = top.bottom() + 11.0f;
+    ui.separator(Rect(10.0f, list_y - 1.0f, SIDE - 20.0f, 1.0f));
+
+    // source list：行高 26、13pt、条目左侧内缩 10（选中块再内缩 8）
+    aino::Stack col = ui.vbox(Rect(0.0f, list_y + 6.0f, SIDE, H - list_y - 6.0f - 64.0f), 1.0f, 10.0f);
 
     if (a.cat == kCustomCat) {
-        ui.muted_text("在下方输入框里手打一个公式", col.next(16.0f), Style().font(11.5f).left());
-        ui.muted_text("运算：+ - * / ^ %  |x|", col.next(16.0f), Style().font(11.5f).left());
-        ui.muted_text("省略乘号：2x  3(x+1)", col.next(16.0f), Style().font(11.5f).left());
-        col.skip(6.0f);
-        ui.muted_text("变量：x y u t a b c", col.next(16.0f), Style().font(11.5f).left());
-        ui.muted_text("常量：pi tau e phi", col.next(16.0f), Style().font(11.5f).left());
-        col.skip(6.0f);
-        ui.muted_text("三角 sin cos tan sec", col.next(16.0f), Style().font(11.5f).left());
-        ui.muted_text("     csc cot asin acos", col.next(16.0f), Style().font(11.5f).left());
-        ui.muted_text("     atan atan2", col.next(16.0f), Style().font(11.5f).left());
-        ui.muted_text("双曲 sinh cosh tanh", col.next(16.0f), Style().font(11.5f).left());
-        ui.muted_text("     asinh acosh atanh", col.next(16.0f), Style().font(11.5f).left());
-        ui.muted_text("指数 exp log log10", col.next(16.0f), Style().font(11.5f).left());
-        ui.muted_text("     log2 sqrt cbrt", col.next(16.0f), Style().font(11.5f).left());
-        ui.muted_text("取整 floor ceil round", col.next(16.0f), Style().font(11.5f).left());
-        ui.muted_text("     trunc frac sign", col.next(16.0f), Style().font(11.5f).left());
-        ui.muted_text("其它 min max pow mod", col.next(16.0f), Style().font(11.5f).left());
-        ui.muted_text("     hypot abs step", col.next(16.0f), Style().font(11.5f).left());
-        ui.muted_text("     clamp lerp smoothstep", col.next(16.0f), Style().font(11.5f).left());
+        auto hint = [&](const char* t) {
+            if (col.remain() < 16.0f) return;
+            ui.muted_text(t, col.next(16.0f), Style().font(11.0f).left());
+        };
+        hint("在下方输入框里手打一个公式");
+        hint("运算：+ - * / ^ %  |x|");
+        hint("省略乘号：2x  3(x+1)");
+        col.skip(4.0f);
+        hint("变量：x y u t a b c");
+        hint("常量：pi tau e phi");
+        col.skip(4.0f);
+        hint("三角 sin cos tan sec");
+        hint("     反三角 asin acos");
+        hint("     atan atan2");
+        hint("双曲 sinh cosh tanh");
+        hint("     反双曲 asinh acosh atanh");
+        hint("指数 exp log log10");
+        hint("     log2 sqrt cbrt");
+        hint("取整 floor ceil round");
+        hint("     trunc frac sign");
+        hint("其它 min max pow mod");
+        hint("     hypot abs step");
+        hint("     clamp lerp smoothstep");
     } else {
         for (size_t i = 0; i < st.presets.size(); ++i) {
-            if (col.remain() < 34.0f) break;
-            if (ui.nav_item(st.presets[i].name, a.sel == static_cast<int>(i), col.next(30.0f))) {
+            if (col.remain() < 26.0f) break;
+            if (ui.nav_item(st.presets[i].name, a.sel == static_cast<int>(i),
+                            col.next(26.0f), Style().font(13.0f)))
+            {
                 a.sel = static_cast<int>(i);
                 st.reset_view();
                 st.reset_params();
@@ -1303,12 +1317,12 @@ void draw_sidebar(aino::Ui& ui, UiState& st, const aino::Theme& th) {
         }
     }
 
-    // 底部：主题开关 + 运行状态
+    // 底部：外观开关 + 运行状态
     const Rect foot(18.0f, H - 56.0f, SIDE - 36.0f, 26.0f);
     ui.draw_text("深色主题", Rect(foot.x, foot.y, 90.0f, 26.0f), th.foreground,
                  Style().font(12.5f).left().middle());
     bool dark = a.dark;
-    if (ui.toggle(&dark, Rect(foot.right() - 44.0f, foot.y + 1.0f, 44.0f, 24.0f))) {
+    if (ui.toggle(&dark, Rect(foot.right() - 38.0f, foot.y + 3.0f, 38.0f, 20.0f))) {
         a.dark = dark;
         if (st.win) st.win->set_theme(dark ? aino::Theme::dark() : aino::Theme::light());
     }
@@ -1715,8 +1729,9 @@ int main() {
 
         // ---- 标题区 ----
         const std::string title = custom ? std::string("自定义公式") : pre->name;
-        ui.heading(title, Rect(hdr.x, hdr.y, hdr.w * 0.62f, 26.0f),
-                   Style().font(19.0f).left().middle());
+        // Title 1 = 22 Bold，和画廊的内容区标题保持同一级
+        ui.heading(title, Rect(hdr.x, hdr.y - 4.0f, hdr.w * 0.62f, 30.0f),
+                   Style().font(22.0f).left().middle());
         const std::string formula = custom
             ? (a.custom_mode == 1 ? ("x = " + a.custom_src + "    y = " + a.custom_src2)
                                   : a.custom_src)
@@ -1725,17 +1740,17 @@ int main() {
                                ? (th.background.luminance() < 0.5f ? Color::hex(0x60A5FA)
                                                                    : Color::hex(0x2563EB))
                                : th.destructive;
-        ui.draw_text(formula, Rect(hdr.x, hdr.y + 28.0f, hdr.w * 0.66f, 20.0f), fcol,
-                     Style().font(12.5f).left().middle());
+        ui.draw_text(formula, Rect(hdr.x, hdr.y + 30.0f, hdr.w * 0.66f, 20.0f), fcol,
+                     Style().font(13.0f).left().middle());
         const Kind mode = custom ? (a.custom_mode == 0 ? Kind::Curve
                                   : a.custom_mode == 1 ? Kind::Param
                                   : a.custom_mode == 2 ? Kind::Polar
                                   : a.custom_mode == 3 ? Kind::Implicit : Kind::Field)
                                 : pre->kind;
-        ui.muted_text(kind_note(mode), Rect(hdr.x, hdr.y + 28.0f, hdr.w, 20.0f),
-                      Style().font(11.5f).right().middle());
+        ui.muted_text(kind_note(mode), Rect(hdr.x, hdr.y + 30.0f, hdr.w, 20.0f),
+                      Style().font(11.0f).right().middle());
         ui.muted_text("拖拽平移 · 滚轮缩放 · 双击复位 · 空格暂停",
-                      Rect(hdr.x, hdr.y + 48.0f, hdr.w, 16.0f),
+                      Rect(hdr.x, hdr.y + 50.0f, hdr.w, 16.0f),
                       Style().font(11.0f).right().middle());
 
         // ---- 绘图区 ----

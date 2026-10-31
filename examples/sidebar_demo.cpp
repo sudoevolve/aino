@@ -40,17 +40,21 @@ int main() {
         // ---------------- 左：侧边栏 ----------------
         const float nav_w = 176.0f;
         const Rect  side(0.0f, 0.0f, nav_w, ui.height());
-        ui.fill_rect(side, ui.theme().background.mix(ui.theme().muted, 0.6f));
-        ui.fill_rect(Rect(side.right() - 1.0f, 0.0f, 1.0f, side.h), ui.theme().border);
+        // 侧边栏用 Materials/Controls/Sidebar 这个 token 本身（#EAEAEA / #1E1E1E）。
+        // 别写 `background.mix(muted, 0.6f)`：muted 是带 alpha 的填充色
+        // rgba(0,0,0,13)，和不透明色 mix 出来是中灰 + 半透明，压在窗口上是 #BBBBBB。
+        ui.fill_rect(side, ui.theme().sidebar_bg);
+        ui.fill_rect(Rect(side.right() - 1.0f, 0.0f, 1.0f, side.h), ui.theme().separator);
 
-        Stack nav = ui.vbox(side, 4.0f, 16.0f);
-        ui.heading("我的应用", nav.next(34.0f), Style().font(18.0f).left());
-        nav.skip(8.0f);
+        Stack nav = ui.vbox(side, 1.0f, 10.0f);
+        // 侧边栏里不摆 App 名：那是标题栏的事。这里用 11 Semibold 的分组标题行。
+        ui.muted_text("我的应用", nav.next(22.0f), Style().left().semi_bold().font(11.0f));
+        nav.skip(4.0f);
 
         for (int i = 0; i < 3; ++i) {
-            // 第二个参数 = 是否选中（决定有没有底色和左侧竖条）
+            // 第二个参数 = 是否选中（选中 = 强调色 23% 的圆角块）
             // 返回 true = 这一帧刚被点了一下
-            if (ui.nav_item(kItems[i], page == i, nav.next(34.0f)))
+            if (ui.nav_item(kItems[i], page == i, nav.next(26.0f), Style().font(13.0f)))
                 page = i;
         }
 

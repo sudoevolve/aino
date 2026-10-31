@@ -511,3 +511,55 @@ float y = area.y - off;      // 不减：滚轮一动，内容不动，只被裁
 之前是边画边 `min(剩余高度, 自然高)` 夹一下——窗口 760 高时没问题，
 截图的 700 高就露馅：18 行代码直接画到按钮行里。现在总量已知，夹的逻辑
 整个删掉了。
+
+---
+
+## 十二、半透明 token 不能直接量亮度
+
+### 12.1 症状
+
+- 头像：浅色主题下首字是白的，落在近乎白的圆上 —— 什么也看不见。
+- 评分：未选中的空星几乎隐形。
+- 函数显示器 / 侧边栏示例：侧边栏是一片 `#BBBBBB` 的中灰，比内容区还暗。
+
+三处看着无关，其实是同一个错误：**拿带 alpha 的颜色当不透明色用**。
+
+### 12.2 根因
+
+`th.muted`（`rgba(0,0,0,13)`）、`th.label2`（`rgba(0,0,0,128)`）这些 token
+是"叠在别的东西上"的填充/文字色。`Color::luminance()` 只算 RGB，不看 alpha：
+
+```cpp
+Color fg = bg.luminance() > 0.55f ? th.foreground : Color(255,255,255);
+// bg = rgba(0,0,0,13) → luminance() = 0.0 → 判成"暗底" → 白字
+// 实际压在 #FFFFFF 上是 #F2F2F2，白字当然看不见
+```
+
+侧边栏那处是另一种形态：`th.background.mix(th.muted, 0.55f)`。`mix` 连 alpha
+一起插值，得到"45% 白 + 55% 黑"再带 ~48% alpha，落在窗口上就是 `#BBBBBB`。
+
+### 12.3 改法
+
+新增 `Color::over(base)`：把半透明层压到底色上，得到"实际看到的颜色"，
+然后才允许调 `luminance()`。
+
+```cpp
+const Color eff = bg.over(th.window_bg);
+Color fg = eff.luminance() > 0.55f ? th.foreground : Color(255, 255, 255);
+```
+
+- 头像默认底也从 `th.muted`（5%）提到 `th.fill`（10%）：5% 的圆在浅色主题下
+  只剩一圈描边，10% 才像个"没照片"的占位。
+- 空星的 `if (empty_c.luminance() > 0.82f)` 这个判断以前**从来没生效过**
+  （半透明色亮度恒为 0），压平之后才会真的退到 `th.border`。
+- 侧边栏一律用 `th.sidebar_bg` / `th.separator` 这两个 token，不再现调颜色。
+
+### 12.4 顺手对齐的其他 demo
+
+| | 之前 | 现在 |
+|---|---|---|
+| 函数显示器 · 侧边栏 | `background.mix(muted,.55)` → `#BBBBBB`；17pt App 名 + 副标占三行；类别选择器 34 高；条目 30 高 | `sidebar_bg`；顶部只放类别选择器（24 高），细线，条目 26 高 13pt |
+| 函数显示器 · 内容标题 | 19pt | Title 1：22 Bold |
+| 侧边栏示例 | 同一个 `mix` 写法；条目 34 高 | `sidebar_bg`；11 Semibold 分组标题 + 26 高条目 |
+
+SSH 客户端本来就是深色 + 卡片，没有这个 token 误用，未改动。

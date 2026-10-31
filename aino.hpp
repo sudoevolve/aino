@@ -170,7 +170,23 @@ struct Color {
                      uint8_t(g * (1.0f - amount) + 0.5f),
                      uint8_t(b * (1.0f - amount) + 0.5f), a);
     }
+    // 把本层（可能是半透明）**压到** base 上，得到"实际看到的颜色"。
+    //
+    // 判断"该配深色还是浅色前景"之前必须先压平：`th.muted`（rgba(0,0,0,13)）、
+    // `th.label2`（rgba(0,0,0,128)）这些 token 都带 alpha，直接 luminance() 量到的
+    // 是它们自己 RGB 的亮度 —— 一个 5% 黑的填充在浅色主题下会被判成"黑底"，
+    // 于是配上白字，实际看到的是"白字 + 近乎白的圆"，什么也读不出来。
+    Color over(const Color& base) const {
+        if (a == 255) return *this;
+        const float t = float(a) / 255.0f;
+        const float u = 1.0f - t;
+        return Color(uint8_t(float(r) * t + float(base.r) * u + 0.5f),
+                     uint8_t(float(g) * t + float(base.g) * u + 0.5f),
+                     uint8_t(float(b) * t + float(base.b) * u + 0.5f), 255);
+    }
+
     // 感知亮度 0..1，用于自动判断该配深色还是浅色前景
+    // 注意：不含 alpha。半透明色要先 over(底色) 再量（见上）。
     float luminance() const {
         return (0.2126f * r + 0.7152f * g + 0.0722f * b) / 255.0f;
     }
@@ -6763,7 +6779,9 @@ inline bool Ui::rating(int* value, int max_stars, const Rect& box, const Style& 
     const float r_out = size * 0.5f;
     const float r_in  = r_out * 0.44f;
 
-    Color empty_c = th.muted;
+    // 空星：先压平再判断"是不是浅到看不见" —— th.muted 本身是半透明的，量它自己的
+    // 亮度永远是 0，这个判断从来不会生效，空星就一直停在 5% 黑上。
+    Color empty_c = th.muted.over(th.window_bg);
     if (empty_c.luminance() > 0.82f) empty_c = th.border;     // 浅色主题下 muted 太淡，用 border
     const Color full_c = !st.bg.is_none() ? st.bg : th.primary;
 
@@ -6812,7 +6830,9 @@ inline void Ui::avatar(const std::string& text, const Rect& box, const Style& st
     if (d <= 2.0f) return;
     const Rect c = Rect::centered(box.cx(), box.cy(), d, d);
 
-    Color bg = !st.bg.is_none() ? st.bg : th.muted;
+    // 默认底 = 10% 的填充（`th.fill`）。用 `th.muted`（5%）在浅色主题下几乎看不见，
+    // 头像就只剩一个描边圈；10% 既能当"没照片的占位"，又不至于抢照片位。
+    Color bg = !st.bg.is_none() ? st.bg : th.fill;
     if (st.disabled) bg.a = uint8_t(float(bg.a) * 0.45f);
     fill_rect(c, bg, d * 0.5f);
     // 默认 1px 描边。以前是 0——理由是"照片位通常有底图"，但那样 `muted` 圆底一旦落在
@@ -6832,8 +6852,11 @@ inline void Ui::avatar(const std::string& text, const Rect& box, const Style& st
     ts.font_weight = 600;
     ts.align = Align::Center;
     ts.valign = VAlign::Middle;
+    // 前景色按**压平后**的底色判断。默认底是 th.muted = rgba(0,0,0,13)：量它自己的
+    // 亮度是 0（纯黑），于是"浅色主题给白字" —— 白字落在 5% 黑的圆上，等于隐形。
+    const Color eff = bg.over(th.window_bg);
     Color fg = !st.fg.is_none() ? st.fg
-             : (bg.luminance() > 0.5f ? th.muted_foreground : th.primary_foreground);
+             : (eff.luminance() > 0.55f ? th.foreground : Color(255, 255, 255));
     if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
     draw_text(initial, c, fg, ts);
 }
