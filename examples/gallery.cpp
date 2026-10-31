@@ -5,8 +5,9 @@
 //    标题栏  红绿灯浮在侧边栏顶部，标题居中，右侧是外观分段控件
 //    侧边栏  整窗高；顶部搜索框，下面是 source list（分组 + 可折叠条目）
 //    内容区  Title 1 + Body 副标（右上角标对应的 AppKit 控件），
-//            下面每条示例 = 13 Semibold 小标题 + 左预览 / 右源码
-//  示例区的"分组标题 + 1px 细线 Group Box"来自 macOS 的设置类界面。
+//            下面每条示例 = 一个 Group Box（表头行 + 细线 + 预览 + 可展开的源码）
+//  示例区不用"左预览右源码"两栏：那是 shadcn 文档站的 Preview/Code 结构，
+//  macOS 的分组语汇只有 Group Box（1px 细线 + r10，内部不铺底）。
 //
 //  数据驱动。一个组件就是 kPages 里的一项，一项挂 N 个 Demo；
 //  Demo = { 名称, 说明, 源码, 预览高度, 绘制函数 }。
@@ -98,6 +99,11 @@ struct App {
     // 导航里被折叠的分组（第 i 位 = 第 i 组）。默认全展开：45 项按组铺开，
     // 想缩短列表就点组头。位掩码而不是 vector<bool>，因为要能一眼看出"全开"。
     std::uint32_t nav_closed = 0;
+
+    // 每条示例的源码是否展开（第 i 位 = 当页第 i 条）。翻页时重置成"只展开第一条"，
+    // 由 AINO_CODE=1 全展开（截图用）。
+    std::uint32_t code_mask = 1u;
+    int           code_page = -1;
 };
 
 // =============================================================================
@@ -247,14 +253,39 @@ const char* kQuickstart =
 // dashboard，macOS 的窗口里没有这种"卡片墙"。
 void draw_overview(Ui& ui, App& a, const Rect& area) {
     (void)a;
-    // 60 / 40 两栏。不用 Stack::part(i, n) —— 那是"n 等分里的第 i 份"，
-    // 想给 3:2 只能自己算（写成 part(0,3)/part(1,3) 会各拿到 1/3，右栏空出一截）。
     const float GAP  = 26.0f;
-    const float lw   = (area.w - GAP) * 0.62f;
-    const Rect  left_col(area.x, area.y, lw, area.h);
-    const Rect  right_col(area.x + lw + GAP, area.y, area.w - lw - GAP, area.h);
-    const float HEAD = 18.0f;    // 分组标题行高
+    const float HEAD = 18.0f;    // 分组标题行高（11 Semibold 灰字）
     const float GAPY = 24.0f;    // 两个分组之间
+
+    const float lw = (area.w - GAP) * 0.62f;
+    const auto& gs = group_stats();
+
+    const std::vector<std::string> heads = {"指标", "值"};
+    const std::vector<std::vector<std::string>> rows = {
+        {"第三方依赖", "0"},
+        {"空闲 CPU", "0.00%"},
+        {"指针移动", "变化才画"},
+        {"动画", "60 fps"},
+        {"组件", "47 个"},
+        {"回归断言", "45 项"},
+        {"文字", "系统字体"},
+        {"几何", "自绘 AA"},
+        {"DLL", "仅系统库"},
+    };
+
+    // 高度必须先算出总量再进滚动作用域 —— 两栏都是"从上往下排"的确定高度，
+    // 所以第一遍只算数、第二遍才画。之前这页不滚动，窗口一矮，代码块就压在
+    // 底部动作条上（18 行代码画到按钮行里去了）。
+    const float code_h   = ui.code_block_height(kQuickstart, Style().font(11.5f));
+    const float left_h   = (HEAD + 6.0f) + 128.0f + GAPY + (HEAD + 6.0f) + (code_h + 62.0f);
+    const float right_h  = (HEAD + 6.0f) + (10.0f + 26.0f * float(gs.size() - 1) + 10.0f)
+                         + GAPY + (HEAD + 6.0f) + (24.0f + 20.0f * float(rows.size()) + 16.0f);
+
+    auto sc = ui.scroll(area, std::max(left_h, right_h) + 10.0f);
+    (void)sc;
+    // 滚动作用域里 `ui.row()` 返回的是**已减掉偏移**的屏幕坐标；这里用绝对坐标
+    // 排版，所以要自己减 —— 否则滚轮一动，内容不动只被裁剪。
+    const float off = ui.scroll_y();
 
     auto section = [&](const char* text, float x, float y, float w) {
         ui.muted_text(text, Rect(x, y, w, HEAD), Style().left().semi_bold().font(11.0f));
@@ -262,13 +293,13 @@ void draw_overview(Ui& ui, App& a, const Rect& area) {
 
     // ---------------- 左栏：关于 + 快速开始 ----------------
     {
-        const Rect col = left_col;
-        float y = col.y;
+        const float cx = area.x, cw = lw;
+        float y = area.y - off;
 
-        section("关于", col.x, y, col.w);
+        section("关于", cx, y, cw);
         y += HEAD + 6.0f;
 
-        const Rect about(col.x, y, col.w, 128.0f);
+        const Rect about(cx, y, cw, 128.0f);
         ui.panel(about);
         {
             Stack c = ui.vbox(Rect(about.x + 18.0f, about.y + 16.0f,
@@ -287,17 +318,14 @@ void draw_overview(Ui& ui, App& a, const Rect& area) {
         }
         y += about.h + GAPY;
 
-        section("快速开始", col.x, y, col.w);
+        section("快速开始", cx, y, cw);
         y += HEAD + 6.0f;
 
-        // 框高 = 代码实测高 + 底部动作条。窗口矮的时候按剩余高度收 —— 代码块
-        // 自己会按 box 高度截断，不会顶穿页底（概览页不滚动）。
-        const float code_h = ui.code_block_height(kQuickstart, Style().font(11.5f));
-        const Rect box(col.x, y, col.w, std::min(area.bottom() - y, code_h + 8.0f + 8.0f + 46.0f));
+        // 代码块 + 底部动作条，两段都在同一个 Group Box 里，中间一条内缩细线
+        const Rect box(cx, y, cw, code_h + 62.0f);
         ui.panel(box);
         ui.code_block(kQuickstart, Rect(box.x + 8.0f, box.y + 8.0f, box.w - 16.0f, code_h),
                       Style().font(11.5f));
-        // 框底那一条：动作 + 说明，中间一条内缩的细线（Group Box 里的分隔行）
         ui.fill_rect(Rect(box.x + 1.0f, box.bottom() - 46.0f, box.w - 2.0f, 1.0f),
                      ui.theme().separator, 0.0f);
         {
@@ -305,22 +333,20 @@ void draw_overview(Ui& ui, App& a, const Rect& area) {
             const Rect bb = r.next(168.0f).center_y(24.0f);
             if (ui.button("在新窗口运行这段代码", bb, Style().primary()))
                 open_quickstart_window();
-            ui.muted_text("独立窗口 · 独立消息循环", r.rest(),
-                          Style().left().font(11.0f));
+            ui.muted_text("独立窗口 · 独立消息循环", r.rest(), Style().left().font(11.0f));
         }
     }
 
     // ---------------- 右栏：分类 + 实测 ----------------
     {
-        const Rect col = right_col;
-        float y = col.y;
+        const float cx = area.x + lw + GAP, cw = area.w - lw - GAP;
+        float y = area.y - off;
 
-        section("分类", col.x, y, col.w);
+        section("分类", cx, y, cw);
         y += HEAD + 6.0f;
 
-        const auto& gs = group_stats();
         const float row_h = 26.0f;
-        const Rect cat(col.x, y, col.w, 10.0f + row_h * float(gs.size() - 1) + 10.0f);
+        const Rect cat(cx, y, cw, 10.0f + row_h * float(gs.size() - 1) + 10.0f);
         ui.panel(cat);
         for (size_t i = 1; i < gs.size(); ++i) {
             const float ry = cat.y + 10.0f + row_h * float(i - 1);
@@ -334,26 +360,12 @@ void draw_overview(Ui& ui, App& a, const Rect& area) {
         }
         y += cat.h + GAPY;
 
-        section("实测", col.x, y, col.w);
+        section("实测", cx, y, cw);
         y += HEAD + 6.0f;
 
-        const std::vector<std::string> h = {"指标", "值"};
-        const std::vector<std::vector<std::string>> rows = {
-            {"第三方依赖", "0"},
-            {"空闲 CPU", "0.00%"},
-            {"指针移动", "变化才画"},
-            {"动画", "60 fps"},
-            {"组件", "47 个"},
-            {"回归断言", "45 项"},
-            {"文字", "系统字体"},
-            {"几何", "自绘 AA"},
-            {"DLL", "仅系统库"},
-        };
-        // 表格自己会算行高（表头 24 + 行 20），框按内容定高，别撑到页底 ——
-        // 之前给的是 area.bottom()，框里于是留了一大片空白的"卡片"。
-        const Rect tbl(col.x, y, col.w, 24.0f + 20.0f * float(rows.size()) + 16.0f);
+        const Rect tbl(cx, y, cw, 24.0f + 20.0f * float(rows.size()) + 16.0f);
         ui.panel(tbl);
-        ui.table(h, rows, Rect(tbl.x + 10.0f, tbl.y + 8.0f, tbl.w - 20.0f, tbl.h - 16.0f),
+        ui.table(heads, rows, Rect(tbl.x + 10.0f, tbl.y + 8.0f, tbl.w - 20.0f, tbl.h - 16.0f),
                  Style().font(12.0f));
     }
 }
@@ -1684,46 +1696,42 @@ void draw_nav(Ui& ui, App& a, const Rect& nav) {
 // =============================================================================
 //  内容区
 // =============================================================================
-struct CardGeom {
-    float pad = 14.0f;
-    float title_h = 30.0f;
-    float code_w = 0.0f;
-    float body_w = 0.0f;
-    float preview_w = 0.0f;
-    float inner_h = 0.0f;    // 交给示例函数的内容盒高度
-    float body_h = 0.0f;     // 预览底板（= 内容盒 + 上下各 16 的留白）
+// macOS 的分组语汇只有一种：**Group Box** —— 1px 细线 + r10，内部不铺底，
+// 内容直接坐在窗口背景上；一个框里可以有多行，行与行之间是内缩的细线。
+// System Settings、检查器、NSAlert 的 accessoryView 全是这个写法。
+//
+// 之前每条示例是"左预览底板 + 右源码块"两栏并列，底板还自带底色和圆角 ——
+// 那是 shadcn 文档站的 Preview / Code 双栏。现在一条示例 = 一个 Group Box：
+//
+//   表头行   13 Semibold 名字（左边带披露三角）        11 说明（右）
+//   ──────── 内缩 14 的细线 ────────
+//   预览     整宽，左右各内缩 20
+//   ──────── 细线（只在展开源码时出现）────────
+//   源码     11.5 等宽，行号靠颜色区分
+//
+// 表头整行可点 = 展开 / 收起源码。默认只展开当页第一条：一进来看到的是干净的
+// 组件列表（像系统设置），想看用法再点开，而不是每条下面都拖着一块代码。
+constexpr float kBoxPadX = 20.0f;   // 预览左右内缩
+constexpr float kBoxPadY = 16.0f;   // 预览上下内缩
+constexpr float kRowH    = 30.0f;   // 表头行高
+constexpr float kCodePad = 10.0f;   // 源码块与细线之间的留白
+constexpr float kBoxGap  = 18.0f;   // 两个 Group Box 之间
+
+struct BoxGeom {
+    float demo_h  = 0.0f;    // 预览实测高度
+    float code_h  = 0.0f;    // 源码块高度（收起时 0）
+    float inner_w = 0.0f;    // 交给示例函数的宽度
+    float box_h   = 0.0f;    // Group Box 总高
 };
 
-// 预览底板的上下留白。
-constexpr float kPlatePadY = 16.0f;
-
-// 交给示例函数的**内容盒**宽度：预览底板再内缩 20px（左右各 20，共 40）。
-// 测量和绘制都必须用这一个函数，否则量出来的高度和画出来的不一样。
-float preview_inner_w(float card_w) {
-    const float code_w = std::max(card_w * 0.42f, 280.0f);
-    const float body_w = card_w - 24.0f;
-    return body_w - code_w - 12.0f - 40.0f;
-}
-
-// 卡片几何。need_h 是内容实测高度，和 preview_h（示例的声明高度）取大：
-// 声明值只当"最小高度"，内容比它高就自动长高。
-CardGeom card_geom(Ui& ui, const Demo& d, float card_w, float need_h) {
-    CardGeom g;
-    g.code_w    = std::max(card_w * 0.42f, 280.0f);
-    g.body_w    = card_w - 2.0f * g.pad;
-    g.preview_w = g.body_w - g.code_w - 12.0f;
-    // 只用**实测**高度。声明值当上限用会留下大片空白（50 条示例里 37 条声明值
-    // 偏大，最多多出 72px）—— 声明值现在只当"没量出来时的兜底"。
-    g.inner_h = need_h > 1.0f ? need_h : d.preview_h;
-    // 行高只由**内容**决定，不再被源码块撑开 —— 之前代码一长，预览区就被拉出
-    // 一大片空白，整页看起来像文档站。源码超出就裁（code_block 按 box 高度自行截断）。
-    g.body_h = g.inner_h + 2.0f * kPlatePadY;
-    return g;
+// 交给示例函数的**内容宽度**。测量和绘制必须共用这一个函数，否则量出来的
+// 高度和画出来的对不上。
+float demo_inner_w(float page_w) {
+    return std::max(page_w - 2.0f * kBoxPadX, 80.0f);
 }
 
 // 内容实测高度：让示例在测量模式下空跑一遍（不落像素、不响应、不排帧）。
-// 以前卡片高度全靠手填的 preview_h，45 页 × 每页若干示例里总有几条写小了，
-// 结果就是内容爬出卡片下边框。现在声明值只是下限，高度永远够。
+// 声明值 preview_h 只当"没量出来时的兜底"—— 50 条示例里 37 条声明值偏大。
 float demo_need_h(Ui& ui, App& a, const Demo& d, float inner_w) {
     ui.begin_measure();
     d.draw(ui, a, Rect(0.0f, 0.0f, inner_w, d.preview_h));
@@ -1731,35 +1739,58 @@ float demo_need_h(Ui& ui, App& a, const Demo& d, float inner_w) {
     return std::max(used.h, 0.0f);
 }
 
-void draw_demo_card(Ui& ui, App& a, const Demo& d, const Rect& card, const CardGeom& g) {
+BoxGeom box_geom(Ui& ui, const Demo& d, float page_w, float need_h, bool expanded) {
+    BoxGeom g;
+    g.inner_w = demo_inner_w(page_w);
+    g.demo_h  = need_h > 1.0f ? need_h : d.preview_h;
+    g.code_h  = expanded ? ui.code_block_height(d.code, Style().font(11.5f)) : 0.0f;
+    g.box_h   = kRowH + 1.0f + kBoxPadY + g.demo_h + kBoxPadY;
+    if (expanded) g.box_h += 1.0f + kCodePad + g.code_h + kCodePad;
+    return g;
+}
+
+void draw_demo_box(Ui& ui, App& a, int idx, const Demo& d, const Rect& box,
+                   const BoxGeom& g, bool expanded) {
     const aino::Theme& th = ui.theme();
-    const float body_h = g.body_h;
+    ui.panel(box);                     // 1px 细线 + r10，不铺底
 
-    // ---- 标题在**上面**：macOS 的分组标题是"标题 + 右侧说明"，内容在下面。
-    // 之前把标题放在卡片底部、左边套一块带边框的底板，那是 Web 文档站的写法。
-    const Rect bar(card.x, card.y, g.body_w, 20.0f);
-    ui.label(d.name, Rect(bar.x, bar.y, bar.w * 0.45f, bar.h),
+    // ---- 表头（整行可点：展开 / 收起源码）----
+    const Rect head(box.x + 1.0f, box.y + 1.0f, box.w - 2.0f, kRowH - 1.0f);
+    if (ui.button("", head, Style().ghost())) {
+        a.code_mask ^= (1u << unsigned(idx));
+        ui.set_focus(nullptr);
+    }
+    // 披露三角在名字左边（Finder / 系统设置的位置）
+    {
+        const float cx = head.x + 10.0f, cy = head.cy();
+        const aino::Color cc = th.label3;
+        if (expanded) {
+            ui.draw_line(cx - 4.0f, cy - 2.0f, cx, cy + 2.0f, cc, 1.4f);
+            ui.draw_line(cx, cy + 2.0f, cx + 4.0f, cy - 2.0f, cc, 1.4f);
+        } else {
+            ui.draw_line(cx - 2.0f, cy - 4.0f, cx + 2.0f, cy, cc, 1.4f);
+            ui.draw_line(cx + 2.0f, cy, cx - 2.0f, cy + 4.0f, cc, 1.4f);
+        }
+    }
+    ui.label(d.name, Rect(head.x + 22.0f, head.y, head.w * 0.5f, head.h),
              Style().left().semi_bold().font(13.0f));
-    ui.muted_text(d.note, Rect(bar.x, bar.y, bar.w, bar.h),
+    ui.muted_text(d.note, Rect(head.x + 22.0f, head.y, head.w - 42.0f, head.h),
                   Style().right().font(11.0f));
+    ui.fill_rect(Rect(box.x + 14.0f, head.bottom() - 0.5f, box.w - 28.0f, 1.0f),
+                 th.separator, 0.0f);
 
-    const Rect body(card.x, bar.bottom() + 10.0f, g.body_w, body_h);
-    const Rect pre(body.x, body.y, g.preview_w, body_h);
-    // 源码块按**内容**定高，不跟预览区硬凑等高：一行代码撑一块 200px 的灰面，
-    // 空出来的部分只会显得"没写完"。左边缘仍然对齐。
-    const float cod_h = std::min(body_h,
-        ui.code_block_height(d.code, Style().font(11.5f)) + 12.0f);
-    const Rect cod(body.right() - g.code_w, body.y, g.code_w, cod_h);
+    // ---- 预览：直接坐在窗口底上，不套底板、不描边 ----
+    const float dy = head.bottom() + kBoxPadY;
+    d.draw(ui, a, Rect(box.x + kBoxPadX, dy, g.inner_w, g.demo_h));
 
-    // ---- 预览区：直接铺在窗口背景上，不套底板、不描边 ----
-    // macOS 的内容区就是"背景 + 内容"，分层靠明度差；一圈 1px 边框 + 圆角卡片
-    // 是 Web 语言，也是这套界面之前看起来"像网页"的主要原因之一。
-    const Rect content(pre.x + 20.0f,
-                       pre.y + kPlatePadY + (body_h - 2.0f * kPlatePadY - g.inner_h) * 0.5f,
-                       pre.w - 40.0f, g.inner_h);
-    d.draw(ui, a, content);
-
-    ui.code_block(d.code, cod, Style().font(11.5f));
+    // ---- 源码（展开时）----
+    if (expanded) {
+        const float sy = dy + g.demo_h + kBoxPadY;
+        ui.fill_rect(Rect(box.x + 14.0f, sy, box.w - 28.0f, 1.0f), th.separator, 0.0f);
+        ui.code_block(d.code, Rect(box.x + kCodePad, sy + kCodePad,
+                                   box.w - 2.0f * kCodePad, g.code_h),
+                      Style().font(11.5f));
+    }
 }
 
 void draw_page(Ui& ui, App& a, const Rect& area) {
@@ -1793,27 +1824,34 @@ void draw_page(Ui& ui, App& a, const Rect& area) {
         return;
     }
 
-    // 先量高度，再定滚动范围与卡片尺寸。测量必须在 scroll 之外做：scroll 会给
-    // 绘制加裁剪和偏移，测量时套上那层就量不到内容的真实高度了。
-    const float card_w = content.w;
-    const float inner_w = preview_inner_w(card_w);
-    std::vector<float> need(size_t(p.n), 0.0f);
-    std::vector<CardGeom> geo(size_t(p.n));
-    float total = 8.0f;
+    // 翻页时回到"只展开第一条"：否则上一页展开的位会套到这一页别的示例上。
+    if (a.code_page != a.page) {
+        a.code_page = a.page;
+        a.code_mask = std::getenv("AINO_CODE") ? 0xffffffffu : 1u;
+    }
+
+    // 先量高度，再定滚动范围。测量必须在 scroll 之外做：scroll 会给绘制加裁剪
+    // 和偏移，套着那层量不到内容的真实高度。
+    const float page_w  = content.w;
+    const float inner_w = demo_inner_w(page_w);
+    std::vector<BoxGeom> geo(size_t(p.n));
+    float total = 6.0f;
     for (int i = 0; i < p.n; ++i) {
-        need[size_t(i)] = demo_need_h(ui, a, p.demos[i], inner_w);
-        geo[size_t(i)] = card_geom(ui, p.demos[i], card_w, need[size_t(i)]);
-        total += geo[size_t(i)].body_h + 56.0f + 18.0f;
+        const float need = demo_need_h(ui, a, p.demos[i], inner_w);
+        const bool  exp  = (a.code_mask >> unsigned(i)) & 1u;
+        geo[size_t(i)] = box_geom(ui, p.demos[i], page_w, need, exp);
+        total += geo[size_t(i)].box_h + kBoxGap;
     }
 
     {
         auto sc = ui.scroll(content, total);
         (void)sc;
         for (int i = 0; i < p.n; ++i) {
-            const CardGeom& g = geo[size_t(i)];
-            const Rect row = ui.row(g.body_h + 56.0f + 18.0f);
-            draw_demo_card(ui, a, p.demos[i],
-                           Rect(row.x, row.y, row.w, g.body_h + 56.0f), g);
+            const BoxGeom& g = geo[size_t(i)];
+            const Rect row = ui.row(g.box_h + kBoxGap);
+            const bool exp = (a.code_mask >> unsigned(i)) & 1u;
+            draw_demo_box(ui, a, i, p.demos[i],
+                          Rect(row.x, row.y, row.w, g.box_h), g, exp);
         }
     }
     // 模态浮层必须在 scroll 作用域**结束之后**画：滚动作用域持有一个裁剪区，
@@ -1844,7 +1882,7 @@ void dump_layout_report(Ui& ui, App& a, float card_w) {
     if (!path || !*path) return;
     std::FILE* f = std::fopen(path, "w");
     if (!f) return;
-    const float inner_w = preview_inner_w(card_w);
+    const float inner_w = demo_inner_w(card_w);
     int over = 0, under = 0, total = 0;
     // 1.5px 容差：描边压在盒边界上时会往外占半个像素，不算溢出。
     const float tol = 1.5f;
