@@ -2373,36 +2373,58 @@ inline void raster_rrect_inner(Canvas& cv, const Rect& r, float rad, float blur,
     }
 }
 
-// 阴影：对"外扩 blur"的包围盒逐像素求到圆角矩形边界的有符号距离，
-// 再用一条平方衰减求 alpha：alpha = A * (1 - d/blur)^2。
+// 阴影覆盖率曲线：**高斯模糊后的形状**在边界处的覆盖率是 50%，不是 100%。
 //
-// 为什么不用"叠 N 层放大的圆角矩形"：blend 是**累积**的，靠近边缘的地方
-// 十几层叠在同一个像素上。传进来的 alpha 是 90，实际渲出来接近 148 ——
-// 比设计值深 60%，看上去就是一圈发黑、边界很硬的脏影。
-// 距离场版本一次遍历就够，alpha 曲线直接可控，也不再随 blur 变化而变味。
+// 这是之前"雷霆阴影边框"的根因：旧实现让轮廓线上直接取满 alpha，再往外平方
+// 衰减 —— 于是 drop_shadow(r, r, 3, rgba(0,0,0,.55)) 画出来的其实是一圈 3px
+// 宽、55% 黑的**实心描边**，叠上第二层柔光后边缘 α ≈ 66%，在浅色底上就是一
+// 道黑框，完全不是投影。
+//
+// Figma / CSS 的 blur 参数是"模糊半径"，对应高斯 σ = blur/2，轮廓处正好一半
+// 覆盖：α(d) = A · [1 − Φ(2d/blur)]。这里用 logistic 近似 Φ（误差 < 0.5%），
+// 查表求值，不引入 erfc 依赖也不逐像素 exp。
+//
+//   u = d/blur     -1(全实)      0(半覆盖)      +1(几乎透明)
+inline float shadow_cov(float u) {
+    static float tab[65];
+    static bool init = false;
+    if (!init) {
+        for (int i = 0; i < 65; ++i) {
+            const float x = -2.0f + 4.0f * float(i) / 64.0f;   // u ∈ [-2, 2]
+            tab[i] = 1.0f / (1.0f + std::exp(3.404f * x));
+        }
+        init = true;
+    }
+    const float t = (u * 0.25f + 0.5f) * 64.0f;                // u ∈ [-2,2] → [0,64]
+    if (t <= 0.0f) return 1.0f;
+    if (t >= 64.0f) return 0.0f;
+    const int   i = int(t);
+    const float f = t - float(i);
+    return tab[i] + (tab[i + 1] - tab[i]) * f;
+}
+
+// 阴影：对"外扩 blur"的包围盒逐像素求到圆角矩形边界的有符号距离 d，
+// 再按高斯覆盖率曲线取 alpha。距离场一次遍历就够，曲线不随 blur 变味。
 inline void raster_shadow(Canvas& cv, const Rect& r, float rad, float blur, const Color& c, float dy) {
     if (blur <= 0.5f || c.a == 0) return;
     const Rect s = r.offset(0.0f, dy);
-    const float A = float(c.a);
     const float inv_blur = 1.0f / blur;
+    // 拖尾截断到 ±1.35·blur（覆盖率 < 0.3%，肉眼不可见）
+    const float ext = blur * 1.35f;
 
-    const int x0 = std::max(0, int(std::floor(s.x - blur)));
-    const int x1 = std::min(cv.w, int(std::ceil(s.right() + blur)));
-    const int y0 = std::max(0, int(std::floor(s.y - blur)));
-    const int y1 = std::min(cv.h, int(std::ceil(s.bottom() + blur)));
+    const int x0 = std::max(0, int(std::floor(s.x - ext)));
+    const int x1 = std::min(cv.w, int(std::ceil(s.right() + ext)));
+    const int y0 = std::max(0, int(std::floor(s.y - ext)));
+    const int y1 = std::min(cv.h, int(std::ceil(s.bottom() + ext)));
     if (x0 >= x1 || y0 >= y1) return;
 
     for (int y = y0; y < y1; ++y) {
         const float pyc = float(y) + 0.5f;
         for (int x = x0; x < x1; ++x) {
             const float d = rrect_sdf(float(x) + 0.5f, pyc, s, rad);
-            // d <= 0 在形状内部：给满值（面板会盖住它；半透明面板才看得见）。
-            // d >= blur 在衰减范围外：什么都不画。
-            if (d >= blur) continue;
-            const float t = d <= 0.0f ? 1.0f : (1.0f - d * inv_blur);
-            const float a = A * t * t;
-            if (a < 0.6f) continue;
-            cv.blend(x, y, c, t * t);   // coverage 是"衰减系数"，alpha 由 blend 里的 c.a 负责
+            const float cov = shadow_cov(d * inv_blur);
+            if (cov < 0.004f) continue;
+            cv.blend(x, y, c, cov);   // alpha 由 blend 里的 c.a 负责
         }
     }
 }
@@ -4621,20 +4643,29 @@ inline void paint_surface(Ui& ui, const Rect& r, const Skin& sk, float t_hover, 
 
 // macOS 27 的弹层投影是**两层**：一层 0/0/3 的紧贴轮廓（把边缘压住），
 // 一层大范围的柔光（拉开层次）。只画一层柔光会显得飘，只画紧轮廓会显得脏。
+//
 //   level 0 = Quaternary（菜单/右键菜单）  1 = Secondary（弹层/浮卡）  2 = Primary（模态）
+//
+// 关于"紧轮廓层"：设计稿写的是 `0 0 3 rgba(0,0,0,.55)`。按 Figma/CSS 的语义
+// 忠实渲染出来，轮廓线上是 27% 黑、且只铺开 3px —— 在 1080p 上就是一整圈
+// **深灰描边**，看着像"雷霆边框"而不是影子（用户实测就是这个反馈）。
+// AppKit 的真实观感是"没有一圈可见的暗边"，靠的是大半径柔光。所以这里把紧
+// 轮廓压到 16%（只负责把边缘咬住），并放大柔光层的半径 —— 层次感来自柔光，
+// 边缘定义交给面板自己的 1px 细线。
 inline void pop_shadow(Ui& ui, const Rect& r, float rad, const Theme& th, int level = 1) {
     const bool dark = th.window_bg.luminance() < 0.5f;
     if (!dark) {
-        ui.drop_shadow(r, rad, 3.0f, Color(0, 0, 0, 140), 0.0f);
-        if (level >= 2)      ui.drop_shadow(r, rad, 100.0f, Color(0, 0, 0, 102), 36.0f);
-        else if (level == 1) ui.drop_shadow(r, rad, 40.0f,  Color(0, 0, 0, 64),  8.0f);
-        else                 ui.drop_shadow(r, rad, 20.0f,  Color(0, 0, 0, 64),  4.0f);
+        ui.drop_shadow(r, rad, 5.0f, Color(0, 0, 0, 40), 0.5f);
+        if (level >= 2)      ui.drop_shadow(r, rad, 90.0f, Color(0, 0, 0, 82), 30.0f);
+        else if (level == 1) ui.drop_shadow(r, rad, 44.0f, Color(0, 0, 0, 56), 10.0f);
+        else                 ui.drop_shadow(r, rad, 30.0f, Color(0, 0, 0, 52), 5.0f);
     } else {
-        // 暗色下第一层是 1px 实心黑（不是柔光），靠它把面板从深色背景里"切"出来
-        ui.drop_shadow(r, rad, 1.0f, Color(0, 0, 0, 255), 0.0f);
-        if (level >= 2)      ui.drop_shadow(r, rad, 100.0f, Color(0, 0, 0, 179), 36.0f);
-        else if (level == 1) ui.drop_shadow(r, rad, 40.0f,  Color(0, 0, 0, 179), 8.0f);
-        else                 ui.drop_shadow(r, rad, 20.0f,  Color(0, 0, 0, 115), 4.0f);
+        // `0 0 1 spread 1 #000`：外扩 1px 的实心黑。用 1px 描边画，不能拿
+        // blur=1 的柔光冒充 —— 高斯之后边缘只剩半格，暗色下会"切"不出来。
+        ui.stroke_rect(r.expand(0.5f), Color(0, 0, 0, 255), rad + 0.5f, 1.0f);
+        if (level >= 2)      ui.drop_shadow(r, rad, 90.0f, Color(0, 0, 0, 150), 30.0f);
+        else if (level == 1) ui.drop_shadow(r, rad, 44.0f, Color(0, 0, 0, 140), 10.0f);
+        else                 ui.drop_shadow(r, rad, 30.0f, Color(0, 0, 0, 120), 5.0f);
     }
 }
 
