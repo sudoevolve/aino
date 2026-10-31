@@ -580,7 +580,7 @@ NODE_PATH=.workbuddy/figma/node_modules node docs/macos27/tools/digest.js "Windo
 > 注意 `node_modules` 在 `.workbuddy/figma/`，直接 `node tools/digest.js` 会报
 > `Cannot find module 'kiwi-schema'`。
 
-### 13.1 仍然带 Web 味的 13 处（已改）
+### 13.1 仍然带 Web 味的 15 处（已改）
 
 | # | 组件 | kit 依据 | 之前（Web / shadcn） | 现在（macOS 27） |
 |---|---|---|---|---|
@@ -597,6 +597,8 @@ NODE_PATH=.workbuddy/figma/node_modules node docs/macos27/tools/digest.js "Windo
 | 11 | 抽屉 `drawer()` | `Sheet`（r10） | 整屏 35% 黑幕 + 方角 + 1px 边 | **无黑幕** + r10 + 二级投影 |
 | 12 | Group Box | `Group Box`（r12、1.5% 底） | r10、不铺底 | r12 + 2% 底 + 1px 细线 |
 | 13 | 示例栏宽 | — | 单控件被拉满 ~790px | 表单类 400（`demo_col`），表格/日历/图表仍整宽 |
+| 14 | 验证码 `input_otp()` | 由 `Text Field` 推导 | 每格跟着 box 撑到 36 高、15 号字 | 24 高 / r5 / 13 号字，格子垂直居中 |
+| 15 | 示例里的控件高 | Medium = 24 | 布局示例 36、toggle 34、分页 24 混用 | 全部 24（源码片段里的数字一起改） |
 
 第 11 条要单独说明：macOS 的 sheet / 检查器**不会把窗口压黑**（窗口只是失去
 焦点），整屏半透明黑是 Radix / shadcn 的 Dialog Overlay。层级交给圆角 + 投影。
