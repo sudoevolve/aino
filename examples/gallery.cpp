@@ -104,6 +104,7 @@ struct App {
     // 由 AINO_CODE=1 全展开（截图用）。
     std::uint32_t code_mask = 1u;
     int           code_page = -1;
+    int           toggle_pending = -1;   // 下一帧要翻转的示例下标（见 draw_page）
 };
 
 // =============================================================================
@@ -1756,8 +1757,11 @@ void draw_demo_box(Ui& ui, App& a, int idx, const Demo& d, const Rect& box,
 
     // ---- 表头（整行可点：展开 / 收起源码）----
     const Rect head(box.x + 1.0f, box.y + 1.0f, box.w - 2.0f, kRowH - 1.0f);
+    // 不在绘制途中翻状态：这一帧的 box 高度是按旧状态算的，就地翻转会让展开出来
+    // 的源码画进一个矮了一截的框里（闪一帧，压到下一个框上）。记下来，下一帧在
+    // 算高度之前翻。
     if (ui.button("", head, Style().ghost())) {
-        a.code_mask ^= (1u << unsigned(idx));
+        a.toggle_pending = idx;
         ui.set_focus(nullptr);
     }
     // 披露三角在名字左边（Finder / 系统设置的位置）
@@ -1822,6 +1826,12 @@ void draw_page(Ui& ui, App& a, const Rect& area) {
     if (a.page == 0) {
         draw_overview(ui, a, content);
         return;
+    }
+
+    // 上一帧点过的表头在这里生效 —— 必须在算高度之前。
+    if (a.toggle_pending >= 0) {
+        a.code_mask ^= (1u << unsigned(a.toggle_pending));
+        a.toggle_pending = -1;
     }
 
     // 翻页时回到"只展开第一条"：否则上一页展开的位会套到这一页别的示例上。
