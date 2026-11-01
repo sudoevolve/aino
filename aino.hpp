@@ -7716,7 +7716,7 @@ inline bool contains_ci(const std::string& hay, const std::string& needle) {
 // 复制三份最容易出的问题就是改了一处忘另外两处。
 inline bool group_cell(Ui& ui, Ui::Impl* im, uint64_t id, const Rect& r, const std::string& text,
                        bool on, float fs, float outer_rad, const Style& st,
-                       const Color& on_bg, const Color& hover_bg, bool divider) {
+                       bool selectable, bool divider) {
     const Theme& th = im->theme;
     Interact in = interact(im, id, r, !st.disabled);
     if (in.hovered) ui.set_cursor(Cursor::Hand);
@@ -7733,19 +7733,21 @@ inline bool group_cell(Ui& ui, Ui::Impl* im, uint64_t id, const Rect& r, const s
         ui.fill_rect(Rect(r.x, r.y + (r.h - dh) * 0.5f, 1.0f, dh), th.label3, 0.0f);
     }
 
-    // 选中段内缩 2（24 高的轨道里放 20 高的滑块），圆角比容器小 2 —— 同心圆角
+    // 选中 = **白色胶囊**（暗色是比轨道亮一档的灰），和 segmented() 同一套画法。
+    // 强调色实心 + 白字是 shadcn 的 ToggleGroup（data-[state=on]:bg-accent），
+    // 在 mac 界面里那一块蓝比主操作按钮还抢眼。
     const Rect inner = r.inset(2.0f, 2.0f);
-    const float ir = std::max(0.0f, outer_rad - 2.0f);
+    const float ir = inner.h * 0.5f;
+    const Color pill = th.is_dark() ? Color(255, 255, 255, 46) : Color(255, 255, 255, 255);
     if (t_on > 0.01f) {
-        // 强调色是不透明的：淡入只能缩 alpha，不能 mix（mix 会经过脏灰）
-        Color bg = on_bg;
-        bg.a = uint8_t(255.0f * t_on + 0.5f);
-        ui.fill_rect_s(inner, bg, ir, 0.35f);
+        ui.fill_rect_s(inner, pill.scaled_alpha(t_on), ir, 0.35f);
     } else if (t_h > 0.01f) {
-        ui.fill_rect(inner, hover_bg.scaled_alpha(t_h * 0.55f), ir);
+        ui.fill_rect(inner, th.fill4.scaled_alpha(t_h * 0.7f), ir);
     }
 
-    Color fg = on ? on_color(on_bg) : th.foreground;
+    // 有选中语义的组：选中项 85%，其余 50%（官方 Segmented 就是这样分级的）；
+    // 一次性动作的按钮组没有"选中"，所有标签都是主标签色。
+    Color fg = !selectable ? th.foreground : (on ? th.label : th.label2);
     if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
     Style ts;
     ts.font_size = fs;
@@ -7802,7 +7804,7 @@ inline bool Ui::toggle_button(const std::string& label, bool* value, const Rect&
     if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
     Style ts;
     ts.font_size = fs;
-    ts.font_weight = st.font_weight > 0 ? st.font_weight : (t_on > 0.5f ? 600 : 500);
+    ts.font_weight = st.font_weight > 0 ? st.font_weight : 500;   // kit 两态都是 Medium
     ts.align = st.align_set ? st.align : Align::Center;
     ts.valign = VAlign::Middle;
     const float pad = st.pad_x >= 0.0f ? st.pad_x : 10.0f;
@@ -7820,7 +7822,8 @@ inline bool Ui::toggle_group(const std::vector<std::string>& items, int* index,
     const Theme& th = impl->theme;
     const int n = int(items.size());
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    // 胶囊轨道：这三个组控件在 AppKit 里就是 NSSegmentedControl，半径 = h/2
+    const float rad = st.radius >= 0.0f ? st.radius : box.h * 0.5f;
     const float iw  = box.w / float(n);
     const uint64_t base = detail::make_id("toggle_group", box);
 
@@ -7837,7 +7840,7 @@ inline bool Ui::toggle_group(const std::vector<std::string>& items, int* index,
         // 分隔线只在两侧都没选中时画：官方 kit 的 Separator 会被 Selected 段整块盖住
         const bool div = i > 0 && !on && !(*index == i - 1);
         if (detail::group_cell(*this, impl, id, r, items[size_t(i)], on,
-                               fs, rad, st, th.tint, th.fill, div)) {
+                               fs, rad, st, true, div)) {
             *index = (*index == i) ? -1 : i;
             changed = true;
             repaint();
@@ -7853,7 +7856,7 @@ inline bool Ui::toggle_group_multi(const std::vector<std::string>& items, std::u
     const Theme& th = impl->theme;
     const int n = std::min(int(items.size()), 32);
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float rad = st.radius >= 0.0f ? st.radius : box.h * 0.5f;
     const float iw  = box.w / float(n);
     const uint64_t base = detail::make_id("toggle_group_m", box);
 
@@ -7866,7 +7869,7 @@ inline bool Ui::toggle_group_multi(const std::vector<std::string>& items, std::u
         const bool on = ((*mask >> i) & 1u) != 0u;
         const bool prev_on = i > 0 && (((*mask >> (i - 1)) & 1u) != 0u);
         if (detail::group_cell(*this, impl, id, r, items[size_t(i)], on,
-                               fs, rad, st, th.tint, th.fill, i > 0 && !on && !prev_on)) {
+                               fs, rad, st, true, i > 0 && !on && !prev_on)) {
             *mask ^= (1u << i);
             changed = true;
             repaint();
@@ -7883,12 +7886,13 @@ inline bool Ui::button_group(const std::vector<std::string>& items, int* clicked
     const Theme& th = impl->theme;
     const int n = int(items.size());
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float rad = st.radius >= 0.0f ? st.radius : box.h * 0.5f;
     const float iw  = box.w / float(n);
     const uint64_t base = detail::make_id("button_group", box);
 
-    fill_rect(box, !st.bg.is_none() ? st.bg : th.secondary, rad);
-    stroke_rect(box, th.border, rad, 1.0f);
+    // 和 Segmented 同一个轨道：8% 凹槽、无描边（之前是 secondary 底 + 1px 边，
+    // 那是 Web 的 button-group，mac 里相邻按钮不会长一个"外框"）
+    fill_rect_s(box, !st.bg.is_none() ? st.bg : th.track_well(), rad, 0.35f);
 
     bool clicked = false;
     for (int i = 0; i < n; ++i) {
@@ -7897,7 +7901,7 @@ inline bool Ui::button_group(const std::vector<std::string>& items, int* clicked
         // 灰底上不能再用 accent（浅色主题里 secondary 和 accent 是同一个色，
         // hover 会完全看不出来），改用背景色提亮。
         if (detail::group_cell(*this, impl, id, r, items[size_t(i)], false,
-                               fs, rad, st, th.accent, th.background, i > 0)) {
+                               fs, rad, st, false, i > 0)) {
             if (clicked_index) *clicked_index = i;
             clicked = true;
             repaint();
@@ -8300,11 +8304,18 @@ inline bool Ui::pagination(int* page, int total_pages, const Rect& box, const St
 
         const bool is_cur = (s >= 0 && s == cur);
         const float t_h = detail::animate_value(impl, id * 103u + 1u, (in.hovered && !is_cur) ? 1.0f : 0.0f, 20.0f);
-        // 页码是方格子，但选中态是**胶囊/圆**（macOS 的选中标记永远是胶囊，不是方块）
+        // 当前页 = **强调色 23% 的胶囊**，不是实心蓝圆点。实心蓝是 iOS 的页码点，
+        // 也会跟"主操作按钮"抢视觉权重；mac 的选中/当前位置一律是 23% 的淡底
+        // （见 Item/Small/Selected）。
         const Rect inner = r.inset(2.0f, 2.0f);
         const float pill_r = inner.h * 0.5f;
-        if (is_cur)      fill_rect_s(inner, th.tint, pill_r, 0.0f);
-        else if (t_h > 0.01f) fill_rect_s(inner, th.fill.scaled_alpha(t_h), pill_r, 0.0f);
+        if (is_cur) {
+            Color cur_bg = th.tint;
+            cur_bg.a = 59;                      // ≈23%
+            fill_rect_s(inner, cur_bg, pill_r, 0.35f);
+        } else if (t_h > 0.01f) {
+            fill_rect_s(inner, th.fill.scaled_alpha(t_h), pill_r, 0.35f);
+        }
 
         if (s < 0) {
             // 上一页 / 下一页：自绘箭头（不依赖字体里有没有 < >）
@@ -8320,7 +8331,8 @@ inline bool Ui::pagination(int* page, int total_pages, const Rect& box, const St
         } else {
             char buf[16];
             std::snprintf(buf, sizeof buf, "%d", s + 1);
-            draw_text(buf, r, is_cur ? detail::on_color(th.tint) : th.foreground, ts);
+            // 淡底 + 主标签字（以前是实心蓝 + 反色字，那是"选中即主操作"的写法）
+            draw_text(buf, r, th.foreground, ts);
             if (in.clicked && s != cur) { *page = s; changed = true; repaint(); }
         }
 

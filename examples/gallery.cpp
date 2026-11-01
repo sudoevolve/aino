@@ -585,7 +585,7 @@ void d_button_group(Ui& ui, App& a, const Rect& box) {
     Stack c = demo_col(ui, box, 12.0f);
     ui.button_group({"复制", "粘贴", "剪切"}, &a.bg_click, c.next(24.0f));
     ui.toggle_group_multi({"B", "I", "U"}, &a.tgm, c.next(24.0f));
-    ui.muted_text("前者互斥、相邻共享边框；后者用位掩码表示任意组合。", c.next(18.0f),
+    ui.muted_text("同一条凹槽轨道里分段；前者互斥，后者用位掩码表示任意组合。", c.next(18.0f),
                   Style().left().font(11.5f));
 }
 
@@ -1151,7 +1151,7 @@ ui.toggle_group({"日", "周", "月"}, &a.tg, c.next(24.0f));)cpp",
 };
 
 const Demo kButtonGroup[] = {
-    {"按钮组", "相邻共享边框；多选用位掩码",
+    {"按钮组", "同一条轨道里分段；多选用位掩码",
      R"cpp(ui.button_group({"复制", "粘贴", "剪切"}, &a.bg_click, c.next(24.0f));
 ui.toggle_group_multi({"B", "I", "U"}, &a.tgm, c.next(24.0f));)cpp",
      116.0f, d_button_group},
@@ -1431,7 +1431,7 @@ const Page kPages[] = {
      kCombobox, COUNT(kCombobox)},
     {"表单", "Toggle", "按下态按钮与分组。", "NSSegmentedControl",
      kToggle, COUNT(kToggle)},
-    {"表单", "Button Group", "相邻按钮共享边框，支持多选。", "NSSegmentedControl",
+    {"表单", "Button Group", "凹槽轨道内分段，支持多选。", "NSSegmentedControl",
      kButtonGroup, COUNT(kButtonGroup)},
     {"表单", "Stepper", "数值步进与星级评分。", "—",
      kStepper, COUNT(kStepper)},
