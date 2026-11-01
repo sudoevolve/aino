@@ -3142,6 +3142,10 @@ struct Ui::Impl {
     }
     void* focus = nullptr;        // 当前获得键盘焦点的控件
     uint64_t focus_id = 0;
+    // 焦点是**鼠标点出来**的还是键盘走出来的。macOS 只有键盘焦点画焦点环：
+    // 点一下按钮就留一圈蓝（Web 的 :focus-visible 之外的默认行为）很有"网页感"，
+    // 而文本类控件点进去本来就有环，所以它们照旧画。
+    bool focus_by_mouse = false;
     bool  focus_consumed = false; // 本帧 Focus 是否已被某控件认领
 
     // 文本编辑状态
@@ -4701,7 +4705,10 @@ inline void paint_popup_chevrons(Ui& ui, const Rect& box, float pad, const Color
     ui.draw_line(cx, cy + gap + k, cx + s, cy + gap - k, c, 1.2f);
 }
 
-inline void paint_focus_ring(Ui& ui, const Rect& r, float radius, const Color& ring) {
+// for_text = 文本类控件（点进去就有环，和系统一致）；其余控件只在键盘焦点时画。
+inline void paint_focus_ring(Ui& ui, const Rect& r, float radius, const Color& ring,
+                             bool for_text = false) {
+    if (!for_text && ui.impl->focus_by_mouse) return;
     // HIG：焦点环 3pt 宽、画在控件**外面**（不占控件自身的空间）。之前是
     // 2px / 外扩 1.5，叠上 55% 的衰减后只有 27% 的强调色 —— 浅色下几乎看不见，
     // 焦点跑到哪全靠猜。外扩 2 + 宽 3 才是系统那圈"贴边一圈蓝"。
@@ -4791,6 +4798,7 @@ inline void grab_focus(Ui::Impl* im, uint64_t id) {
     im->focus = reinterpret_cast<void*>(static_cast<uintptr_t>(id));
     im->focus_id = id;
     im->caret_blink = 0.0f;
+    im->focus_by_mouse = im->input.pressed[0] || im->input.pressed[1];
 }
 inline void drop_focus(Ui::Impl* im) { im->focus = nullptr; im->focus_id = 0; }
 
@@ -5347,8 +5355,10 @@ inline bool Ui::button(const std::string& text, const Rect& box, const Style& st
     if (!s.valign_set) s.valign = VAlign::Middle;
 
     const bool enabled = !s.disabled;
+    // macOS 里手型指针只出现在**链接**上：按钮、菜单、列表行、日历格全是箭头。
+    // 整屏都是小手是浏览器 / Web 组件库的习惯，也是"一眼像网页"的来源之一。
     detail::Interact in = detail::interact(impl, id, box, enabled);
-    if (in.hovered) set_cursor(Cursor::Hand);
+    if (in.hovered && s.variant == Style::Link) set_cursor(Cursor::Hand);
 
     const float t_hover = detail::animate_value(impl, id * 31u + 1u, in.hovered ? 1.0f : 0.0f, 18.0f);
     const float t_press = detail::animate_value(impl, id * 31u + 2u, (in.held && in.hovered) ? 1.0f : 0.0f, 34.0f);
@@ -5368,7 +5378,8 @@ inline bool Ui::button(const std::string& text, const Rect& box, const Style& st
     if (s.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
     draw_text(text, r, fg, ts);
 
-    if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, r, sk.radius, impl->theme.ring);
+    if (detail::is_focused(impl, id))
+        detail::paint_focus_ring(*this, r, sk.radius, impl->theme.ring, true);
 
     if (in.pressed) detail::grab_focus(impl, id);
     return in.clicked && enabled;
@@ -5383,7 +5394,7 @@ inline bool Ui::icon_button(const std::string& glyph, const Rect& box, const Sty
 
     const bool enabled = !s.disabled;
     detail::Interact in = detail::interact(impl, id, box, enabled);
-    if (in.hovered) set_cursor(Cursor::Hand);
+    if (in.hovered) set_cursor(Cursor::Arrow);
     const float t_hover = detail::animate_value(impl, id * 31u + 1u, in.hovered ? 1.0f : 0.0f, 18.0f);
     const float t_press = detail::animate_value(impl, id * 31u + 2u, (in.held && in.hovered) ? 1.0f : 0.0f, 34.0f);
 
@@ -5415,7 +5426,7 @@ inline bool Ui::nav_item(const std::string& label, bool active, const Rect& box,
     const bool enabled = !st.disabled;
 
     detail::Interact in = detail::interact(impl, id, box, enabled);
-    if (in.hovered) set_cursor(Cursor::Hand);
+    if (in.hovered) set_cursor(Cursor::Arrow);
     const float t_hover  = detail::animate_value(impl, id * 31u + 1u, (in.hovered && !active) ? 1.0f : 0.0f, 20.0f);
     const float t_active = detail::animate_value(impl, id * 31u + 2u, active ? 1.0f : 0.0f, 24.0f);
 
@@ -5813,7 +5824,7 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
     pop_clip();
 
     if (detail::is_focused(impl, id) && focused)
-        detail::paint_focus_ring(*this, box, rad, th.ring);
+        detail::paint_focus_ring(*this, box, rad, th.ring, true);
 
     return changed;
 }
@@ -5829,7 +5840,7 @@ inline bool Ui::checkbox(bool* value, const std::string& label_text, const Rect&
     const bool enabled = !st.disabled;
 
     detail::Interact in = detail::interact(impl, id, box, enabled);
-    if (in.hovered) set_cursor(Cursor::Hand);
+    if (in.hovered) set_cursor(Cursor::Arrow);
     bool changed = false;
     if (in.clicked) { *value = !*value; changed = true; }
 
@@ -5904,7 +5915,7 @@ inline bool Ui::toggle(bool* value, const Rect& box, const Style& st) {
     const bool enabled = !st.disabled;
 
     detail::Interact in = detail::interact(impl, id, box, enabled);
-    if (in.hovered) set_cursor(Cursor::Hand);
+    if (in.hovered) set_cursor(Cursor::Arrow);
     bool changed = false;
     if (in.clicked) { *value = !*value; changed = true; }
 
@@ -6064,7 +6075,7 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
         Rect item(xs[i], inner.y, ws[i], inner.h);
         uint64_t id = detail::make_id("tab", item, base_id + i);
         detail::Interact in = detail::interact(impl, id, item, !st.disabled);
-        if (in.hovered) set_cursor(Cursor::Hand);
+        if (in.hovered) set_cursor(Cursor::Arrow);
         if (in.clicked && *index != int(i)) { *index = int(i); changed = true; }
 
         const float t_sel = detail::animate_value(impl, id * 47u + 1u, (*index == int(i)) ? 1.0f : 0.0f, 22.0f);
@@ -6134,7 +6145,7 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
 
     bool open = impl->flags[id] > 0.5f;
     detail::Interact in = detail::interact(impl, id, box, enabled);
-    if (in.hovered) set_cursor(Cursor::Hand);
+    if (in.hovered) set_cursor(Cursor::Arrow);
 
     bool changed = false;
     if (in.clicked) { open = !open; impl->flags[id] = open ? 1.0f : 0.0f; }
@@ -6200,7 +6211,7 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
                                 list.w - pad * 2.0f, item_h);
                 ids[i] = detail::make_id("select_item", rects[i]);
                 detail::Interact ii = detail::interact(impl, ids[i], rects[i], true);
-                if (ii.hovered) { set_cursor(Cursor::Hand); hov[i] = 1; }
+                if (ii.hovered) { set_cursor(Cursor::Arrow); hov[i] = 1; }
                 if (ii.clicked) clicked_index = int(i);
             }
         }
@@ -6259,7 +6270,7 @@ inline bool Ui::radio_group(const std::vector<std::string>& items, int* index, c
         Rect row(box.x, box.y + row_h * float(i), box.w, row_h);
         uint64_t id = detail::make_id("radio", row, base + i);
         detail::Interact in = detail::interact(impl, id, row, !st.disabled);
-        if (in.hovered) set_cursor(Cursor::Hand);
+        if (in.hovered) set_cursor(Cursor::Arrow);
         if (in.pressed) detail::grab_focus(impl, id);
         if (in.clicked && *index != int(i)) { *index = int(i); changed = true; }
 
@@ -6341,7 +6352,7 @@ inline bool Ui::stepper(float* value, float step, float min_value, float max_val
 
     auto draw_btn = [&](const Rect& r, uint64_t id, bool up) -> bool {
         detail::Interact in = detail::interact(impl, id, r, !st.disabled);
-        if (in.hovered) set_cursor(Cursor::Hand);
+        if (in.hovered) set_cursor(Cursor::Arrow);
         if (in.pressed) detail::grab_focus(impl, id);
         const float t_p = detail::animate_value(impl, id * 61u + 2u, (in.held && in.hovered) ? 1.0f : 0.0f, 30.0f);
         if (t_p > 0.02f)
@@ -6787,7 +6798,7 @@ inline bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
 
     pop_clip();
 
-    if (focused) detail::paint_focus_ring(*this, box, rad, th.ring);
+    if (focused) detail::paint_focus_ring(*this, box, rad, th.ring, true);
     return changed;
 }
 
@@ -6821,7 +6832,7 @@ inline bool Ui::rating(int* value, int max_stars, const Rect& box, const Style& 
         const Rect sr(box.x + float(i) * (size + gap), top, size, size);
         uint64_t id = detail::make_id("star", sr, base + uint64_t(i));
         detail::Interact in = detail::interact(impl, id, sr, !st.disabled);
-        if (in.hovered) set_cursor(Cursor::Hand);
+        if (in.hovered) set_cursor(Cursor::Arrow);
         if (in.pressed) detail::grab_focus(impl, id);
         if (in.clicked) {
             const int nv = (*value == i + 1) ? 0 : (i + 1);
@@ -7063,7 +7074,7 @@ inline bool Ui::accordion(const std::string& title, bool* open, const Rect& box,
     const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
 
     detail::Interact in = detail::interact(impl, id, head, !st.disabled);
-    if (in.hovered) set_cursor(Cursor::Hand);
+    if (in.hovered) set_cursor(Cursor::Arrow);
     if (in.pressed) detail::grab_focus(impl, id);
     bool changed = false;
     if (in.clicked) { *open = !*open; changed = true; }
@@ -7304,7 +7315,7 @@ inline bool Ui::menu(const std::string& label, const std::vector<std::string>& i
 
     bool open = impl->flags[id] > 0.5f;
     detail::Interact in = detail::interact(impl, id, box, enabled);
-    if (in.hovered) set_cursor(Cursor::Hand);
+    if (in.hovered) set_cursor(Cursor::Arrow);
     const float t_hover = detail::animate_value(impl, id * 73u + 1u, (in.hovered || open) ? 1.0f : 0.0f, 18.0f);
     const float t_press = detail::animate_value(impl, id * 73u + 2u, (in.held && in.hovered) ? 1.0f : 0.0f, 34.0f);
 
@@ -7366,7 +7377,7 @@ inline bool Ui::menu(const std::string& label, const std::vector<std::string>& i
         Impl::SeqFrameEnd guard(impl);   // 项在帧内交互、帧末绘制，序号算帧末层
         for (size_t i = 0; i < items.size(); ++i) {
             detail::Interact ii = detail::interact(impl, ids[i], rects[i], true);
-            if (ii.hovered) { set_cursor(Cursor::Hand); hov[i] = 1; }
+            if (ii.hovered) { set_cursor(Cursor::Arrow); hov[i] = 1; }
             if (ii.clicked) chosen = int(i);
         }
         }
@@ -7440,7 +7451,7 @@ inline MenuPick Ui::menubar(const std::vector<std::string>& labels,
     for (size_t i = 0; i < labels.size(); ++i) {
         const uint64_t tid = detail::make_id("menubar_item", trg[i], bar_id + i);
         detail::Interact in = detail::interact(impl, tid, trg[i], enabled);
-        if (in.hovered) { set_cursor(Cursor::Hand); hov[i] = 1; }
+        if (in.hovered) { set_cursor(Cursor::Arrow); hov[i] = 1; }
         if (in.clicked) {
             open_idx = (open_idx == int(i)) ? -1 : int(i);   // 点自己 = 收起
             repaint();
@@ -7511,7 +7522,7 @@ inline MenuPick Ui::menubar(const std::vector<std::string>& labels,
         Impl::SeqFrameEnd guard(impl);  // 项在帧内交互、帧末绘制，序号算帧末层
         for (size_t i = 0; i < rects.size(); ++i) {
             detail::Interact ii = detail::interact(impl, ids[i], rects[i], true);
-            if (ii.hovered) { set_cursor(Cursor::Hand); lhov[i] = 1; }
+            if (ii.hovered) { set_cursor(Cursor::Arrow); lhov[i] = 1; }
             if (ii.clicked) chosen = int(i);
         }
         }
@@ -7563,7 +7574,7 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
 
     const Rect close_r(box.right() - pad - 6.0f, box.y + pad - 8.0f, 22.0f, 22.0f);
     detail::Interact cin = detail::interact(impl, cid, close_r, true);
-    if (cin.hovered) set_cursor(Cursor::Hand);
+    if (cin.hovered) set_cursor(Cursor::Arrow);
     if (cin.clicked) dismiss = true;
     const float ct = detail::animate_value(impl, cid * 79u + 1u, cin.hovered ? 1.0f : 0.0f, 18.0f);
 
@@ -7719,7 +7730,7 @@ inline bool group_cell(Ui& ui, Ui::Impl* im, uint64_t id, const Rect& r, const s
                        bool selectable, bool divider) {
     const Theme& th = im->theme;
     Interact in = interact(im, id, r, !st.disabled);
-    if (in.hovered) ui.set_cursor(Cursor::Hand);
+    if (in.hovered) ui.set_cursor(Cursor::Arrow);
     if (in.pressed) grab_focus(im, id);
 
     const float t_on = animate_value(im, id * 101u + 1u, on ? 1.0f : 0.0f, 22.0f);
@@ -7778,7 +7789,7 @@ inline bool Ui::toggle_button(const std::string& label, bool* value, const Rect&
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
 
     detail::Interact in = detail::interact(impl, id, box, !st.disabled);
-    if (in.hovered) set_cursor(Cursor::Hand);
+    if (in.hovered) set_cursor(Cursor::Arrow);
     if (in.pressed) detail::grab_focus(impl, id);
 
     const float t_on = detail::animate_value(impl, id * 97u + 1u, *value ? 1.0f : 0.0f, 22.0f);
@@ -7983,7 +7994,7 @@ inline bool Ui::input_group(std::string* value, const std::string& prefix, const
     // 必须画在 input() 之后：它内部会 push_clip(inner) 并在里面铺绘制，先画的边框会被压掉。
     if (detail::is_focused(impl, detail::make_id("input", inner))) {
         stroke_rect(box, th.ring, rad, 1.4f);
-        detail::paint_focus_ring(*this, box, rad, th.ring);
+        detail::paint_focus_ring(*this, box, rad, th.ring, true);
     }
     return changed;
 }
@@ -8142,7 +8153,7 @@ inline bool Ui::item(const std::string& title, const std::string& description,
     const float rad = st.radius >= 0.0f ? st.radius : 5.0f;
 
     detail::Interact in = detail::interact(impl, id, box, !st.disabled);
-    if (in.hovered) set_cursor(Cursor::Hand);
+    if (in.hovered) set_cursor(Cursor::Arrow);
     if (in.pressed) detail::grab_focus(impl, id);
     const float t_h = detail::animate_value(impl, id * 107u + 1u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
@@ -8299,7 +8310,7 @@ inline bool Ui::pagination(int* page, int total_pages, const Rect& box, const St
 
         const uint64_t id = detail::make_id("pg", r, base + uint64_t(i));
         detail::Interact in = detail::interact(impl, id, r, !st.disabled);
-        if (in.hovered) set_cursor(Cursor::Hand);
+        if (in.hovered) set_cursor(Cursor::Arrow);
         if (in.pressed) detail::grab_focus(impl, id);
 
         const bool is_cur = (s >= 0 && s == cur);
@@ -8376,7 +8387,7 @@ inline bool Ui::calendar(int* year, int* month, int* day, const Rect& box, const
         const Rect& r = (k == 0) ? prev_r : next_r;
         const uint64_t id = detail::make_id("cal_nav", r, base + uint64_t(k));
         detail::Interact in = detail::interact(impl, id, r, true);
-        if (in.hovered) set_cursor(Cursor::Hand);
+        if (in.hovered) set_cursor(Cursor::Arrow);
         const float t_h = detail::animate_value(impl, id * 109u + 1u, in.hovered ? 1.0f : 0.0f, 20.0f);
         if (t_h > 0.01f) fill_rect(r, th.accent.scaled_alpha(t_h), rad);
         const float cx = r.cx(), cy = r.cy(), a = fs * 0.2f;
@@ -8424,7 +8435,7 @@ inline bool Ui::calendar(int* year, int* month, int* day, const Rect& box, const
             const Rect inner = r.inset(3.0f, 2.0f);
             const uint64_t id = detail::make_id("cal_day", r, base + uint64_t(d));
             detail::Interact in = detail::interact(impl, id, inner, true);
-            if (in.hovered) set_cursor(Cursor::Hand);
+            if (in.hovered) set_cursor(Cursor::Arrow);
             const bool is_sel = (d == sel);
             const float t_h = detail::animate_value(impl, id * 113u + 1u, (in.hovered && !is_sel) ? 1.0f : 0.0f, 20.0f);
             // 官方日期格是**正圆**，不是圆角方块：直径取格子的短边减 6，最小 22。
@@ -8476,7 +8487,7 @@ inline bool Ui::popover(const std::string& label, bool* open, const Rect& box,
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
 
     detail::Interact in = detail::interact(impl, id, box, !st.disabled);
-    if (in.hovered) set_cursor(Cursor::Hand);
+    if (in.hovered) set_cursor(Cursor::Arrow);
     if (in.pressed) detail::grab_focus(impl, id);
     const float t_h = detail::animate_value(impl, id * 109u + 1u,
                                             (in.hovered || *open) ? 1.0f : 0.0f, 18.0f);
@@ -8616,7 +8627,7 @@ inline bool Ui::alert_dialog(const std::string& title, const std::string& body,
     const uint64_t no_id = detail::make_id("alert_no", box, 1u);
     detail::Interact ok_in = detail::interact(impl, ok_id, ok_r, true);
     detail::Interact no_in = detail::interact(impl, no_id, no_r, true);
-    if (ok_in.hovered || no_in.hovered) set_cursor(Cursor::Hand);
+    if (ok_in.hovered || no_in.hovered) set_cursor(Cursor::Arrow);
 
     bool confirmed = false;
     if (ok_in.clicked) confirmed = true;
@@ -8719,7 +8730,7 @@ inline bool Ui::drawer(const std::string& title, bool* open, int side, const Rec
     const Rect close_r(box.right() - pad - 22.0f, box.y + (head_h - 22.0f) * 0.5f, 22.0f, 22.0f);
     const uint64_t cid = detail::make_id("drawer_close", box);
     detail::Interact cin = detail::interact(impl, cid, close_r, true);
-    if (cin.hovered) set_cursor(Cursor::Hand);
+    if (cin.hovered) set_cursor(Cursor::Arrow);
     if (cin.clicked) dismiss = true;
     const float ct = detail::animate_value(impl, cid * 131u + 1u, cin.hovered ? 1.0f : 0.0f, 18.0f);
 
@@ -8813,7 +8824,7 @@ inline bool Ui::context_menu(const Rect& area, const std::vector<std::string>& i
     Impl::SeqFrameEnd guard(impl);      // 项在帧内交互、帧末绘制，序号算帧末层
     for (size_t i = 0; i < items.size(); ++i) {
         detail::Interact ii = detail::interact(impl, ids[i], rects[i], true);
-        if (ii.hovered) { set_cursor(Cursor::Hand); hov[i] = 1; }
+        if (ii.hovered) { set_cursor(Cursor::Arrow); hov[i] = 1; }
         if (ii.clicked) chosen = int(i);
     }
     }
@@ -8864,7 +8875,7 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
     std::string& query = impl->strings[id];
 
     detail::Interact in = detail::interact(impl, id, box, !st.disabled);
-    if (in.hovered) set_cursor(Cursor::Hand);
+    if (in.hovered) set_cursor(Cursor::Arrow);
     if (in.pressed) detail::grab_focus(impl, id);
     bool focused = detail::is_focused(impl, id);
     if (focused && impl->gate_blocked_here(box)) { detail::drop_focus(impl); focused = false; }
@@ -8962,7 +8973,7 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
         const Rect rr(list.x + 4.0f, sr.bottom() + 4.0f + item_h * float(r), list.w - 8.0f, item_h);
         const uint64_t iid = detail::make_id("cb_item", rr, id + uint64_t(vis[size_t(r)]));
         detail::Interact ii = detail::interact(impl, iid, rr, true);
-        if (ii.hovered) { set_cursor(Cursor::Hand); hi = r; }
+        if (ii.hovered) { set_cursor(Cursor::Arrow); hi = r; }
         if (ii.clicked) chosen_now = vis[size_t(r)];
     }
     }

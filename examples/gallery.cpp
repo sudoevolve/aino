@@ -1596,6 +1596,43 @@ void sidebar_glyph(Ui& ui, float cx, float cy, const Color& c) {
     ui.stroke_rect(r, c, 3.0f, 1.2f);
 }
 
+// 侧边栏图标：**按分组**给一枚单色字形（Finder / Xcode 的 source list 每一项
+// 都带图标；纯文字在 macOS 里几乎没有先例）。没有去凑 SF Symbols ——41 页各画
+// 一枚会变成一堆猜的形状，同组共用一枚反而更像系统里的"类型图标"。
+void group_glyph(Ui& ui, int gi, float cx, float cy, const Color& c) {
+    // 全部**描边**（不用实心底）：12px 的图标一旦有填充就糊成一坨灰块，
+    // SF Symbols 的 regular 字重也是这个做法。线宽 1.2 在 3x 下是 3.6，
+    // 和系统源列表的图标笔划接近。
+    const float h = 6.0f;
+    switch (gi) {
+    case 0:                                     // 入门：圆环 + 点心
+        circle_ring(ui, cx, cy, h, c, 1.2f);
+        ui.fill_circle(cx, cy, 1.5f, c);
+        break;
+    case 1:                                     // 基础：圆角方框（一个控件）
+        ui.stroke_rect(Rect(cx - h, cy - h * 0.8f, h * 2.0f, h * 1.6f), c, 3.2f, 1.2f);
+        break;
+    case 2:                                     // 表单：输入框（框 + 一条字）
+        ui.stroke_rect(Rect(cx - h, cy - h * 0.8f, h * 2.0f, h * 1.6f), c, 3.0f, 1.2f);
+        ui.fill_rect(Rect(cx - h * 0.5f, cy - 0.6f, h, 1.2f), c, 0.6f);
+        break;
+    case 3:                                     // 数据：三行（列表）
+        for (int i = 0; i < 3; ++i) {
+            const float w = (i == 2) ? 1.1f : 2.0f;
+            ui.fill_rect(Rect(cx - h, cy - 4.2f + float(i) * 4.2f, w * h, 1.3f), c, 0.65f);
+        }
+        break;
+    case 4:                                     // 浮层：两块错开的方框
+        ui.stroke_rect(Rect(cx - h, cy - h * 0.95f, h * 1.45f, h * 1.1f), c.scaled_alpha(0.65f), 2.4f, 1.2f);
+        ui.stroke_rect(Rect(cx - h * 0.4f, cy - h * 0.15f, h * 1.4f, h * 1.05f), c, 2.4f, 1.2f);
+        break;
+    default:                                    // 布局：两栏
+        ui.stroke_rect(Rect(cx - h, cy - h * 0.85f, h * 0.85f, h * 1.7f), c, 2.0f, 1.2f);
+        ui.stroke_rect(Rect(cx + h * 0.15f, cy - h * 0.85f, h * 0.85f, h * 1.7f), c, 2.0f, 1.2f);
+        break;
+    }
+}
+
 // -----------------------------------------------------------------------------
 //  标题栏
 // -----------------------------------------------------------------------------
@@ -1681,7 +1718,7 @@ void draw_nav(Ui& ui, App& a, const Rect& nav) {
             }
             // 披露三角在**左**边（Finder / Xcode 的 navigator 都是这个位置）
             {
-                const float cx = gh.x + 15.0f, cy = gh.cy();
+                const float cx = gh.x + 11.0f, cy = gh.cy();
                 const Color cc = th.label2;
                 if (open) {
                     ui.draw_line(cx - 4.0f, cy - 2.0f, cx, cy + 2.0f, cc, 1.3f);
@@ -1692,17 +1729,21 @@ void draw_nav(Ui& ui, App& a, const Rect& nav) {
                 }
             }
             ui.muted_text(kPages[r.page].group,
-                          Rect(gh.x + 25.0f, gh.y, gh.w - 35.0f, gh.h),
+                          Rect(gh.x + 21.0f, gh.y, gh.w - 31.0f, gh.h),
                           Style().left().semi_bold().font(11.0f));
             continue;
         }
         const Rect rw = ui.row(kNavItemH);
         const bool active = (a.page == r.page);
-        // 内缩 8、文字再缩进 18 —— 条目文字和分组头文字落在同一条竖线上
+        // 图标在 24 处、文字从 40 起（Finder 的条目就是这个关系：图标比文字重 14）
         if (ui.nav_item(kPages[r.page].name, active,
                         Rect(rw.x + 8.0f, rw.y, rw.w - 16.0f, rw.h),
-                        Style().font(13.0f).padding(18.0f)))
+                        Style().font(13.0f).padding(36.0f)))
             a.page = r.page;
+        // 图标 50% / 选中 85%：系统 source list 的图标是"标签色的一档"，
+        // 用 25%（label3）会淡到看不出形状。
+        group_glyph(ui, r.group, rw.x + 28.0f, rw.cy(),
+                    active ? th.label : th.label2);
     }
     if (rows.empty())
         ui.muted_text("没有匹配的组件", Rect(list.x, list.y + 8.0f, list.w, 20.0f),

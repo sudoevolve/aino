@@ -580,7 +580,7 @@ NODE_PATH=.workbuddy/figma/node_modules node docs/macos27/tools/digest.js "Windo
 > 注意 `node_modules` 在 `.workbuddy/figma/`，直接 `node tools/digest.js` 会报
 > `Cannot find module 'kiwi-schema'`。
 
-### 13.1 仍然带 Web 味的 18 处（已改）
+### 13.1 仍然带 Web 味的 21 处（已改）
 
 | # | 组件 | kit 依据 | 之前（Web / shadcn） | 现在（macOS 27） |
 |---|---|---|---|---|
@@ -602,6 +602,9 @@ NODE_PATH=.workbuddy/figma/node_modules node docs/macos27/tools/digest.js "Windo
 | 16 | 切换组 `toggle_group()` / `toggle_group_multi()` | `Window/Button Group`：胶囊轨道 + `#E6E6E6` 胶囊 | 强调色实心 + 白字（shadcn ToggleGroup） | 8% 凹槽轨道 + 白色胶囊，非选中 50% 字 |
 | 17 | 按钮组 `button_group()` | 同上 | `secondary` 底 + 1px 外框 + 通高竖线 | 8% 凹槽、**无外框**，段间 1×14 细缝 |
 | 18 | 分页当前页 | `Item/Small/Selected`（强调色 23%） | 实心蓝圆点 + 白字（iOS 页码点） | 强调色 23% 胶囊 + 主标签字 |
+| 19 | 悬停光标 | — | 按钮/菜单/列表/日历格全部变手型 | 只有 `Style::Link` 变手型，其余保持箭头 |
+| 20 | 焦点环 | HIG：只在键盘焦点时出现 | 鼠标点过的控件也留一圈蓝（`:focus-visible` 的反面） | 记录 `focus_by_mouse`，非文本控件只在键盘焦点时画；输入框仍点击即画 |
+| 21 | 侧边栏图标 | `Item/Small`（18×18 图标 + 文字） | 纯文字条目 | 按分组给描边字形（圆环 / 方框 / 输入框 / 三行 / 两块错开 / 两栏），50% 与 85% 两档 |
 
 第 11 条要单独说明：macOS 的 sheet / 检查器**不会把窗口压黑**（窗口只是失去
 焦点），整屏半透明黑是 Radix / shadcn 的 Dialog Overlay。层级交给圆角 + 投影。
@@ -628,8 +631,8 @@ NODE_PATH=.workbuddy/figma/node_modules node docs/macos27/tools/digest.js "Windo
 
 - 液态玻璃：`Liquid Glass` 符号是整块玻璃材质（多层填充 + GLASS 效果），
   本库没有背景模糊，按最初的约定跳过。因此分段控件用 8% 灰轨道替代玻璃轨道。
-- 侧边栏还没有 SF Symbols 图标（纯文字）。kit 里每个 `Item` 都带 18×18 图标，
-  这块要一张图标表，没在本轮做。
+- 侧边栏的图标是**按分组**画的描边字形，不是 41 页各一枚 SF Symbol。
+  `Item/Small` 里是每项一枚 18×18 图标；要做到那一层需要一张 41 项的图标表。
 
 ### 13.5 补记：`group_cell` 是同一个 bug 的第三个出口
 
