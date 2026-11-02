@@ -374,6 +374,53 @@ A 那半边被负载抬高，比值反而更大）；把 `set_hover_skip(false)`
 
 ---
 
+## 6.5 帧间隔的隐形上限：`Sleep` 只有 15.6ms 精度
+
+前面几节量的是"一帧花多久"，但用户感受到的是**帧与帧之间隔多久**。
+这两件事之间还夹着一个主循环的节流：
+
+```cpp
+const uint64_t budget_us = uint64_t(budget_ms) * 1000u;   // 16ms
+if (el_us < budget_us) Sleep(DWORD((budget_us - el_us + 999) / 1000));
+```
+
+Windows 的默认时钟粒度是 15.6ms，`Sleep` 会被向上取整到整数个 tick：
+
+| 调用 | 实际睡了 |
+|---|---|
+| `Sleep(1)` | 15.6 ms |
+| `Sleep(5)` | 15.6 ms |
+| `Sleep(15)` | 16.0 ms |
+| `Sleep(16)` | 30.9 ms |
+
+后果：绘制 12.5ms + `Sleep(4)` → 28ms/帧。**渲染还有 4ms 余量，画面却被钉在 33fps。**
+而且帧间隔整齐地停在 28~32ms（不是抖动的长尾），这正好是"被量化"的指纹 ——
+如果看到这种形状，先怀疑定时器，别去优化绘制。
+
+修法用 `CreateWaitableTimerExW` + `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`
+（Win10 1803+，精度约 1ms），**只影响本进程等的那一下**：
+
+```cpp
+HANDLE h = CreateWaitableTimerExW(nullptr, nullptr, 0x2, TIMER_ALL_ACCESS);
+LARGE_INTEGER due; due.QuadPart = -LONGLONG(us * 10);   // 相对时间，100ns
+SetWaitableTimer(h, &due, 0, nullptr, nullptr, FALSE);
+WaitForSingleObject(h, INFINITE);
+```
+
+不用 `timeBeginPeriod(1)`：那是全局把系统时钟中断调快，空闲时也会压着 CPU 不降频，
+和"空闲 0% CPU"的承诺冲突。
+
+实测（gallery，1180×760，Button 页）：**30.25 ms → 16.27 ms（33.1 → 61.5 fps）**，
+最差帧 37.6 → 18.3 ms，没有一帧超过 20ms。
+
+量它需要一个"连排 N 帧并记录每帧开始时刻"的钩子（光有渲染耗时看不到空档）：
+
+```bash
+AINO_BENCH_RUN=90 AINO_FRAME_LOG=o.txt build/Release/aino_gallery.exe
+```
+
+---
+
 ## 7. 优化建议
 
 ### 7.1 按「贵」的顺序避开

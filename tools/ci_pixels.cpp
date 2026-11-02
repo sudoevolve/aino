@@ -605,7 +605,12 @@ static bool scene_dark() {
     if (!got) { fail("S3 抓到后备缓冲", "grab 失败"); return true; }
 
     want_color(shot, 10.0f,  10.0f, bg,   "S3 深色主题背景色正确");
-    want_color(shot, 100.0f, 70.0f, card, "S3 panel 中心是卡片色");
+    // panel 现在是 macOS Group Box 语义：**不铺卡片色**，只叠 1.5% 的白
+    // （Figma Group Box = r12 + #00000008 再乘 50%）。所以断言不能写死成
+    // card（0x252525）—— 那每调一次底价就假红一次。这里直接按 token 算出
+    // "背景 + fill5" 的期望值，跟着主题走。
+    const Color panel_fill = th.fill5.over(bg);
+    want_color(shot, 100.0f, 70.0f, panel_fill, "S3 panel 中心是 背景+1.5% 白（Group Box 不铺卡片色）");
     want_true(chan_diff(bg, card, 0), "S3 深色主题里卡片色 ≠ 背景色", "两者相同，看不出层次");
     want_clean(shot, Rect(200.0f, 20.0f, 80.0f, 100.0f), bg, "S3 panel 没有画到 box 右侧外面");
 

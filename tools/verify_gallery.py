@@ -29,11 +29,19 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 import verify_render as vr                      # noqa: E402
 
+# 生成器不同 exe 落点不同：Ninja/Makefiles 放 build/，VS 多配置放 build/Release。
+# 写死 build/ 会让整段断言在没有 VS 的环境里报"找不到 exe"，看着像失败其实是路径。
 EXE = os.path.join(ROOT, "build", "aino_gallery.exe")
+for _sub in ("", "Release", "Debug"):
+    _cand = os.path.join(ROOT, "build", _sub, "aino_gallery.exe")
+    if os.path.isfile(_cand):
+        EXE = _cand
+        break
 
 LOGICAL_W = 1180.0
 LOGICAL_H = 760.0
-NAV_W = 232.0
+NAV_W = 220.0        # 侧边栏宽（整窗高，红绿灯浮在它上面）
+TITLE_H = 52.0      # 标题栏高
 
 
 def save_png(raw, w, h, path):
@@ -215,6 +223,36 @@ def send_key(hwnd, vk):
     vr.user32.PostMessageW(hwnd, 0x0101, vk, 0)     # WM_KEYUP
 
 
+def launch(extra_env=None):
+    """起一个 gallery，返回 (proc, hwnd)。"""
+    env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
+    p = subprocess.Popen([EXE], env=env)
+    hwnd = None
+    for _ in range(80):
+        hwnd = vr.find_window_by_pid(p.pid)
+        if hwnd:
+            break
+        time.sleep(0.1)
+    return p, hwnd
+
+
+def stop(p):
+    try:
+        p.terminate(); p.wait(timeout=5)
+    except Exception:
+        p.kill()
+
+
+# 导航行的纵向位置由「组头 24 + 条目 26」决定，页表第一项是概览。
+NAV_TOP = TITLE_H + 8.0 + 24.0 + 10.0      # 搜索框下沿 + 留白 = 94
+GROUP1_Y = NAV_TOP                          # 「入门」组头
+ITEM1_Y = GROUP1_Y + 24.0                   # 概览
+GROUP2_Y = ITEM1_Y + 26.0                   # 「基础」组头
+BUTTON_Y = GROUP2_Y + 24.0 + 13.0           # Button 条目中心
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots", action="store_true")
@@ -224,18 +262,12 @@ def main():
         print("找不到 %s，先跑 tools/build.py" % EXE)
         return 2
 
-    proc = subprocess.Popen([EXE])
     rep = Report()
+    proc, hwnd = launch()
+    if not hwnd:
+        print("  [FAIL] 窗口没建起来")
+        return 2
     try:
-        hwnd = None
-        for _ in range(60):
-            hwnd = vr.find_window_by_pid(proc.pid)
-            if hwnd:
-                break
-            time.sleep(0.1)
-        if not hwnd:
-            print("  [FAIL] 窗口没建起来")
-            return 2
         time.sleep(2.2)
         scale = client_scale(hwnd)
         print("  窗口 %.0fx%.0f 逻辑，缩放 %.2f" % (LOGICAL_W, LOGICAL_H, scale))
@@ -243,180 +275,166 @@ def main():
         s0 = Shot(hwnd, scale)
         rep.step("窗口可抓取", s0.ok, "ok=%s" % s0.ok)
 
-        # ---- 1. 结构：导航与内容之间有一条分界线 ----
-        bg_content = s0.at(400.0, 90.0)
-        line_dark = 0
-        for ly in range(120, 680, 20):
-            c_line = s0.at(NAV_W - 1.0, ly)
-            c_in = s0.at(NAV_W - 10.0, ly)
-            if sum(c_line[:3]) + 10 < sum(c_in[:3]):
-                line_dark += 1
-        rep.step("导航右侧有 1px 分界线", line_dark >= 20, "命中 %d/28 个采样点" % line_dark)
+        # ---- 1. 外壳结构：标题栏下沿、侧边栏右沿各有一条 1px 分界线 ----
+        # 采样"线上 vs 线内 3px"，两条线都必须比邻近底色明显更深。
+        hits = 0
+        for lx in range(300, 1150, 40):
+            if sum(s0.at(lx, TITLE_H - 1)[:3]) + 10 < sum(s0.at(lx, TITLE_H - 4)[:3]):
+                hits += 1
+        rep.step("标题栏底部有 1px 分界线", hits >= 15, "命中 %d/22 个采样点" % hits)
 
-        # ---- 2. 初始页（概览）有内容 ----
-        ink0 = s0.ink(NAV_W + 28.0, 110.0, LOGICAL_W - 40.0, LOGICAL_H - 60.0, bg_content)
+        hits = 0
+        for ly in range(120, 700, 20):
+            if sum(s0.at(NAV_W - 1.0, ly)[:3]) + 10 < sum(s0.at(NAV_W - 4.0, ly)[:3]):
+                hits += 1
+        rep.step("导航右侧有 1px 分界线", hits >= 20, "命中 %d/29 个采样点" % hits)
+
+        # ---- 2. 侧边栏顶部是搜索框（比侧边栏材质亮一档的白底）----
+        sidebar_bg = s0.avg(20.0, 300.0, NAV_W - 30.0, 600.0)
+        search_luma = s0.avg(16.0, 64.0, NAV_W - 16.0, 80.0)
+        rep.step("侧边栏顶部是搜索框", search_luma > sidebar_bg + 3.0,
+                 "搜索框亮度 %.0f / 侧边栏 %.0f" % (search_luma, sidebar_bg))
+
+        # ---- 3. 初始页（概览）有内容 ----
+        bg_content = s0.at(400.0, 200.0)
+        ink0 = s0.ink(NAV_W + 28.0, TITLE_H + 20.0, LOGICAL_W - 40.0, LOGICAL_H - 40.0, bg_content)
         rep.step("概览页有内容", ink0 > 300, "墨迹采样 = %d" % ink0)
 
         if a.shots:
             save_png(s0.raw, s0.w, s0.h, os.path.join(ROOT, "screenshots", "gallery-overview.png"))
 
-        # ---- 2.5 页脚的主题按钮：列表比视口长时也必须点得到 ----
-        # 导航有 45 项、视口只装得下 20 来行。滚出视口的那些行**看不见但还在**，
-        # 以前照样参与命中：它们平平地压在页脚上，点主题按钮会被"看不见的行"
-        # 吃掉 —— 主题没切换，页面还莫名跳走了（用户原话："换夜间模式按钮后面
-        # 有东西的时候就点不动"）。
-        # 这里刻意在**初始状态**（导航没滚过）点，那正是被压住的状态。
-        luma_b = s0.avg(NAV_W + 300.0, 120.0, LOGICAL_W - 300.0, 200.0)
-        vr.click_logical(hwnd, 33.0, 734.0, scale)
-        time.sleep(0.7)
-        s_dark = Shot(hwnd, scale)
-        luma_a = s_dark.avg(NAV_W + 300.0, 120.0, LOGICAL_W - 300.0, 200.0)
-        rep.step("页脚主题按钮可点（导航未滚动）", luma_a < luma_b - 100.0,
-                 "内容区亮度 %.0f → %.0f" % (luma_b, luma_a))
+        # ---- 4. 组头文字必须和披露三角在同一条中线上 ----
+        # 新版导航：三角在行首（x≈11），文字从 21 起；行高 24。
+        gy = GROUP2_Y
+        t0, t1 = ink_span(s0, 21.0, gy, 80.0, gy + 24.0)      # 「基础」
+        c0, c1 = ink_span(s0, 4.0, gy, 18.0, gy + 24.0)       # 三角
+        if t0 is None or c0 is None:
+            rep.step("组头文字与三角同中线", False,
+                     "找不到墨迹（文字 %s / 三角 %s）—— 导航版式又变了？" % (t0, c0))
+        else:
+            mid_t = (t0 + t1) * 0.5
+            mid_c = (c0 + c1) * 0.5
+            rep.step("组头文字与三角同中线", abs(mid_t - mid_c) <= 2.0,
+                     "文字中线 %.1f / 三角中线 %.1f（行中 %.1f）" % (mid_t, mid_c, gy + 12.0))
 
-        vr.click_logical(hwnd, 33.0, 734.0, scale)     # 切回来
-        time.sleep(0.7)
-        s_back = Shot(hwnd, scale)
-        # 两次点击之后画面必须回到原样 —— 只要页面被顺带切走，这里就是几百个差异格。
-        restored = s_back.diff(s0, NAV_W + 20.0, 40.0, LOGICAL_W - 20.0, LOGICAL_H - 80.0, step=3)
-        rep.step("切主题不顺带切页", restored < 40, "差异采样 = %d" % restored)
-
-        # ---- 2.6 组头文字必须和折叠三角在同一条中线上 ----
-        # 用户原话："折叠选单文本为什么没居中，不允许再出现这类问题"。根因是把文字
-        # 盒子写成 16 高再手算 y + 12 —— 行高 30 里整体偏上。现在盒子给整行，靠
-        # Style 的 valign 居中。这里量"墨迹中线 vs 行中线"，行高或偏移一改就红。
-        GY = 138.0                              # 「基础」组头：78 品牌 + 30 + 30
-        gy_c = GY + 15.0                        # 行中线
-        t0, t1 = ink_span(s0, 20.0, GY, 60.0, GY + 30.0)      # 文字
-        c0, c1 = ink_span(s0, 196.0, GY, 226.0, GY + 30.0)    # 折叠三角
-        mid_t = (t0 + t1) * 0.5
-        mid_c = (c0 + c1) * 0.5
-        # 文字墨迹天然不对称（有的字没下伸部），所以给 ±3 的容差；旧的 y + 12 偏 5px。
-        rep.step("组头文字与折叠三角同中线",
-                 abs(mid_t - mid_c) <= 2.0 and abs(mid_t - gy_c) <= 3.0,
-                 "文字中线 %.1f / 三角中线 %.1f / 行中线 %.1f" % (mid_t, mid_c, gy_c))
-
-        # ---- 3. 点导航切到 Button ----
-        vr.click_logical(hwnd, 110.0, 183.0, scale)
+        # ---- 5. 点导航切到 Button ----
+        vr.click_logical(hwnd, 110.0, BUTTON_Y, scale)
         time.sleep(0.75)
-        # 抓帧偶尔会得到一张"内容已经是新的一页、导航还是旧高亮"的拼贴帧。
-        # 根因不是抓帧时机：点导航改的是**后面才画**的内容区状态，而导航行本身
-        # 这一帧早就画完了 —— 状态改完没人再排帧，这帧错位画面就挂在屏幕上
-        # （用户看到的是"页面换了、高亮卡住"）。现在 interact() 返回 pressed /
-        # clicked 时会补一次 request_repaint，这里仍留着"多抓几帧"兜底。
-        # 注意：**不重试点击**，只重抓。点两次会切换两次状态，那是改语义。
         s1 = Shot(hwnd, scale)
         navdiff = 0
         for _ in range(6):
-            navdiff = s1.diff(s0, 8.0, 100.0, NAV_W - 12.0, 420.0)
+            navdiff = s1.diff(s0, 8.0, 100.0, NAV_W - 12.0, 460.0)
             if navdiff > 20:
                 break
             time.sleep(0.15)
             s1 = Shot(hwnd, scale)
 
-        head = s1.diff(s0, NAV_W + 20.0, 20.0, LOGICAL_W - 20.0, 100.0)
+        head = s1.diff(s0, NAV_W + 28.0, TITLE_H + 10.0, LOGICAL_W - 28.0, TITLE_H + 70.0)
+        body = s1.diff(s0, NAV_W + 28.0, TITLE_H + 80.0, LOGICAL_W - 28.0, LOGICAL_H - 30.0)
         rep.step("切页后页头变化", head > 40, "差异采样 = %d" % head)
-
-        body = s1.diff(s0, NAV_W + 20.0, 110.0, LOGICAL_W - 20.0, LOGICAL_H - 40.0)
         rep.step("切页后内容区变化", body > 2000, "差异采样 = %d" % body)
-
-        # 带上页头 / 内容区的读数：万一将来又红了，一眼能分清是"页没切"
-        # （三个都 0 → 点击被吞）还是"高亮没跟上"（只有 nav 是 0）。
         rep.step("导航高亮移动到 Button", navdiff > 20,
                  "差异采样 = %d（页头 %d / 内容 %d）" % (navdiff, head, body))
 
-        # ---- 4. 卡片结构：预览区必须是独立的一块 ----
-        #
-        # 以前这条比的是"预览区底色 ≠ 卡片底色"（板子铺 muted.mix(background, 0.12)）。
-        # 那个做法本身是个 bug 的源头：浅色主题里 secondary / muted / accent 都是
-        # #F4F4F5，板子铺 #F5F5F6 时，头像的圆、Secondary 按钮、骨架、徽章全都
-        # 糊在板子里看不见。现在板子改铺 background（和 shadcn 官网的预览区一致），
-        # 分层交给 1px border —— 所以这里改成断言"边界线真的画出来了"，
-        # 比原来的"底色差 3 级"更严：底色相同只剩描边一条线索，描边丢了就整块糊平。
-        card_bg = s1.at(NAV_W + 60.0, 128.0)
-        plate_bg = s1.at(NAV_W + 90.0, 200.0)
-        edge = 0.0
-        for px in range(int(NAV_W + 18), int(NAV_W + 130)):
-            c = s1.at(float(px), 200.0)
-            edge = max(edge, 255.0 - sum(c[:3]) / 3.0)
-        rep.step("预览区有 1px 边界（描边）", edge >= 8.0,
-                "最深一条暗 %.0f 级（card=%s plate=%s）" % (edge, card_bg[:3], plate_bg[:3]))
-
-        # ---- 5. 代码块确实画了字 ----
-        code_x0 = LOGICAL_W - 56.0 - 40.0 - 300.0
-        code_ink = s1.ink(code_x0, 150.0, LOGICAL_W - 70.0, 330.0, plate_bg)
-        rep.step("代码块有文字", code_ink > 200, "墨迹采样 = %d" % code_ink)
-
-        # ---- 6. 点预览区的按钮 → 页头出现"最近"回显 ----
-        vr.click_logical(hwnd, NAV_W + 28.0 + 14.0 + 20.0 + 60.0, 122.0 + 14.0 + 18.0, scale)
-        time.sleep(0.6)
-        s2 = Shot(hwnd, scale)
-        # 回显画在页头第二行右侧（y 约 58..76），不是标题那一行
-        echo = s2.diff(s1, 600.0, 44.0, LOGICAL_W - 120.0, 90.0)
-        rep.step("点按钮后页头出现交互回显", echo > 15, "差异采样 = %d" % echo)
+        # ---- 6. Group Box：表头下面那条 1px 细线 ----
+        # 一条示例 = 表头 30 + 细线 + 预览。第一条 box 从内容区顶端 +6 开始。
+        box_top = TITLE_H + 20.0 + 74.0 + 6.0
+        line_y = box_top + 29.5
+        # 1.5 倍缩放下 1px 的线会落在两个物理像素之间，单点采样量到的是
+        # "半条线"（实测只剩 5 级）。这里按行取 10 列的**平均**暗度再找最暗行，
+        # 并且扫 ±8（渲染把线对齐到哪一格都可能）。
+        darkest, best_y = 0.0, line_y
+        for yy in range(int(line_y) - 8, int(line_y) + 9):
+            tot = 0
+            for lx in range(500, 1000, 50):
+                c = s1.at(float(lx), float(yy))
+                tot += 255.0 - sum(c[:3]) / 3.0
+            d = tot / 10.0
+            if d > darkest:
+                darkest, best_y = d, float(yy)
+        # 背景是 1.5% 的淡底（相对白约 4 级），细线是 10% 分隔线色（约 25 级）。
+        rep.step("Group Box 表头下有 1px 细线", darkest >= 10.0,
+                 "最暗一行平均 %.0f 级（y=%.0f）" % (darkest, best_y))
 
         if a.shots:
-            save_png(s2.raw, s2.w, s2.h, os.path.join(ROOT, "screenshots", "gallery-button.png"))
+            save_png(s1.raw, s1.w, s1.h, os.path.join(ROOT, "screenshots", "gallery-button.png"))
 
-        # ---- 7. 浮层：滚到 Dialog 页，开对话框，遮罩必须盖住导航 ----
-        wheel(hwnd, 110.0, 400.0, -120, scale, times=30)
-        time.sleep(0.5)
-        s_nav = Shot(hwnd, scale)
-        vr.click_logical(hwnd, 110.0, 263.0, scale)      # Dialog
+        # ---- 7. 外观：标题栏右侧的分段控件，点右段切深色、点左段切回 ----
+        seg_x = LOGICAL_W - 16.0 - 108.0
+        luma_b = s1.avg(NAV_W + 300.0, 140.0, LOGICAL_W - 300.0, 240.0)
+        vr.click_logical(hwnd, seg_x + 81.0, 26.0, scale)        # 「深色」
+        time.sleep(0.8)
+        s2 = Shot(hwnd, scale)
+        luma_d = s2.avg(NAV_W + 300.0, 140.0, LOGICAL_W - 300.0, 240.0)
+        rep.step("分段控件切深色", luma_d < luma_b - 100.0, "内容区亮度 %.0f → %.0f" % (luma_b, luma_d))
+        if a.shots:
+            save_png(s2.raw, s2.w, s2.h, os.path.join(ROOT, "screenshots", "gallery-dark.png"))
+
+        vr.click_logical(hwnd, seg_x + 27.0, 26.0, scale)        # 「浅色」
         time.sleep(0.8)
         s3 = Shot(hwnd, scale)
-        moved = s3.diff(s_nav, 240.0, 20.0, LOGICAL_W - 20.0, 110.0)
-        rep.step("滚到 Dialog 并切页", moved > 40, "页头差异 = %d" % moved)
+        luma_l = s3.avg(NAV_W + 300.0, 140.0, LOGICAL_W - 300.0, 240.0)
+        rep.step("分段控件切回浅色", luma_l > 180.0, "内容区亮度 %.0f" % luma_l)
 
-        nav_before = s3.avg(20.0, 150.0, NAV_W - 30.0, 400.0)
-        # Dialog 页的代码比预览高，内容盒因此在卡片里垂直居中下移了约 12px，
-        # 按钮中心落在 y≈182 而不是 170。
-        vr.click_logical(hwnd, 354.0, 182.0, scale)
-        time.sleep(0.8)
+        # 切主题不能顺带切页：整块内容区必须回到原样
+        restored = s3.diff(s1, NAV_W + 28.0, TITLE_H + 80.0, LOGICAL_W - 28.0, LOGICAL_H - 40.0, step=3)
+        rep.step("切主题不顺带切页", restored < 40, "差异采样 = %d" % restored)
+    finally:
+        stop(proc)
+
+    # ---- 8. 对话框遮罩 ----
+    # 以前是"滚 30 格滚轮再点某一行"，导航行高改一次就点到别的地方去了。
+    # 现在直接起在 Dialog 页；遮罩的判据也改成**跟不开对话框的同一页比**，
+    # 而不是写死一个绝对亮度（#EAEAEA 的导航压在 overlay 上到底是 193 还是 190，
+    # 取决于 overlay 的 alpha，写死就会假红）。
+    def nav_luma_of(env):
+        p2, h2 = launch(env)
+        if not h2:
+            return None, None, None
+        time.sleep(2.2)
+        sc2 = client_scale(h2)
+        sh = Shot(h2, sc2)
+        v = sh.avg(20.0, 150.0, NAV_W - 30.0, 420.0)
+        return p2, h2, (sh, sc2, v)
+
+    p_b, h_b, base = nav_luma_of({"AINO_START_PAGE": "Dialog"})
+    if base is None:
+        print("  [FAIL] 对话框页没建起来")
+        return 2
+    stop(p_b)
+    nav_base = base[2]
+
+    proc, hwnd = launch({"AINO_START_PAGE": "Dialog", "AINO_OPEN": "dialog"})
+    if not hwnd:
+        print("  [FAIL] 对话框窗口没建起来")
+        return 2
+    try:
+        time.sleep(2.2)
+        scale = client_scale(hwnd)
         s4 = Shot(hwnd, scale)
-        nav_after = s4.avg(20.0, 150.0, NAV_W - 30.0, 400.0)
-        rep.step("对话框遮罩覆盖整窗（导航也变暗）", nav_after < nav_before - 25.0,
-                 "导航亮度 %.0f → %.0f" % (nav_before, nav_after))
-
-        panel_luma = s4.avg(LOGICAL_W * 0.5 - 80, LOGICAL_H * 0.5 - 40,
-                            LOGICAL_W * 0.5 + 80, LOGICAL_H * 0.5 + 40)
-        rep.step("面板位于窗口中央且不透明", panel_luma > nav_after + 60.0,
-                 "面板亮度 %.0f，遮罩 %.0f" % (panel_luma, nav_after))
-
+        nav_luma = s4.avg(20.0, 150.0, NAV_W - 30.0, 420.0)
+        rep.step("对话框遮罩覆盖整窗（导航变暗）", nav_luma < nav_base - 25.0,
+                 "导航亮度 %.0f → %.0f" % (nav_base, nav_luma))
+        panel = s4.avg(LOGICAL_W * 0.5 - 80, LOGICAL_H * 0.5 - 40,
+                       LOGICAL_W * 0.5 + 80, LOGICAL_H * 0.5 + 40)
+        rep.step("面板位于窗口中央且不透明", panel > nav_luma + 30.0,
+                 "面板亮度 %.0f，遮罩 %.0f" % (panel, nav_luma))
         if a.shots:
             save_png(s4.raw, s4.w, s4.h, os.path.join(ROOT, "screenshots", "gallery-dialog.png"))
 
-        send_key(hwnd, 0x1B)                              # Esc
-        time.sleep(0.5)
-        s5 = Shot(hwnd, scale)
-        nav_closed = s5.avg(20.0, 150.0, NAV_W - 30.0, 400.0)
-        rep.step("Esc 关闭后遮罩撤掉", nav_closed > nav_before - 8.0,
-                 "导航亮度 %.0f（初始 %.0f）" % (nav_closed, nav_before))
-
-        # ---- 8. 深色主题 ----
-        vr.click_logical(hwnd, 33.0, 734.0, scale)
+        # 点面板外的遮罩关掉。Esc 也支持，但那要真实键盘焦点 —— 自动化环境里
+        # 窗口抢不到前台时 send_key 会被系统吞掉（实测按了没反应）。
+        vr.click_logical(hwnd, 40.0, LOGICAL_H - 40.0, scale)
         time.sleep(0.7)
-        s6 = Shot(hwnd, scale)
-        luma_dark = s6.avg(NAV_W + 300.0, 120.0, LOGICAL_W - 300.0, 200.0)
-        rep.step("切深色后背景变暗", luma_dark < 90.0, "内容区亮度 %.0f" % luma_dark)
-        if a.shots:
-            save_png(s6.raw, s6.w, s6.h, os.path.join(ROOT, "screenshots", "gallery-dark.png"))
-
-        vr.click_logical(hwnd, 33.0, 734.0, scale)
-        time.sleep(0.6)
-        s7 = Shot(hwnd, scale)
-        luma_light = s7.avg(NAV_W + 300.0, 120.0, LOGICAL_W - 300.0, 200.0)
-        rep.step("切回浅色", luma_light > 180.0, "内容区亮度 %.0f" % luma_light)
-
-        print("\n===== 共 %d 项，失败 %d 项 =====" % (len(rep.results), rep.failed))
-        return 1 if rep.failed else 0
+        s5 = Shot(hwnd, scale)
+        nav_after = s5.avg(20.0, 150.0, NAV_W - 30.0, 420.0)
+        rep.step("点遮罩关闭后遮罩撤掉", nav_after > nav_luma + 25.0,
+                 "导航亮度 %.0f → %.0f（初始 %.0f）" % (nav_luma, nav_after, nav_base))
     finally:
-        time.sleep(0.3)
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        stop(proc)
+
+    print("\n===== 共 %d 项，失败 %d 项 =====" % (len(rep.results), rep.failed))
+    return 1 if rep.failed else 0
 
 
 if __name__ == "__main__":

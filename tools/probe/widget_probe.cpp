@@ -583,8 +583,9 @@ static void test_context_menu() {
     const int flag_on = int(ui.impl->flags[aino::detail::make_id("ctxmenu", area, uint64_t(items.size()))] + 0.5f);
     check(flag_on == 1, "区域内右键 → 弹出");
 
-    // 列表从点击处开始，item_h = max(fs+16, 32) = 32，内边距 4
-    const float ih = 32.0f;
+    // 列表从点击处开始，行高跟着 kit 的 Menu/Height Medium = 24（旧的 32 是
+    // Web 菜单的比例），内边距 8 上下各半 = 4。
+    const float ih = 24.0f;
     d.click(100.0f + 60.0f, 100.0f + 4.0f + ih * 1.5f, draw);
     check(chosen == 1, "点第二项 → 1", "chosen=" + std::to_string(chosen));
 }

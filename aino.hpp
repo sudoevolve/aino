@@ -1619,14 +1619,44 @@ struct Canvas {
         }
     }
 
+    // 半透明整行填充。
+    //
+    // 行裁剪、边界判断、颜色量化全部只做一次，循环里只剩三次整数乘加。
+    // 为什么值得单独写：圆角矩形/圆形的"实心内区"对半透明色会落在这条路径上，
+    // 而 Group Box 的 2% 底、代码块底、侧边栏材质都是几十万像素的大面积半透明 ——
+    // 逐像素调 blend() 时那些判断和浮点换算几乎占掉一半时间。
+    //
+    // 用 0..256 的定点 alpha（而不是 0..255）是为了让"全覆盖"能整除干净：
+    // 反色分量乘 (256-sa)，结果右移 8 位正好还原，不需要再判一次 sa==255。
+    inline void blend_row(int y, int x0, int x1, const Color& c, float coverage = 1.0f) {
+        if (y < 0 || y >= h) return;
+        if (clipped) {
+            if (y < clip_y0 || y >= clip_y1) return;
+            if (x0 < clip_x0) x0 = clip_x0;
+            if (x1 > clip_x1) x1 = clip_x1;
+        }
+        if (x0 < 0) x0 = 0;
+        if (x1 > w) x1 = w;
+        if (x1 <= x0) return;
+        int sa = int(float(c.a) * coverage * (256.0f / 255.0f) + 0.5f);
+        if (sa <= 0) return;
+        if (sa >= 256) { fill_row_fast(y, x0, x1, c); return; }
+        const int inv = 256 - sa;
+        const int sr = int(c.r) * sa, sg = int(c.g) * sa, sb = int(c.b) * sa;
+        uint8_t* p = px + size_t(y) * size_t(stride) + size_t(x0) * 4u;
+        for (int i = x1 - x0; i > 0; --i, p += 4) {
+            p[CH_R] = uint8_t((sr + p[CH_R] * inv + 128) >> 8);
+            p[CH_G] = uint8_t((sg + p[CH_G] * inv + 128) >> 8);
+            p[CH_B] = uint8_t((sb + p[CH_B] * inv + 128) >> 8);
+            p[CH_A] = 255;
+        }
+    }
+
     // 覆盖率恒为 1 的整行填充。只有不透明色才能走 memcpy 式的快填 ——
     // 半透明色覆盖率 1 也还是"混合"，必须逐像素 blend，否则会把颜色写实。
     inline void fill_row_opaque(int y, int x0, int x1, const Color& c) {
         if (c.a == 255) { fill_row_fast(y, x0, x1, c); return; }
-        if (y < 0 || y >= h) return;
-        if (x0 < 0) x0 = 0;
-        if (x1 > w) x1 = w;
-        for (int x = x0; x < x1; ++x) blend(x, y, c, 1.0f);
+        blend_row(y, x0, x1, c, 1.0f);
     }
 
     void clear(const Color& c) {
@@ -2676,6 +2706,21 @@ public:
         metric_dc_ = CreateCompatibleDC(nullptr);
         SetBkMode(metric_dc_, TRANSPARENT);
     }
+    // 当前 DC 上"已经设置好"的 GDI 状态。文字是每帧调用最多的图元（一页上百段），
+    // 每段都做 SelectObject + SetBkMode + SetTextColor 再逐个还原，光这 6 次
+    // 往返就占掉每段 30µs 里的一大半 —— 而相邻两段文字 90% 概率用同一个字体
+    // 和同一种颜色。记住上次设过什么，相同就跳过。
+    //
+    // 不还原是有意的：这个 DC 是后备缓冲的内部 DC，Canvas 的图形全是纯内存
+    // 光栅（不碰 GDI 状态），所以留给下一段文字复用是安全的。换了 DC（resize
+    // 重建 DIB）就整体失效重设。
+    HDC      cur_dc_ = nullptr;
+    HFONT    cur_font_ = nullptr;
+    COLORREF cur_color_ = 0xFFFFFFFF;
+    int      cur_bk_ = -1;
+
+    void invalidate_dc_state() { cur_font_ = nullptr; cur_color_ = 0xFFFFFFFF; cur_bk_ = -1; }
+
     void release() override {
         for (auto& kv : fonts_) if (kv.second) DeleteObject(kv.second);
         fonts_.clear();
@@ -2749,9 +2794,11 @@ public:
         HDC dc = reinterpret_cast<HDC>(cv.platform_dc);
         if (!dc) return;
         HFONT f = font(size, weight, 0, mono);
-        HGDIOBJ old_font = SelectObject(dc, f);
-        int old_mode = SetBkMode(dc, TRANSPARENT);
-        COLORREF old_color = SetTextColor(dc, RGB(c.r, c.g, c.b));
+        if (dc != cur_dc_) { cur_dc_ = dc; invalidate_dc_state(); }
+        if (f != cur_font_) { SelectObject(dc, f); cur_font_ = f; }
+        if (cur_bk_ != (int)TRANSPARENT) { SetBkMode(dc, TRANSPARENT); cur_bk_ = (int)TRANSPARENT; }
+        const COLORREF cr = RGB(c.r, c.g, c.b);
+        if (cr != cur_color_) { SetTextColor(dc, cr); cur_color_ = cr; }
 
         std::wstring& w = wide_scratch();
         to_wide_into(utf8, w);
@@ -2765,10 +2812,7 @@ public:
         } else {
             ExtTextOutW(dc, tx, ty, 0, nullptr, w.c_str(), UINT(w.size()), nullptr);
         }
-
-        SetTextColor(dc, old_color);
-        SetBkMode(dc, old_mode);
-        SelectObject(dc, old_font);
+        // 状态刻意留着给下一段文字复用（见 cur_* 的注释）。
     }
 
     // 旋转文字：GDI 用 lfEscapement 原生旋转（比"画到位图再采样"干净得多，
@@ -2794,6 +2838,9 @@ public:
         HGDIOBJ old_font = SelectObject(dc, font(size, weight, esc10));
         int old_mode = SetBkMode(dc, TRANSPARENT);
         COLORREF old_color = SetTextColor(dc, RGB(c.r, c.g, c.b));
+        // 旋转路径仍然完整还原：它用的是带 escapement 的临时字体，而且调用稀疏，
+        // 缓存收益为零、还把"当前状态"搞脏（这里必须让缓存作废）。
+        cur_dc_ = dc; invalidate_dc_state();
 
         std::wstring& ws = wide_scratch();
         to_wide_into(utf8, ws);
@@ -3049,6 +3096,36 @@ inline Color press_color(const Color& c) { return c.luminance() > 0.5f ? c.darke
 // =============================================================================
 //  8.5  Ui 内部状态
 // =============================================================================
+
+namespace detail {
+// 分项计时的时基。AINO_PROF=1 时才被调用，平时一次 QueryPerformanceCounter 都不发。
+inline uint64_t prof_now() {
+#if defined(_WIN32)
+    static LARGE_INTEGER freq = [] { LARGE_INTEGER f{}; QueryPerformanceFrequency(&f); return f; }();
+    LARGE_INTEGER c{}; QueryPerformanceCounter(&c);
+    return uint64_t(double(c.QuadPart) * 1e6 / double(freq.QuadPart));
+#else
+    return uint64_t(clock() * 1000000 / CLOCKS_PER_SEC);
+#endif
+}
+
+// RAII 打点：函数里有多少个 return 都不用管。
+struct ProfTick {
+    uint64_t* acc;
+    uint32_t* cnt;
+    uint64_t  t0;
+    bool      live;
+    ProfTick(uint64_t* a, uint32_t* c, bool on) : acc(a), cnt(c), t0(0), live(on) {
+        if (live) t0 = prof_now();
+    }
+    ~ProfTick() {
+        if (!live || !acc) return;
+        *acc += prof_now() - t0;
+        ++*cnt;
+    }
+};
+} // namespace detail
+
 struct Ui::Impl {
     Theme theme = Theme::light();
     Input input;
@@ -3058,6 +3135,15 @@ struct Ui::Impl {
     float clock = 0.0f;
     bool  animating = false;
     Cursor cursor = Cursor::Arrow;
+    // AINO_PROF=1 时按图元分项累计耗时，定位"这一帧花在哪"。
+    bool     prof_on = false;
+    uint64_t pf_fill_us = 0, pf_stroke_us = 0, pf_text_us = 0,
+             pf_circle_us = 0, pf_shadow_us = 0, pf_measure_us = 0;
+    uint32_t pf_fill_n = 0, pf_stroke_n = 0, pf_text_n = 0,
+             pf_circle_n = 0, pf_shadow_n = 0, pf_measure_n = 0;
+    // 面积/字符数：用来分"面积大"还是"每像素慢" —— 只有耗时没有面积，
+    // 没法判断该优化算法还是该少画。
+    uint64_t pf_fill_px = 0, pf_stroke_px = 0, pf_text_ch = 0;
 
     Canvas* canvas = nullptr;
     TextRenderer* text = nullptr;
@@ -3708,6 +3794,8 @@ inline void Ui::clear(const Color& c) {
 }
 
 inline void Ui::fill_rect(const Rect& r, const Color& c, float radius) {
+    detail::ProfTick _pt(&impl->pf_fill_us, &impl->pf_fill_n, impl->prof_on);
+    if (impl->prof_on) impl->pf_fill_px += uint64_t(std::max(r.w, 0.0f) * std::max(r.h, 0.0f) * impl->scale * impl->scale);
     if (impl->measure_on) { if (c.a != 0 && !r.empty()) impl->measure_add(r); return; }
     if (!impl->canvas || c.a == 0 || r.empty()) return;
     // 有旋转 → 多边形（raster_rrect 只吃轴对齐矩形）
@@ -3754,6 +3842,8 @@ inline void Ui::fill_rect(const Rect& r, const Color& c, float radius) {
 }
 
 inline void Ui::stroke_rect(const Rect& r, const Color& c, float radius, float width) {
+    detail::ProfTick _pt(&impl->pf_stroke_us, &impl->pf_stroke_n, impl->prof_on);
+    if (impl->prof_on) impl->pf_stroke_px += uint64_t(std::max(r.w, 0.0f) * std::max(r.h, 0.0f) * impl->scale * impl->scale);
     if (impl->measure_on) { if (c.a != 0 && !r.empty()) impl->measure_add(r); return; }
     if (!impl->canvas || c.a == 0 || r.empty()) return;
     const float w = std::max(impl->xf_len(width), 0.6f);
@@ -3778,6 +3868,8 @@ inline void Ui::stroke_rect(const Rect& r, const Color& c, float radius, float w
 }
 
 inline void Ui::fill_rect_s(const Rect& r, const Color& c, float radius, float smooth) {
+    detail::ProfTick _pt(&impl->pf_fill_us, &impl->pf_fill_n, impl->prof_on);
+    if (impl->prof_on) impl->pf_fill_px += uint64_t(std::max(r.w, 0.0f) * std::max(r.h, 0.0f) * impl->scale * impl->scale);
     if (impl->measure_on) { if (c.a != 0 && !r.empty()) impl->measure_add(r); return; }
     if (!impl->canvas || c.a == 0 || r.empty()) return;
     detail::raster_rrect(*impl->canvas, impl->xf_phys(r), c,
@@ -3833,6 +3925,7 @@ inline void Ui::stroke_rect_top(const Rect& r, const Color& c, float radius, flo
 }
 
 inline void Ui::fill_circle(float cx, float cy, float radius, const Color& c) {
+    detail::ProfTick _pt(&impl->pf_circle_us, &impl->pf_circle_n, impl->prof_on);
     if (impl->measure_on) {
         if (c.a != 0 && radius > 0.0f)
             impl->measure_add(Rect(cx - radius, cy - radius, radius * 2.0f, radius * 2.0f));
@@ -4263,6 +4356,8 @@ inline const std::vector<std::string>& wrap_layout(Ui::Impl* im, const std::stri
 } // namespace detail
 
 inline void Ui::draw_text(const std::string& text, const Rect& box, const Color& c, const Style& st) {
+    detail::ProfTick _pt(&impl->pf_text_us, &impl->pf_text_n, impl->prof_on);
+    if (impl->prof_on) impl->pf_text_ch += uint32_t(text.size());
     if (impl->measure_on) { if (c.a != 0) impl->measure_add(box); return; }
     if (!impl->canvas || !impl->text || text.empty() || c.a == 0) return;
     const float tscale = impl->xf_scale();
@@ -6333,8 +6428,10 @@ inline bool Ui::stepper(float* value, float step, float min_value, float max_val
     // 各自带上下小三角；它贴在数值框的右边缘，不是"[−] 值 [+]"这种横向三段。
     // 横向那套是 Web 的 Number Input，放在 mac 界面里一眼就不对。
     const float btn_w = std::min(std::max(box.h * 0.83f, 16.0f), 20.0f);
-    const Rect minus_r(box.right() - btn_w, box.y, btn_w, box.h * 0.5f);
-    const Rect plus_r (box.right() - btn_w, box.y + box.h * 0.5f, btn_w, box.h - box.h * 0.5f);
+    // ⚠️ 上 = 加、下 = 减。之前写反了（上半减、下半加）：看着像步进器，用起来
+    // 是"点上面的三角数字变小"—— AppKit 的 NSStepper 从上到下永远是 ＋ / －。
+    const Rect plus_r (box.right() - btn_w, box.y, btn_w, box.h * 0.5f);
+    const Rect minus_r(box.right() - btn_w, box.y + box.h * 0.5f, btn_w, box.h - box.h * 0.5f);
     const Rect value_r(box.x, box.y, std::max(box.w - btn_w, 1.0f), box.h);
     const float br = std::min(rad, box.h * 0.5f);
 
@@ -9427,7 +9524,10 @@ struct Window::Impl {
     // 帧回调里画了跟着指针跑的东西（自定义准星、拖影），又不经过任何控件。
     bool hover_skip = true;
     // AINO_FRAME_LOG=1 时把每帧渲染耗时打到 stderr，用来定位"谁在吃 CPU"。
+    // 值是文件路径时写文件 —— WIN32 子系统的程序没有控制台，stderr 是无效句柄，
+    // 重定向到文件也拿不到任何输出（实测：0 字节），而示例程序全是 WIN32 子系统。
     bool frame_log = false;
+    std::FILE* frame_log_out = nullptr;
     uint32_t frame_log_n = 0;
     uint64_t frame_log_sum = 0;     // µs
     uint32_t frame_log_worst = 0;   // µs
@@ -9498,7 +9598,17 @@ inline Window::Window(const WindowConfig& cfg) : impl(new Impl()) {
 #  pragma warning(disable: 4996)   // getenv 在 MSVC 下被标记为不安全，这里只读环境变量
 #endif
     {   const char* fl = std::getenv("AINO_FRAME_LOG");
-        if (fl && fl[0] && fl[0] != '0') impl->frame_log = true; }
+        if (fl && fl[0] && fl[0] != '0') {
+            impl->frame_log = true;
+            if (!(fl[0] == '1' && fl[1] == 0))          // 不是 "1" 就当输出路径
+                impl->frame_log_out = std::fopen(fl, "w");
+        } }
+    {   const char* pf = std::getenv("AINO_PROF");
+        if (pf && pf[0] && pf[0] != '0') {
+            impl->ui.impl->prof_on = true;              // 分项计时，帧日志里多打一行
+            impl->frame_log = true;
+            if (!(pf[0] == '1' && pf[1] == 0)) impl->frame_log_out = std::fopen(pf, "w");
+        } }
 #if defined(_MSC_VER)
 #  pragma warning(pop)
 #endif
@@ -10366,24 +10476,88 @@ inline uint64_t win_ticks_us() {
     return uint64_t(double(c.QuadPart) * 1e6 / double(freq.QuadPart));
 }
 
+// 高精度睡眠。
+//
+// 为什么不能直接 Sleep(ms)：Windows 的默认时钟粒度是 **15.6 ms**，Sleep(4) 实际
+// 要睡 15.6 ms，Sleep(16) 直接跨两个 tick 睡 31.2 ms。本机实测：
+//     Sleep(1)  → 15.6    Sleep(15) → 16.0    Sleep(16) → 30.9
+// 于是"每帧补足 16ms 预算"这条逻辑整个失效：绘制 12.7 ms 的一页 + Sleep(4)
+// = 28 ms/帧，也就是说画面被系统时钟钉在 33~35 fps —— 用户体感就是"卡卡的"，
+// 而渲染本身其实还有 4 ms 余量。
+//
+// CreateWaitableTimerExW + HIGH_RESOLUTION（Win10 1803+）不需要 timeBeginPeriod，
+// 精度约 1 ms，且**只影响本进程等的那一下**，不会让整机时钟中断变快（timeBeginPeriod
+// 会，代价是待机耗电）。老系统创建失败就退回 Sleep。
+struct WinPreciseTimer {
+    HANDLE h = nullptr;
+    WinPreciseTimer() {
+        h = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002 /*HIGH_RESOLUTION*/,
+                                   TIMER_ALL_ACCESS);
+        if (!h) h = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+    }
+    ~WinPreciseTimer() { if (h) CloseHandle(h); }
+    void wait_us(uint64_t us) {
+        if (us == 0) return;
+        if (!h) { Sleep(DWORD((us + 999) / 1000)); return; }
+        LARGE_INTEGER due;
+        due.QuadPart = -LONGLONG(us * 10);        // 相对时间，单位 100ns
+        if (!SetWaitableTimer(h, &due, 0, nullptr, nullptr, FALSE)) {
+            Sleep(DWORD((us + 999) / 1000));
+            return;
+        }
+        WaitForSingleObject(h, INFINITE);
+    }
+};
+
+inline WinPreciseTimer& win_timer() {
+    static WinPreciseTimer t;      // 进程内一个就够，主循环是单线程的
+    return t;
+}
+
 // 每 120 帧汇总一次渲染耗时（只在 AINO_FRAME_LOG=1 时被调用）。
 inline void win_frame_log(Window::Impl* o, uint64_t render_us) {
     ++o->frame_log_n;
     o->frame_log_sum += render_us;
     if (render_us > o->frame_log_worst) o->frame_log_worst = uint32_t(render_us);
-    if (o->frame_log_n >= 120) {
+    // 60 帧一块：交互驱动的帧是零散的（拖着鼠标扫过一排控件才有几帧），
+    // 攒到 120 帧往往要等很久，探针还没采到样进程就被关掉了。
+    if (o->frame_log_n >= 60) {
+        std::FILE* out = o->frame_log_out ? o->frame_log_out : stderr;
         const double n = double(o->frame_log_n);
-        std::fprintf(stderr,
-            "[aino] 120 帧  渲染均 %.2f ms  最差 %.2f ms  (预算 %.0f ms)\n"
+        std::fprintf(out,
+            "[aino] 60 帧  渲染均 %.2f ms  最差 %.2f ms  (预算 %.0f ms)\n"
             "        取输入 %.2f | 绘制 %.2f | 收尾 %.2f | 上屏 %.2f  (ms)\n",
             double(o->frame_log_sum) / n / 1000.0, double(o->frame_log_worst) / 1000.0,
             double(o->anim_budget_ms),
             double(o->t_feed) / n / 1000.0, double(o->t_cb) / n / 1000.0,
             double(o->t_end) / n / 1000.0, double(o->t_present) / n / 1000.0);
+        if (o->ui.impl->prof_on) {
+            // 分项。注意 draw_text 内部会调 fill_rect（下划线、底色），所以 fill
+            // 里含着一部分文字时间；看"谁是大头"足够，别当严格互斥的分解看。
+            auto per = [&](uint64_t acc) { return double(acc) / n / 1000.0; };
+            const double fpx = double(o->ui.impl->pf_fill_px) / n;
+            const double tch = double(o->ui.impl->pf_text_ch) / n;
+            const double fms = per(o->ui.impl->pf_fill_us);
+            const double tms = per(o->ui.impl->pf_text_us);
+            std::fprintf(out,
+                "        填充 %.2f ms (%u 次, %.0f kpx, %.0f Mpx/s) | 描边 %.2f (%u) | "
+                "文字 %.2f ms (%u 段 %.0f 字, %.2f µs/段) | 圆 %.2f (%u)\n",
+                fms, o->ui.impl->pf_fill_n / unsigned(n), fpx / 1000.0,
+                fms > 0.001 ? fpx / fms / 1000.0 : 0.0,
+                per(o->ui.impl->pf_stroke_us), o->ui.impl->pf_stroke_n / unsigned(n),
+                tms, o->ui.impl->pf_text_n / unsigned(n), tch,
+                o->ui.impl->pf_text_n ? tms * 1000.0 / double(o->ui.impl->pf_text_n / unsigned(n)) : 0.0,
+                per(o->ui.impl->pf_circle_us), o->ui.impl->pf_circle_n / unsigned(n));
+            o->ui.impl->pf_fill_us = o->ui.impl->pf_stroke_us = o->ui.impl->pf_text_us = 0;
+            o->ui.impl->pf_circle_us = o->ui.impl->pf_shadow_us = 0;
+            o->ui.impl->pf_fill_n = o->ui.impl->pf_stroke_n = o->ui.impl->pf_text_n = 0;
+            o->ui.impl->pf_circle_n = o->ui.impl->pf_shadow_n = 0;
+            o->ui.impl->pf_fill_px = o->ui.impl->pf_stroke_px = o->ui.impl->pf_text_ch = 0;
+        }
         o->frame_log_n = 0; o->frame_log_sum = 0; o->frame_log_worst = 0;
         o->t_feed = o->t_cb = o->t_end = o->t_present = 0;
-        // 必须 flush：重定向到文件时 stderr 是全缓冲，进程被 kill 掉就一行都看不到
-        std::fflush(stderr);
+        // 必须 flush：文件是全缓冲，进程被 kill 掉就一行都看不到
+        std::fflush(out);
     }
 }
 
@@ -10497,7 +10671,8 @@ inline void Window::run(const std::function<void(Ui&)>& frame) {
                     : o->anim_budget_ms;
             o->move_only = false;      // 下一帧的触发源重新判定
             const uint64_t budget_us = uint64_t(budget_ms) * 1000u;
-            if (el_us < budget_us) Sleep(DWORD((budget_us - el_us + 999) / 1000));
+            // 用高精度等待补足预算：Sleep 的 15.6ms 粒度会把 60fps 砍到 33fps。
+            if (el_us < budget_us) detail::win_timer().wait_us(budget_us - el_us);
         } else {
             // 没有待办 → 阻塞在内核里等消息。这就是空闲 0% CPU 的来源。
             WaitMessage();

@@ -69,6 +69,17 @@ struct Harness {
         return std::abs(int(g.r) - int(c.r)) <= 3 && std::abs(int(g.g) - int(c.g)) <= 3
             && std::abs(int(g.b) - int(c.b)) <= 3;
     }
+    // 铺一整块不透明底色。**测半透明 token 必须先铺底**：canvas 初值是黑，
+    // 而 "10% 的黑" 叠在纯黑上还是纯黑 —— 直接比较 RGB 会永远为真（假通过）。
+    void fill_all(const Color& c) {
+        for (int y = 0; y < int(H); ++y)
+            for (int x = 0; x < int(W); ++x) {
+                uint8_t* q = buf.data() + size_t(y) * size_t(cv.stride) + size_t(x) * 4u;
+                q[aino::detail::CH_R] = c.r;
+                q[aino::detail::CH_G] = c.g;
+                q[aino::detail::CH_B] = c.b; q[3] = 255;
+            }
+    }
     void blank(int x0, int y0, int w, int h) {
         for (int y = y0; y < y0 + h; ++y)
             for (int x = x0; x < x0 + w; ++x) {
@@ -116,22 +127,22 @@ int main() {
     {
         Harness h;
         float v = 5.0f;
-        const Rect box(10, 10, 140, 34);          // btn_w = min(34,34) = 34
+        const Rect box(10, 10, 140, 34);
+        // NSStepper 的几何：右边缘 **20 宽竖条**，上半 = ＋、下半 = －。
+        // 旧的"[−] 值 [+]"横向三段是 Web 的 Number Input，已经改掉了。
+        const float bx = box.right() - 10.0f;
+        const float up_y = box.y + box.h * 0.25f;
+        const float dn_y = box.y + box.h * 0.75f;
         auto draw = [&]() { return h.ui.stepper(&v, 1.0f, 0.0f, 6.0f, box, Style()); };
         h.step(draw);
         check(approx(v, 5.0f), "初始值不变");
-        check(h.click(box.right() - 17.0f, 27.0f, draw), "点 + 返回 changed");
+        check(h.click(bx, up_y, draw), "点 + 返回 changed");
         check(approx(v, 6.0f), "+ 之后 6");
-        check(!h.click(box.right() - 17.0f, 27.0f, draw), "到上限后再点 + 不算 changed");
+        check(!h.click(bx, up_y, draw), "到上限后再点 + 不算 changed");
         check(approx(v, 6.0f), "上限被夹住");
-        h.click(box.x + 17.0f, 27.0f, draw);
-        h.click(box.x + 17.0f, 27.0f, draw);
-        h.click(box.x + 17.0f, 27.0f, draw);
-        h.click(box.x + 17.0f, 27.0f, draw);
-        h.click(box.x + 17.0f, 27.0f, draw);
-        h.click(box.x + 17.0f, 27.0f, draw);
+        for (int i = 0; i < 6; ++i) h.click(bx, dn_y, draw);
         check(approx(v, 0.0f), "连点 6 次 − 到 0");
-        h.click(box.x + 17.0f, 27.0f, draw);
+        h.click(bx, dn_y, draw);
         check(approx(v, 0.0f), "下限被夹住");
     }
 
@@ -283,13 +294,16 @@ int main() {
         h.key(aino::KEY_ESC);
         h.step([&]() { return h.ui.dialog("t", "b", &open, box, Style()); });
         check(!open, "Esc → 关闭");
-        // 点 × 关闭
+        // macOS 的 alert 没有右上角 ×（关闭靠按钮 / Esc）。所以这里反过来钉住：
+        // 点面板内部的空白**不能**把它关掉 —— 以前那个 × 的位置就在右上角，
+        // 一旦有人把叉加回来，这条会立刻红。
         open = true;
-        const float cx = box.right() - 24.0f - 6.0f - 11.0f + 11.0f;
-        const float cy = box.y + 24.0f - 8.0f + 11.0f;
-        h.click(cx, cy, [&]() { return h.ui.dialog("t", "b", &open, box, Style()); });
-        check(!open, "点右上角 × → 关闭");
+        h.step([&]() { return h.ui.dialog("t", "b", &open, box, Style()); });
+        h.click(box.right() - 30.0f, box.y + 26.0f,
+                [&]() { return h.ui.dialog("t", "b", &open, box, Style()); });
+        check(open, "面板右上角没有关闭按钮（点它不关）");
         // 关闭后不再绘制
+        open = false;
         check(!h.step([&]() { return h.ui.dialog("t", "b", &open, box, Style()); }), "关闭后返回 false");
     }
 
@@ -417,11 +431,12 @@ int main() {
     std::printf("[T12] avatar 像素\n");
     {
         Harness h;
-        h.blank(0, 0, int(W), int(H));
+        h.fill_all(LT.window_bg);          // 白底：半透明 token 必须叠在底上才可比
         const Rect box(0, 0, 64, 64);
         h.step([&]() { h.ui.avatar("AB", box, Style()); return true; });
-        check(h.px_is(32, 8, LT.muted), "圆内上部是 muted 底色");
-        check(!h.px_is(1, 1, LT.muted), "圆外角落未被填（是圆形不是方块）");
+        const Color av_bg = LT.fill.over(LT.window_bg);
+        check(h.px_is(32, 8, av_bg), "圆内上部是 fill 底色（10% 占位，不是 5%）");
+        check(h.px_is(1, 1, LT.window_bg), "圆外角落未被填（是圆形不是方块）");
         // 默认必须有 1px border 描边。理由不是审美：圆底是 muted，一旦落在浅灰容器
         // （gallery 预览板 / card() / panel()）上就跟背景同色，只剩一个孤零零的字。
         // 用户原话"头像咋只有个文字"。轮廓是唯一在任何底色上都能立住的线索。
@@ -446,10 +461,15 @@ int main() {
         check(h.px_is(100, 5, LT.muted), "表头是 muted 底色（无字体时也能断言底色）");
         check(h.px_is(100, 139, LT.border), "底边框是 border 色");
 
-        h.blank(0, 0, int(W), int(H));
+        h.fill_all(LT.window_bg);
         h.step([&]() { h.ui.alert("T", "D", box, Style()); return true; });
-        check(h.px_is(100, 70, LT.card), "alert 面板用 card 底色");
-        check(h.px_is(20, 20, LT.foreground), "alert 左上角有实心感叹号图标");
+        // alert 面是 8% 的标签色（fill4），不铺卡片色、也不画红框
+        check(h.px_is(100, 70, LT.fill4.over(LT.window_bg)),
+              "alert 面板是 8% 淡底（不铺卡片色）");
+        // 图标是**中性 50%**（label2）实心圆 + 白色感叹号，不是纯黑 —— 告警的
+        // 重音交给红色标题/红色符号，面本身保持中性（macOS 不画红框也不会给图标上黑）。
+        check(h.px_is(20, 20, LT.label2.over(LT.fill4.over(LT.window_bg))),
+              "alert 左上角有实心感叹号图标（中性 50%）");
 
         h.blank(0, 0, int(W), int(H));
         const Rect sp(0, 0, 40, 40);

@@ -422,14 +422,20 @@ static void test_tabs() {
     const Rect tbox(20.0f, 20.0f, 300.0f, 38.0f);
     auto tdraw = [&]() { ui.tabs(items, &idx, tbox); };
 
-    d.click(tbox.x + 150.0f, tbox.cy(), tdraw);
-    check(idx == 1, "点第二项 → 1", "idx=" + num(idx));
-
-    d.click(tbox.x + 150.0f, tbox.cy(), tdraw);
-    check(idx == 1, "再点当前项不变", "idx=" + num(idx));
-
-    d.click(tbox.x + 250.0f, tbox.cy(), tdraw);
+    // tabs 是 AppKit 语义：项宽 = 文字宽 + 36、左对齐，**不是**等分整条 300
+    // （三条加起来才 ~186，右侧那 100 多像素是空的 —— 点它不该有反应）。
+    const float tw = ui.text_width(items[0], 13.0f, 500) + 36.0f;
+    d.click(tbox.x + tw * 2.5f, tbox.cy(), tdraw);
     check(idx == 2, "点第三项 → 2", "idx=" + num(idx));
+
+    d.click(tbox.x + tw * 2.5f, tbox.cy(), tdraw);
+    check(idx == 2, "再点当前项不变", "idx=" + num(idx));
+
+    d.click(tbox.x + tw * 0.5f, tbox.cy(), tdraw);
+    check(idx == 0, "点第一项 → 0", "idx=" + num(idx));
+
+    d.click(tbox.right() - 6.0f, tbox.cy(), tdraw);
+    check(idx == 0, "点标题栏空白处不改选中", "idx=" + num(idx));
 
     int seg = 0;
     const Rect sbox(20.0f, 90.0f, 240.0f, 32.0f);
@@ -510,15 +516,17 @@ static void test_stepper_rating() {
     const Rect box(20.0f, 20.0f, 140.0f, 36.0f);
     auto draw = [&]() { ui.stepper(&v, 1.0f, 0.0f, 6.0f, box); };
 
-    // 右半是加号，左半是减号
-    d.click(box.right() - 18.0f, box.cy(), draw);
-    check(v > 5.9f && v < 6.1f, "点加号 +1", std::string("v=") + s(v));
+    // NSStepper 的几何：右边缘 **20 宽竖条**，上半 = ＋、下半 = －（不是
+    // "[−] 值 [+]" 那种横向三段，那是 Web 的 Number Input）。
+    const float up_y = box.y + box.h * 0.25f, dn_y = box.y + box.h * 0.75f;
+    d.click(box.right() - 10.0f, up_y, draw);
+    check(v > 5.9f && v < 6.1f, "点上部三角 +1", std::string("v=") + s(v));
 
-    d.click(box.right() - 18.0f, box.cy(), draw);
+    d.click(box.right() - 10.0f, up_y, draw);
     check(v <= 6.001f, "到上限夹取", std::string("v=") + s(v));
 
-    d.click(box.x + 18.0f, box.cy(), draw);
-    check(v > 4.9f && v < 5.1f, "点减号 -1", std::string("v=") + s(v));
+    d.click(box.right() - 10.0f, dn_y, draw);
+    check(v > 4.9f && v < 5.1f, "点下部三角 -1", std::string("v=") + s(v));
 
     v = 0.0f;
     d.click(box.x + 18.0f, box.cy(), draw);

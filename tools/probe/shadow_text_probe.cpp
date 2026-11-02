@@ -115,7 +115,10 @@ static void test_shadow() {
 
     check(peak <= nominal, "阴影峰值不得超过调用方传入的 alpha");
     check(mono, "阴影必须随距离单调衰减（不能出现脏环）");
-    check(h.alpha_at(int(box.x) - 1 - int(blur) - 4, y) == 0, "blur 之外必须完全透明");
+    // 高斯语义下轮廓处的覆盖率是 0.5，拖尾要铺到约 1.35×blur 才归零
+    // （Figma 的 blur 就是高斯 σ = blur/2）。所以判"完全透明"的点取 1.4×blur。
+    check(h.alpha_at(int(box.x) - 1 - int(blur * 1.4f) - 2, y) == 0,
+          "1.4×blur 之外必须完全透明（高斯拖尾）");
     check(peak >= 12, "阴影又不能太弱到看不见");
     // 旧实现在同样参数下是这个量级 —— 留一条明确的"别退回去"的线
     check(peak < 80, "峰值必须远低于旧实现的 ~148");
@@ -174,14 +177,20 @@ static void test_text_wrap() {
         check(max_ink_x <= limit, "正文墨迹不得越过内边距右界（横向溢出的根因）");
         check(max_ink_x >= 0, "正文确实画出来了");
 
-        // 阴影侧写：白底 + 遮罩(110) 之上，面板外一圈只该有"很浅"的影子。
-        // alpha_at 是"相对纯白的变暗量"，所以遮罩自己就贡献 110。
+        // 阴影侧写：白底 + 遮罩之上，面板外一圈只该有"很浅"的影子。
+        // alpha_at 是"相对纯白的变暗量"；遮罩的贡献**按 token 算**，不能写死 ——
+        // 之前写 110，后来 overlay 换成 rgba(171,171,171,153)（白底只压暗 50），
+        // 这条就假红了。
+        const aino::Color mask_c = aino::Theme::light().overlay.over(aino::Color(255, 255, 255));
+        const int base = 255 - int(mask_c.r);
         const int a_just = h.alpha_at(int(box.right()) + 3, int(box.cy()));
         const int a_far  = h.alpha_at(int(box.right()) + 34, int(box.cy()));
-        std::printf("  面板右侧变暗量：+3px=%d（其中遮罩 110），+34px=%d（只该剩遮罩）\n", a_just, a_far);
-        check(a_far <= 115, "blur 之外不该还有影子（+34px 应只剩遮罩 110）");
-        check(a_just <= 150, "面板右侧不该叠出深色脏边（旧实现这里会接近 255）");
-        check(a_just > 110, "面板右侧确实有影子（不能淡到没有）");
+        std::printf("  面板右侧变暗量：+3px=%d，+34px=%d（遮罩基线 %d）\n", a_just, a_far, base);
+        // +34px 相对 90px 的模糊半径只有 0.4σ，影子还剩一点是**对的**
+        // （Primary 投影就是 "0 30 90"）。这里要的是"明显变淡"，不是"归零"。
+        check(a_far < a_just && a_far <= base + 20, "影子随距离变淡，34px 处已经很浅");
+        check(a_just <= base + 70, "面板右侧不该叠出深色脏边（旧实现这里会接近 255）");
+        check(a_just > base + 3, "面板右侧确实有影子（不能淡到没有）");
     }
 
     // --- 2c. 单行仍然是单行（快路径没被改坏）---

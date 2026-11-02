@@ -96,7 +96,11 @@ int main() {
         const auto g = aino::detail::scrollbar_geom(kBox, 0.0f, content - kBox.h);
         check(std::fabs(g.travel - (kBox.h - g.thumb.h)) < 0.01f, "S0 几何：travel = 视口高 - 滑块高",
               "thumb=" + std::to_string(g.thumb.h) + " travel=" + std::to_string(g.travel));
-        check(g.thumb.w <= 3.5f && g.track.w >= 10.0f, "S1 视觉 3px / 热区 11px（细条也要点得中）");
+        // macOS 的 overlay 滚动条视觉宽 7px（圆头），热区给到 15px —— 细条的
+        // 视觉是给人看的，热区才是点得中的尺寸。旧的 3px 是 Windows/浏览器那种
+        // 常驻细线。
+        check(g.thumb.w >= 6.0f && g.thumb.w <= 7.5f && g.track.w >= 10.0f,
+              "S1 视觉 7px / 热区 15px（细条也要点得中）");
         check(std::fabs(g.thumb.y - kBox.y) < 0.01f, "S2 offset=0 时滑块贴顶");
 
         // 滑块中心（一开始在顶端）

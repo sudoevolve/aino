@@ -643,3 +643,175 @@ NODE_PATH=.workbuddy/figma/node_modules node docs/macos27/tools/digest.js "Windo
 
 `toggle_button` 单独保留 22% 的强调色底：kit 的 `Buttons - Toggle/Bordered - Tinted`
 里选中态标签仍是 85% 黑（不是白字），说明那是"淡色底"而不是实心强调色。
+
+---
+
+## 十四、交互「卡卡的」：不是帧率低，是帧间隔被系统时钟钉住了
+
+### 14.1 症状
+
+鼠标划过控件、拖滑块、展开面板时，画面一顿一顿的。目测像 20~30fps，
+但"动画是否顺滑"这件事不能靠目测 —— 先量帧间隔。
+
+### 14.2 量：一帧走多久、隔多久
+
+给 gallery 加两个诊断钩子（库里的 `AINO_FRAME_LOG` 只打渲染耗时，
+看不到帧与帧之间的空档）：
+
+```bash
+# 真实主循环连排 N 帧，记录每帧开始时刻 → 帧间隔分布
+AINO_BENCH_RUN=90 AINO_FRAME_LOG=out.txt build/Release/aino_gallery.exe
+# 分项：填充/描边/文字/圆各占多少
+AINO_PROF=out.txt AINO_BENCH_RUN=70 build/Release/aino_gallery.exe
+```
+
+第一次量出来的数字：
+
+```
+帧间隔 均 30.25 ms (33.1 fps)   >20ms 86 帧 / 90 帧
+序列 ms: 14 28 28 32 31 32 31 32 33 29 32 30 ...
+```
+
+**帧间隔整齐地停在 28~32ms** —— 这不是"绘制慢"的形状（那会是抖动的长尾），
+是被某个 15.6ms 的东西量化了。
+
+### 14.3 根因一：`Sleep` 的 15.6ms 粒度（影响最大）
+
+主循环的节流是这样写的：
+
+```cpp
+const uint64_t budget_us = uint64_t(budget_ms) * 1000u;   // 16ms
+if (el_us < budget_us) Sleep(DWORD((budget_us - el_us + 999) / 1000));
+```
+
+而 Windows 默认时钟粒度是 15.6ms。本机实测：
+
+| 调用 | 实际睡多久 |
+|---|---|
+| `Sleep(1)` | 15.6 ms |
+| `Sleep(5)` | 15.6 ms |
+| `Sleep(15)` | 16.0 ms |
+| `Sleep(16)` | **30.9 ms** |
+
+于是"补足 16ms 预算"这条逻辑整个失效：绘制 12.5ms 的一页 + `Sleep(4)`
+= 15.6ms 的等待 → 28ms/帧。也就是说**画面被系统时钟钉在 33fps**，
+而渲染其实还有 4ms 余量。
+
+改法：`CreateWaitableTimerExW` + `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`
+（Win10 1803+），精度约 1ms，**只影响本进程等的那一下**。不用
+`timeBeginPeriod(1)` —— 那是全局把系统时钟中断调快，代价是待机耗电。
+
+```cpp
+HANDLE h = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /*HIGH_RESOLUTION*/, TIMER_ALL_ACCESS);
+LARGE_INTEGER due; due.QuadPart = -LONGLONG(us * 10);   // 相对，100ns 单位
+SetWaitableTimer(h, &due, 0, nullptr, nullptr, FALSE);
+WaitForSingleObject(h, INFINITE);
+```
+
+结果：**30.25ms → 16.27ms（33.1 → 61.5 fps）**，最差 18.28ms，没有一帧超过 20ms。
+
+### 14.4 根因二：每帧 12.7ms 的绘制
+
+帧调度修好之后余量只剩 4ms，概览页（14.7ms）还是会掉帧，所以得把绘制本身压下来。
+
+`AINO_PROF` 分项（Button 页，1180×760）：
+
+| 项 | 耗时 | 量 |
+|---|---|---|
+| 填充 | 6.86 ms | 71 次 / 2064 kpx（301 Mpx/s） |
+| 文字 | 3.19 ms | 100 段 / 853 字（31.9 µs/段） |
+| 描边 | 0.44 ms | 57 次 |
+| 上屏 | 0.77 ms | BitBlt |
+
+**填充是最大头，而且慢得没有道理**：2064 kpx 里大部分是"半透明的大面积"——
+Group Box 的 2% 底、代码块底、侧边栏材质。这些像素走的是圆角矩形的"实心内区"
+路径，那里对 `alpha<255` 是**逐像素调 `blend()`**：
+
+```cpp
+for (int x = x0; x < x1; ++x) blend(x, y, c, 1.0f);   // 每像素：边界+裁剪+浮点混合
+```
+
+行裁剪、左右边界、`sa` 的浮点换算每像素都重算一遍。改成行级：
+
+```cpp
+// 裁剪/量化只做一次，循环里只剩三次整数乘加（alpha 用 0..256 定点）
+int sa = int(float(c.a) * coverage * (256.0f / 255.0f) + 0.5f);
+uint8_t* p = px + y * stride + x0 * 4;
+for (int i = x1 - x0; i > 0; --i, p += 4) {
+    p[CH_R] = uint8_t((sr + p[CH_R] * inv + 128) >> 8);
+    ...
+}
+```
+
+**填充 6.86 → 2.06 ms（301 → 1003 Mpx/s）**，绘制 12.65 → 6.68 ms。
+
+### 14.5 文字为什么只降了 3%
+
+先试了"缓存 GDI 状态"（字体/颜色/背景模式在相邻两段之间 90% 相同，
+省掉每段 6 次 `SelectObject`/`SetTextColor`/`SetBkMode` 往返 + 还原）：
+文字 3.19 → 3.02ms。
+
+**几乎没动** —— 说明那 30µs/段不是状态往返，而是 `ExtTextOutW` 本身
+（GDI 要锁 DIB、跑 hinting/AA）。想再快只能自己做字形缓存
+（`GetGlyphOutline` + 小位图着色），那是另一个量级的工程，
+本轮不做。状态缓存留着（便宜且无害），但别指望它。
+
+顺带记一个坑：`Win32` 下 `stderr` 在 **WIN32 子系统**程序里是无效句柄，
+`AINO_FRAME_LOG=1` 一行输出都没有。所以诊断支持"值不是 `1` 就当成文件路径"：
+
+```bash
+AINO_FRAME_LOG=build/frames.txt build/Release/aino_gallery.exe
+```
+
+### 14.6 结果
+
+| | 之前 | 之后 |
+|---|---|---|
+| 帧间隔均值 | 30.25 ms | **16.27 ms** |
+| 帧率 | 33.1 fps | **61.5 fps** |
+| 最差帧 | 37.6 ms | 18.3 ms（无 >20ms） |
+| 绘制（Button 页） | 12.65 ms | **6.68 ms** |
+| 填充吞吐 | 301 Mpx/s | **1003 Mpx/s** |
+| 概览页绘制 | 14.74 ms | 9.54 ms |
+
+代价：60fps 的交互比 33fps 贵（扫导航时单核 40~60%，16 核约 3%）。
+想省电用 `set_move_fps(30)`，别把它当性能指标。
+
+### 14.7 顺手抓到的一个真 bug：步进器上下反了
+
+`stepper` 的 `minus_r` 拿的是**上半**、`plus_r` 拿的是下半 ——
+点上面的三角数字变小。NSStepper 从上到下永远是 ＋ / －。
+改完之后 `interaction_probe` 的"点上部三角 +1 / 点下部三角 -1"才立得住。
+
+### 14.8 这一轮顺带修的过时断言
+
+改版式之后一批断言还在按旧几何/旧 token 判，全都会假红。都改成"跟着 token 走"：
+
+| 断言 | 旧假设 | 现在 |
+|---|---|---|
+| panel 中心色 | 写死 `card`（0x252525） | `fill5.over(bg)` |
+| 滚动条宽 | 3px 常驻 | 7px overlay / 热区 15px |
+| 阴影"blur 外透明" | 距边 `blur` | `1.4×blur`（高斯拖尾） |
+| 遮罩基线 | 写死 110 | `overlay.over(白)` |
+| 菜单行高 | 32 | 24（kit Menu/Height） |
+| tabs 点击位置 | 等分 `w/3` | 按文字宽（`text_width + 36`） |
+| 组控件/步进器点击 | 左半减、右半加 | 胶囊分段 / 右侧竖条上+下− |
+| 头像底色 | `muted`（5%） | `fill`（10%），且必须**先铺白底**再比 |
+| 交互 CPU | 光标横扫的 A/B 比值 | 帧日志的**帧数**（3 秒内扫导航 ≥2 块、同行 0 块） |
+
+最后一条要单独说：`move_probe` 原来拿"单核 CPU 百分比"判红绿，
+而这台机器上同一个二进制能读出 3% / 19% / 43%（窗口被遮挡、DWM 合成、
+后台进程都会掺进来）。现在改成读帧日志数**帧块**（每 60 帧一块）——
+"同一行抖动 3 秒 = 0 块"才是这条断言真正要证明的东西。
+本地自动化环境抢不到前台（`SetForegroundWindow` 失败、`WindowFromPoint`
+返回别的窗口）时明确 **SKIP** 并打印原因，不判红也不伪造。
+
+### 14.9 取证命令
+
+```bash
+# 帧间隔（真实主循环）
+AINO_BENCH_RUN=90 AINO_START_PAGE=Button AINO_FRAME_LOG=o.txt build/Release/aino_gallery.exe
+
+# 分项
+AINO_PROF=o.txt AINO_BENCH_RUN=70 AINO_START_PAGE=Button build/Release/aino_gallery.exe
+```
