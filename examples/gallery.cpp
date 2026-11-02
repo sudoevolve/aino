@@ -1723,131 +1723,156 @@ void page_typography(Ui& ui, App& a, const Rect& area) {
 // =============================================================================
 //  规范页：材质
 // =============================================================================
-// macOS 26 起的 Liquid Glass 是"半透明面 + 高光边 + 背后内容模糊"。aino 没有
-// 后台模糊（那要 window server 配合），所以这里用"半透明填充 + 一条 1px 高光
-// + 顶部渐亮"近似 —— 形状、层级、明度关系都对，只是背后的东西没糊。
-struct MaterialDef { const char* name; float alpha; };
+// macOS 的传统材质（NSVisualEffectView）：一层半透明模糊面压在前景内容上，
+// "厚度"决定背后能透出多少。这里刻意不用 Liquid Glass 那套玻璃胶囊 —— 那是
+// macOS 26 才有的语言，跟这个库其余部分（纯色面 + hairline 分层）不是一套东西。
+//
+// aino 拿不到窗口背后的像素（那是 window server 的事），所以模糊用"同一张壁纸
+// + 不同 alpha 的半透明面"表现：底下是连续的一张壁纸，每块材质按自己的厚度压
+// 上去，透出的颜色深浅就是厚度差。
 
-static const MaterialDef kMaterialsLight[] = {
-    {"Ultra Thick", 0.92f}, {"Thick", 0.78f}, {"Medium", 0.62f},
-    {"Thin", 0.46f}, {"Ultra Thin", 0.30f},
+struct BlurMatDef { const char* name; float alpha; };
+
+// Blur 厚度：Ultra Thick 几乎不透，Ultra Thin 只剩一层雾
+static const BlurMatDef kBlurMats[] = {
+    {"Ultra Thick", 0.92f},
+    {"Thick",       0.78f},
+    {"Medium",      0.62f},
+    {"Thin",        0.46f},
+    {"Ultra Thin",  0.30f},
 };
 
-// 一块玻璃：半透明面 + 1px 高光边 + 顶部渐亮（模拟折射）
-static void glass_panel(Ui& ui, const Rect& r, bool dark, float alpha, float radius) {
-    const Color face = dark ? Color(30, 30, 32, (unsigned char)(alpha * 255.0f))
-                            : Color(255, 255, 255, (unsigned char)(alpha * 255.0f));
-    ui.fill_rect(r, face, radius);
-    ui.fill_rect_grad(Rect(r.x + 1.0f, r.y + 1.0f, r.w - 2.0f, r.h * 0.5f),
-                      dark ? Color(255, 255, 255, 16) : Color(255, 255, 255, 120),
-                      Color(255, 255, 255, 0), radius);
-    ui.stroke_rect(r, dark ? Color(255, 255, 255, 48) : Color(255, 255, 255, 190),
-                   radius, 1.0f);
+// 语义材质：同一个模糊面，不同的使用场景。HUD 永远是暗的（它是浮在内容上的
+// 黑色面板），其余跟随外观。
+struct SemanticMatDef { const char* name; float alpha; bool always_dark; };
+static const SemanticMatDef kSemanticMats[] = {
+    {"Sidebar",  0.55f, false},
+    {"Menu",     0.80f, false},
+    {"Popover",  0.82f, false},
+    {"HUD",      0.72f, true},
+    {"Window",   0.90f, false},
+    {"Content",  0.96f, false},
+};
+
+// 桌面壁纸：一张渐变 + 三个大色斑。材质透出的就是它 —— 没有彩色底，
+// 半透明面在纯色背景上等于没画。
+static void desktop_wallpaper(Ui& ui, const Rect& r, float radius) {
+    // 壁纸要**中等明度**：太深的话 90% 的白材质压上去就是一块白板，五档厚度
+    // 全都长一个样；太浅又看不出"透"。取中间调，白材质的每一档都能拉开。
+    // 色斑只用**低饱和、大半径**的一两笔：背景太花的话，五块材质透出的差异
+    // 分不清是"厚度"还是"背后那块正好是个色斑"。
+    ui.fill_rect_grad(r, Color::hex(0x8FB3CE), Color::hex(0xD9A38F), radius);
+    ui.push_clip(r);
+    ui.fill_circle(r.x + r.w * 0.50f, r.y + r.h * 0.50f, r.h * 1.05f, Color(61, 142, 134, 70));
+    ui.fill_circle(r.x + r.w * 0.80f, r.y + r.h * 0.20f, r.h * 0.55f, Color(233, 196, 106, 60));
+    ui.pop_clip();
 }
 
-// 一排玻璃药丸，尺寸三档（Small / Medium / Large）。
-// 标签画在玻璃背后那块彩色台上，所以用白色 —— 灰字在渐变上会糊掉。
-static void glass_pill_row(Ui& ui, const Rect& box, const char* label, float h, bool dark) {
-    ui.draw_text(label, Rect(box.x, box.y, box.w, 14.0f), Color(255, 255, 255, 180),
-                 Style().left().font(9.5f));
-    const float y = box.y + 18.0f;
-    float x = box.x;
-    for (int i = 0; i < 5; ++i) {
-        const float w = h * (1.9f - float(i) * 0.12f);
-        const Rect p(x, y, w, h);
-        glass_panel(ui, p, dark, 0.34f, h * 0.5f);
-        ui.fill_circle(p.x + h * 0.5f, p.cy(), h * 0.16f,
-                       dark ? Color(255, 255, 255, 150) : Color(0, 0, 0, 90));
-        x += w + 8.0f;
-    }
+// 一块材质面：纯半透明 + 一条 hairline。传统 vibrancy 没有高光边、没有玻璃
+// 折射，越接近系统控件越好 —— 有金属高光就成了另一个人做的东西。
+static void material_face(Ui& ui, const Rect& r, float alpha, bool dark, float radius) {
+    const unsigned char a = (unsigned char)std::lround(std::min(1.0f, std::max(0.0f, alpha)) * 255.0f);
+    ui.fill_rect(r, dark ? Color(22, 22, 24, a) : Color(255, 255, 255, a), radius);
+    ui.stroke_rect(r, dark ? Color(255, 255, 255, 22) : Color(0, 0, 0, 16), radius, 1.0f);
 }
 
 void page_materials(Ui& ui, App& a, const Rect& area) {
     (void)a;
-    const float GAP = 22.0f;
-    const float lw = 300.0f;
-    const float rw = area.w - lw - GAP;
+    const bool dark = ui.theme().window_bg.luminance() < 0.5f;
+    const float GAP = 16.0f;
 
-    const float row1 = 236.0f;          // 上排：玻璃 + 滚动边缘
-    const float row2 = 232.0f;          // 下排：材质层级
-    const float total = row1 + GAP + row2 + 10.0f;
+    const float strip_h = 176.0f;      // 壁纸条（含块）
+    const float sem_h   = 132.0f;      // 语义材质行
+    const float stack_h = 196.0f;      // 层叠演示
+    const float total   = strip_h + GAP + sem_h + GAP + stack_h + 30.0f;
 
     auto sc = ui.scroll(area, total);
     (void)sc;
     const float off = ui.scroll_y();
     const float y0 = area.y - off;
 
-    // ---------------- 左上：Liquid Glass 三档尺寸 ----------------
+    // ---------------- Blur 厚度 ----------------
     {
-        const Rect box(area.x, y0, lw, row1);
-        ui.panel(box, Style().corner(12.0f));
-        ui.muted_text("Liquid Glass", Rect(box.x + 14.0f, box.y + 12.0f, box.w - 28.0f, 14.0f),
-                      Style().left().semi_bold().font(11.0f));
-        // 玻璃必须放在**有内容的地方**才看得见：34% 的白叠在纯白面板上等于没画。
-        const Rect stage(box.x + 12.0f, box.y + 32.0f, box.w - 24.0f, box.h - 44.0f);
-        ui.fill_rect_grad(stage, Color::hex(0x2E5C8A), Color::hex(0xD96B4A), 8.0f);
-        ui.push_clip(stage);
-        glass_pill_row(ui, Rect(stage.x + 10.0f, stage.y + 8.0f, stage.w - 20.0f, 46.0f),
-                       "Small", 15.0f, false);
-        glass_pill_row(ui, Rect(stage.x + 10.0f, stage.y + 66.0f, stage.w - 20.0f, 46.0f),
-                       "Medium", 25.0f, false);
-        glass_pill_row(ui, Rect(stage.x + 10.0f, stage.y + 126.0f, stage.w - 20.0f, 46.0f),
-                       "Large", 36.0f, false);
-        ui.pop_clip();
-    }
+        const float cw = (area.w - GAP * 4.0f) / 5.0f;
+        // 壁纸是一整条（不是每块各画一张）—— 这样五块透出的是同一张图的不同
+        // 部位，厚度差异才可比。
+        const Rect strip(area.x, y0, area.w, strip_h - 22.0f);
+        desktop_wallpaper(ui, strip, 12.0f);
 
-    // ---------------- 右上：Scroll Edge Effect ----------------
-    {
-        const Rect box(area.x + lw + GAP, y0, rw, row1);
-        ui.panel(box, Style().corner(12.0f));
-        ui.muted_text("Scroll Edge Effect", Rect(box.x + 14.0f, box.y + 12.0f, box.w - 28.0f, 14.0f),
-                      Style().left().semi_bold().font(11.0f));
-
-        // 内容滚到边缘时，靠近边缘的那一条会被"吃掉" —— 不是一条硬线，而是
-        // 从透明到背景色的连续过渡。左：Soft（长过渡），右：Hard（短过渡）。
-        const Rect a1(box.x + 14.0f, box.y + 34.0f, (box.w - 42.0f) * 0.5f, row1 - 60.0f);
-        const Rect a2(a1.right() + 14.0f, a1.y, a1.w, a1.h);
-        for (int k = 0; k < 2; ++k) {
-            const Rect r = k == 0 ? a1 : a2;
-            ui.fill_rect(r, ui.theme().fill5, 8.0f);
-            // 假内容：几条横线，让"边缘吃掉"看得见
-            for (int i = 0; i < 7; ++i)
-                ui.fill_rect(Rect(r.x + 12.0f, r.y + 14.0f + float(i) * 20.0f, r.w - 24.0f, 8.0f),
-                             ui.theme().label4, 4.0f);
-            const float soft = (k == 0) ? 0.30f : 0.12f;
-            const Color bgc = ui.theme().window_bg, clear = bgc.with_alpha(0);
-            ui.fill_rect_grad(Rect(r.x, r.y, r.w, r.h * soft), bgc, clear, 8.0f);
-            ui.fill_rect_grad(Rect(r.x, r.bottom() - r.h * soft, r.w, r.h * soft),
-                              clear, bgc, 8.0f);
-            ui.stroke_rect(r, ui.theme().separator, 8.0f, 1.0f);
-            ui.muted_text(k == 0 ? "Soft" : "Hard", Rect(r.x, r.bottom() + 6.0f, r.w, 12.0f),
-                          Style().center().font(9.5f));
-        }
-    }
-
-    // ---------------- 下排：材质层级 ----------------
-    {
-        const Rect box(area.x, y0 + row1 + GAP, area.w, row2);
-        ui.panel(box, Style().corner(12.0f));
-        ui.muted_text("Materials", Rect(box.x + 14.0f, box.y + 12.0f, box.w - 28.0f, 14.0f),
-                      Style().left().semi_bold().font(11.0f));
-
-        const float cw = (box.w - 28.0f - 16.0f * 4.0f) / 5.0f;
         for (int i = 0; i < 5; ++i) {
-            const Rect cell(box.x + 14.0f + float(i) * (cw + 16.0f), box.y + 36.0f,
-                            cw, row2 - 56.0f);
-            // 背景：一块彩色渐变，材质叠在上面才看得出"厚/薄"
-            ui.fill_rect_grad(cell, Color::hex(0x2B4C7E), Color::hex(0xC96B4A), 10.0f);
-            ui.fill_circle(cell.x + cw * 0.30f, cell.y + cell.h * 0.34f, cw * 0.22f,
-                           Color(255, 214, 10, 220));
-            ui.fill_circle(cell.x + cw * 0.72f, cell.y + cell.h * 0.70f, cw * 0.26f,
-                           Color(255, 64, 120, 220));
-            glass_panel(ui, Rect(cell.x + 10.0f, cell.y + 10.0f, cell.w - 20.0f, cell.h - 20.0f),
-                        false, kMaterialsLight[i].alpha, 8.0f);
-            ui.draw_text(kMaterialsLight[i].name,
-                         Rect(cell.x + 10.0f, cell.bottom() - 26.0f, cell.w - 20.0f, 14.0f),
-                         Color(28, 28, 30, 220), Style().center().font(9.5f));
+            const Rect cell(strip.x + float(i) * (cw + GAP), strip.y, cw, strip.h);
+            ui.push_clip(cell);
+            material_face(ui, cell, kBlurMats[i].alpha, dark, 12.0f);
+            // 底下一行字：厚度名，压在材质上（用材质自己的对比色）
+            ui.pop_clip();
+            const Color ink = dark ? Color(255, 255, 255, 200) : Color(0, 0, 0, 200);
+            ui.draw_text(kBlurMats[i].name,
+                         Rect(cell.x, cell.bottom() + 6.0f, cell.w, 14.0f),
+                         ui.theme().label2, Style().center().font(9.5f));
+            (void)ink;
         }
+    }
+
+    // ---------------- 语义材质 ----------------
+    {
+        const float cw = (area.w - GAP * 5.0f) / 6.0f;
+        const float y = y0 + strip_h + GAP;
+        const Rect strip(area.x, y, area.w, sem_h - 22.0f);
+        desktop_wallpaper(ui, strip, 12.0f);
+
+        for (int i = 0; i < 6; ++i) {
+            const Rect cell(strip.x + float(i) * (cw + GAP), strip.y, cw, strip.h);
+            const bool cell_dark = kSemanticMats[i].always_dark || dark;
+            material_face(ui, cell, kSemanticMats[i].alpha, cell_dark, 12.0f);
+            const Color ink = cell_dark ? Color(255, 255, 255, 210) : Color(0, 0, 0, 210);
+            ui.draw_text(kSemanticMats[i].name,
+                         Rect(cell.x + 10.0f, cell.y + 10.0f, cell.w - 20.0f, 14.0f),
+                         ink, Style().left().semi_bold().font(10.0f));
+            ui.draw_text(kSemanticMats[i].name,
+                         Rect(cell.x, cell.bottom() + 6.0f, cell.w, 14.0f),
+                         ui.theme().label2, Style().center().font(9.5f));
+        }
+    }
+
+    // ---------------- 层叠：一个窗口浮在壁纸上 ----------------
+    // 单看一张材质块只能看出"透多少"，看不出它们怎么叠。这里画一个真的窗口：
+    // 标题栏 90% / 侧边栏 55% / 内容 96%，三层的透过率不一样，侧边栏能看见
+    // 壁纸的色，内容区几乎实心 —— 这才是材质在实际界面里的样子。
+    {
+        const float y = y0 + strip_h + GAP + sem_h + GAP;
+        const Rect strip(area.x, y, area.w, stack_h - 24.0f);
+        desktop_wallpaper(ui, strip, 12.0f);
+
+        const Rect win(strip.x + strip.w * 0.26f, strip.y + 30.0f,
+                       strip.w * 0.48f, strip.h - 56.0f);
+        const float bar = 26.0f, side_w = win.w * 0.32f;
+
+        material_face(ui, win, 0.96f, dark, 10.0f);                 // 内容区
+        ui.push_clip(win);
+        material_face(ui, Rect(win.x, win.y + bar, side_w, win.h - bar), 0.55f, dark, 0.0f);
+        ui.fill_rect(Rect(win.x + side_w, win.y + bar, 1.0f, win.h - bar),
+                     dark ? Color(255, 255, 255, 26) : Color(0, 0, 0, 18), 0.0f);
+        // 侧边栏里的几行"条目"
+        for (int i = 0; i < 4; ++i)
+            ui.fill_rect(Rect(win.x + 12.0f, win.y + bar + 12.0f + float(i) * 20.0f,
+                              side_w - 24.0f, 10.0f),
+                         ui.theme().label4, 5.0f);
+        // 内容区的几行占位
+        for (int i = 0; i < 3; ++i)
+            ui.fill_rect(Rect(win.x + side_w + 16.0f, win.y + bar + 16.0f + float(i) * 22.0f,
+                              win.w - side_w - 32.0f, 10.0f),
+                         ui.theme().label4, 5.0f);
+        ui.pop_clip();
+
+        // 标题栏压在最上层（带圆角）
+        material_face(ui, Rect(win.x, win.y, win.w, bar), 0.90f, dark, 10.0f);
+        const float lr = 4.5f;
+        const Color dots[3] = {Color::hex(0xFF5F57), Color::hex(0xFEBC2E), Color::hex(0x28C840)};
+        for (int i = 0; i < 3; ++i)
+            ui.fill_circle(win.x + 14.0f + float(i) * 14.0f, win.y + bar * 0.5f, lr, dots[i]);
+        ui.draw_text("Window", Rect(win.x, win.y, win.w, bar),
+                     dark ? Color(255, 255, 255, 160) : Color(0, 0, 0, 150),
+                     Style().center().font(9.5f).semi_bold());
     }
 }
 
@@ -1946,7 +1971,7 @@ const Page kPages[] = {
      nullptr, 0, nullptr, page_colors},
     {"规范", "Typography", "11 个文本样式在 3 个层级 × 4 种材质下的样子。", "—",
      nullptr, 0, nullptr, page_typography},
-    {"规范", "Materials", "Liquid Glass 尺寸、滚动边缘与五档材质厚度。", "—",
+    {"规范", "Materials", "传统 vibrancy：五档模糊厚度与六个语义场景。", "—",
      nullptr, 0, nullptr, page_materials},
 };
 
