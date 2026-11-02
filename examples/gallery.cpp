@@ -2222,10 +2222,14 @@ void draw_nav(Ui& ui, App& a, const Rect& nav) {
                         Rect(rw.x + 8.0f, rw.y, rw.w - 16.0f, rw.h),
                         Style().font(13.0f).padding(36.0f)))
             a.page = r.page;
-        // 图标 50% / 选中 85%：系统 source list 的图标是"标签色的一档"，
-        // 用 25%（label3）会淡到看不出形状。
-        group_glyph(ui, r.group, rw.x + 28.0f, rw.cy(),
-                    active ? th.label : th.label2);
+        // 图标是**有色的**，不是灰的：Finder 的收藏、系统设置的面板图标都是
+        // 彩色 SF Symbol（而且大半是蓝的）。文字仍然走灰阶（label / label2），
+        // 只有图标带强调色 —— 这跟"整行变蓝"是两件事。
+        // 用满色。压 alpha 是错的：alpha 越低越往背景色上混，浅色主题还行，
+        // 深色主题会直接混成一块暗蓝（#0778CE），比背景还闷。选中与未选中靠
+        // 行底胶囊和文字字重区分，不靠图标明度。
+        (void)active;
+        group_glyph(ui, r.group, rw.x + 28.0f, rw.cy(), th.tint);
     }
     if (rows.empty())
         ui.muted_text("没有匹配的组件", Rect(list.x, list.y + 8.0f, list.w, 20.0f),
