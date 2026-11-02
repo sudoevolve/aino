@@ -164,6 +164,10 @@ struct Page {
     // 本页的模态浮层。必须在这里画、而不是在卡片里画：dialog / drawer 是立即
     // 绘制的，放进滚动容器会被视口裁掉，还会被后面的卡片盖住。
     void (*overlay)(Ui&, App&) = nullptr;
+    // 整页自定义排版。非空时跳过"示例卡片"那套（表头 + 代码块），整页交给它画。
+    // 色彩 / 材质 / 字阶这三页是设计规范板，不是控件示例 —— 套进卡片表头反而
+    // 变成"在一个框里再画一个框"。
+    void (*custom)(Ui&, App&, const Rect&) = nullptr;
 };
 
 // ---------------------------------------------------------------- 布局助手
@@ -1408,6 +1412,445 @@ t.rotate = -12.0f + 24.0f * k;)cpp",
 
 #define COUNT(a) int(sizeof(a) / sizeof((a)[0]))
 
+// =============================================================================
+//  规范页：色彩 / 材质 / 字阶
+//
+//  这三页不是"控件示例"，是设计系统的规范板 —— 所以走 Page::custom 整页自绘，
+//  不套示例卡片那套表头 + 代码块（那等于在一个框里再画一个框）。
+// =============================================================================
+
+// 一张色卡 = 上半「浅色外观」（白底）、下半「深色外观」（近黑底），同一个圆骑在
+// 中线上。Figma 的 macOS kit 就是这么摆的：一眼能看出同一个语义色在两种外观下
+// 的真实取值，而不是给两个色块让人自己去对。
+struct SwatchDef { const char* name; Color light; Color dark; };
+
+// sRGB 系统色（浅色外观 / 深色外观）。值和 aino.hpp 里 Theme::light/dark 的
+// accents 是同一套，改一处必须改另一处 —— 否则规范页会跟控件实际用色对不上。
+static const SwatchDef kAccentSwatches[] = {
+    {"Red",    Color::hex(0xFF383C), Color::hex(0xFF4245)},
+    {"Orange", Color::hex(0xFF8D28), Color::hex(0xFF9230)},
+    {"Yellow", Color::hex(0xFFCC00), Color::hex(0xFFD600)},
+    {"Green",  Color::hex(0x34C759), Color::hex(0x30D158)},
+    {"Mint",   Color::hex(0x00C8B3), Color::hex(0x00DAC3)},
+    {"Teal",   Color::hex(0x00C3D0), Color::hex(0x00D2E0)},
+    {"Cyan",   Color::hex(0x00C0E8), Color::hex(0x3CD3FE)},
+    {"Blue",   Color::hex(0x0088FF), Color::hex(0x0091FF)},
+    {"Indigo", Color::hex(0x6155F5), Color::hex(0x6D7CFF)},
+    {"Purple", Color::hex(0xCB30E0), Color::hex(0xDB34F2)},
+    {"Pink",   Color::hex(0xFF2D55), Color::hex(0xFF375F)},
+    {"Brown",  Color::hex(0xAC7F5E), Color::hex(0xB78A66)},
+    {"Gray",   Color::hex(0x8E8E93), Color::hex(0x98989F)},
+};
+
+// Vibrant：同一个语义色在白底 / 黑底上的变体。白底上要压深（否则糊成一片），
+// 黑底上要提亮（否则像块脏斑）—— 这就是 vibrancy 的物理来源。
+static const SwatchDef kVibrantSwatches[] = {
+    {"Red",    Color::hex(0xD50F12), Color::hex(0xFF7A7A)},
+    {"Orange", Color::hex(0xD56605), Color::hex(0xFFD166)},
+    {"Yellow", Color::hex(0xD6A300), Color::hex(0xFFFF46)},
+    {"Green",  Color::hex(0x07A02E), Color::hex(0x6DFF95)},
+    {"Mint",   Color::hex(0x009E8A), Color::hex(0x6BFFE8)},
+    {"Teal",   Color::hex(0x0094A0), Color::hex(0x5EFFFF)},
+    {"Cyan",   Color::hex(0x008CB0), Color::hex(0x78FFFF)},
+    {"Blue",   Color::hex(0x005AD2), Color::hex(0x3AC9FF)},
+    {"Indigo", Color::hex(0x3E32C8), Color::hex(0xA193FF)},
+    {"Purple", Color::hex(0x9A0EAC), Color::hex(0xFF76FF)},
+    {"Pink",   Color::hex(0xD9072F), Color::hex(0xFF7098)},
+    {"Brown",  Color::hex(0x825738), Color::hex(0xF1C5A1)},
+    {"Gray",   Color::hex(0x6E6E73), Color::hex(0xC7C7CC)},
+};
+
+// Fills / Text 的层级。alpha 用 0..255；浅色外观叠黑、深色外观叠白。
+static const unsigned char kLadderAlpha[] = {26, 20, 13, 8, 5};        // Fills：10/8/5/3/2%
+static const unsigned char kLabelAlpha[]  = {217, 128, 64, 26, 13};    // Text：85/50/25/10/5%
+static const char* kLadderName[] = {"Primary", "Secondary", "Tertiary", "Quaternary", "Quinary"};
+static const char* kTextName[]   = {"Primary", "Secondary", "Tertiary", "Quaternary", "Quinary",
+                                    "Inverted"};
+
+static void spec_tile_split(Ui& ui, const Rect& r) {
+    const float half = std::floor(r.h * 0.5f);
+    ui.fill_rect(Rect(r.x, r.y, r.w, half), Color(255, 255, 255), 0.0f);
+    ui.fill_rect(Rect(r.x, r.y + half, r.w, r.h - half), Color(0x1C, 0x1C, 0x1E), 0.0f);
+}
+
+// 圆骑中线：上半圆用浅色外观的取值，下半圆用深色外观的取值
+static void spec_circle(Ui& ui, const Rect& r, Color up, Color dn, float ratio) {
+    spec_tile_split(ui, r);
+    const float half = std::floor(r.h * 0.5f);
+    const float d = r.w * ratio;
+    ui.push_clip(Rect(r.x, r.y, r.w, half));
+    ui.fill_circle(r.cx(), r.y + half, d * 0.5f, up);
+    ui.pop_clip();
+    ui.push_clip(Rect(r.x, r.y + half, r.w, r.h - half));
+    ui.fill_circle(r.cx(), r.y + half, d * 0.5f, dn);
+    ui.pop_clip();
+    ui.stroke_rect(r, Color(0, 0, 0, 20), 0.0f, 1.0f);
+}
+
+// 上下两个完整的字形（不是一个字被切成两半 —— Figma 的 Text 卡就是这么摆的）
+static void spec_glyph(Ui& ui, const Rect& r, Color up, Color dn, const char* g) {
+    spec_tile_split(ui, r);
+    const float half = std::floor(r.h * 0.5f);
+    Style s;
+    s.font_size = half * 0.60f;
+    s.font_weight = 600;
+    s.align = aino::Align::Center;
+    s.valign = aino::VAlign::Middle;
+    ui.draw_text(g, Rect(r.x, r.y, r.w, half), up, s);
+    ui.draw_text(g, Rect(r.x, r.y + half, r.w, r.h - half), dn, s);
+    ui.stroke_rect(r, Color(0, 0, 0, 20), 0.0f, 1.0f);
+}
+
+void page_colors(Ui& ui, App& a, const Rect& area) {
+    (void)a;
+    const float PAD = 16.0f, GAP = 10.0f, SEC = 15.0f, NAME = 12.0f, SEG = 14.0f;
+    const float W = std::min(area.w, 1000.0f);
+    const float inner = W - PAD * 2.0f;
+
+    const float c13 = (inner - GAP * 12.0f) / 13.0f;
+    const float halfw = (inner - 22.0f) * 0.5f;
+    const float c5 = (halfw - GAP * 4.0f) / 5.0f;
+    const float c6 = (halfw - GAP * 5.0f) / 6.0f;
+    const float h5 = c5, h6 = c6;
+
+    const float row1 = SEC + 4.0f + NAME + 4.0f + c13 + SEG;      // 13 列
+    const float row2 = SEC + 4.0f + NAME + 4.0f + std::max(h5, h6) + SEG;
+    const float box_h = PAD * 2.0f + row1 * 2.0f + row2 * 2.0f;
+    const float sw_h  = 86.0f;
+    const float total = box_h + 12.0f + sw_h + 4.0f;
+
+    auto sc = ui.scroll(area, total);
+    (void)sc;
+    const float off = ui.scroll_y();
+
+    const Rect box(area.x, area.y - off, W, box_h);
+    ui.panel(box);
+
+    auto heading = [&](const char* t, float x, float y, float w) {
+        ui.muted_text(t, Rect(x, y, w, SEC), Style().left().semi_bold().font(11.0f));
+    };
+    auto names = [&](const SwatchDef* arr, int n, float x0, float y, float cw) {
+        for (int i = 0; i < n; ++i)
+            ui.muted_text(arr[i].name, Rect(x0 + float(i) * (cw + GAP), y, cw, NAME),
+                          Style().center().font(9.5f));
+    };
+
+    float y = box.y + PAD;
+
+    // ---- Accents ----
+    heading("Accents", box.x + PAD, y, 240.0f);
+    names(kAccentSwatches, 13, box.x + PAD, y + SEC + 4.0f, c13);
+    for (int i = 0; i < 13; ++i) {
+        const Rect r(box.x + PAD + float(i) * (c13 + GAP),
+                     y + SEC + 4.0f + NAME + 4.0f, c13, c13);
+        spec_circle(ui, r, kAccentSwatches[i].light, kAccentSwatches[i].dark, 0.62f);
+    }
+    y += row1;
+
+    // ---- Accents - Vibrant ----
+    heading("Accents - Vibrant", box.x + PAD, y, 240.0f);
+    names(kVibrantSwatches, 13, box.x + PAD, y + SEC + 4.0f, c13);
+    for (int i = 0; i < 13; ++i) {
+        const Rect r(box.x + PAD + float(i) * (c13 + GAP),
+                     y + SEC + 4.0f + NAME + 4.0f, c13, c13);
+        spec_circle(ui, r, kVibrantSwatches[i].light, kVibrantSwatches[i].dark, 0.62f);
+    }
+    y += row1;
+
+    // ---- Fills | Text ----
+    const float lx = box.x + PAD, rx = box.x + PAD + halfw + 22.0f;
+    heading("Fills", lx, y, halfw);
+    for (int i = 0; i < 5; ++i) {
+        ui.muted_text(kLadderName[i], Rect(lx + float(i) * (c5 + GAP), y + SEC + 4.0f, c5, NAME),
+                      Style().center().font(9.5f));
+        const Rect r(lx + float(i) * (c5 + GAP), y + SEC + 4.0f + NAME + 4.0f, c5, h5);
+        spec_circle(ui, r, Color(0, 0, 0, kLadderAlpha[i]), Color(255, 255, 255, kLadderAlpha[i]),
+                    0.66f);
+    }
+    heading("Text", rx, y, halfw);
+    for (int i = 0; i < 6; ++i) {
+        ui.muted_text(kTextName[i], Rect(rx + float(i) * (c6 + GAP), y + SEC + 4.0f, c6, NAME),
+                      Style().center().font(9.5f));
+        const Rect r(rx + float(i) * (c6 + GAP), y + SEC + 4.0f + NAME + 4.0f, c6, h6);
+        const Color up = (i == 5) ? Color(255, 255, 255) : Color(0, 0, 0, kLabelAlpha[i]);
+        const Color dn = (i == 5) ? Color(0, 0, 0) : Color(255, 255, 255, kLabelAlpha[i]);
+        spec_glyph(ui, r, up, dn, "A");
+    }
+    y += row2;
+
+    // ---- Fills - Vibrant | Text - Vibrant ----
+    heading("Fills - Vibrant", lx, y, halfw);
+    for (int i = 0; i < 5; ++i) {
+        ui.muted_text(kLadderName[i], Rect(lx + float(i) * (c5 + GAP), y + SEC + 4.0f, c5, NAME),
+                      Style().center().font(9.5f));
+        const Rect r(lx + float(i) * (c5 + GAP), y + SEC + 4.0f + NAME + 4.0f, c5, h5);
+        // vibrant 的填充更"透"：同一层级在白底上更深、黑底上更亮
+        const Color up(0, 0, 0, (unsigned char)std::min(255, int(kLadderAlpha[i]) + 6));
+        const Color dn(255, 255, 255, (unsigned char)std::min(255, int(kLadderAlpha[i]) + 10));
+        spec_circle(ui, r, up, dn, 0.66f);
+    }
+    heading("Text - Vibrant", rx, y, halfw);
+    for (int i = 0; i < 5; ++i) {
+        ui.muted_text(kLadderName[i], Rect(rx + float(i) * (c6 + GAP), y + SEC + 4.0f, c6, NAME),
+                      Style().center().font(9.5f));
+        const Rect r(rx + float(i) * (c6 + GAP), y + SEC + 4.0f + NAME + 4.0f, c6, h6);
+        spec_glyph(ui, r, Color(0, 0, 0, kLabelAlpha[i]), Color(255, 255, 255, kLabelAlpha[i]), "A");
+    }
+
+    // ---- 可拖用的 Swatch 组件 ----
+    const float sy = box.bottom() + 12.0f;
+    ui.muted_text("Swatch", Rect(area.x, sy, 240.0f, SEC), Style().left().semi_bold().font(11.0f));
+    const float sw = 56.0f;
+    const float sy2 = sy + SEC + 6.0f;
+    for (int i = 0; i < 4; ++i) {
+        const Rect r(area.x + float(i) * (sw + 14.0f), sy2, sw, sw);
+        ui.panel(r, Style().corner(10.0f));
+        const float d = sw * 0.46f;
+        const SwatchDef& s0 = (i == 0 || i == 1) ? kAccentSwatches[0] : kVibrantSwatches[0];
+        const Rect inner(r.x + (sw - d) * 0.5f, r.y + (sw - d) * 0.5f, d, d);
+        if (i == 0 || i == 2) spec_circle(ui, inner, s0.light, s0.dark, 0.66f);
+        else                  spec_glyph(ui, inner, s0.light, s0.dark, "A");
+    }
+}
+
+// =============================================================================
+//  规范页：字阶
+// =============================================================================
+// macOS 的 11 个文本样式。字号是 pt（= aino 的逻辑像素），这里按 TYPE_SCALE
+// 缩小展示 —— 34pt 的 LargeTitle 摆成全尺寸，一屏放不下四个矩阵，也失去了
+// "并排比较"的意义。缩小比例写在块标题里，不藏着。
+struct TypeStyleDef { const char* name; float size; int weight; };
+
+static const TypeStyleDef kTypeStyles[] = {
+    {"LargeTitle",  34.0f, 400},
+    {"Title1",      28.0f, 400},
+    {"Title2",      22.0f, 400},
+    {"Title3",      20.0f, 400},
+    {"Headline",    17.0f, 600},
+    {"Body",        17.0f, 400},
+    {"Callout",     16.0f, 400},
+    {"Subheadline", 15.0f, 400},
+    {"Footnote",    13.0f, 400},
+    {"Caption1",    12.0f, 400},
+    {"Caption2",    11.0f, 400},
+};
+
+static const char* kTypeCols[3] = {"Label Color", "Secondary Label Color", "Tertiary Label Color"};
+
+// tone: 0 = Light Opaque / 1 = Dark Opaque / 2 = Light Vibrant / 3 = Dark Vibrant
+static void type_block(Ui& ui, const Rect& box, const char* title, int tone) {
+    const float SCALE = 0.72f;
+    const bool dark = (tone == 1 || tone == 3);
+    const bool vib  = (tone >= 2);
+
+    ui.muted_text(title, Rect(box.x, box.y, box.w, 16.0f),
+                  Style().left().semi_bold().font(11.0f));
+
+    const Rect panel(box.x, box.y + 20.0f, box.w, box.h - 20.0f);
+
+    // 面：Opaque 是纯色，Vibrant 是一层带色的材质（用渐变近似 —— 真的 vibrancy
+    // 要把背后内容取样再混色，那是 window server 的事）
+    if (vib) {
+        if (dark) {
+            ui.fill_rect_grad(panel, Color::hex(0x1B2440), Color::hex(0x0C0F16), 10.0f);
+        } else {
+            ui.fill_rect_grad(panel, Color::hex(0xF3E9E0), Color::hex(0xE6E6F2), 10.0f);
+        }
+    } else {
+        ui.fill_rect(panel, dark ? Color::hex(0x1C1C1E) : Color::hex(0xFFFFFF), 10.0f);
+    }
+    ui.stroke_rect(panel, dark ? Color(255, 255, 255, 24) : Color(0, 0, 0, 20), 10.0f, 1.0f);
+
+    const unsigned char alpha[3] = {217, 128, 64};
+    const float colw = (panel.w - 24.0f) * (1.0f / 3.0f);
+
+    for (int c = 0; c < 3; ++c) {
+        const float cx = panel.x + 12.0f + colw * float(c);
+        if (c > 0)
+            ui.fill_rect(Rect(cx - 8.0f, panel.y + 6.0f, 1.0f, panel.h - 12.0f),
+                         dark ? Color(255, 255, 255, 24) : Color(0, 0, 0, 20), 0.0f);
+        ui.draw_text(kTypeCols[c], Rect(cx, panel.y + 8.0f, colw - 8.0f, 12.0f),
+                     dark ? Color(255, 255, 255, 128) : Color(0, 0, 0, 128),
+                     Style().left().font(8.5f));
+
+        const Color ink = dark ? Color(255, 255, 255, alpha[c]) : Color(0, 0, 0, alpha[c]);
+        float y = panel.y + 26.0f;
+        for (const TypeStyleDef& ts : kTypeStyles) {
+            const float fs = ts.size * SCALE;
+            for (int w = 0; w < 2; ++w) {                 // Regular / Semibold
+                Style s;
+                s.font_size = fs;
+                s.font_weight = w == 0 ? ts.weight : (ts.weight >= 600 ? 700 : 600);
+                s.align = aino::Align::Left;
+                s.valign = aino::VAlign::Top;
+                ui.draw_text(ts.name, Rect(cx, y, colw - 10.0f, fs * 1.22f), ink, s);
+                y += std::floor(fs * 1.20f);
+            }
+            y += 5.0f;
+        }
+    }
+}
+
+void page_typography(Ui& ui, App& a, const Rect& area) {
+    (void)a;
+    const float GAP = 22.0f;
+    const float bw = (area.w - GAP) * 0.5f;
+
+    // 块高按样式表算：每行两个字重 + 行间 5
+    float block_h = 20.0f + 26.0f;          // 块标题 + 列头
+    for (const TypeStyleDef& ts : kTypeStyles)
+        block_h += std::floor(ts.size * 0.72f * 1.20f) * 2.0f + 5.0f;
+    block_h += 14.0f;
+
+    const float total = block_h * 2.0f + GAP + 8.0f;
+    auto sc = ui.scroll(area, total);
+    (void)sc;
+    const float off = ui.scroll_y();
+
+    const char* titles[4] = {
+        "Text Styles - Left Aligned - Light Opaque",
+        "Text Styles - Left Aligned - Dark Opaque",
+        "Text Styles - Left Aligned - Light Vibrant",
+        "Text Styles - Left Aligned - Dark Vibrant",
+    };
+    for (int i = 0; i < 4; ++i) {
+        const float x = area.x + (i % 2) * (bw + GAP);
+        const float y = area.y - off + (i / 2) * (block_h + GAP);
+        type_block(ui, Rect(x, y, bw, block_h), titles[i], i);
+    }
+}
+
+// =============================================================================
+//  规范页：材质
+// =============================================================================
+// macOS 26 起的 Liquid Glass 是"半透明面 + 高光边 + 背后内容模糊"。aino 没有
+// 后台模糊（那要 window server 配合），所以这里用"半透明填充 + 一条 1px 高光
+// + 顶部渐亮"近似 —— 形状、层级、明度关系都对，只是背后的东西没糊。
+struct MaterialDef { const char* name; float alpha; };
+
+static const MaterialDef kMaterialsLight[] = {
+    {"Ultra Thick", 0.92f}, {"Thick", 0.78f}, {"Medium", 0.62f},
+    {"Thin", 0.46f}, {"Ultra Thin", 0.30f},
+};
+
+// 一块玻璃：半透明面 + 1px 高光边 + 顶部渐亮（模拟折射）
+static void glass_panel(Ui& ui, const Rect& r, bool dark, float alpha, float radius) {
+    const Color face = dark ? Color(30, 30, 32, (unsigned char)(alpha * 255.0f))
+                            : Color(255, 255, 255, (unsigned char)(alpha * 255.0f));
+    ui.fill_rect(r, face, radius);
+    ui.fill_rect_grad(Rect(r.x + 1.0f, r.y + 1.0f, r.w - 2.0f, r.h * 0.5f),
+                      dark ? Color(255, 255, 255, 16) : Color(255, 255, 255, 120),
+                      Color(255, 255, 255, 0), radius);
+    ui.stroke_rect(r, dark ? Color(255, 255, 255, 48) : Color(255, 255, 255, 190),
+                   radius, 1.0f);
+}
+
+// 一排玻璃药丸，尺寸三档（Small / Medium / Large）。
+// 标签画在玻璃背后那块彩色台上，所以用白色 —— 灰字在渐变上会糊掉。
+static void glass_pill_row(Ui& ui, const Rect& box, const char* label, float h, bool dark) {
+    ui.draw_text(label, Rect(box.x, box.y, box.w, 14.0f), Color(255, 255, 255, 180),
+                 Style().left().font(9.5f));
+    const float y = box.y + 18.0f;
+    float x = box.x;
+    for (int i = 0; i < 5; ++i) {
+        const float w = h * (1.9f - float(i) * 0.12f);
+        const Rect p(x, y, w, h);
+        glass_panel(ui, p, dark, 0.34f, h * 0.5f);
+        ui.fill_circle(p.x + h * 0.5f, p.cy(), h * 0.16f,
+                       dark ? Color(255, 255, 255, 150) : Color(0, 0, 0, 90));
+        x += w + 8.0f;
+    }
+}
+
+void page_materials(Ui& ui, App& a, const Rect& area) {
+    (void)a;
+    const float GAP = 22.0f;
+    const float lw = 300.0f;
+    const float rw = area.w - lw - GAP;
+
+    const float row1 = 236.0f;          // 上排：玻璃 + 滚动边缘
+    const float row2 = 232.0f;          // 下排：材质层级
+    const float total = row1 + GAP + row2 + 10.0f;
+
+    auto sc = ui.scroll(area, total);
+    (void)sc;
+    const float off = ui.scroll_y();
+    const float y0 = area.y - off;
+
+    // ---------------- 左上：Liquid Glass 三档尺寸 ----------------
+    {
+        const Rect box(area.x, y0, lw, row1);
+        ui.panel(box, Style().corner(12.0f));
+        ui.muted_text("Liquid Glass", Rect(box.x + 14.0f, box.y + 12.0f, box.w - 28.0f, 14.0f),
+                      Style().left().semi_bold().font(11.0f));
+        // 玻璃必须放在**有内容的地方**才看得见：34% 的白叠在纯白面板上等于没画。
+        const Rect stage(box.x + 12.0f, box.y + 32.0f, box.w - 24.0f, box.h - 44.0f);
+        ui.fill_rect_grad(stage, Color::hex(0x2E5C8A), Color::hex(0xD96B4A), 8.0f);
+        ui.push_clip(stage);
+        glass_pill_row(ui, Rect(stage.x + 10.0f, stage.y + 8.0f, stage.w - 20.0f, 46.0f),
+                       "Small", 15.0f, false);
+        glass_pill_row(ui, Rect(stage.x + 10.0f, stage.y + 66.0f, stage.w - 20.0f, 46.0f),
+                       "Medium", 25.0f, false);
+        glass_pill_row(ui, Rect(stage.x + 10.0f, stage.y + 126.0f, stage.w - 20.0f, 46.0f),
+                       "Large", 36.0f, false);
+        ui.pop_clip();
+    }
+
+    // ---------------- 右上：Scroll Edge Effect ----------------
+    {
+        const Rect box(area.x + lw + GAP, y0, rw, row1);
+        ui.panel(box, Style().corner(12.0f));
+        ui.muted_text("Scroll Edge Effect", Rect(box.x + 14.0f, box.y + 12.0f, box.w - 28.0f, 14.0f),
+                      Style().left().semi_bold().font(11.0f));
+
+        // 内容滚到边缘时，靠近边缘的那一条会被"吃掉" —— 不是一条硬线，而是
+        // 从透明到背景色的连续过渡。左：Soft（长过渡），右：Hard（短过渡）。
+        const Rect a1(box.x + 14.0f, box.y + 34.0f, (box.w - 42.0f) * 0.5f, row1 - 60.0f);
+        const Rect a2(a1.right() + 14.0f, a1.y, a1.w, a1.h);
+        for (int k = 0; k < 2; ++k) {
+            const Rect r = k == 0 ? a1 : a2;
+            ui.fill_rect(r, ui.theme().fill5, 8.0f);
+            // 假内容：几条横线，让"边缘吃掉"看得见
+            for (int i = 0; i < 7; ++i)
+                ui.fill_rect(Rect(r.x + 12.0f, r.y + 14.0f + float(i) * 20.0f, r.w - 24.0f, 8.0f),
+                             ui.theme().label4, 4.0f);
+            const float soft = (k == 0) ? 0.30f : 0.12f;
+            const Color bgc = ui.theme().window_bg, clear = bgc.with_alpha(0);
+            ui.fill_rect_grad(Rect(r.x, r.y, r.w, r.h * soft), bgc, clear, 8.0f);
+            ui.fill_rect_grad(Rect(r.x, r.bottom() - r.h * soft, r.w, r.h * soft),
+                              clear, bgc, 8.0f);
+            ui.stroke_rect(r, ui.theme().separator, 8.0f, 1.0f);
+            ui.muted_text(k == 0 ? "Soft" : "Hard", Rect(r.x, r.bottom() + 6.0f, r.w, 12.0f),
+                          Style().center().font(9.5f));
+        }
+    }
+
+    // ---------------- 下排：材质层级 ----------------
+    {
+        const Rect box(area.x, y0 + row1 + GAP, area.w, row2);
+        ui.panel(box, Style().corner(12.0f));
+        ui.muted_text("Materials", Rect(box.x + 14.0f, box.y + 12.0f, box.w - 28.0f, 14.0f),
+                      Style().left().semi_bold().font(11.0f));
+
+        const float cw = (box.w - 28.0f - 16.0f * 4.0f) / 5.0f;
+        for (int i = 0; i < 5; ++i) {
+            const Rect cell(box.x + 14.0f + float(i) * (cw + 16.0f), box.y + 36.0f,
+                            cw, row2 - 56.0f);
+            // 背景：一块彩色渐变，材质叠在上面才看得出"厚/薄"
+            ui.fill_rect_grad(cell, Color::hex(0x2B4C7E), Color::hex(0xC96B4A), 10.0f);
+            ui.fill_circle(cell.x + cw * 0.30f, cell.y + cell.h * 0.34f, cw * 0.22f,
+                           Color(255, 214, 10, 220));
+            ui.fill_circle(cell.x + cw * 0.72f, cell.y + cell.h * 0.70f, cw * 0.26f,
+                           Color(255, 64, 120, 220));
+            glass_panel(ui, Rect(cell.x + 10.0f, cell.y + 10.0f, cell.w - 20.0f, cell.h - 20.0f),
+                        false, kMaterialsLight[i].alpha, 8.0f);
+            ui.draw_text(kMaterialsLight[i].name,
+                         Rect(cell.x + 10.0f, cell.bottom() - 26.0f, cell.w - 20.0f, 14.0f),
+                         Color(28, 28, 30, 220), Style().center().font(9.5f));
+        }
+    }
+}
+
 const Page kPages[] = {
     {"入门", "概览", "库的定位、结构与实测数据。", "—", nullptr, 0},
     {"基础", "Button", "触发一个动作。六种语义变体，统一 24 高度（Medium 档）。", "NSButton",
@@ -1498,6 +1941,13 @@ const Page kPages[] = {
      kTransform, COUNT(kTransform)},
     {"图形与动效", "Tween", "补间与缓动。", "—",
      kTween, COUNT(kTween)},
+    // 规范页：不是控件示例，是设计系统的取值表（整页自绘，见 Page::custom）
+    {"规范", "Colors", "语义色、填充层级与文本层级在两种外观下的取值。", "—",
+     nullptr, 0, nullptr, page_colors},
+    {"规范", "Typography", "11 个文本样式在 3 个层级 × 4 种材质下的样子。", "—",
+     nullptr, 0, nullptr, page_typography},
+    {"规范", "Materials", "Liquid Glass 尺寸、滚动边缘与五档材质厚度。", "—",
+     nullptr, 0, nullptr, page_materials},
 };
 
 const int kPageCount = COUNT(kPages);
@@ -1890,6 +2340,7 @@ void draw_page(Ui& ui, App& a, const Rect& area) {
         draw_overview(ui, a, content);
         return;
     }
+    if (p.custom) { p.custom(ui, a, content); return; }
 
     // 上一帧点过的表头在这里生效 —— 必须在算高度之前。
     if (a.toggle_pending >= 0) {
