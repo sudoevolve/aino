@@ -259,7 +259,8 @@ float h = ui.text_height(long_doc, 700.0f, aino::Style().wrap_text());
 | 数值、路径、版本号、行内代码 | `code_text` |
 | 多行代码、源码展示 | `code_block`（行号 + 着色，高度用 `code_block_height`） |
 
-需要**底 + 框 + 内边距**的文本块（如提示条）→ 用 `alert`；
+需要**符号 + 标题 + 说明**的提示（macOS 的 inline warning）→ 用 `alert`
+（默认不铺底，只有符号和文字；要面得自己给 `bg`）；
 需要**可点击**的文本 → 用 `Style().ghost()` 或 `Style().link()` 的 `button`。
 ---
 

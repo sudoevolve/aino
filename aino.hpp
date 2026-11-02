@@ -2935,6 +2935,11 @@ void cocoa_destroy(Window* self);
 // =============================================================================
 //  8.4  主题与图标
 // =============================================================================
+namespace detail {
+// alert 的内边距：绘制与 alert_height 必须读同一个数，否则折行宽度对不上。
+inline constexpr float kAlertPad = 12.0f;
+} // namespace detail
+
 inline Theme Theme::light() {
     Theme t;
     // ---- 标签 ----
@@ -4479,9 +4484,9 @@ inline float Ui::text_height(const std::string& text, float width, const Style& 
 inline float Ui::alert_height(const std::string& title, const std::string& description,
                               float width, const Style& st) const {
     const float fs  = st.font_size > 0.0f ? st.font_size : impl->theme.font_size;
-    const float pad = st.pad_x >= 0.0f ? st.pad_x : 14.0f;
-    const float d   = fs + 8.0f;                             // 图标直径（见 alert 里的自绘）
-    const float tw  = std::max(width - pad * 2.0f - d - 10.0f, 1.0f);
+    const float pad = st.pad_x >= 0.0f ? st.pad_x : detail::kAlertPad;
+    const float d   = fs + 3.0f;                             // 符号直径（见 alert 里的自绘）
+    const float tw  = std::max(width - pad * 2.0f - d - 9.0f, 1.0f);
     const float lh  = line_height(fs);
     Style ds = st;
     ds.font_size = fs;
@@ -5278,11 +5283,15 @@ inline void Ui::code_block(const std::string& code, const Rect& box, const Style
 
     const float fs   = st.font_size > 0.0f ? st.font_size : 12.5f;
     const float lh   = std::max(fs * 1.62f, 15.0f);
-    const float rad  = st.radius >= 0.0f ? st.radius : 6.0f;
-    // macOS 的源码/文本块是"凹陷面"：比背景深一档的半透明黑，**没有描边**。
-    // 一圈 1px 边框是 Web 卡片语言，macOS 用明度差分层。
+    const float rad  = st.radius >= 0.0f ? st.radius : 8.0f;
+    // macOS 的源码/文本块是"凹陷面"：比背景**暗**一档、没有描边。一圈 1px 边框
+    // 是 Web 卡片语言，macOS 用明度差分层。
+    // 注意暗色下也要压暗（叠黑），不是叠白 —— 叠白会让它比背景更亮，看起来像
+    // 又一张卡片浮在 Group Box 上，整页就成了"卡片套卡片"。
+    // 暗色的窗口底已经是 #1E1E1E，留给"更暗"的空间只有几级：#1E 上叠 10% 黑只差
+    // 3 级，等于没画。所以暗色压到 25%（#1E → #16，差 8 级），浅色仍是 3%。
     const Color bg   = !st.bg.is_none() ? st.bg
-                     : (th.window_bg.luminance() < 0.5f ? Color(255, 255, 255, 7) : Color(0, 0, 0, 7));
+                     : (th.window_bg.luminance() < 0.5f ? Color(0, 0, 0, 64) : Color(0, 0, 0, 8));
     const detail::CodeColors& cc = detail::code_colors(th);
 
     fill_rect(box, bg, rad);
@@ -7043,41 +7052,71 @@ inline void Ui::spinner(const Rect& box, const Style& st) {
     detail::raster_ring_tail(*impl->canvas, cx, cy, rad, lw, arc, ang, 0.14f);
 }
 
-// 提示条：图标 + 标题 + 描述。variant = Destructive 时图标/标题转破坏色。
+// 提示条：符号 + 标题 + 描述。variant = Destructive 时符号转破坏色。
+//
+// macOS 里**没有**"整块底色的提示条"这种东西。Finder 的删除警告、系统设置的
+// 空间不足提示，都是"一枚符号 + 两行文字"直接贴在版面上：没有面、没有边、没有
+// 圆角卡片。之前那版画的是一块 3% 填充的圆角矩形，在已经有一层 Group Box 的
+// 容器里就是"卡片套卡片"，一眼后台管理系统。所以默认不铺底 —— 只有调用方
+// 显式给 bg，或者要一个安静的次级面（Secondary）时才画。
+//
+// 同理，标题**不染红**：NSAlert 的 messageText 永远是 label 色，红色只出现在
+// 符号和破坏性按钮上。整行红字是 Web 的 alert-danger。
 inline void Ui::alert(const std::string& title, const std::string& description, const Rect& box, const Style& st) {
+    // 不铺底时整块区域没有 fill_rect 可登记，测量阶段会只剩文字的包围盒 —— 两条
+    // 提示条叠出来的高度会比实际矮一大截，第二个的描述被裁掉。所以自己登记。
+    if (impl->measure_on) { impl->measure_add(box); return; }
+
     const Theme& th = impl->theme;
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius;
+    const float rad = st.radius >= 0.0f ? st.radius : 10.0f;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
-    const float pad = st.pad_x >= 0.0f ? st.pad_x : 14.0f;
+    const float pad = st.pad_x >= 0.0f ? st.pad_x : detail::kAlertPad;
 
     const bool danger = (st.variant == Style::Destructive);
     const bool quiet  = (st.variant == Style::Secondary);
 
-    // macOS 没有"红框警告条"这种 Web 组件：告警靠**红色符号 + 红色标题**表达，
-    // 面本身保持中性（一层 3% 标签色），描边一律不画 —— 一圈红边是最刺眼的 Web 味。
-    Color bg = !st.bg.is_none() ? st.bg : (quiet ? th.fill3 : th.fill4);
-    Color bd = !st.border_color.is_none() ? st.border_color : Color::none();
-    const Color head_c = !st.fg.is_none() ? st.fg : (danger ? th.destructive : th.foreground);
+    Color bg = st.bg;
+    if (bg.is_none() && quiet) bg = th.fill4;
+    Color head_c = !st.fg.is_none() ? st.fg : th.foreground;
     Color icon_c = danger ? th.destructive : th.label2;
     if (st.disabled) {
-        if (bg.a > 0) bg.a = uint8_t(float(bg.a) * 0.45f);
-        bd.a = uint8_t(float(bd.a) * 0.45f);
+        bg.a     = uint8_t(float(bg.a) * 0.45f);
+        head_c.a = uint8_t(float(head_c.a) * 0.45f);
+        icon_c.a = uint8_t(float(icon_c.a) * 0.45f);
     }
 
-    fill_rect(box, bg, rad);
-    if (bd.a > 0) stroke_rect(box, bd, rad, st.border_width >= 0.0f ? st.border_width : 1.0f);
+    if (bg.a > 0) fill_rect(box, bg, rad);
 
-    // 图标：实心圆里的感叹号（自绘 —— 中文字体不一定有 ⓘ / ⚠ 这些字形）
-    const float d = std::min(fs + 8.0f, std::max(12.0f, box.h - pad * 2.0f + 6.0f));
-    const Rect ic = Rect::centered(box.x + pad + d * 0.5f, box.y + pad + d * 0.5f, d, d);
-    fill_circle(ic.cx(), ic.cy(), d * 0.5f, icon_c);
-    const Color on_icon = (icon_c.luminance() > 0.55f) ? Color(0x18, 0x18, 0x1B) : Color(255, 255, 255);
-    draw_line(ic.cx(), ic.cy() - d * 0.20f, ic.cx(), ic.cy() + d * 0.06f, on_icon, std::max(1.4f, d * 0.14f));
-    fill_circle(ic.cx(), ic.cy() + d * 0.22f, std::max(0.9f, d * 0.085f), on_icon);
-
-    const float tx = ic.right() + 10.0f;
-    const float tw = std::max(box.right() - pad - tx, 1.0f);
+    // 符号：SF Symbol 的 info.circle / exclamationmark.triangle —— 一圈 1.4px 描边
+    // 加中间的 i / !。旧版是"饱和色实心圆片里挖白字"，那是 Bootstrap 的 alert
+    // 图标，形状和配色都不是 mac 的。中文字体不一定有 ⓘ / ⚠ 字形，所以自绘。
+    const float d = std::min(fs + 3.0f, std::max(12.0f, box.h - pad * 2.0f));
     const float lh = line_height(fs);
+    const float icy = box.y + pad + lh * 0.5f;           // 与标题首行中心对齐
+    const float icx = box.x + pad + d * 0.5f;
+    const float lw  = std::max(1.2f, d * 0.093f);
+    const float in  = 0.78f;                              // 字形线宽
+    if (impl->canvas) {
+        if (danger) {
+            // 三角：三条圆头线围合，顶点朝上（SF Symbol exclamationmark.triangle）
+            const float hw = d * 0.46f, top = icy - d * 0.44f, bot = icy + d * 0.30f;
+            draw_line(icx, top, icx - hw, bot, icon_c, lw);
+            draw_line(icx, top, icx + hw, bot, icon_c, lw);
+            draw_line(icx - hw, bot, icx + hw, bot, icon_c, lw);
+            draw_line(icx, icy - d * 0.13f, icx, icy + d * 0.06f, icon_c, lw * in);
+            fill_circle(icx, icy + d * 0.20f, std::max(0.75f, d * 0.055f), icon_c);
+        } else {
+            // 整圈描边要一次成形（拼线段会在接缝叠色），走 raster_arc 到像素层
+            detail::raster_arc(*impl->canvas, impl->px(icx), impl->px(icy),
+                               impl->px(d * 0.5f - lw * 0.5f), impl->px(lw),
+                               icon_c, 0.0f, 0.0f, 1.0f);
+            fill_circle(icx, icy - d * 0.20f, std::max(0.75f, d * 0.055f), icon_c);
+            draw_line(icx, icy - d * 0.075f, icx, icy + d * 0.21f, icon_c, lw * in);
+        }
+    }
+
+    const float tx = icx + d * 0.5f + 9.0f;
+    const float tw = std::max(box.right() - pad - tx, 1.0f);
 
     if (description.empty()) {
         Style ts;

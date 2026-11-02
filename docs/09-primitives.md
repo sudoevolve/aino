@@ -112,8 +112,8 @@ ui.draw_text("居中文字", {24, 24, 200, 40}, aino::Color::hex(0x09090B),
              aino::Style().center().middle());
 ```
 
-> 想要「底 + 框 + 内边距」就用 `label` / `code_text` / `alert`——
-> 它们内部都是 `draw_text` 加一层装饰。
+> 想要一层底就用 `label` / `code_text`——它们内部是 `draw_text` 加一层装饰。
+> `alert` 是例外：macOS 的 inline 提示**不铺底**，只有一枚符号 + 两行文字。
 
 ---
 

@@ -17,9 +17,8 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
 import verify_render as vr            # noqa: E402  抓图 / 找窗口
-from verify_gallery import Shot, save_png, client_scale   # noqa: E402
+from verify_gallery import Shot, save_png, client_scale, EXE   # noqa: E402
 
-EXE = os.path.join(ROOT, "build", "aino_gallery.exe")
 OUT_DIR = os.path.join(ROOT, "build", "shots")
 
 

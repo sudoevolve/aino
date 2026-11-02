@@ -463,13 +463,33 @@ int main() {
 
         h.fill_all(LT.window_bg);
         h.step([&]() { h.ui.alert("T", "D", box, Style()); return true; });
-        // alert 面是 8% 的标签色（fill4），不铺卡片色、也不画红框
-        check(h.px_is(100, 70, LT.fill4.over(LT.window_bg)),
-              "alert 面板是 8% 淡底（不铺卡片色）");
-        // 图标是**中性 50%**（label2）实心圆 + 白色感叹号，不是纯黑 —— 告警的
-        // 重音交给红色标题/红色符号，面本身保持中性（macOS 不画红框也不会给图标上黑）。
-        check(h.px_is(20, 20, LT.label2.over(LT.fill4.over(LT.window_bg))),
-              "alert 左上角有实心感叹号图标（中性 50%）");
+        // macOS 没有"整块底色的提示条"：Finder / 系统设置里的警告就是一枚符号 +
+        // 两行文字直接贴在版面上。铺底会让它在一层 Group Box 里变成"卡片套卡片"。
+        check(h.px_is(100, 70, LT.window_bg), "alert 默认不铺底（与窗口底同色）");
+        // 符号是 SF Symbol 那种**描边**（info.circle / exclamationmark.triangle），
+        // 不是"饱和色实心圆片里挖白字"—— 后者是 Bootstrap 的 alert 图标。
+        auto icon_ink = [&]() {
+            int n = 0;
+            for (int y = 10; y < 30; ++y)
+                for (int x = 11; x < 29; ++x)
+                    if (h.px(x, y).luminance() < 0.75f) ++n;
+            return n;
+        };
+        const int ink = icon_ink();
+        check(ink > 12, "alert 左上角画出了符号（中性 50%）");
+        check(ink < 110, "符号是描边环/三角，不是实心圆片");
+
+        h.fill_all(LT.window_bg);
+        Style bad;
+        bad.variant = Style::Destructive;
+        h.step([&]() { h.ui.alert("T", "D", box, bad); return true; });
+        bool red_sym = false;
+        for (int y = 10; y < 30 && !red_sym; ++y)
+            for (int x = 11; x < 29; ++x) {
+                const Color p = h.px(x, y);
+                if (p.r > 180 && p.g < 110) { red_sym = true; break; }
+            }
+        check(red_sym, "Destructive 的符号是系统红（标题不染红）");
 
         h.blank(0, 0, int(W), int(H));
         const Rect sp(0, 0, 40, 40);

@@ -284,7 +284,8 @@ static void test_measured_height() {
 
     // --- 4c. alert_height 给的高度必须刚好放得下正文 ---
     {
-        const float fs = 14.0f, pad = 14.0f, d = fs + 8.0f;
+        // 几何必须跟实现同源：内边距读 detail::kAlertPad，符号直径是 fs + 3
+        const float fs = 14.0f, pad = aino::detail::kAlertPad, d = fs + 3.0f;
         const std::string title = "删除后无法恢复";
         const std::string body =
             "这条提示条的正文会按宽度自动折行，所以高度必须能量出来 —— "
@@ -295,8 +296,8 @@ static void test_measured_height() {
             h.ui.fill_rect(Rect(0, 0, W, H), Color(255, 255, 255), 0.0f);
             const Rect box(40.0f, 40.0f, 420.0f, box_h);
             h.ui.alert(title, body, box);
-            const int tx = int(box.x + pad + d + 10.0f);
-            const int tw = int(box.w - pad * 2.0f - d - 10.0f);
+            const int tx = int(box.x + pad + d + 9.0f);
+            const int tw = int(box.w - pad * 2.0f - d - 9.0f);
             int last = -1;
             for (int y = int(box.y); y < int(box.bottom()); ++y) {
                 for (int x = tx; x < tx + tw; ++x) {

@@ -107,30 +107,45 @@ ui.spinner(box, aino::Style().background(aino::Color::hex(0x16A34A)));   // 绿�
 
 ---
 
-## 3. `alert` —— 提示块
+## 3. `alert` —— 提示条
 
 | 项 | 默认值 |
 |---|---|
 | 返回 | 无 |
-| 底色 | `st.bg` → 否则 `theme.card`；`variant == Secondary` 时用 `theme.muted` |
-| 描边 | `theme.border` 1px；`variant == Destructive` 时用 `destructive` 45% alpha |
-| 圆角 | `theme.radius`（8） |
-| `pad_x` | **14**（同时用于垂直内边距） |
+| 底色 | **不铺底**（见下）；`st.bg` 显式给了才画；`variant == Secondary` 时用 `theme.fill4` |
+| 描边 | **无**（macOS 不用边框分层） |
+| 圆角 | 10（只在铺底时可见） |
+| `pad_x` | **12**（同时用于垂直内边距） |
 | 字号 | `theme.font_size` |
-| 图标 | 自绘实心圆 + 感叹号（**不依赖字体字形**） |
-| 标题 | 600 字重，色 `foreground`；Destructive 时用 `destructive` |
+| 符号 | 自绘 SF Symbol 风格**描边**：`info.circle`（中性 50%）/ `exclamationmark.triangle`（系统红） |
+| 标题 | 600 字重，色 `foreground`（**不因 Destructive 染红**） |
 | 描述 | 400 字重，色 `muted_foreground`，**自动折行** |
 
-**生效的属性**：`bg` `fg` `border_color` `border_width` `radius` `pad_x` `font_size`
+**生效的属性**：`bg` `fg` `radius` `pad_x` `font_size`
 `variant`（`Default` / `Secondary` / `Destructive`）`disabled`
+
+### 为什么默认不铺底
+
+macOS 没有「整块底色的提示条」这种控件。Finder 的删除警告、系统设置里的空间不足
+提示，都是**一枚符号 + 两行文字**直接贴在版面上：没有面、没有边、没有圆角卡片。
+
+铺一层 3% 的底，在已经有一层 Group Box 的容器里就变成「卡片套卡片」——整页一眼
+后台管理系统。所以默认 `bg = none`，要面得自己给。
+
+同理，标题**不染红**：`NSAlert` 的 `messageText` 永远是 label 色，红色只出现在符号
+和破坏性按钮上。整行红字是 Web 的 `alert-danger`。
 
 ### 三个变体
 
 ```cpp
-ui.alert("提示", "默认样式，卡片底 + 普通边框", box);
-ui.alert("提示", "次要样式，灰底无强调",        box, aino::Style().secondary());
-ui.alert("错误", "危险样式，红图标 + 红边框",   box, aino::Style().destructive());
+ui.alert("提示", "默认：只有符号和文字，没有任何面",          box);
+ui.alert("提示", "次要：2% 淡底（少数需要分块的地方才用）",   box, aino::Style().secondary());
+ui.alert("错误", "危险：符号转系统红，标题仍是 label 色",      box, aino::Style().destructive());
 ```
+
+符号是自绘的：`info.circle` 是一圈 1.4px 描边 + 中间的 i，`exclamationmark.triangle`
+是一圈描边三角 + 感叹号。**不是**「饱和色实心圆片里挖白字」——那是 Bootstrap 的
+alert 图标，形状和配色都不是 mac 的。
 
 ### 高度必须量
 

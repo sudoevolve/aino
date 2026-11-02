@@ -439,7 +439,7 @@ def move_probe(exe=GALLERY, dur=3.0, limit=70.0, tries=2, ratio_min=4.0):
 
 PROBES = (
     ("layoutprobe",      "通过 27 项，失败 0 项",        "Stack 布局计算"),
-    ("newcomp_probe",    "85 passed, 0 failed",           "新增组件行为 + 像素"),
+    ("newcomp_probe",    "87 passed, 0 failed",           "新增组件行为 + 像素"),
     ("raster_equiv",     "通过 1602 项，失败 0 项",        "光栅化 vs 参考实现"),
     ("shadow_text_probe", "通过 24 项，失败 0 项",         "阴影衰减 + 文本换行/裁剪/量高"),
     ("arc_probe",        "通过 10 项，失败 0 项",          "圆弧无接缝 + 渐变 + 端帽"),
