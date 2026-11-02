@@ -1027,8 +1027,9 @@ public:
     MenuPick menubar(const std::vector<std::string>& labels,
                      const std::vector<std::vector<std::string>>& items,
                      const Rect& box, const Style& st = Style());
-    // 模态框：打开时铺满窗口的遮罩 + box 处的面板，返回"本帧是否处于打开态"。
-    // 要在遮罩之上画自己的按钮，就紧接着 dialog() 之后画（此时已在遮罩之上）。
+    // 模态面板：box 处一块浮起的面（r10 + Primary 投影，**不铺整屏黑幕** ——
+    // macOS 的模态只是窗口失去焦点，不会被压暗），返回"本帧是否处于打开态"。
+    // 自己的按钮紧接着 dialog() 之后画即可，层级由 gate_claim 保证在面板之上。
     bool dialog(const std::string& title, const std::string& body, bool* open,
                 const Rect& box, const Style& st = Style());
     // 轻提示条（通常自己摆在右下角；生命周期由调用方用 bool 控制）
@@ -5351,16 +5352,19 @@ inline void Ui::code_block(const std::string& code, const Rect& box, const Style
 inline void Ui::panel(const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
     const Color bg = !st.bg.is_none() ? st.bg : th.card;
-    const Color bd = !st.border_color.is_none() ? st.border_color : th.separator;
-    // macOS 的 Group Box 是**一圈 1px 细线 + r12，内部几乎不铺底**（Figma 的
-    // Group Box 符号：r12、#00000008 再乘 50% 不透明度 ≈ 1.5%）。Web 那种
-    // "白卡片 + 灰背景 + 阴影"在 mac 里根本不存在 —— 之前每个示例块都套
-    // 一层描边白卡，整页因此像后台管理系统。
+    // macOS 的 Group Box 是**一层填充，没有描边**（Figma `Group Box`：r12、
+    // #00000008 再乘 50% 不透明度，图层里没有任何 stroke）。一圈 1px 线是
+    // Web 卡片语汇 —— 系统的分组靠"面比底深一档"分层，不靠画框。
+    // 要框得显式给 border_color，这里不再默认描边。
+    const Color bd = st.border_color;
     const float bw = st.border_width >= 0.0f ? st.border_width : 1.0f;
     const float rad = st.radius >= 0.0f ? st.radius : th.radius_xl;
+    // 填充取 Fills - Opaque/Tertiary（5%）：kit 的 Group Box 本身是 3%@50%
+    // ≈1.5%，在白底上等于看不见；而示例卡片是"分组容器"，对应系统里的
+    // grouped background（#F2F2F2 = 5%）。两者取同一个档位，深浅都成立。
     if (!st.bg.is_none())      fill_rect(box, bg, rad);
     else if (st.muted)         fill_rect(box, th.fill4, rad);
-    else                       fill_rect(box, th.fill5, rad);   // 1.5~2%，不抢层次
+    else                       fill_rect(box, th.fill3, rad);
     if (bw > 0.0f && bd.a > 0) stroke_rect(box, bd, rad, bw);
 }
 
@@ -5887,7 +5891,9 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
                   th.primary.with_alpha(52), 2.0f);
     }
 
-    Color fg = !st.fg.is_none() ? st.fg : (show_placeholder ? th.muted_foreground : th.foreground);
+    // 占位符是 **25%**（kit `Text Field/Rounded` 的 Placeholder 是 #000000 @0.25），
+    // 不是 secondary label 的 50% —— 后者会让空输入框看着像"已经有内容"。
+    Color fg = !st.fg.is_none() ? st.fg : (show_placeholder ? th.label3 : th.foreground);
     if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
     if (composing) {
         // 分三段画：正文前半 / 预编辑串（主色 + 下划线）/ 正文后半。
@@ -6087,9 +6093,10 @@ inline bool Ui::slider(float* value, float min_value, float max_value, const Rec
     }
     const float t_hover = detail::animate_value(impl, id * 43u + 1u, (in.hovered || impl->active == id) ? 1.0f : 0.0f, 18.0f);
 
-    // 官方 Slider：整体 100×24，轨道 **6px** 胶囊（不是 4），左右各留出把手的半宽。
+    // 官方 Slider：整体 140×24，轨道 **4px** 胶囊（kit 里 Track 是 150×4 r2，
+    // 带两道内阴影），左右各留出把手的半宽。
     // 把手是 20×16 的白色胶囊（不是圆点）—— 圆点会让它一眼看着像 HTML range。
-    const float track_h = 6.0f;
+    const float track_h = 4.0f;
     const float knob_w = 20.0f, knob_h = 16.0f;
     const float half = knob_w * 0.5f;
     Rect track(box.x + half, box.cy() - track_h * 0.5f,
@@ -6186,16 +6193,16 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
         const float t_hov = detail::animate_value(impl, id * 47u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
         if (pill) {
-            // 选中的那一段是**白色胶囊**（暗色是比轨道亮一档的灰），文字回到主
-            // 标签色。强调色实心 + 白字是 iOS / Web 的分段控件；macOS 从 Big Sur
-            // 起一直是"凹槽里浮起一块"，Figma 的选中段是 #E6E6E6 / #141414 的实体。
+            // 选中段 = **强调色实心 + 白字**。依据是 kit 里分段的两个变体：
+            //   `Segmented Control/3/1/True`  → 活动窗口：BG #0088FF，Label #FFFFFF
+            //   `Segmented Control/3/1/False` → 非活动窗口：BG #0000001A，Label 85%
+            // 上一轮照着 `Window/Segmented Control`（工具栏那套玻璃图标按钮，
+            // 选中是 #E6E6E6 玻璃胶囊）改成了"白胶囊 + 主标签字"，那是另一个控件
+            // —— 内容区的文字分段控件在活动窗口里就是强调色。
             const Rect seg = item.inset(2.0f, 2.0f);
             const float sr = std::max(0.0f, seg.h * 0.5f);
             if (t_sel > 0.02f) {
-                Color sel_bg = !st.border_color.is_none()
-                             ? st.border_color
-                             : (th.is_dark() ? Color(255, 255, 255, 46)
-                                             : Color(255, 255, 255, 255));
+                Color sel_bg = !st.border_color.is_none() ? st.border_color : th.tint;
                 sel_bg.a = uint8_t(float(sel_bg.a) * t_sel + 0.5f);
                 fill_rect_s(seg, sel_bg, sr, 0.35f);
             } else if (t_hov > 0.02f) {
@@ -6215,9 +6222,12 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
         ts.font_weight = 500;                 // 官方：选中/未选中都是 SF Pro Medium
         ts.align = Align::Center;
         ts.valign = VAlign::Middle;
-        Color c = pill
-                ? ((*index == int(i)) ? th.label : th.label2)
-                : ((*index == int(i)) ? th.label : th.label2);
+        // 分段的未选中标签是 **85%**（kit 里三段全是 #000000D9），选中只是面上
+        // 换成强调色 + 白字；标签栏则相反 —— 未选中 55%、选中 100%（`Tabs/8`）。
+        // 之前两处都用 label2（50%），一排分段看着比旁边的按钮淡一档。
+        Color c;
+        if (pill) c = (*index == int(i)) ? detail::on_color(th.tint) : th.label;
+        else      c = (*index == int(i)) ? th.foreground : th.label2;
         if (st.disabled) c.a = uint8_t(float(c.a) * 0.45f);
         draw_text(labels[i], item, c, ts);
     }
@@ -6243,7 +6253,8 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
     uint64_t id = detail::make_id("select", box);
     // 本组件第一个控件的层级号。弹层下一帧用它判定"谁在下面"。
     const uint64_t z_first = impl->seq + 1;
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    // 下拉按钮和普通按钮同一个半径尺度（6），之前用 radius_sm（4）显得比方角按钮方
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius;
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
     const bool enabled = !st.disabled;
 
@@ -6367,7 +6378,7 @@ inline bool Ui::radio_group(const std::vector<std::string>& items, int* index, c
     uint64_t base = detail::make_id("radiogroup", box);
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float row_h = box.h / float(items.size());
-    const float dot = std::max(14.0f, fs + 2.0f);
+    const float dot = std::max(16.0f, fs + 3.0f);
 
     bool changed = false;
     for (size_t i = 0; i < items.size(); ++i) {
@@ -6400,8 +6411,10 @@ inline bool Ui::radio_group(const std::vector<std::string>& items, int* index, c
         }
 
         if (t > 0.02f) {
-            // 中心点用 t*(2-t) 做一次 ease-out，弹出感比线性更像"长出来"
-            const float ir = (dot * 0.5f - std::max(3.2f, dot * 0.24f)) * (t * (2.0f - t));
+            // 中心点用 t*(2-t) 做一次 ease-out，弹出感比线性更像"长出来"。
+            // 官方 Radio Button/Medium：16 的圆里一颗 **6** 的点（不是跟着半径比例
+            // 长到 8）—— 8 的点在 16 的圆里显得"实心"，退化成 iOS 的圆点开关。
+            const float ir = 3.0f * (t * (2.0f - t));
             if (ir > 0.3f) {
                 Color fg = th.primary;
                 if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
@@ -6411,7 +6424,9 @@ inline bool Ui::radio_group(const std::vector<std::string>& items, int* index, c
 
         Style ts;
         ts.font_size = fs;
-        ts.font_weight = (*index == int(i)) ? 500 : 400;
+        // 官方 `Type=Radio Buttons`：标签 13 Medium，**选中不换字重**（换字重会让
+        // 整行文字宽度跳一下，一排单选看着在抖）。
+        ts.font_weight = 500;
         ts.align = Align::Left;
         ts.valign = VAlign::Middle;
         Color c = !st.fg.is_none() ? st.fg : th.foreground;
@@ -7696,9 +7711,9 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
     // 关闭按钮在下面 claim 之前就 interact 了，所以层级号必须在入口处取，
     // 否则它会被自己的闸门挡住（点了没反应，看着像"按钮坏了"）。
     const uint64_t z_first = impl->seq + 1;
-    // 官方 Alert 面板：r12、无描边（层次全靠 Primary 投影）、标题 Headline 13 Bold、
-    // 正文 13、四周留 20。之前 r10 + 1px 边框 + 16px 标题，是"网页模态框"的配比。
-    const float rad = st.radius >= 0.0f ? st.radius : 12.0f;
+    // 官方 `Alert/3 Options + Cancel`：面板 r10、无描边（层次全靠 Primary 投影）、
+    // 内边距 16/20、标题 13 Bold、正文 **11 Regular 85%**（不是 50% 的次要灰）。
+    const float rad = st.radius >= 0.0f ? st.radius : 10.0f;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float pad = st.pad_x >= 0.0f ? st.pad_x : 20.0f;
     const Input& kin = impl->input;
@@ -7714,8 +7729,8 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
     if (cin.clicked) dismiss = true;
     const float ct = detail::animate_value(impl, cid * 79u + 1u, cin.hovered ? 1.0f : 0.0f, 18.0f);
 
-    // 绘制：遮罩 → 面板
-    fill_rect(Rect(0, 0, width(), height()), th.overlay, 0.0f);
+    // 绘制：面板 + 投影（**不铺整屏黑幕** —— macOS 的模态只是窗口失去焦点，
+    // 不会被压暗；整屏半透明黑是 Web Dialog 的 overlay）
     detail::pop_shadow(*this, box, rad, th, 2);
     fill_rect(box, !st.bg.is_none() ? st.bg : th.popover_bg, rad);
     // 面板不描边：macOS 靠投影与底色分层，一圈 1px 会让它看起来像 Web 的卡片
@@ -7734,7 +7749,7 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
               !st.fg.is_none() ? st.fg : th.foreground, hs);
     if (!body.empty()) {
         Style bs;
-        bs.font_size = fs;
+        bs.font_size = 11.0f;               // Footnote 11（kit 的 Alert Description）
         bs.font_weight = 400;
         bs.align = Align::Left;
         bs.valign = VAlign::Top;
@@ -7742,7 +7757,7 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
         bs.line_gap = 3.0f;                 // 正文比标题松一点，长段落才好读
         draw_text(body, Rect(box.x + pad, box.y + pad + title_lh + 10.0f, box.w - pad * 2.0f,
                              std::max(box.h - pad * 2.0f - title_lh - 10.0f, 1.0f)),
-                  th.muted_foreground, bs);
+                  th.foreground, bs);
     }
     pop_clip();
 
@@ -7771,11 +7786,11 @@ inline void Ui::toast(const std::string& text, const Rect& box, const Style& st)
     if (st.disabled) { bg.a = uint8_t(float(bg.a) * 0.6f); fg.a = uint8_t(float(fg.a) * 0.6f); }
     if (danger) fg = th.destructive;
 
-    // 浮起的通知条：r10 + Secondary 投影 + 一根描边。Web 那种"左边一条色带"
-    // 在 macOS 里不存在，告警用**文字颜色**表达。
+    // 浮起的通知条：r10 + Secondary 投影，**不描边**（描一圈线是 Web 的 toast）。
+    // Web 那种"左边一条色带"在 macOS 里也不存在，告警用**文字颜色**表达。
+    (void)bd;
     detail::pop_shadow(*this, box, rad, th, 1);
     fill_rect(box, bg, rad);
-    stroke_rect(box, bd, rad, 1.0f);
     const float text_x = box.x + 14.0f;
     Style ts;
     ts.font_size = fs;
@@ -7880,12 +7895,14 @@ inline bool group_cell(Ui& ui, Ui::Impl* im, uint64_t id, const Rect& r, const s
         ui.fill_rect(Rect(r.x, r.y + (r.h - dh) * 0.5f, 1.0f, dh), th.label3, 0.0f);
     }
 
-    // 选中 = **白色胶囊**（暗色是比轨道亮一档的灰），和 segmented() 同一套画法。
-    // 强调色实心 + 白字是 shadcn 的 ToggleGroup（data-[state=on]:bg-accent），
-    // 在 mac 界面里那一块蓝比主操作按钮还抢眼。
+    // 选中 = 一块**比轨道深一档的灰胶囊**，不是纯白。
+    // 依据 kit `Button Group/3`：选中钮是实体 #E6E6E6（≈10% 黑），压在玻璃轨道上
+    // —— 也就是"凹进去"的方向。之前画纯白，在白底页面上等于给选中项打了个高光，
+    // 和系统里"选中的那格看起来更沉"正好相反（深色模式则相反，要比轨道亮，
+    // 玻璃轨道在暗色下本身是 ~#2C2C2C，选中提到 #3A3A3A）。
     const Rect inner = r.inset(2.0f, 2.0f);
     const float ir = inner.h * 0.5f;
-    const Color pill = th.is_dark() ? Color(255, 255, 255, 46) : Color(255, 255, 255, 255);
+    const Color pill = th.is_dark() ? Color::hex(0x3A3A3A) : Color::hex(0xE6E6E6);
     if (t_on > 0.01f) {
         ui.fill_rect_s(inner, pill.scaled_alpha(t_on), ir, 0.35f);
     } else if (t_h > 0.01f) {
@@ -8068,7 +8085,7 @@ inline bool Ui::input_group(std::string* value, const std::string& prefix, const
                             const Rect& box, const Style& st) {
     if (!value || box.w <= 0.0f) return false;
     const Theme& th = impl->theme;
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float pad = 12.0f;
 
@@ -8077,8 +8094,11 @@ inline bool Ui::input_group(std::string* value, const std::string& prefix, const
     const float pre_w = prefix.empty() ? 0.0f : text_width(prefix, fs, 400) + 10.0f;
     const float suf_w = suffix.empty() ? 0.0f : text_width(suffix, fs, 400) + 10.0f;
 
-    fill_rect(box, !st.bg.is_none() ? st.bg : th.background, rad);
-    stroke_rect(box, !st.border_color.is_none() ? st.border_color : th.input, rad, 1.0f);
+    // 和 input() 同一套皮：纯白底 + 顶部内阴影 + 极淡描边。之前是"白底 + 1px
+    // 深边框"，跟旁边真正能打字的输入框不是一张皮。
+    fill_rect(box, !st.bg.is_none() ? st.bg : th.window_bg, rad);
+    inner_shadow(box, th.is_dark() ? Color(0, 0, 0, 70) : Color(0, 0, 0, 18), rad, 1.8f, 1.0f);
+    stroke_rect(box, !st.border_color.is_none() ? st.border_color : th.separator, rad, 1.0f);
 
     Style ts;
     ts.font_size = fs;
@@ -8619,7 +8639,10 @@ inline bool Ui::popover(const std::string& label, bool* open, const Rect& box,
     const uint64_t id = detail::make_id("popover", box);
     // 层级号取入口处的 seq：触发器和面板都从它往后数。
     const uint64_t z_first = impl->seq + 1;
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    // 触发器是普通按钮面（r6）；**面板是 r12**（kit `Popover` 的容器）。之前拿
+    // radius_sm（4）当面板圆角，气泡四个角几乎是方的。
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius;
+    const float panel_rad = 12.0f;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
 
     detail::Interact in = detail::interact(impl, id, box, !st.disabled);
@@ -8652,8 +8675,9 @@ inline bool Ui::popover(const std::string& label, bool* open, const Rect& box,
     if (in.clicked) { *open = !*open; repaint(); }
     if (!*open) return false;
 
-    // 面板：内容尺寸 + 内边距；下方放不下就翻到上方
-    const float inner_pad = 12.0f;
+    // 面板：内容尺寸 + 内边距；下方放不下就翻到上方。内边距 20 ——
+    // kit `Popover` 的 Content Area 就是 pad 20/20（气泡里的内容离边缘很远）。
+    const float inner_pad = 20.0f;
     const float pw = std::max(content.x, 1.0f) + inner_pad * 2.0f;
     const float ph = std::max(content.y, 1.0f) + inner_pad * 2.0f;
     float px = box.x;
@@ -8675,11 +8699,11 @@ inline bool Ui::popover(const std::string& label, bool* open, const Rect& box,
     }
     if (kin.key_pressed[KEY_ESC]) dismiss = true;
 
-    deferred([this, panel, inner, rad, draw]() {
+    deferred([this, panel, inner, panel_rad, draw]() {
         const Theme& t2 = impl->theme;
-        detail::pop_shadow(*this, panel, rad, t2, 1);
-        fill_rect(panel, t2.popover_bg, rad);
-        stroke_rect(panel, t2.border, rad, 1.0f);
+        // 气泡只有投影，没有描边（一圈 1px 线是 Web 的 Popover）
+        detail::pop_shadow(*this, panel, panel_rad, t2, 1);
+        fill_rect(panel, t2.popover_bg, panel_rad);
         push_clip(panel);
         if (draw) draw(inner);          // 内容自己画，可以继续调 ui.* 组件
         pop_clip();
@@ -8750,19 +8774,19 @@ inline bool Ui::alert_dialog(const std::string& title, const std::string& body,
     if (kin.key_pressed[KEY_ESC]) dismiss = true;
 
     // 按钮几何先算出来：交互必须在画遮罩之前处理完，否则 hover 效果会被遮罩压掉。
-    const float btn_h = 36.0f;
-    const float btn_pad = 16.0f;
-    const float btn_y = box.bottom() - pad - btn_h;
-    const float ok_w = text_width(confirm, fs, 500) + btn_pad * 2.0f;
-    const float no_w = text_width(cancel, fs, 500) + btn_pad * 2.0f;
-    const float gap = 8.0f;
-    const Rect ok_r(box.right() - pad - ok_w, btn_y, ok_w, btn_h);
-    const Rect no_r(ok_r.x - gap - no_w, btn_y, no_w, btn_h);
+    // 官方 `Alert/3 Options + Cancel`：按钮是**通宽 28 高的行**，纵向排列，最底
+    // 一行才是取消；行与行之间一条 1px 的 3% 细线。之前是"右下角两颗胶囊"，
+    // 那是网页模态框（Bootstrap/Radix）的排法。
+    const float pad_v = 16.0f;
+    const float btn_h = 28.0f;
+    const float inner_w = std::max(box.w - pad * 2.0f, 1.0f);
+    const Rect cancel_r(box.x + pad, box.bottom() - pad_v - btn_h, inner_w, btn_h);
+    const Rect ok_r(box.x + pad, cancel_r.y - 16.0f - btn_h, inner_w, btn_h);
 
     const uint64_t ok_id = detail::make_id("alert_ok", box);
     const uint64_t no_id = detail::make_id("alert_no", box, 1u);
     detail::Interact ok_in = detail::interact(impl, ok_id, ok_r, true);
-    detail::Interact no_in = detail::interact(impl, no_id, no_r, true);
+    detail::Interact no_in = detail::interact(impl, no_id, cancel_r, true);
     if (ok_in.hovered || no_in.hovered) set_cursor(Cursor::Arrow);
 
     bool confirmed = false;
@@ -8773,7 +8797,8 @@ inline bool Ui::alert_dialog(const std::string& title, const std::string& body,
     const float no_t = detail::animate_value(impl, no_id * 127u + 1u, no_in.hovered ? 1.0f : 0.0f, 20.0f);
 
     // ---- 画 ----
-    fill_rect(Rect(0, 0, width(), height()), th.overlay, 0.0f);
+    // 不铺整屏黑幕：macOS 的 alert 是"浮起来的一块面板 + 强投影"，窗口本身
+    // 只是失去焦点，不会被压暗。整屏 35% 黑是 Web Dialog 的 overlay。
     detail::pop_shadow(*this, box, rad, th, 2);
     fill_rect(box, !st.bg.is_none() ? st.bg : th.popover_bg, rad);
     // 面板不描边：macOS 靠投影与底色分层，一圈 1px 会让它看起来像 Web 的卡片
@@ -8786,42 +8811,43 @@ inline bool Ui::alert_dialog(const std::string& title, const std::string& body,
     hs.align = Align::Left;
     hs.valign = VAlign::Top;
     hs.wrap = true;
-    draw_text(title, Rect(box.x + pad, box.y + pad, std::max(box.w - pad * 2.0f, 1.0f), title_lh),
+    draw_text(title, Rect(box.x + pad, box.y + pad_v, std::max(box.w - pad * 2.0f, 1.0f), title_lh),
               !st.fg.is_none() ? st.fg : th.foreground, hs);
 
     if (!body.empty()) {
         Style bs;
-        bs.font_size = fs;
+        bs.font_size = 11.0f;              // 说明文字是 Footnote 11，不是 13
         bs.font_weight = 400;
         bs.align = Align::Left;
         bs.valign = VAlign::Top;
         bs.wrap = true;
         bs.line_gap = 3.0f;
-        draw_text(body, Rect(box.x + pad, box.y + pad + title_lh + 10.0f, box.w - pad * 2.0f,
-                             std::max(btn_y - 12.0f - (box.y + pad + title_lh + 10.0f), 1.0f)),
-                  th.muted_foreground, bs);
+        draw_text(body, Rect(box.x + pad, box.y + pad_v + title_lh + 10.0f, box.w - pad * 2.0f,
+                             std::max(ok_r.y - 12.0f - (box.y + pad_v + title_lh + 10.0f), 1.0f)),
+                  th.foreground, bs);
     }
     pop_clip();
 
-    // 取消（outline）
-    fill_rect(no_r, th.background, rad >= 8.0f ? 8.0f : rad);
-    stroke_rect(no_r, th.border, rad >= 8.0f ? 8.0f : rad, 1.0f);
-    if (no_t > 0.01f)
-        fill_rect(no_r, th.accent.scaled_alpha(no_t), rad >= 8.0f ? 8.0f : rad);
+    // 选项行（确认）：通宽一条，顶部一条 3% 细线，悬停压 5% 底。
+    // 官方 `_Alert Button/No Background`：228×28，标签 13 Regular 85%，居中。
+    fill_rect(Rect(ok_r.x, ok_r.y, ok_r.w, 1.0f), th.fill4, 0.0f);
+    if (ok_t > 0.01f) fill_rect(ok_r, th.fill3.scaled_alpha(ok_t), 0.0f);
 
-    // 确认（primary 或 destructive）
-    const Color ok_bg0 = danger ? th.destructive : th.primary;
-    const Color ok_fg  = danger ? th.destructive_foreground : th.primary_foreground;
-    const Color ok_bg  = ok_t > 0.01f ? ok_bg0.mix(th.foreground.with_alpha(ok_bg0.a), ok_t * 0.16f) : ok_bg0;
-    fill_rect(ok_r, ok_bg, rad >= 8.0f ? 8.0f : rad);
+    // 取消：**底部一颗胶囊**（kit 里 Cancel 是 r=100 的 #E6E6E6），不是白底描边。
+    const float cr = cancel_r.h * 0.5f;
+    const Color cancel_bg = th.is_dark() ? Color(255, 255, 255, 26) : Color::hex(0xE6E6E6);
+    fill_rect_s(cancel_r, cancel_bg, cr, 0.35f);
+    if (no_t > 0.01f) fill_rect_s(cancel_r, th.fill3.scaled_alpha(no_t), cr, 0.35f);
 
     Style bs2;
     bs2.font_size = fs;
-    bs2.font_weight = 500;
     bs2.align = Align::Center;
     bs2.valign = VAlign::Middle;
-    draw_text(cancel, no_r, th.foreground, bs2);
-    draw_text(confirm, ok_r, ok_fg, bs2);
+    // 取消是 Medium 13 85%；选项行是 Regular 13 85%（破坏性选项转系统红）
+    bs2.font_weight = 500;
+    draw_text(cancel, cancel_r, th.foreground, bs2);
+    bs2.font_weight = 400;
+    draw_text(confirm, ok_r, danger ? th.destructive : th.foreground, bs2);
 
     impl->gate_claim(box, z_first);
 
@@ -9028,15 +9054,19 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
     const float t_h = detail::animate_value(impl, id * 137u + 1u, (in.hovered || open) ? 1.0f : 0.0f, 18.0f);
 
     // ---- 触发器 ----
-    // 可编辑的 NSComboBox = 输入框的皮（白底 + 阴影）+ 右侧上下箭头按钮
-    fill_rect(box, !st.bg.is_none() ? st.bg : th.background, rad);
-    Color bd = !st.border_color.is_none() ? st.border_color : th.input;
-    if (focused) bd = th.ring;
-    else if (t_h > 0.01f) bd = bd.mix(th.foreground.with_alpha(120), t_h * 0.4f);
-    stroke_rect(box, bd, rad, focused ? 1.4f : 1.0f);
+    // 可编辑的 NSComboBox = **输入框的皮**（白底 + 顶部内阴影 + 极淡描边）+
+    // 右侧上下箭头按钮。kit `Combo Box/False` 就是这个配方：纯白底、两道向下
+    // 投影、没有 1px 硬边框 —— 一圈 1~1.4px 的深边框是 shadcn 的 Input。
+    fill_rect(box, !st.bg.is_none() ? st.bg : th.window_bg, rad);
+    inner_shadow(box, th.is_dark() ? Color(0, 0, 0, 70) : Color(0, 0, 0, focused ? 10 : 18),
+                 rad, 1.8f, 1.0f);
+    Color bd = !st.border_color.is_none() ? st.border_color : th.separator;
+    if (t_h > 0.01f && !focused) bd = bd.mix(th.label3, t_h);
+    stroke_rect(box, bd, rad, 1.0f);
 
     const bool has_sel = (*index >= 0 && *index < int(items.size()));
-    Color fg = !st.fg.is_none() ? st.fg : (has_sel ? th.foreground : th.muted_foreground);
+    // 占位符 25%（同 Text Field），已选值 85%
+    Color fg = !st.fg.is_none() ? st.fg : (has_sel ? th.foreground : th.label3);
     Style ts;
     ts.font_size = fs;
     ts.font_weight = 500;
@@ -9046,6 +9076,8 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
                       : (st.placeholder.empty() ? std::string("选择...") : st.placeholder),
               Rect(box.x + pad, box.y, std::max(box.w - pad * 2.0f - 18.0f, 1.0f), box.h), fg, ts);
     detail::paint_popup_chevrons(*this, box, pad, th.label2);
+    // 焦点走 3px 光环（同 input），不要"把边框染粗"—— 那是 Web 的 :focus 写法
+    if (focused) detail::paint_focus_ring(*this, box, rad, th.ring, true);
 
     if (!open) return false;
 

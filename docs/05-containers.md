@@ -18,11 +18,18 @@ void skeleton (const Rect& box, const Style& st = Style());
 
 | 项 | 默认值 |
 |---|---|
-| 底 | `st.bg` → 否则 `theme.card` |
-| 描边 | `st.border_color` → 否则 `theme.border` |
-| 描边宽 | `st.border_width` → 否则 **1.0** |
-| 圆角 | `st.radius` → 否则 `theme.radius_lg`（10） |
-| `muted` | `= true` 时底改用 `theme.muted`（忽略 `bg`） |
+| 底 | `st.bg` → 否则 `theme.card`；都没给就是 `theme.fill3`（5% 叠加） |
+| 描边 | `st.border_color` → **默认没有**（`Color::none()`，不画） |
+| 描边宽 | `st.border_width` → 否则 **1.0**（只有给了颜色才用得上） |
+| 圆角 | `st.radius` → 否则 `theme.radius_xl`（12） |
+| `muted` | `= true` 时底改用 `theme.fill4`（3%，忽略 `bg`） |
+
+> **默认不描边**。Figma 的 `Group Box` 符号只有一层填充（3% 再乘 50% 不透明度），
+> 图层里没有任何 stroke —— macOS 的分组靠"面比底深一档"分层，画一圈 1px 线是
+> Web 卡片的语法。默认填充取 `Fills - Opaque/Tertiary`（5%），也就是系统
+> "grouped background" 那一档；kit 裸值 1.5% 在白底上等于看不见。
+>
+> 要框就显式给：`ui.panel(box, aino::Style().stroke(1.0f, ui.theme().separator))`。
 
 **生效的 Style 属性**：`bg` `border_color` `border_width` `radius` `muted`
 
@@ -35,19 +42,13 @@ void skeleton (const Rect& box, const Style& st = Style());
 > ```
 
 ```cpp
-ui.panel({24, 24, 400, 240});                                    // 标准卡片
-ui.panel({24, 24, 400, 60}, aino::Style().muted_text());         // 浅灰区块（见下方说明）
-ui.panel({24, 24, 400, 60}, aino::Style().corner(0).stroke(0, aino::Color::none()));  // 无圆角无边框
+ui.panel({24, 24, 400, 240});                                  // 标准分组卡（5% 底、r12、无边框）
+ui.panel({24, 24, 400, 60}, aino::Style().muted_text());       // 更淡的一档（3%，忽略 bg）
+ui.panel(box, aino::Style().stroke(1.0f, aino::Color(0, 0, 0, 26)));   // 显式要一圈线
 ```
 
-> 想画一个「无边框纯色块」：`panel` 的描边宽在 `st.border_width < 0`（默认）时取 1，
-> 所以不写 `stroke()` 就一定有 1px 边框。去掉它的办法是把宽度显式设为 **0**：
->
-> ```cpp
-> ui.panel(box, aino::Style().corner(0).stroke(0, aino::Color::none()));
-> ```
->
-> 判断条件是 `bw > 0 && bd.a > 0`，宽度为 0 就直接不画，颜色给什么都不影响。
+> 判断条件是 `bw > 0 && bd.a > 0`：颜色是 `Color::none()`（a=0）就直接不画，
+> 宽度给什么都不影响。所以"无边框"是默认态，不需要再写 `stroke(0, ...)` 去关它。
 
 `panel` 是**底层**：它只画底和框，不画内容。内容要紧接着用 `Stack` 布局在上面画。
 

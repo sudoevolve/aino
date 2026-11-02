@@ -382,11 +382,10 @@ def main():
     finally:
         stop(proc)
 
-    # ---- 8. 对话框遮罩 ----
-    # 以前是"滚 30 格滚轮再点某一行"，导航行高改一次就点到别的地方去了。
-    # 现在直接起在 Dialog 页；遮罩的判据也改成**跟不开对话框的同一页比**，
-    # 而不是写死一个绝对亮度（#EAEAEA 的导航压在 overlay 上到底是 193 还是 190，
-    # 取决于 overlay 的 alpha，写死就会假红）。
+    # ---- 8. 对话框 ----
+    # macOS 的模态**不压暗整窗**（窗口只是失去焦点），所以这里查的是"导航亮度
+    # 不变 + 中间多出一块浮起的面板"，而不是"整屏变暗"。判据全部跟同一页不开
+    # 对话框的基线比，不写死绝对亮度。
     def nav_luma_of(env):
         p2, h2 = launch(env)
         if not h2:
@@ -413,12 +412,30 @@ def main():
         scale = client_scale(hwnd)
         s4 = Shot(hwnd, scale)
         nav_luma = s4.avg(20.0, 150.0, NAV_W - 30.0, 420.0)
-        rep.step("对话框遮罩覆盖整窗（导航变暗）", nav_luma < nav_base - 25.0,
+        rep.step("对话框不压暗整窗（macOS 无黑幕）", abs(nav_luma - nav_base) <= 5.0,
                  "导航亮度 %.0f → %.0f" % (nav_base, nav_luma))
-        panel = s4.avg(LOGICAL_W * 0.5 - 80, LOGICAL_H * 0.5 - 40,
-                       LOGICAL_W * 0.5 + 80, LOGICAL_H * 0.5 + 40)
-        rep.step("面板位于窗口中央且不透明", panel > nav_luma + 30.0,
-                 "面板亮度 %.0f，遮罩 %.0f" % (panel, nav_luma))
+        # 不再用"整块区域的平均亮度"判断面板是否盖住内容：面板 #F6F6F6（246）和
+        # 示例卡 #F2F2F2（242）只差 4 级，平均下来分不开。真正的判据是下面那条
+        # 「面板是一整块实心面」——面板内一条竖带的同色占比，开/关差别是 0.95 vs 0.2。
+
+        # 面板左侧那一条竖带（内缩 15~5px，避开通栏文字）在打开时应该是**同一种
+        # 面板色**；关掉之后那里是示例页的卡面/页底，颜色立刻变杂。
+        def panel_strip(sh):
+            px0, px1 = LOGICAL_W * 0.5 - 185.0, LOGICAL_W * 0.5 - 175.0
+            py0, py1 = LOGICAL_H * 0.5 - 90.0, LOGICAL_H * 0.5 + 90.0
+            target = sh.avg(px0, py0, px1, py1)
+            hit = tot = 0
+            for yy in range(int(py0), int(py1), 3):
+                for xx in range(int(px0), int(px1), 2):
+                    r, g, b = sh.at(xx, yy)[:3]
+                    tot += 1
+                    if abs((r + g + b) / 3.0 - target) <= 1.5:
+                        hit += 1
+            return (hit / float(tot) if tot else 0.0)
+
+        strip_open = panel_strip(s4)
+        rep.step("面板是一整块实心面（不是透明框）", strip_open >= 0.95,
+                 "同色占比 %.2f" % strip_open)
         if a.shots:
             save_png(s4.raw, s4.w, s4.h, os.path.join(ROOT, "screenshots", "gallery-dialog.png"))
 
@@ -427,9 +444,9 @@ def main():
         vr.click_logical(hwnd, 40.0, LOGICAL_H - 40.0, scale)
         time.sleep(0.7)
         s5 = Shot(hwnd, scale)
-        nav_after = s5.avg(20.0, 150.0, NAV_W - 30.0, 420.0)
-        rep.step("点遮罩关闭后遮罩撤掉", nav_after > nav_luma + 25.0,
-                 "导航亮度 %.0f → %.0f（初始 %.0f）" % (nav_luma, nav_after, nav_base))
+        strip_closed = panel_strip(s5)
+        rep.step("点面板外关闭（面板消失）", strip_closed < strip_open - 0.25,
+                 "同色占比 %.2f → %.2f" % (strip_open, strip_closed))
     finally:
         stop(proc)
 

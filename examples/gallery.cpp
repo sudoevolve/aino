@@ -465,9 +465,10 @@ void d_avatar(Ui& ui, App& a, const Rect& box) {
 
 void d_progress(Ui& ui, App& a, const Rect& box) {
     Stack c = demo_col(ui, box, 8.0f);
-    ui.progress(0.24f, c.next(8.0f));
-    ui.progress(0.58f, c.next(8.0f));
-    ui.progress(0.92f, c.next(8.0f));
+    // kit `Determinate/Medium`：100×10 胶囊 —— 8 高会显得比系统细一档
+    ui.progress(0.24f, c.next(10.0f));
+    ui.progress(0.58f, c.next(10.0f));
+    ui.progress(0.92f, c.next(10.0f));
     c.skip(4.0f);
     Stack r = c.hbox(24.0f, 10.0f);
     ui.skeleton(r.next(120.0f));
@@ -792,19 +793,24 @@ void d_dialog(Ui& ui, App& a, const Rect& box) {
 }
 
 void o_dialog(Ui& ui, App& a) {
-    const Rect d = Rect::centered(ui.width() * 0.5f, ui.height() * 0.5f, 420.0f, 200.0f);
+    const Rect d = Rect::centered(ui.width() * 0.5f, ui.height() * 0.5f, 380.0f, 200.0f);
     const std::string body =
         "正文按宽度折行并被裁进面板。按钮由调用方紧接着画，因此天然位于面板之上。";
     if (ui.dialog("确认删除", body, &a.dlg, d)) {
-        // macOS 告警的按钮是**右下角右对齐、按内容定宽**的两个小按钮；
-        // 把面板底边二分之一二分之一地摊开是 Web 模态的做法，一眼就不是 mac。
-        const float bw = 86.0f, gap = 10.0f, by = d.bottom() - 58.0f;
-        if (ui.button("删除", Rect(d.right() - 22.0f - bw, by, bw, 24.0f), Style().destructive())) a.dlg = false;
-        if (ui.button("取消", Rect(d.right() - 22.0f - bw * 2.0f - gap, by, bw, 24.0f), Style().outline())) a.dlg = false;
+        // macOS 告警的按钮是**通宽 28 高的行，纵向排列**，最底一行是取消胶囊
+        // （kit `Alert/3 Options + Cancel`）。右下角两颗小按钮是网页模态的排法。
+        const float pad = 20.0f, bh = 28.0f;
+        const Rect cr(d.x + pad, d.bottom() - 16.0f - bh, d.w - pad * 2.0f, bh);
+        const Rect orr(d.x + pad, cr.y - 16.0f - bh, d.w - pad * 2.0f, bh);
+        ui.fill_rect(Rect(orr.x, orr.y, orr.w, 1.0f), ui.theme().fill4, 0.0f);
+        if (ui.button("删除这个文件", orr, Style().ghost().destructive().font(13.0f).normal_weight()))
+            a.dlg = false;
+        if (ui.button("取消", cr, Style().secondary().corner(bh * 0.5f).font(13.0f).medium()))
+            a.dlg = false;
     }
     ui.alert_dialog("删除这个文件？", "删除后无法恢复，这份数据没有其他备份。",
                     "删除", "取消", &a.confirm,
-                    Rect(ui.width() * 0.5f - 190.0f, ui.height() * 0.5f - 82.0f, 380.0f, 164.0f),
+                    Rect(ui.width() * 0.5f - 190.0f, ui.height() * 0.5f - 100.0f, 380.0f, 200.0f),
                     Style().destructive());
 }
 
@@ -1083,11 +1089,11 @@ ui.avatar("A", r.next(64.0f));)cpp",
 
 const Demo kProgress[] = {
     {"进度 / 骨架 / 指示器", "skeleton 与 spinner 默认静态，加 .animate() 才动",
-     R"cpp(ui.progress(0.24f, c.next(8.0f));
-ui.progress(0.92f, c.next(8.0f));
+     R"cpp(ui.progress(0.24f, c.next(10.0f));
+ui.progress(0.92f, c.next(10.0f));
 ui.skeleton(r.next(120.0f));
 ui.spinner(r.next(24.0f));)cpp",
-     88.0f, d_progress},
+     96.0f, d_progress},
 };
 
 const Demo kInput[] = {

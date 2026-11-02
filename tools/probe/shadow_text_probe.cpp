@@ -181,16 +181,17 @@ static void test_text_wrap() {
         // alpha_at 是"相对纯白的变暗量"；遮罩的贡献**按 token 算**，不能写死 ——
         // 之前写 110，后来 overlay 换成 rgba(171,171,171,153)（白底只压暗 50），
         // 这条就假红了。
-        const aino::Color mask_c = aino::Theme::light().overlay.over(aino::Color(255, 255, 255));
-        const int base = 255 - int(mask_c.r);
+        // 对话框不再铺整屏遮罩（macOS 不压暗窗口），基线就是纯白：panel 外面
+        // 的变暗量全部来自投影本身。
+        const int base = 0;
         const int a_just = h.alpha_at(int(box.right()) + 3, int(box.cy()));
         const int a_far  = h.alpha_at(int(box.right()) + 34, int(box.cy()));
         std::printf("  面板右侧变暗量：+3px=%d，+34px=%d（遮罩基线 %d）\n", a_just, a_far, base);
         // +34px 相对 90px 的模糊半径只有 0.4σ，影子还剩一点是**对的**
         // （Primary 投影就是 "0 30 90"）。这里要的是"明显变淡"，不是"归零"。
-        check(a_far < a_just && a_far <= base + 20, "影子随距离变淡，34px 处已经很浅");
-        check(a_just <= base + 70, "面板右侧不该叠出深色脏边（旧实现这里会接近 255）");
-        check(a_just > base + 3, "面板右侧确实有影子（不能淡到没有）");
+        check(a_far < a_just && a_far <= 40, "影子随距离变淡，34px 处已经很浅");
+        check(a_just <= 120, "面板右侧不该叠出深色脏边（旧实现这里会接近 255）");
+        check(a_just > 8, "面板右侧确实有影子（不能淡到没有）");
     }
 
     // --- 2c. 单行仍然是单行（快路径没被改坏）---

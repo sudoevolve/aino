@@ -499,9 +499,10 @@ static void test_alert_dialog() {
     d.idle(draw);
     check(open, "初始是打开态");
 
-    const float pad = 24.0f, btn_h = 36.0f;
-    const float ok_w = ui.text_width("删除", 14.0f, 500) + 32.0f;
-    const Rect ok_r(box.right() - pad - ok_w, box.bottom() - pad - btn_h, ok_w, btn_h);
+    // 按钮几何跟库同源：通宽 28 高的选项行，其上 16 是取消胶囊
+    const float pad = 20.0f, btn_h = 28.0f;
+    const Rect ok_r(box.x + pad, box.bottom() - 16.0f - btn_h * 2.0f - 16.0f,
+                    box.w - pad * 2.0f, btn_h);
     d.click(ok_r.cx(), ok_r.cy(), draw);
     check(confirmed, "点确认 → 返回 true");
     check(!open, "确认后自动关闭");

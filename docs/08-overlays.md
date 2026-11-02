@@ -331,6 +331,7 @@ ui.hover_card(anchor_rect, aino::Vec2(210, 78), [&](const aino::Rect& c) {
 | 触发 | 指针进 `anchor` 就出，**没有延时**（`tooltip` 有 0.4s） |
 | 位置 | 锚点右侧 +8；右边放不下翻到左侧；上下夹在窗口内 |
 | 尺寸 | `Vec2 + 四周各 12px` 内边距 |
+| 面板 | r12、`theme.popover` 底、只有投影没有描边（kit `Popover`） |
 | 阴影 | blur 18 / alpha 44 / dy 6 |
 | 遮罩 | 无 |
 | 输入闸门 | **不登记** —— 它不该拦任何输入 |
@@ -354,10 +355,17 @@ if (ui.alert_dialog("删除？", "删了不能恢复", "删除", "取消", &open
 | | `dialog()` | `alert_dialog()` |
 |---|---|---|
 | 返回 | 本帧是否处于打开态 | **本帧是否点了确认** |
-| 按钮 | 调用方自己画 | 内建确认 / 取消 |
-| 确认键配色 | — | `Style().destructive()` → 红底 |
+| 按钮 | 调用方自己画 | 内建：通宽选项行 + 底部取消胶囊 |
+| 危险操作 | — | `Style().destructive()` → 选项行转**红字** |
 
 危险操作要的就是那一个布尔，所以别拿 `dialog()` 去拼。取消键点了会自己把 `*open` 置 false。
+
+**按钮排布按 kit 的 `Alert/3 Options + Cancel`**：选项是通宽 28 高的一行行（标签
+13 Regular 85%，行顶一条 3% 细线），最底一行是 `#E6E6E6` 胶囊形的取消。右下角并排
+两颗小胶囊是网页模态的排法，macOS 的 alert 从来是竖着排。
+
+**不铺整屏黑幕**。macOS 的模态只是让窗口失去焦点，面板靠 `Primary` 投影浮起来；
+整屏半透明黑是 Web Dialog 的 overlay。`dialog()` 同理。
 
 ### 5.4 `drawer` —— 从边上出来
 

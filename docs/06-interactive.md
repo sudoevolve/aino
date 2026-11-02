@@ -551,9 +551,16 @@ bool segmented(const std::vector<std::string>& items, int* index, const Rect& bo
 
 | 项 | 默认值 |
 |---|---|
-| 容器 | `st.bg` → `theme.muted`，圆角 `theme.radius` |
-| 内边距 | **3px**（四周） |
-| 选中项 | 浮起的一块圆角块：`st.border_color` → `theme.background`（深色主题下自亮 7%） |
+| 容器 | `st.bg` → `theme.track_well()`（8% 叠加，凹槽），圆角 = 高度一半（胶囊） |
+| 内边距 | **2px**（选中段内缩） |
+| 选中段 | **强调色实心 + 白字**（`on_color(tint)`），胶囊形 |
+| 未选中标签 | 主标签色（85%）—— 三段标签一样深，选中只靠那块蓝 |
+| 段间细缝 | 1×14、25% 标签色（相邻段有选中时不画） |
+
+> 依据是 kit 的两个变体：`Segmented Control/3/1/True`（活动窗口）选出的是
+> `BG #0088FF + Label #FFFFFF`；`/False`（非活动窗口）才是 `BG #0000001A`。
+> 上一轮照着 `Window/Segmented Control`（工具栏那套**玻璃图标按钮**，选中是
+> `#E6E6E6` 玻璃胶囊）把内容区分段改成了"白胶囊"，那是另一个控件。
 
 `segmented` 走的是 `tabs` 的 **Secondary 变体**（凹槽 + 滑块），所以两者看起来不再是
 同一个东西：
@@ -578,11 +585,12 @@ bool select(const std::vector<std::string>& items, int* index, const Rect& box, 
 | 项 | 默认值 |
 |---|---|
 | 返回 | `true` = 选中项变了 |
-| 底色 | `theme.background` |
-| 描边 | `theme.input`；展开时变 `theme.ring`；hover 时与前景色混合 |
-| 圆角 | `theme.radius_sm`（4） |
-| `pad_x` | **12**（硬编码） |
-| 弹层底 | `theme.popover` |
+| 底色 | `theme.fill2`（8% 实心，NSPopUpButton） |
+| 描边 | **无**（8% 面自己分层）；`st.border_color` 才画 |
+| 圆角 | `theme.radius`（6） |
+| `pad_x` | **12**（硬编码，= `Popup/Inset - Left` Medium） |
+| 标记 | 右侧**上下双三角**（不是单个向下箭头） |
+| 弹层底 | `theme.popover`，行高 24 |
 | 弹层阴影 | `blur 10` |
 | 选中项底色 | `accent` |
 
@@ -615,10 +623,10 @@ bool radio_group(const std::vector<std::string>& items, int* index, const Rect& 
 |---|---|
 | 返回 | `true` = 选中项变了 |
 | 布局 | **纵向等分 `box.h`**，每行一个圆环 + 标签 |
-| 圆环色（未选） | `theme.input` |
-| 圆环色（选中） | `theme.primary`，描边变粗 |
-| 中心点 | 选中时从中心"长出来"（`t*(2-t)` ease-out） |
-| 字号 | `theme.font_size` |
+| 圆环 | **16×16**（kit `Type=Radio Buttons`），和复选框同一套"凹槽"配方（淡底 + 极淡描边 + 内阴影） |
+| 圆环色（选中） | `theme.primary` 实心 |
+| 中心点 | 直径 **6**（不是按半径比例长到 8），`t*(2-t)` ease-out 弹出 |
+| 标签 | 13 Medium 85%，**选中不换字重**（换字重会让整行宽度跳一下） |
 
 **生效的属性**：`fg` `font_size` `disabled`
 

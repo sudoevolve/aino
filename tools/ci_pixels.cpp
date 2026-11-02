@@ -609,8 +609,10 @@ static bool scene_dark() {
     // （Figma Group Box = r12 + #00000008 再乘 50%）。所以断言不能写死成
     // card（0x252525）—— 那每调一次底价就假红一次。这里直接按 token 算出
     // "背景 + fill5" 的期望值，跟着主题走。
-    const Color panel_fill = th.fill5.over(bg);
-    want_color(shot, 100.0f, 70.0f, panel_fill, "S3 panel 中心是 背景+1.5% 白（Group Box 不铺卡片色）");
+    // panel 现在是 Fills - Opaque/Tertiary（5%）：kit 的 Group Box 裸值
+    // （3%@50% ≈ 1.5%）在白/深底上都看不见，分组容器取系统 grouped 背景那一档。
+    const Color panel_fill = th.fill3.over(bg);
+    want_color(shot, 100.0f, 70.0f, panel_fill, "S3 panel 中心是 背景+5% 叠加（Group Box 不铺卡片色）");
     want_true(chan_diff(bg, card, 0), "S3 深色主题里卡片色 ≠ 背景色", "两者相同，看不出层次");
     want_clean(shot, Rect(200.0f, 20.0f, 80.0f, 100.0f), bg, "S3 panel 没有画到 box 右侧外面");
 

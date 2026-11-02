@@ -815,3 +815,88 @@ AINO_BENCH_RUN=90 AINO_START_PAGE=Button AINO_FRAME_LOG=o.txt build/Release/aino
 # 分项
 AINO_PROF=o.txt AINO_BENCH_RUN=70 AINO_START_PAGE=Button build/Release/aino_gallery.exe
 ```
+
+---
+
+## 十五、第八轮：把 INSTANCE 解到主组件，逐控件重对一遍
+
+这一轮的关键不是"再看一遍截图"，而是补上了一个取数能力：**Figma 的实例不存
+圆角/填充，存在主组件上**。之前的 `digest.js` 只能读到实例这一层，所以分段控件
+的选中段底色、圆角一直是"看着像"估出来的。新写的
+`.workbuddy/figma/inst.js` 顺着 `symbolData.symbolID` 往主组件跳一跳，
+就能拿到真实值：
+
+```bash
+cd .workbuddy/figma && NODE_PATH=node_modules MAXD=3 node inst.js "Segmented Control/3/1/True"
+```
+
+第一行就推翻了上一轮的结论。
+
+### 15.1 最大的一个错：分段的 True/False 不是"选中/未选中"
+
+kit 里 `Segmented Control/3/1/True` 和 `/3/1/False` 是**两个变体**，而 `1/2/3`
+才是"第几段被选中"。跳进主组件才看清 `True/False` 指的是 **Active（窗口是否活动）**：
+
+| 符号 | 选中段 BG | 标签 | 未选中标签 |
+|---|---|---|---|
+| `/3/1/True`（活动窗口） | `#0088FF` + 3% 黑 | `#FFFFFF` | `#000000D9` |
+| `/3/1/False`（非活动窗口） | `#0000001A` | `#000000D9` | `#000000D9` |
+
+上一轮照着 `Window/Segmented Control`（工具栏那套**玻璃图标按钮**，选中是
+`#E6E6E6` 玻璃胶囊、内容是 SF Symbol）把内容区的文字分段改成了"白胶囊 + 主标签字"
+—— 那是另一个控件。内容区的分段在活动窗口里就是**强调色实心 + 白字**，
+而未选中标签是 **85%**（三段一样深，选中只靠那块蓝），不是 50%。
+
+### 15.2 这一轮的逐项修正
+
+| # | 组件 | kit 依据（真实值） | 之前 | 现在 |
+|---|---|---|---|---|
+| 1 | 分段控件选中段 | `Segmented Control/3/1/True`：BG `#0088FF`、Label `#FFFFFF` | 白胶囊 + 主标签字 | 强调色胶囊 + 白字 |
+| 2 | 分段未选中标签 | 三段皆 `#000000D9` | `label2`（50%） | `label`（85%） |
+| 3 | 按钮组 / 切换组选中 | `Button Group/3`：实体 `#E6E6E6` 胶囊（玻璃轨道上**压深**一档） | 纯白胶囊 | `#E6E6E6` / 暗色 `#3A3A3A` |
+| 4 | 滑块轨道 | `Slider/Idle/50%`：Track `150×4`、r2、两道内阴影 | 6px | **4px** |
+| 5 | 单选圆环 | `Type=Radio Buttons`：`16×16`，中心点 `6`，标签 13 Medium | 15×15，点直径 8.3，选中换 500 字重 | 16 + 6，字重恒定 |
+| 6 | Group Box（`panel`） | `Group Box`：r12、`#00000008`@50%、**图层里没有任何 stroke** | 2% 底 + 1px 分隔线 | 5% 底（`Fills/Tertiary`）、**无描边** |
+| 7 | 对话框 | `Alert/3 Options + Cancel`：260×360、r10、pad 16/20、标题 13 Bold、正文 **11 Regular 85%**、按钮**通宽 28 高竖排**、取消 `#E6E6E6` 胶囊、**无遮罩** | r12、右下两颗 36 高胶囊、正文 13/50%、整屏 35% 黑幕 | 按 kit 重排 |
+| 8 | Popover | `Popover`：容器 r20（玻璃）、Content Area pad **20/20** | 面板 r4 + 1px 描边 | 面板 r12 + pad 20、只留投影 |
+| 9 | 输入框占位符 | `Text Field/Rounded`：Placeholder `#000000`@0.25 | 50%（`muted_foreground`） | 25%（`label3`） |
+| 10 | Combobox 触发器 | `Combo Box/False`：纯白底 + 两道向下投影，**没有 1px 硬边框** | `theme.input` 深边框（1~1.4px）+ 焦点时染蓝 | 白底 + 内阴影 + 分隔线色细边 + 3px 焦点光环 |
+| 11 | Toast | — | 一圈 1px 描边 | 只有投影 |
+| 12 | 进度条 | `Determinate/Medium`：`100×10` 胶囊 | 示例给 8 高 | 10 |
+| 13 | 下拉按钮圆角 | `Window/Pop-Up Button` r6 | `radius_sm`（4） | `theme.radius`（6） |
+| 14 | 输入组（prefix/suffix） | 同 `Text Field` | 白底 + `input` 深边框 | 与 `input()` 同一套皮 |
+
+第 6 条要单独说：kit 的 Group Box 裸值是 **1.5%**（3% 再乘 50% 不透明度），
+在 `#FFFFFF` 上等于 `#FBFBFB` —— 白底上根本看不见。所以容器取系统的
+"grouped background"（`Fills - Opaque/Tertiary`，5%），暗色下也正好落在
+`#1E1E1E → #292929` 这一档。剥掉那圈 1px 描边之后，示例卡不再是"白卡片 + 灰底
++ 边框"的 Web 三件套，而是一块比页底深一档的面 —— 这才是系统分组的表达方式。
+
+### 15.3 连带修好的三处判定
+
+- **`widget_probe` 的对话框点击点**：按钮从"右下角 36 高胶囊"变成"通宽 28 高行"，
+  点击坐标必须跟库同源算，不能写死。
+- **`verify_gallery` 的对话框三条断言**：「整窗变暗 / 面板比遮罩亮 / 点遮罩后变亮」
+  全部作废 —— 遮罩已经没有了。换成「导航亮度不变（不压暗）」「面板内一条竖带的
+  同色占比 ≥0.95（是一整块实心面）」「点面板外后该占比掉 0.25 以上（面板消失）」。
+  用平均亮度判"面板在不在"是错的：面板 `#F6F6F6`（246）和示例卡 `#F2F2F2`（242）
+  只差 4 级，平均下来分不开。
+- **`ci_pixels` 的 S3 面板断言**：期望值从 `fill5` 改成 `fill3`。
+- **`shadow_text_probe` 的阴影基线**：原来把 `overlay` 的压暗量当基线（50），现在
+  基线是 0；判据改成"面板右侧 +3px 变暗 >8、+34px <40"，量的是投影本身。
+
+### 15.4 验证
+
+```bash
+python tools/regress.py          # 49 项 / 0 失败（1 项环境 SKIP）
+python tools/verify_gallery.py   # 16 项 / 0 失败
+```
+
+像素实测（浅色）：按钮组选中胶囊 `#E6E6E6`、卡片面 `#F2F2F2`（页底 `#FFFFFF`）、
+分段选中段 `#0088FF` 且段内 215 个近白像素（白字）、进度条 10 高、滑块轨道 4 高。
+
+### 15.5 仍然没做
+
+- 液态玻璃（按约定跳过）：分段轨道用 8% 凹槽替代玻璃，Popover 用 r12 实心面
+  替代 r20 玻璃。
+- 侧边栏逐项 SF Symbol：`Item/Small` 是每项一枚 18×18 图标，现在按分组画字形。
