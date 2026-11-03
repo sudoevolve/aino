@@ -275,13 +275,14 @@ def main():
         s0 = Shot(hwnd, scale)
         rep.step("窗口可抓取", s0.ok, "ok=%s" % s0.ok)
 
-        # ---- 1. 外壳结构：标题栏下沿、侧边栏右沿各有一条 1px 分界线 ----
-        # 采样"线上 vs 线内 3px"，两条线都必须比邻近底色明显更深。
-        hits = 0
-        for lx in range(300, 1150, 40):
-            if sum(s0.at(lx, TITLE_H - 1)[:3]) + 10 < sum(s0.at(lx, TITLE_H - 4)[:3]):
-                hits += 1
-        rep.step("标题栏底部有 1px 分界线", hits >= 15, "命中 %d/22 个采样点" % hits)
+        # ---- 1. 外壳结构：标题栏是**另一块材质面**，不是同色 + 一根线 ----
+        # macOS 的工具栏和内容区靠换色分界（Title Bar 材质 vs 窗口底）。之前的
+        # 判据是"下沿有一条 1px 分界线"，那正是网页头部的写法，已经删掉。
+        # 采样上下两侧的平均亮度：必须不同，且**不存在**一整条比两侧都深的线。
+        above = s0.avg(360.0, TITLE_H - 26.0, 1100.0, TITLE_H - 8.0)
+        below = s0.avg(360.0, TITLE_H + 8.0, 1100.0, TITLE_H + 26.0)
+        rep.step("标题栏是独立材质面（与内容区不同色）", abs(above - below) >= 8.0,
+                 "标题栏 %.0f，内容 %.0f" % (above, below))
 
         hits = 0
         for ly in range(120, 700, 20):
@@ -393,7 +394,10 @@ def main():
         time.sleep(2.2)
         sc2 = client_scale(h2)
         sh = Shot(h2, sc2)
-        v = sh.avg(20.0, 150.0, NAV_W - 30.0, 420.0)
+        # 采**标题栏**而不是导航：面板的 Primary 投影（blur 90 / dy 30）会一路压到
+        # 左侧导航上，那是投影该有的样子；要证明的是"没有整屏黑幕"，所以取一个
+        # 投影够不到的位置（标题栏离面板上沿还有 300 多）。
+        v = sh.avg(NAV_W + 40.0, 10.0, LOGICAL_W - 40.0, TITLE_H - 10.0)
         return p2, h2, (sh, sc2, v)
 
     p_b, h_b, base = nav_luma_of({"AINO_START_PAGE": "Dialog"})
@@ -411,7 +415,7 @@ def main():
         time.sleep(2.2)
         scale = client_scale(hwnd)
         s4 = Shot(hwnd, scale)
-        nav_luma = s4.avg(20.0, 150.0, NAV_W - 30.0, 420.0)
+        nav_luma = s4.avg(NAV_W + 40.0, 10.0, LOGICAL_W - 40.0, TITLE_H - 10.0)
         rep.step("对话框不压暗整窗（macOS 无黑幕）", abs(nav_luma - nav_base) <= 5.0,
                  "导航亮度 %.0f → %.0f" % (nav_base, nav_luma))
         # 不再用"整块区域的平均亮度"判断面板是否盖住内容：面板 #F6F6F6（246）和
@@ -421,8 +425,11 @@ def main():
         # 面板左侧那一条竖带（内缩 15~5px，避开通栏文字）在打开时应该是**同一种
         # 面板色**；关掉之后那里是示例页的卡面/页底，颜色立刻变杂。
         def panel_strip(sh):
-            px0, px1 = LOGICAL_W * 0.5 - 185.0, LOGICAL_W * 0.5 - 175.0
-            py0, py1 = LOGICAL_H * 0.5 - 90.0, LOGICAL_H * 0.5 + 90.0
+            # 采**左侧内边距**那一条（面板 pad 20，正文从 cx-170 起，所以
+            # cx-184..-176 是纯空白）。纵向只取中段 —— 上下各留 30，避开 r10
+            # 的圆角弧，否则边角会采到面板外面。
+            px0, px1 = LOGICAL_W * 0.5 - 184.0, LOGICAL_W * 0.5 - 176.0
+            py0, py1 = LOGICAL_H * 0.5 - 60.0, LOGICAL_H * 0.5 + 30.0
             target = sh.avg(px0, py0, px1, py1)
             hit = tot = 0
             for yy in range(int(py0), int(py1), 3):

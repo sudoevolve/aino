@@ -4698,7 +4698,9 @@ inline Skin make_skin(const Theme& th, const Style& st, int default_variant, flo
             sk.rim   = Color(255, 255, 255, 40);
             break;
         case Style::Secondary:
-            sk.base = th.fill;  sk.hover = th.fill;  sk.press = th.fill_press;
+            // kit `Buttons/Bordered` 的 BG 是 **8%**（Fills - Opaque/Secondary），
+            // 不是 10% —— 10% 会让一整排按钮看着比工具栏重一档。
+            sk.base = th.fill2;  sk.hover = th.fill2;  sk.press = th.fill_press;
             sk.fg   = th.label;
             break;
         case Style::Outline:
@@ -4716,8 +4718,8 @@ inline Skin make_skin(const Theme& th, const Style& st, int default_variant, flo
         case Style::Destructive:
             // macOS 的破坏性按钮 = 普通（8% 面）按钮 + 红字，不是红底白字的 iOS 主按钮。
             // 红底会把"删除"变成页面里视觉最重的元素，这在一个原生界面里从不发生。
-            sk.base  = th.fill; sk.fg = th.destructive;
-            sk.hover = th.fill;
+            sk.base  = th.fill2; sk.fg = th.destructive;
+            sk.hover = th.fill2;
             sk.press = th.fill_press;
             break;
         case Style::Link:
@@ -4842,7 +4844,8 @@ inline void paint_menu(Ui& ui, const Rect& list,
     const float r = 12.0f;
     pop_shadow(ui, list, r, th, 0);          // 菜单 = Quaternary 投影
     ui.fill_rect(list, th.popover_bg, r);
-    ui.stroke_rect(list, th.separator, r, 1.0f);
+    // 不描边：mac 的菜单/气泡只有投影，一圈 1px 线是 Web 的下拉面板
+
     ui.push_clip(list);
     // 菜单行的悬停高亮在 macOS 26/27 是**中性灰**（Figma：r8、#E6E6E6 / #141414），
     // 不是强调色蓝条。蓝色高亮 + 白字是 Big Sur 之前的老观感，也是 Web 下拉框的
@@ -5538,7 +5541,9 @@ inline bool Ui::nav_item(const std::string& label, bool active, const Rect& box,
     const float t_hover  = detail::animate_value(impl, id * 31u + 1u, (in.hovered && !active) ? 1.0f : 0.0f, 20.0f);
     const float t_active = detail::animate_value(impl, id * 31u + 2u, active ? 1.0f : 0.0f, 24.0f);
 
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius;
+    // 选中底是 **r8**（kit `Item/Small/Selected` 的选中 Frame 是 178×24 r8，
+    // 而整行自己的圆角只有 5）—— 用按钮的 6 会显得比系统"方"半档。
+    const float rad = st.radius >= 0.0f ? st.radius : 8.0f;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float pad = st.pad_x >= 0.0f ? st.pad_x : 8.0f;
 
@@ -6533,7 +6538,9 @@ inline bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
     uint64_t id = detail::make_id("textarea", box);
     const bool enabled = !st.disabled;
-    const float rad  = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    // 和 input() 同一档圆角（6）与同一套皮 —— 多行框不是"另一种控件"，
+    // 它是同一个 Text Field 长高了。
+    const float rad  = st.radius >= 0.0f ? st.radius : th.radius;
     const float padx = st.pad_x >= 0.0f ? st.pad_x : 10.0f;
     const float pady = st.pad_y >= 0.0f ? st.pad_y : 8.0f;
     const float fs   = st.font_size > 0.0f ? st.font_size : th.font_size;
@@ -6826,14 +6833,16 @@ inline bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
 
     // ---------------- 绘制 ----------------
     const float t_hover = detail::animate_value(impl, id * 89u + 2u, (in.hovered && !focused) ? 1.0f : 0.0f, 18.0f);
-    Color bg = !st.bg.is_none() ? st.bg : th.background;
+    // 纯白底 + 顶部内阴影 + 极淡描边（同 input），焦点走 3px 光环而不是"边框染粗"
+    Color bg = !st.bg.is_none() ? st.bg : th.window_bg;
     if (st.disabled && bg.a > 0) bg.a = uint8_t(float(bg.a) * 0.45f);
     if (bg.a > 0) fill_rect(box, bg, rad);
-    Color bd = !st.border_color.is_none() ? st.border_color : th.input;
-    if (focused) bd = th.ring;
-    else if (t_hover > 0.01f) bd = bd.mix(th.foreground.with_alpha(120), t_hover * 0.4f);
+    inner_shadow(box, th.is_dark() ? Color(0, 0, 0, 70) : Color(0, 0, 0, focused ? 10 : 18),
+                 rad, 1.8f, 1.0f);
+    Color bd = !st.border_color.is_none() ? st.border_color : th.separator;
+    if (t_hover > 0.01f && !focused) bd = bd.mix(th.label3, t_hover);
     const float bw = st.border_width >= 0.0f ? st.border_width : 1.0f;
-    if (bw > 0.0f) stroke_rect(box, bd, rad, focused ? bw + 0.4f : bw);
+    if (bw > 0.0f) stroke_rect(box, bd, rad, bw);
 
     // 组字串优先于 placeholder（空框 + hint 很常见，不能让 hint 把拼音顶掉）
     const bool composing = focused && !impl->ime_comp.empty();
@@ -6868,7 +6877,8 @@ inline bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
         }
     }
 
-    const Color fg = show_ph ? th.muted_foreground : (!st.fg.is_none() ? st.fg : th.foreground);
+    // 占位符 25%（同 Text Field）
+    const Color fg = show_ph ? th.label3 : (!st.fg.is_none() ? st.fg : th.foreground);
 
     // IME 预编辑串只挂在一行上（caret 所在行），在这里算一次就够
     std::pair<int, int> comp_lc(-1, -1);
@@ -8724,7 +8734,8 @@ inline void Ui::hover_card(const Rect& anchor, Vec2 content,
     if (!anchor.contains(kin.mouse.x, kin.mouse.y)) return;
     if (impl->gate_blocked_pointer()) return;
 
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
+    // 和 popover 同一套面板：r12、只有投影（悬停卡片是"轻气泡"，不是卡片）
+    const float rad = st.radius >= 0.0f ? st.radius : 12.0f;
     const float pad = 12.0f;
     const float pw = content.x + pad * 2.0f;
     const float ph = content.y + pad * 2.0f;
@@ -8741,7 +8752,6 @@ inline void Ui::hover_card(const Rect& anchor, Vec2 content,
         const Theme& t2 = impl->theme;
         detail::pop_shadow(*this, panel, rad, t2, 1);
         fill_rect(panel, t2.popover_bg, rad);
-        stroke_rect(panel, t2.border, rad, 1.0f);
         push_clip(panel);
         draw(inner);
         pop_clip();

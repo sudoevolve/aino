@@ -257,6 +257,10 @@ const char* kQuickstart =
 // macOS 的分组语汇是：11 Semibold 的灰色小标题 + 下面一个 1px 细线、r10 的
 // Group Box。之前这里是 2×2 的白卡片 + 描边 + 品牌色块，那是最典型的
 // dashboard，macOS 的窗口里没有这种"卡片墙"。
+// 页表在文件后半段才定义（要先有各页的 d_* 与自定义排版），这里只借它的总数，
+// 用来在概览页显示"组件页 47 个" —— 写死过一次，加页之后就对不上了。
+extern const int kPageCount;
+
 void draw_overview(Ui& ui, App& a, const Rect& area) {
     (void)a;
     const float GAP  = 26.0f;
@@ -272,8 +276,10 @@ void draw_overview(Ui& ui, App& a, const Rect& area) {
         {"空闲 CPU", "0.00%"},
         {"指针移动", "变化才画"},
         {"动画", "60 fps"},
-        {"组件", "47 个"},
-        {"回归断言", "45 项"},
+        // 页数用 kPageCount 现算（写死过一次，加页之后就再也对不上了）；
+        // 断言数来自 tools/regress.py 的期望值，改那边时记得一起改这里。
+        {"组件页", std::to_string(kPageCount - 1) + " 个"},
+        {"回归断言", "49 项"},
         {"文字", "系统字体"},
         {"几何", "自绘 AA"},
         {"DLL", "仅系统库"},
@@ -2131,8 +2137,11 @@ void draw_titlebar(Ui& ui, App& a) {
     const float w  = ui.width();
     const float cy = 26.0f;
 
-    ui.fill_rect(Rect(a.nav_w, 0.0f, w - a.nav_w, kTitleH), th.window_bg, 0.0f);
-    ui.fill_rect(Rect(a.nav_w, kTitleH - 1.0f, w - a.nav_w, 1.0f), th.separator, 0.0f);
+    // 标题栏用**材质色**（`Materials - Controls/Title Bar`），不是窗口底 + 一条线。
+    // 系统里工具栏和内容区是"两块不同的面"，靠换色分界；同一色再压一根 1px 线
+    // 是网页头部的写法。浅色下这块正好和侧边栏同色，连成一条灰带 —— 这就是
+    // macOS 的统一工具栏。
+    ui.fill_rect(Rect(a.nav_w, 0.0f, w - a.nav_w, kTitleH), th.title_bg, 0.0f);
 
     // 红绿灯：直径 12、间距 8（官方 Traffic Light 就是这个数）。纯色圆在浅灰
     // 侧边栏上会发飘，所以先垫一层 12% 的暗底当 0.5px 边。
@@ -2223,10 +2232,11 @@ void draw_nav(Ui& ui, App& a, const Rect& nav) {
         }
         const Rect rw = ui.row(kNavItemH);
         const bool active = (a.page == r.page);
-        // 图标在 24 处、文字从 40 起（Finder 的条目就是这个关系：图标比文字重 14）
+        // 选中底左右各内缩 **10**（kit `Item/*/Selected`：198 宽的行，选中块是
+        // 178 宽），文字从 44 起 —— 图标 20 宽、间隔 6，和系统 source list 一致。
         if (ui.nav_item(kPages[r.page].name, active,
-                        Rect(rw.x + 8.0f, rw.y, rw.w - 16.0f, rw.h),
-                        Style().font(13.0f).padding(36.0f)))
+                        Rect(rw.x + 10.0f, rw.y, rw.w - 20.0f, rw.h),
+                        Style().font(13.0f).padding(34.0f)))
             a.page = r.page;
         // 图标是**有色的**，不是灰的：Finder 的收藏、系统设置的面板图标都是
         // 彩色 SF Symbol（而且大半是蓝的）。文字仍然走灰阶（label / label2），
