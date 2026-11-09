@@ -272,6 +272,14 @@ def main():
         scale = client_scale(hwnd)
         print("  窗口 %.0fx%.0f 逻辑，缩放 %.2f" % (LOGICAL_W, LOGICAL_H, scale))
 
+        # 抓第一张之前先把指针挪进内容区并等它淡出。侧边栏的滚动条是 overlay，
+        # 指针压在上面时就一直亮着，而它正好盖住导航右边缘 —— 下面那条"1px 分界线"
+        # 会因此量到"左边是滚动条、右边是分界线"，判成没有线（假失败）。
+        pt = vr.wintypes.POINT(int(700.0 * scale), int(400.0 * scale))
+        vr.user32.ClientToScreen(hwnd, vr.ctypes.byref(pt))
+        vr.user32.SetCursorPos(pt.x, pt.y)
+        time.sleep(1.2)
+
         s0 = Shot(hwnd, scale)
         rep.step("窗口可抓取", s0.ok, "ok=%s" % s0.ok)
 

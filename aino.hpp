@@ -6833,12 +6833,18 @@ inline bool Ui::search_field(std::string* value, const Rect& box, const Style& s
     if (s.pad_x < 0.0f)  s.pad_x  = 26.0f;                // 给放大镜让位
     bool changed = input(value, box, s);
 
-    detail::paint_magnifier(*this, box.x + 13.0f, box.cy(), 4.2f, th.muted_foreground);
+    // 禁用时放大镜跟着文字一起淡到 45%：只淡文字、图标还是满色的话，看着像
+    // "图标可点、文字是灰的"。
+    Color mag = th.muted_foreground;
+    if (st.disabled) mag.a = uint8_t(float(mag.a) * 0.45f);
+    detail::paint_magnifier(*this, box.x + 13.0f, box.cy(), 4.2f, mag);
 
-    if (!value->empty()) {
+    // 禁用的搜索框**没有**清除按钮 —— 系统里 enabled = NO 时这个按钮根本不画，
+    // 画出来就是个按不动的叉，只会让人以为框还能改。
+    if (!value->empty() && !st.disabled) {
         const uint64_t cid = detail::make_id("searchclear", box);
         const Rect cr(box.right() - box.h * 0.5f, box.y, box.h, box.h);
-        detail::Interact ci = detail::interact(impl, cid, cr, !st.disabled);
+        detail::Interact ci = detail::interact(impl, cid, cr, true);
         if (ci.hovered) set_cursor(Cursor::Arrow);
         const Color badge = th.label3.is_none() ? th.muted_foreground : th.label3;
         detail::paint_clear_badge(*this, cr.cx(), cr.cy(), 7.0f, badge, Color(255, 255, 255, 235));

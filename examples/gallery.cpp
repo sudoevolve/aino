@@ -833,12 +833,24 @@ void d_toast(Ui& ui, App& a, const Rect& box) {
 }
 
 void d_tooltip(Ui& ui, App& a, const Rect& box) {
-    const Rect t(box.x, box.y, 150.0f, 24.0f);
-    ui.button("悬停查看", t, Style().outline());
-    ui.tooltip(t, "tooltip 在悬停约 0.4 秒后出现，移开即消失");
-    const Rect b2(t.right() + 10.0f, t.y, 62.0f, 24.0f);
-    ui.badge("New", b2);
-    ui.tooltip(b2, "任意矩形都能作为锚点");
+    const aino::Theme& th = ui.theme();
+    const Rect t(box.x, box.y, 84.0f, 24.0f);
+    ui.button("删除", t, Style().outline());
+    ui.tooltip(t, "删除选中的文件");
+    const Rect b2(t.right() + 10.0f, t.y, 28.0f, 24.0f);
+    ui.button("?", b2, Style().secondary());
+    ui.tooltip(b2, "更多操作");
+
+    // 悬停态截图抓不到，这里按系统的 18 高 / r5 / 11 Medium 在"?"下面补一个
+    // 静态气泡 —— 两个锚点各自的提示文字不同，不会看成重影。
+    const std::string tx = "更多操作";
+    const float fs = 11.0f;
+    const float w  = ui.text_width(tx, fs, 500) + 12.0f;
+    const Rect bub(b2.cx() - w * 0.5f, b2.bottom() + 6.0f, w, 18.0f);
+    ui.drop_shadow(bub, 5.0f, 10.0f, aino::Color(0, 0, 0, 70), 2.0f);
+    ui.fill_rect(bub, th.tooltip_bg, 5.0f);
+    if (th.tooltip_stroke.a > 0) ui.stroke_rect(bub, th.tooltip_stroke, 5.0f, 0.6f);
+    ui.draw_text(tx, bub, th.popover_foreground, Style().center().font(fs).medium());
     (void)a;
 }
 
@@ -1914,15 +1926,16 @@ void page_materials(Ui& ui, App& a, const Rect& area) {
 //  第九轮：kit 里有、库里原来没有的控件
 // =============================================================================
 void d_search(Ui& ui, App& a, const Rect& box) {
-    Stack c = demo_col(ui, box, 10.0f);
-    Rect r = c.next(24.0f); r.w = std::min(r.w, 280.0f);
-    ui.search_field(&a.search, r, Style().hint("搜索"));
-    Rect r2 = c.next(24.0f); r2.w = std::min(r2.w, 280.0f);
+    // 三种状态**并排**（有内容 / 空 / 禁用），不是竖着摞在左上角。kit 的
+    // `Search Field` 就是一个 6 态的变体条；竖排三行占不满一行宽，页面看着空。
+    const float gap = 24.0f;
+    const float fw  = std::min(280.0f, (box.w - gap * 2.0f) / 3.0f);
+    static std::string off_val = "aino";     // 禁用示例独占一个串，不跟第一条联动
     std::string empty;
-    ui.search_field(&empty, r2, Style().hint("搜索"));
-    Rect r3 = c.next(24.0f); r3.w = std::min(r3.w, 280.0f);
-    ui.search_field(&a.search, r3, Style().hint("搜索").off());
-    (void)a;
+    ui.search_field(&a.search, Rect(box.x, box.y, fw, 24.0f), Style().hint("搜索"));
+    ui.search_field(&empty,    Rect(box.x + fw + gap, box.y, fw, 24.0f), Style().hint("搜索"));
+    ui.search_field(&off_val,  Rect(box.x + (fw + gap) * 2.0f, box.y, fw, 24.0f),
+                    Style().hint("搜索").off());
 }
 
 void d_color_well(Ui& ui, App& a, const Rect& box) {
@@ -2104,7 +2117,7 @@ const Page kPages[] = {
     {"控件", "Pop-up and Pull-down Buttons", "下拉按钮：8% 面 + 上下双箭头。", "NSPopUpButton",
      kSelect, COUNT(kSelect)},
     {"控件", "Search Fields", "胶囊搜索框。", "NSSearchField",
-     kSearchPage, COUNT(kSearchPage)},
+     kSearchPage, COUNT(kSearchPage), nullptr, nullptr, 1},
     {"控件", "Segmented Controls", "凹槽内分段；选中 = 强调色内缩 2。", "NSSegmentedControl",
      kSegCtl, COUNT(kSegCtl)},
     {"控件", "Sliders and Dials", "轨道 4px、把手 20×16 的白色胶囊。", "NSSlider",
