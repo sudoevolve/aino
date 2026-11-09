@@ -6839,15 +6839,25 @@ inline bool Ui::search_field(std::string* value, const Rect& box, const Style& s
     if (st.disabled) mag.a = uint8_t(float(mag.a) * 0.45f);
     detail::paint_magnifier(*this, box.x + 13.0f, box.cy(), 4.2f, mag);
 
-    // 禁用的搜索框**没有**清除按钮 —— 系统里 enabled = NO 时这个按钮根本不画，
-    // 画出来就是个按不动的叉，只会让人以为框还能改。
-    if (!value->empty() && !st.disabled) {
+    // 清除键：14px 直径的实心圆，**中心在框内 12px 处**（右侧留 5px 边距）。
+    // 之前写成 `right - h*0.5` 还给了 h 的宽度，rect 的右边界正好落在框沿上，
+    // 圆心就被推到框的右边缘 —— 半个圆跑到胶囊外面，压在边框上。
+    // 现在 rect 从 right - h 起，圆心落在 right - 12。
+    if (!value->empty()) {
         const uint64_t cid = detail::make_id("searchclear", box);
-        const Rect cr(box.right() - box.h * 0.5f, box.y, box.h, box.h);
-        detail::Interact ci = detail::interact(impl, cid, cr, true);
+        const Rect cr(box.right() - box.h, box.y, box.h, box.h);
+        detail::Interact ci = detail::interact(impl, cid, cr, !st.disabled);
         if (ci.hovered) set_cursor(Cursor::Arrow);
-        const Color badge = th.label3.is_none() ? th.muted_foreground : th.label3;
-        detail::paint_clear_badge(*this, cr.cx(), cr.cy(), 7.0f, badge, Color(255, 255, 255, 235));
+        // 禁用时叉照画、只是淡下去（kit 的 `State=Disabled` 变体里 Clear 还在，
+        // 直接不画反而对不上）。
+        const float dim = st.disabled ? 0.45f : 1.0f;
+        Color badge = th.label3.is_none() ? th.muted_foreground : th.label3;
+        Color cross = Color(255, 255, 255, 235);
+        if (dim < 1.0f) {
+            badge.a = uint8_t(float(badge.a) * dim);
+            cross.a = uint8_t(float(cross.a) * dim);
+        }
+        detail::paint_clear_badge(*this, cr.cx(), cr.cy(), 7.0f, badge, cross);
         if (ci.clicked) {
             value->clear();
             impl->caret = 0;

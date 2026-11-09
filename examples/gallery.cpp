@@ -1325,7 +1325,7 @@ const Demo kTooltip[] = {
     {"悬停提示", "任意矩形都能当锚点；移开即消失",
      R"cpp(ui.tooltip(btn_rect, "tooltip 在悬停后出现");
 ui.tooltip(badge_rect, "任意矩形都能作为锚点");)cpp",
-     44.0f, d_tooltip},
+     60.0f, d_tooltip},
 };
 
 const Demo kContextMenu[] = {
