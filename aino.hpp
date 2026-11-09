@@ -8181,8 +8181,12 @@ inline bool Ui::sheet(const std::string& title, const std::string& body, bool* o
     if (!box.contains(kin.mouse.x, kin.mouse.y) && (kin.pressed[0] || kin.pressed[1])) dismiss = true;
     if (kin.key_pressed[KEY_ESC]) dismiss = true;
 
+    // 投影要裁在 sheet 的上边缘以下：不裁的话，圆角面板的投影会浮在标题栏
+    // 和 sheet 之间，看着像"面板从天上掉下来停在半空"。
     const Rect draw_r(box.x, box.y - 12.0f, box.w, box.h + 12.0f);
+    push_clip(Rect(0.0f, box.y, width(), std::max(height() - box.y, 1.0f)));
     detail::pop_shadow(*this, draw_r, 12.0f, th, 2);
+    pop_clip();
     push_clip(box);
     fill_rect(draw_r, !st.bg.is_none() ? st.bg : th.popover_bg, 12.0f);
 
@@ -8537,7 +8541,10 @@ inline bool Ui::input_group(std::string* value, const std::string& prefix, const
 
     // 和 input() 同一套皮：纯白底 + 顶部内阴影 + 极淡描边。之前是"白底 + 1px
     // 深边框"，跟旁边真正能打字的输入框不是一张皮。
-    fill_rect(box, !st.bg.is_none() ? st.bg : th.window_bg, rad);
+    // 暗色下输入框必须比窗口**亮一档**（#282828 vs #1E1E1E）：取 window_bg 的话
+    // 输入框和页面同色，只剩一圈描边，看起来像"没有框"。
+    fill_rect(box, !st.bg.is_none() ? st.bg
+                                   : (th.is_dark() ? th.control_bg : th.window_bg), rad);
     inner_shadow(box, th.is_dark() ? Color(0, 0, 0, 70) : Color(0, 0, 0, 18), rad, 1.8f, 1.0f);
     stroke_rect(box, !st.border_color.is_none() ? st.border_color : th.separator, rad, 1.0f);
 
@@ -9498,7 +9505,10 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
     // 可编辑的 NSComboBox = **输入框的皮**（白底 + 顶部内阴影 + 极淡描边）+
     // 右侧上下箭头按钮。kit `Combo Box/False` 就是这个配方：纯白底、两道向下
     // 投影、没有 1px 硬边框 —— 一圈 1~1.4px 的深边框是 shadcn 的 Input。
-    fill_rect(box, !st.bg.is_none() ? st.bg : th.window_bg, rad);
+    // 暗色下输入框必须比窗口**亮一档**（#282828 vs #1E1E1E）：取 window_bg 的话
+    // 输入框和页面同色，只剩一圈描边，看起来像"没有框"。
+    fill_rect(box, !st.bg.is_none() ? st.bg
+                                   : (th.is_dark() ? th.control_bg : th.window_bg), rad);
     inner_shadow(box, th.is_dark() ? Color(0, 0, 0, 70) : Color(0, 0, 0, focused ? 10 : 18),
                  rad, 1.8f, 1.0f);
     Color bd = !st.border_color.is_none() ? st.border_color : th.separator;

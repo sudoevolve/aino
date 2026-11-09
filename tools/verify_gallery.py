@@ -443,6 +443,15 @@ def main():
         strip_open = panel_strip(s4)
         rep.step("面板是一整块实心面（不是透明框）", strip_open >= 0.95,
                  "同色占比 %.2f" % strip_open)
+
+        # 面板与页面底色的亮度差。不能再用"同色占比"来判断面板是否消失：示例页
+        # 现在内容稀疏，面板底下那片也是纯色，关掉之后占比照样是 1.0（这条断言
+        # 曾经因此假绿）。
+        def panel_luma(sh):
+            return sh.avg(LOGICAL_W * 0.5 - 40.0, LOGICAL_H * 0.5 - 30.0,
+                          LOGICAL_W * 0.5 + 40.0, LOGICAL_H * 0.5 + 30.0)
+
+        luma_open = panel_luma(s4)
         if a.shots:
             save_png(s4.raw, s4.w, s4.h, os.path.join(ROOT, "screenshots", "gallery-dialog.png"))
 
@@ -451,9 +460,9 @@ def main():
         vr.click_logical(hwnd, 40.0, LOGICAL_H - 40.0, scale)
         time.sleep(0.7)
         s5 = Shot(hwnd, scale)
-        strip_closed = panel_strip(s5)
-        rep.step("点面板外关闭（面板消失）", strip_closed < strip_open - 0.25,
-                 "同色占比 %.2f → %.2f" % (strip_open, strip_closed))
+        luma_closed = panel_luma(s5)
+        rep.step("点面板外关闭（面板消失）", abs(luma_closed - luma_open) >= 4.0,
+                 "面板区亮度 %.0f → %.0f" % (luma_open, luma_closed))
     finally:
         stop(proc)
 

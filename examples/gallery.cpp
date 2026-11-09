@@ -171,6 +171,10 @@ struct Page {
     // 色彩 / 材质 / 字阶这三页是设计规范板，不是控件示例 —— 套进卡片表头反而
     // 变成"在一个框里再画一个框"。
     void (*custom)(Ui&, App&, const Rect&) = nullptr;
+    // 版面列数。kit 的组件页是"一张画布上摆多簇变体"，本库用等宽多列来等价：
+    // 2 列时每格 ~430，正好是这些示例原本的宽度；宽内容（表格/工具栏/材质）
+    // 单独占满一行，传 1。
+    int cols = 2;
 };
 
 // ---------------------------------------------------------------- 布局助手
@@ -409,14 +413,17 @@ Stack demo_col(Ui& ui, const Rect& box, float gap) {
 }
 
 void d_btn_variants(Ui& ui, App& a, const Rect& box) {
-    auto c = ui.vbox(box, 8.0f);
+    // 变体排成 3×2 的**网格**，不是一列。竖着排六个按钮会让整页看着像一张表单，
+    // 而 kit 里这是六种并列的样式样本。
     const Style::Variant vs[] = {Style::Default, Style::Secondary, Style::Outline,
                                  Style::Ghost, Style::Destructive, Style::Link};
     const char* names[] = {"Default", "Secondary", "Outline", "Ghost", "Destructive", "Link"};
+    const float bw = 132.0f, gap = 10.0f;
     for (int i = 0; i < 6; ++i) {
         Style st;
         st.variant = vs[i];
-        if (ui.button(names[i], cell(c, 132.0f, 24.0f), st)) { ++a.hits; a.last = names[i]; }
+        const Rect r(box.x + float(i % 3) * (bw + gap), box.y + float(i / 3) * 32.0f, bw, 24.0f);
+        if (ui.button(names[i], r, st)) { ++a.hits; a.last = names[i]; }
     }
 }
 
@@ -461,15 +468,11 @@ void d_kbd_sep(Ui& ui, App& a, const Rect& box) {
     {
         Stack r = c.hbox(22.0f, 4.0f);
         ui.kbd("Ctrl", r.next_text("Ctrl", 16.0f, 11.0f, 500));
-        ui.muted_text("+", r.next(10.0f), Style().center());
         ui.kbd("Shift", r.next_text("Shift", 16.0f, 11.0f, 500));
-        ui.muted_text("+", r.next(10.0f), Style().center());
         ui.kbd("K", r.next_text("K", 18.0f, 11.0f, 500));
     }
     ui.separator(c.next(1.0f));
     ui.separator(c.next(1.0f));
-    ui.muted_text("separator 的水平与垂直两种朝向由 box 的宽高比决定。", c.next(18.0f),
-                  Style().left().font(11.5f));
     (void)a;
 }
 
@@ -502,8 +505,6 @@ void d_input(Ui& ui, App& a, const Rect& box) {
     Stack c = demo_col(ui, box, 10.0f);
     ui.input(&a.email, c.next(24.0f), Style().hint("you@example.com"));
     ui.input(&a.keyword, c.next(24.0f), Style().hint("搜索…"));
-    ui.muted_text("焦点、选中、剪贴板、IME 组合串都由库处理。", c.next(18.0f),
-                  Style().left().font(11.5f));
 }
 
 void d_textarea(Ui& ui, App& a, const Rect& box) {
@@ -516,8 +517,6 @@ void d_input_group(Ui& ui, App& a, const Rect& box) {
     Stack c = demo_col(ui, box, 10.0f);
     ui.input_group(&a.amount, "¥", "元", c.next(24.0f));
     ui.input_group(&a.phone, "+86", "", c.next(24.0f));
-    ui.muted_text("前后缀区域同属输入框热区，点击任意位置都能落光标。", c.next(18.0f),
-                  Style().left().font(11.5f));
 }
 
 void d_otp(Ui& ui, App& a, const Rect& box) {
@@ -547,8 +546,6 @@ void d_switch(Ui& ui, App& a, const Rect& box) {
         ui.label("蓝牙", rr, Style().left().font(12.5f));
         ui.toggle(&a.bt, Rect(rr.right() - 44.0f, rr.y, 44.0f, 26.0f));
     }
-    ui.muted_text("toggle() 是 Switch。按下去态按钮是 toggle_button()。", c.next(18.0f),
-                  Style().left().font(11.5f));
 }
 
 void d_radio(Ui& ui, App& a, const Rect& box) {
@@ -558,9 +555,10 @@ void d_radio(Ui& ui, App& a, const Rect& box) {
 void d_slider(Ui& ui, App& a, const Rect& box) {
     Stack c = demo_col(ui, box, 12.0f);
     ui.slider(&a.vol, 0.0f, 1.0f, c.next(26.0f));
-    char buf[64];
-    std::snprintf(buf, sizeof buf, "vol = %.2f", double(a.vol));
-    ui.muted_text(buf, c.next(18.0f), Style().left().font(11.5f));
+    float mid = 0.5f, low = 0.0f, hi = 1.0f;
+    ui.slider(&mid, 0.0f, 1.0f, c.next(26.0f));
+    ui.slider(&low, 0.0f, 1.0f, c.next(26.0f));
+    ui.slider(&hi, 0.0f, 1.0f, c.next(26.0f), Style().off());
 }
 
 // 截图工具钩子：AINO_OPEN=select|combobox 让指定下拉默认展开。
@@ -581,8 +579,6 @@ void d_select(Ui& ui, App& a, const Rect& box) {
     const Rect sr = c.next(24.0f);
     demo_force_open(ui, "select", sr);        // AINO_OPEN=select 时强制展开（截图用）
     ui.select(kPlans, &a.plan, sr, Style().hint("选择套餐"));
-    ui.muted_text("列表在帧末绘制，所以永远压住后面的内容。", c.next(18.0f),
-                  Style().left().font(11.5f));
 }
 
 void d_combobox(Ui& ui, App& a, const Rect& box) {
@@ -590,8 +586,6 @@ void d_combobox(Ui& ui, App& a, const Rect& box) {
     const Rect cr = c.next(24.0f);
     demo_force_open(ui, "combobox", cr);      // AINO_OPEN=combobox 时强制展开
     ui.combobox(kLangs, &a.combo, cr);
-    ui.muted_text("展开后直接打字过滤，↑↓ 移动，回车确认，Esc 关闭。", c.next(18.0f),
-                  Style().left().font(11.5f));
 }
 
 void d_toggle(Ui& ui, App& a, const Rect& box) {
@@ -602,16 +596,12 @@ void d_toggle(Ui& ui, App& a, const Rect& box) {
         ui.toggle_button("斜体", &a.italic, r.next(84.0f));
     }
     ui.toggle_group({"日", "周", "月"}, &a.tg, c.next(24.0f));
-    ui.muted_text("toggle_group 单选：再点当前项会取消，使 index 变为 -1。", c.next(18.0f),
-                  Style().left().font(11.5f));
 }
 
 void d_button_group(Ui& ui, App& a, const Rect& box) {
     Stack c = demo_col(ui, box, 12.0f);
     ui.button_group({"复制", "粘贴", "剪切"}, &a.bg_click, c.next(24.0f));
     ui.toggle_group_multi({"B", "I", "U"}, &a.tgm, c.next(24.0f));
-    ui.muted_text("同一条凹槽轨道里分段；前者互斥，后者用位掩码表示任意组合。", c.next(18.0f),
-                  Style().left().font(11.5f));
 }
 
 void d_stepper_rating(Ui& ui, App& a, const Rect& box) {
@@ -623,7 +613,6 @@ void d_stepper_rating(Ui& ui, App& a, const Rect& box) {
     ui.rating(&a.stars, 5, c.next(24.0f));
     char buf[64];
     std::snprintf(buf, sizeof buf, "step = %.0f · rating = %d", double(a.step), a.stars);
-    ui.muted_text(buf, c.next(18.0f), Style().left().font(11.5f));
 }
 
 void d_field(Ui& ui, App& a, const Rect& box) {
@@ -653,8 +642,6 @@ void d_tabs(Ui& ui, App& a, const Rect& box) {
     Stack c = demo_col(ui, box, 14.0f);
     ui.tabs(kViews, &a.tab, c.next(24.0f));
     ui.segmented(kPlans, &a.seg, c.next(24.0f));
-    ui.muted_text("标签栏（无下划线）与胶囊分段：两套视觉，同一套索引语义。",
-                  c.next(18.0f), Style().left().font(11.5f));
 }
 
 void d_table(Ui& ui, App& a, const Rect& box) {
@@ -669,7 +656,6 @@ void d_card(Ui& ui, App& a, const Rect& box) {
         ui.panel(p);
         Stack in = ui.vbox(p, 2.0f, 14.0f);
         ui.label("panel", in.next(18.0f), Style().left().semi_bold().font(12.5f));
-        ui.muted_text("卡片底色、边框、圆角来自主题", in.next(16.0f), Style().left().font(11.5f));
     }
     // 两行条目：macOS 列表里 44 高（不是 Web 的 50），行间一条 1px 分隔线
     ui.item("张伟", "zhangwei@example.com", "管理员", c.next(44.0f), Style().row_lines());
@@ -687,20 +673,15 @@ void d_pagination(Ui& ui, App& a, const Rect& box) {
     ui.pagination(&a.page_no, 20, c.next(24.0f));
     char buf[64];
     std::snprintf(buf, sizeof buf, "第 %d / 20 页", a.page_no + 1);
-    ui.muted_text(buf, c.next(18.0f), Style().left().font(11.5f));
 }
 
 void d_accordion(Ui& ui, App& a, const Rect& box) {
     Stack c = ui.vbox(box, 4.0f);
     ui.accordion("渲染管线", &a.acc1, c.next(24.0f));
     if (a.acc1) {
-        ui.muted_text("几何自绘并做抗锯齿，文字交给系统字体引擎。", c.next(20.0f),
-                      Style().left().font(11.5f));
     }
     ui.accordion("输入分发", &a.acc2, c.next(24.0f));
     if (a.acc2) {
-        ui.muted_text("浮层通过输入闸门按位置与层级放行，不靠控件树。", c.next(20.0f),
-                      Style().left().font(11.5f));
     }
 }
 
@@ -745,8 +726,6 @@ void d_menu(Ui& ui, App& a, const Rect& box) {
         a.toast_msg = "已选择：" + a.last;
         a.toast_left = 2.4f;
     }
-    ui.muted_text("选中项写入 index 并返回 true，关闭由控件自己完成。",
-                  Rect(box.x, box.y + 46.0f, box.w, 18.0f), Style().left().font(11.5f));
 }
 
 // 截图工具钩子：AINO_OPEN=dialog|popover|drawer|toast 让浮层默认打开。
@@ -774,8 +753,6 @@ void d_menubar(Ui& ui, App& a, const Rect& box) {
     const MenuPick mp = ui.menubar(labels, items, bar);
     if (mp.valid())
         a.picked = labels[size_t(mp.menu)] + " → " + items[size_t(mp.menu)][size_t(mp.item)];
-    ui.muted_text("最近选择：" + a.picked, Rect(box.x, bar.bottom() + 12.0f, box.w, 18.0f),
-                  Style().left().font(11.5f));
 }
 
 void d_popover(Ui& ui, App& a, const Rect& box) {
@@ -786,8 +763,6 @@ void d_popover(Ui& ui, App& a, const Rect& box) {
                    ui.item("按时间", "", "", Rect(c.x, c.y + 26.0f, c.w, 24.0f));
                    ui.item("按大小", "", "", Rect(c.x, c.y + 52.0f, c.w, 24.0f));
                });
-    ui.muted_text("锚点由调用方给，内容由回调画，点外部或 Esc 关闭。",
-                  Rect(box.x, box.y + 46.0f, box.w, 18.0f), Style().left().font(11.5f));
 }
 
 void d_hover_card(Ui& ui, App& a, const Rect& box) {
@@ -795,10 +770,6 @@ void d_hover_card(Ui& ui, App& a, const Rect& box) {
     ui.item("张伟", "zhangwei@example.com", "管理员", anchor);
     ui.hover_card(anchor, Vec2(220.0f, 84.0f), [&](const Rect& c) {
         ui.label("张伟", Rect(c.x, c.y, c.w, 20.0f), Style().left().semi_bold());
-        ui.muted_text("加入于 2024 年 3 月", Rect(c.x, c.y + 22.0f, c.w, 17.0f),
-                      Style().left().font(11.5f));
-        ui.muted_text("只响应悬停，不参与点击命中", Rect(c.x, c.y + 42.0f, c.w, 17.0f),
-                      Style().left().font(11.5f));
     });
     (void)a;
 }
@@ -807,45 +778,40 @@ void d_dialog(Ui& ui, App& a, const Rect& box) {
     demo_set_open("dialog", &a.dlg);
     if (ui.button("打开对话框", Rect(box.x, box.y, 132.0f, 24.0f), Style().primary()))
         a.dlg = true;
-    ui.muted_text("面板由 o_dialog() 在页面末尾绘制，遮罩覆盖整窗。",
-                  Rect(box.x, box.y + 46.0f, box.w, 18.0f), Style().left().font(11.5f));
 }
 
 void o_dialog(Ui& ui, App& a) {
-    const Rect d = Rect::centered(ui.width() * 0.5f, ui.height() * 0.5f, 380.0f, 200.0f);
-    const std::string body =
-        "正文按宽度折行并被裁进面板。按钮由调用方紧接着画，因此天然位于面板之上。";
+    const Rect d = Rect::centered(ui.width() * 0.5f, ui.height() * 0.5f, 380.0f, 178.0f);
+    const std::string body = "删除后无法恢复，这份数据没有其他备份。";
     if (ui.dialog("确认删除", body, &a.dlg, d)) {
         // macOS 告警的按钮是**通宽 28 高的行，纵向排列**，最底一行是取消胶囊
         // （kit `Alert/3 Options + Cancel`）。右下角两颗小按钮是网页模态的排法。
+        // kit `Alert/3 Options + Cancel`：上面是若干条 228×28 的**无面通宽行**，
+        // 最下面单独一颗 28 高的胶囊取消键。
         const float pad = 20.0f, bh = 28.0f;
         const Rect cr(d.x + pad, d.bottom() - 16.0f - bh, d.w - pad * 2.0f, bh);
         const Rect orr(d.x + pad, cr.y - 16.0f - bh, d.w - pad * 2.0f, bh);
-        ui.fill_rect(Rect(orr.x, orr.y, orr.w, 1.0f), ui.theme().fill4, 0.0f);
-        if (ui.button("删除这个文件", orr, Style().ghost().destructive().font(13.0f).normal_weight()))
+        if (ui.button("删除这个文件", orr,
+                      Style().ghost().font(13.0f).normal_weight().color(ui.theme().destructive)))
             a.dlg = false;
         if (ui.button("取消", cr, Style().secondary().corner(bh * 0.5f).font(13.0f).medium()))
             a.dlg = false;
     }
     ui.alert_dialog("删除这个文件？", "删除后无法恢复，这份数据没有其他备份。",
                     "删除", "取消", &a.confirm,
-                    Rect(ui.width() * 0.5f - 190.0f, ui.height() * 0.5f - 100.0f, 380.0f, 200.0f),
+                    Rect(ui.width() * 0.5f - 190.0f, ui.height() * 0.5f - 89.0f, 380.0f, 178.0f),
                     Style().destructive());
 }
 
 void d_alert_dialog(Ui& ui, App& a, const Rect& box) {
     if (ui.button("删除…", Rect(box.x, box.y, 120.0f, 24.0f), Style().destructive()))
         a.confirm = true;
-    ui.muted_text("确认弹层与上一个示例共用同一套面板绘制。",
-                  Rect(box.x, box.y + 46.0f, box.w, 18.0f), Style().left().font(11.5f));
 }
 
 void d_drawer(Ui& ui, App& a, const Rect& box) {
     demo_set_open("drawer", &a.drawer);
     if (ui.button("打开抽屉", Rect(box.x, box.y, 120.0f, 24.0f), Style().outline()))
         a.drawer = true;
-    ui.muted_text("抽屉贴窗口边缘，所以同样在页面末尾绘制。",
-                  Rect(box.x, box.y + 46.0f, box.w, 18.0f), Style().left().font(11.5f));
 }
 
 void o_drawer(Ui& ui, App& a) {
@@ -864,8 +830,6 @@ void d_toast(Ui& ui, App& a, const Rect& box) {
         a.toast_msg = "操作已完成";
         a.toast_left = 2.4f;
     }
-    ui.muted_text("toast 在右下角，由 composeOverlayLayer 统一绘制。",
-                  Rect(box.x, box.y + 46.0f, box.w, 18.0f), Style().left().font(11.5f));
 }
 
 void d_tooltip(Ui& ui, App& a, const Rect& box) {
@@ -880,7 +844,6 @@ void d_tooltip(Ui& ui, App& a, const Rect& box) {
 
 void d_context_menu(Ui& ui, App& a, const Rect& box) {
     ui.panel(box);
-    ui.muted_text("在此区域右键", box, Style().center().font(11.5f));
     ui.context_menu(box, {"标记已读", "归档", "删除"}, &a.ctx_pick);
     if (a.ctx_pick >= 0) {
         a.last = "右键：" + std::to_string(a.ctx_pick);
@@ -915,56 +878,69 @@ void d_layout(Ui& ui, App& a, const Rect& box) {
     for (int i = 0; i < 3; ++i) {
         const Rect p = inner.part(i, 3);
         ui.panel(p, Style().background(ui.theme().muted).corner(6.0f));
-        ui.muted_text(i == 1 ? "嵌套" : "", p, Style().center().font(11.0f));
     }
 }
 
 void d_scroll(Ui& ui, App& a, const Rect& box) {
+    const aino::Theme& th = ui.theme();
     Stack c = ui.vbox(box, 8.0f);
     {
         Stack r = c.hbox(24.0f, 8.0f);
-        if (ui.button("回顶", r.part(0, 2), Style().outline())) a.scroll_cmd = 1;
-        if (ui.button("到底", r.part(1, 2), Style().outline())) a.scroll_cmd = 2;
+        if (ui.button("回顶", cell(r, 62.0f, 24.0f), Style().secondary())) a.scroll_cmd = 1;
+        if (ui.button("到底", cell(r, 62.0f, 24.0f), Style().secondary())) a.scroll_cmd = 2;
+        r.fill();
     }
     const Rect vp = c.fill();
-    const float ih = 24.0f;
-    const int   n = 20;
-    auto sc = ui.scroll(vp, ih * float(n));
-    if (a.scroll_cmd == 1) { sc.to(0.0f); a.scroll_cmd = 0; }
-    if (a.scroll_cmd == 2) { sc.to(1e6f); a.scroll_cmd = 0; }
-    for (int i = 0; i < n; ++i) {
-        const Rect r = ui.row(ih);
-        ui.panel(r.inset(0.0f, 1.0f), Style().background(ui.theme().muted));
-        char buf[64];
-        std::snprintf(buf, sizeof buf, "列表项 %02d", i + 1);
-        ui.label(buf, Rect(r.x + 10.0f, r.y + 1.0f, r.w - 20.0f, r.h - 2.0f), Style().left());
+    // 滚动区要有自己的"面"：内容区底色 + 一圈细线。没有面的话行会直接贴在
+    // 页面背景上，看起来是一堆浮空的灰条。
+    ui.fill_rect(vp, th.control_bg, 8.0f);
+    {
+        const float ih = 24.0f;
+        const int   n = 20;
+        auto sc = ui.scroll(vp.inset(1.0f), ih * float(n));
+        if (a.scroll_cmd == 1) { sc.to(0.0f); a.scroll_cmd = 0; }
+        if (a.scroll_cmd == 2) { sc.to(1e6f); a.scroll_cmd = 0; }
+        for (int i = 0; i < n; ++i) {
+            const Rect r = ui.row(ih);
+            if (i) ui.fill_rect(Rect(r.x + 8.0f, r.y, r.w - 16.0f, 1.0f), th.separator, 0.0f);
+            char buf[64];
+            std::snprintf(buf, sizeof buf, "列表项 %02d", i + 1);
+            ui.label(buf, Rect(r.x + 12.0f, r.y, r.w - 24.0f, r.h), Style().left());
+        }
     }
+    ui.stroke_rect(vp, th.separator, 8.0f, 1.0f);
 }
 
 void d_virtual(Ui& ui, App& a, const Rect& box) {
+    const aino::Theme& th = ui.theme();
     Stack c = ui.vbox(box, 8.0f);
-    if (ui.button("跳到底部", c.next(24.0f), Style().outline())) a.jump = 1;
+    {
+        Stack r = c.hbox(24.0f, 8.0f);
+        if (ui.button("跳到底部", cell(r, 92.0f, 24.0f), Style().secondary())) a.jump = 1;
+        r.fill();
+    }
     const Rect vp = c.fill();
-    const float ih = 26.0f;
-    const int   n = 100000;
-    if (a.jump == 1) { ui.scroll_to_index(vp, n - 1, ih, n); a.jump = 0; }
-    const int drawn = ui.scroll(vp, n, ih, [&](int i, const Rect& r) {
-        if (i & 1) ui.fill_rect(r, ui.theme().muted.with_alpha(80), 0.0f);
-        char buf[48];
-        std::snprintf(buf, sizeof buf, "第 %d 行", i + 1);
-        ui.label(buf, Rect(r.x + 8.0f, r.y, r.w - 16.0f, r.h), Style().left().font(12.0f));
-    });
-    ui.muted_text("共 " + std::to_string(n) + " 行，本帧绘制 " + std::to_string(drawn) + " 行",
-                  c.next(16.0f), Style().left().font(11.0f));
+    ui.fill_rect(vp, th.control_bg, 8.0f);
+    {
+        const float ih = 24.0f;
+        const int   n = 100000;
+        if (a.jump == 1) { ui.scroll_to_index(vp.inset(1.0f), n - 1, ih, n); a.jump = 0; }
+        ui.scroll(vp.inset(1.0f), n, ih, [&](int i, const Rect& r) {
+            if (i & 1) ui.fill_rect(r, th.fill5, 0.0f);
+            if (i) ui.fill_rect(Rect(r.x + 8.0f, r.y, r.w - 16.0f, 1.0f), th.separator, 0.0f);
+            char buf[48];
+            std::snprintf(buf, sizeof buf, "第 %d 行", i + 1);
+            ui.label(buf, Rect(r.x + 12.0f, r.y, r.w - 24.0f, r.h), Style().left().font(12.0f));
+        });
+    }
+    ui.stroke_rect(vp, th.separator, 8.0f, 1.0f);
 }
 
 void d_split(Ui& ui, App& a, const Rect& box) {
     Rect l, r;
     ui.split_pane(&a.split, box, &l, &r, true, 0.2f);
     ui.panel(l, Style().background(ui.theme().muted).corner(8.0f));
-    ui.muted_text("左侧", l, Style().center().font(11.5f));
     ui.panel(r, Style().background(ui.theme().muted).corner(8.0f));
-    ui.muted_text("右侧", r, Style().center().font(11.5f));
 }
 
 void d_clip(Ui& ui, App& a, const Rect& box) {
@@ -984,7 +960,6 @@ void d_aspect(Ui& ui, App& a, const Rect& box) {
     ui.panel(r, Style().background(ui.theme().muted).corner(8.0f));
     char buf[64];
     std::snprintf(buf, sizeof buf, "%.0f × %.0f", double(r.w), double(r.h));
-    ui.muted_text(buf, r, Style().center().font(11.5f));
     (void)a;
 }
 
@@ -1024,8 +999,6 @@ void d_transform(Ui& ui, App& a, const Rect& box) {
         ui.label("A", r, Style().center().semi_bold().font(20.0f)
                  .color(ui.theme().primary_foreground));
         ui.pop_transform();
-        ui.muted_text(names[i], Rect(r.x, r.bottom() + 6.0f, r.w, 16.0f),
-                      Style().center().font(11.0f));
     }
 }
 
@@ -1050,7 +1023,6 @@ void d_tween(Ui& ui, App& a, const Rect& box) {
         a.motion = !a.motion;
     char buf[48];
     std::snprintf(buf, sizeof buf, "t = %.3f", double(k));
-    ui.muted_text(buf, c.next(16.0f), Style().left().font(11.0f));
 }
 
 // =============================================================================
@@ -1161,7 +1133,7 @@ const Demo kRadio[] = {
 const Demo kSlider[] = {
     {"滑块", "拖动时连续写回，两端夹取到 min/max",
      R"cpp(ui.slider(&a.vol, 0.0f, 1.0f, c.next(26.0f));)cpp",
-     58.0f, d_slider},
+     137.0f, d_slider},
 };
 
 const Demo kSelect[] = {
@@ -1943,11 +1915,14 @@ void page_materials(Ui& ui, App& a, const Rect& area) {
 // =============================================================================
 void d_search(Ui& ui, App& a, const Rect& box) {
     Stack c = demo_col(ui, box, 10.0f);
-    Rect r = c.next(24.0f);
-    r.w = std::min(r.w, 260.0f);
+    Rect r = c.next(24.0f); r.w = std::min(r.w, 280.0f);
     ui.search_field(&a.search, r, Style().hint("搜索"));
-    ui.muted_text("胶囊轨道 + 框内放大镜；有内容时右端出现清除徽标。",
-                  c.next(18.0f), Style().left().font(11.5f));
+    Rect r2 = c.next(24.0f); r2.w = std::min(r2.w, 280.0f);
+    std::string empty;
+    ui.search_field(&empty, r2, Style().hint("搜索"));
+    Rect r3 = c.next(24.0f); r3.w = std::min(r3.w, 280.0f);
+    ui.search_field(&a.search, r3, Style().hint("搜索").off());
+    (void)a;
 }
 
 void d_color_well(Ui& ui, App& a, const Rect& box) {
@@ -1963,15 +1938,10 @@ void d_color_well(Ui& ui, App& a, const Rect& box) {
             ui.stroke_rect(r.expand(3.0f), ui.theme().ring.scaled_alpha(0.8f), 9.0f, 1.5f);
         x += w + gap;
     }
-    ui.muted_text("48×24 的色块；白色也看得见轮廓（内侧 1px 白边 + 外侧分隔线）。",
-                  Rect(box.x, box.y + 44.0f, box.w, 18.0f), Style().left().font(11.5f));
 }
 
 void d_image_well(Ui& ui, App& a, const Rect& box) {
     ui.image_well(Rect(box.x, box.y, 200.0f, 110.0f), Style().hint("拖入图片"));
-    ui.muted_text("5% 凹面 + 1px 分隔线；本库不做文件拖放，点击由调用方接。",
-                  Rect(box.x + 216.0f, box.y + 24.0f, std::max(box.w - 216.0f, 90.0f), 18.0f),
-                  Style().left().font(11.5f));
     (void)a;
 }
 
@@ -1988,8 +1958,6 @@ void d_sidebar(Ui& ui, App& a, const Rect& box) {
                                {"重要", "待办", "归档", ""}};
     for (int s = 0; s < 2; ++s) {
         if (s) { y += 8.0f; }
-        ui.muted_text(titles[s], Rect(nav.x + 16.0f, y, nav.w - 24.0f, 16.0f),
-                      Style().left().semi_bold().font(11.0f));
         y += 18.0f;
         for (int i = 0; i < 4; ++i) {
             if (!items[s][i][0]) continue;
@@ -2001,9 +1969,6 @@ void d_sidebar(Ui& ui, App& a, const Rect& box) {
             y += 24.0f;
         }
     }
-    ui.muted_text("源列表：分组标题（11 Semibold 次要色）+ 24 高的行；选中 = 强调色 23% 圆角块。",
-                  Rect(box.x, nav.bottom() + 10.0f, box.w, 18.0f),
-                  Style().left().font(11.5f));
 }
 
 void d_toolbar(Ui& ui, App& a, const Rect& box) {
@@ -2020,9 +1985,6 @@ void d_toolbar(Ui& ui, App& a, const Rect& box) {
     ui.segmented({"日", "周", "月"}, &a.tg, Rect(x, bar.cy() - 12.0f, 126.0f, 24.0f));
     ui.search_field(&a.search, Rect(bar.right() - 178.0f, bar.cy() - 12.0f, 164.0f, 24.0f),
                     Style().hint("搜索"));
-    ui.muted_text("工具栏 = 图标按钮 + 分段控件 + 搜索框，整条用 title_bg 材质。",
-                  Rect(box.x, bar.bottom() + 12.0f, box.w, 18.0f),
-                  Style().left().font(11.5f));
 }
 
 void d_window(Ui& ui, App& a, const Rect& box) {
@@ -2042,9 +2004,6 @@ void d_window(Ui& ui, App& a, const Rect& box) {
     }
     ui.draw_text("未命名", Rect(win.x, win.y, win.w, 46.0f), th.foreground,
                  Style().center().semi_bold().font(13.0f));
-    ui.muted_text("标题栏 46 · 红绿灯 14/间距 9 · 内容面从 34 起（圆角跟着窗口）",
-                  Rect(win.x + 16.0f, win.y + 56.0f, win.w - 32.0f, 18.0f),
-                  Style().left().font(11.5f));
     (void)a;
 }
 
@@ -2054,8 +2013,6 @@ void d_sheet(Ui& ui, App& a, const Rect& box) {
         a.drawer = true;
     if (ui.button("显示 sheet", Rect(box.x, box.y, 110.0f, 24.0f), Style().secondary()))
         a.drawer = true;
-    ui.muted_text("sheet 贴在标题栏下方，上平下圆；窗口其余部分只失去焦点、不压黑。",
-                  Rect(box.x, box.y + 44.0f, box.w, 18.0f), Style().left().font(11.5f));
 }
 
 // 覆层：真的从窗口顶部降下来（不是画一张示意图）
@@ -2078,13 +2035,15 @@ void o_sheet(Ui& ui, App& a) {
 // 标签栏 + 分段 + 切换组（AppKit 里都是 NSSegmentedControl 一族）。
 const Demo kToggles[]  = {kCheckbox[0], kRadio[0], kSwitch[0]};
 const Demo kSegCtl[]   = {kTabs[0], kToggle[0], kButtonGroup[0]};
-const Demo kTextF[]    = {kInput[0], kInput[1], kInput[2]};
+// kInput 只有 2 条（单行 / 多行），第三条是 kInputGroup 的"前后缀" ——
+// 写 kInput[2] 会读到数组外的内存，页面上会出现一段来路不明的内容。
+const Demo kTextF[]    = {kInput[0], kInput[1], kInputGroup[0]};
 const Demo kMenusPage[] = {kMenu[0], kContextMenu[0]};
 
 const Demo kSearchPage[] = {
     {"搜索框", "NSSearchField 的胶囊皮：input 复用 + 放大镜 + 清除钮",
      R"cpp(ui.search_field(&q, Rect(x, y, 260.0f, 24.0f), Style().hint("搜索"));)cpp",
-     44.0f, d_search},
+     82.0f, d_search},
 };
 const Demo kColorWellPage[] = {
     {"颜色池", "NSColorWell：48×24；白色也有轮廓",
@@ -2125,11 +2084,11 @@ const Page kPages[] = {
 
     // ── 外观（kit 的 Colors / Text Styles / Materials）──
     {"外观", "Colors", "语义色、填充层级与文本层级在两种外观下的取值。", "—",
-     nullptr, 0, nullptr, page_colors},
+     nullptr, 0, nullptr, page_colors, 1},
     {"外观", "Text Styles", "11 个文本样式在 3 个层级 × 4 种材质下的样子。", "—",
-     nullptr, 0, nullptr, page_typography},
+     nullptr, 0, nullptr, page_typography, 1},
     {"外观", "Materials", "液态玻璃（模糊替身）与传统 vibrancy 的对比。", "—",
-     nullptr, 0, nullptr, page_materials},
+     nullptr, 0, nullptr, page_materials, 1},
 
     // ── 控件（字母序）──
     {"控件", "Buttons", "推按钮的六种语义变体，统一 24 高度（Medium 档）。", "NSButton",
@@ -2159,19 +2118,19 @@ const Page kPages[] = {
 
     // ── 容器 ──
     {"容器", "Forms", "标签、说明、错误的纵向组合。", "—",
-     kField, COUNT(kField)},
+     kField, COUNT(kField), nullptr, nullptr, 1},
     {"容器", "Group Boxes", "面板与带插槽的列表项。", "NSBox",
      kCard, COUNT(kCard)},
     {"容器", "Lists and Tables", "表头 + 行分隔线，数字列右对齐。", "NSTableView",
-     kTable, COUNT(kTable)},
+     kTable, COUNT(kTable), nullptr, nullptr, 1},
     {"容器", "Sidebars", "源列表：分组标题 + 选中胶囊。", "NSOutlineView · source list",
-     kSidebarPage, COUNT(kSidebarPage)},
+     kSidebarPage, COUNT(kSidebarPage), nullptr, nullptr, 1},
     {"容器", "Split Views", "可拖动的分割面板。", "NSSplitView",
-     kSplit, COUNT(kSplit)},
+     kSplit, COUNT(kSplit), nullptr, nullptr, 1},
     {"容器", "Toolbars", "图标按钮 + 分段 + 搜索的整条材质。", "NSToolbar",
-     kToolbarPage, COUNT(kToolbarPage)},
+     kToolbarPage, COUNT(kToolbarPage), nullptr, nullptr, 1},
     {"容器", "Windows", "标题栏、红绿灯与内容面。", "NSWindow",
-     kWindowPage, COUNT(kWindowPage)},
+     kWindowPage, COUNT(kWindowPage), nullptr, nullptr, 1},
 
     // ── 菜单与浮层 ──
     {"浮层", "Alerts", "提示条：符号 + 两行文字，不是一张色卡。", "—",
@@ -2179,7 +2138,7 @@ const Page kPages[] = {
     {"浮层", "Dialogs", "模态面板与确认弹层。", "NSAlert",
      kDialog, COUNT(kDialog), o_dialog},
     {"浮层", "Menu Bar and Dock", "窗口级菜单栏。", "NSMenu · main",
-     kMenubar, COUNT(kMenubar)},
+     kMenubar, COUNT(kMenubar), nullptr, nullptr, 1},
     {"浮层", "Menus", "锚定下拉与右键菜单，共用同一个面板。", "NSMenu",
      kMenusPage, COUNT(kMenusPage)},
     {"浮层", "Notifications", "右下角的短暂反馈。", "NSUserNotification",
@@ -2195,7 +2154,7 @@ const Page kPages[] = {
     {"反馈", "Progress Indicators", "进度条、骨架与旋转指示。", "NSProgressIndicator",
      kProgress, COUNT(kProgress)},
     {"反馈", "Scrollbar", "通用滚动与虚拟列表。", "NSScrollView",
-     kScroll, COUNT(kScroll)},
+     kScroll, COUNT(kScroll), nullptr, nullptr, 1},
 };
 
 const int kPageCount = COUNT(kPages);
@@ -2485,13 +2444,14 @@ void draw_nav(Ui& ui, App& a, const Rect& nav) {
 //
 // 标题行整行可点 = 展开 / 收起源码；默认不展开，页面上看到的就是 kit 那种
 // 纯组件表，想看用法再点开。
-constexpr float kSecH    = 40.0f;   // section 标题行（15 Semibold + 11 说明）
+constexpr float kSecH    = 26.0f;   // section 标题行（15 Semibold）
 constexpr float kSecTop  = 6.0f;    // 标题 → 内容
 constexpr float kRowH    = 22.0f;
 constexpr float kCodePad = 10.0f;   // 源码块与细线之间的留白
 constexpr float kBoxGap  = 26.0f;   // 两条 section 之间
 
 struct BoxGeom {
+    float y       = 0.0f;    // 在本列里的纵向位置（多列排版用）
     float demo_h  = 0.0f;    // 预览实测高度
     float code_h  = 0.0f;    // 源码块高度（收起时 0）
     float inner_w = 0.0f;    // 交给示例函数的宽度
@@ -2536,13 +2496,11 @@ void draw_demo_box(Ui& ui, App& a, int idx, const Demo& d, const Rect& box,
         a.toggle_pending = idx;
         ui.set_focus(nullptr);
     }
-    // Title 3 = 15 / Semibold。kit 的 section 标题就是这个档，不是 13 也不是 17。
-    // 说明跟在标题**下面**（11 次要色），不是甩到最右边 —— 右对齐的一行长字
-    // 会跑到离控件很远的地方，读起来像页脚。
-    ui.subheading(d.name, Rect(head.x, head.y, head.w, 22.0f),
+    // 只有标题。kit 的 section 没有说明行 —— 控件自己会说话，旁边再写一行
+    // "这个控件是什么"属于自言自语。
+    (void)d.note;
+    ui.subheading(d.name, Rect(head.x, head.y, head.w, head.h),
                   Style().left().semi_bold().font(15.0f));
-    ui.muted_text(d.note, Rect(head.x, head.y + 21.0f, head.w, 16.0f),
-                  Style().left().font(11.0f));
 
     // ---- 内容：直接坐在窗口底上，不套底板、不描边 ----
     const float dy = head.bottom() + kSecTop;
@@ -2605,26 +2563,39 @@ void draw_page(Ui& ui, App& a, const Rect& area) {
 
     // 先量高度，再定滚动范围。测量必须在 scroll 之外做：scroll 会给绘制加裁剪
     // 和偏移，套着那层量不到内容的真实高度。
-    const float page_w  = content.w;
-    const float inner_w = demo_inner_w(page_w);
+    const float page_w = content.w;
+    const int   cols   = p.cols > 0 ? p.cols : 2;
+    const float gap    = 28.0f;
+    const float cell_w = (page_w - gap * float(cols - 1)) / float(cols);
+
     std::vector<BoxGeom> geo(size_t(p.n));
-    float total = 6.0f;
+    std::vector<int>     col_of(size_t(p.n), 0);
+    std::vector<float>   col_y(size_t(cols), 0.0f);
     for (int i = 0; i < p.n; ++i) {
-        const float need = demo_need_h(ui, a, p.demos[i], inner_w);
+        const float need = demo_need_h(ui, a, p.demos[i], cell_w);
         const bool  exp  = (a.code_mask >> unsigned(i)) & 1u;
-        geo[size_t(i)] = box_geom(ui, p.demos[i], page_w, need, exp);
-        total += geo[size_t(i)].box_h + kBoxGap;
+        geo[size_t(i)] = box_geom(ui, p.demos[i], cell_w, need, exp);
+        int best = 0;
+        for (int c = 1; c < cols; ++c)
+            if (col_y[size_t(c)] < col_y[size_t(best)]) best = c;
+        col_of[size_t(i)] = best;
+        geo[size_t(i)].y = col_y[size_t(best)];
+        col_y[size_t(best)] += geo[size_t(i)].box_h + kBoxGap;
     }
+    float total = 0.0f;
+    for (int c = 0; c < cols; ++c) total = std::max(total, col_y[size_t(c)]);
+    total += 8.0f;
 
     {
         auto sc = ui.scroll(content, total);
         (void)sc;
+        const Rect origin = ui.row(total);
         for (int i = 0; i < p.n; ++i) {
             const BoxGeom& g = geo[size_t(i)];
-            const Rect row = ui.row(g.box_h + kBoxGap);
             const bool exp = (a.code_mask >> unsigned(i)) & 1u;
             draw_demo_box(ui, a, i, p.demos[i],
-                          Rect(row.x, row.y, row.w, g.box_h), g, exp);
+                          Rect(origin.x + float(col_of[size_t(i)]) * (cell_w + gap),
+                               origin.y + g.y, cell_w, g.box_h), g, exp);
         }
     }
     // 模态浮层必须在 scroll 作用域**结束之后**画：滚动作用域持有一个裁剪区，

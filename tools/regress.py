@@ -353,7 +353,7 @@ def _move_once(exe, dur, mode="nav"):
         else:
             # 在某一行**内部**抖：y 只在小范围里动，始终不出这一行
             cy = pt.y + int(183 * sc)         # 导航第 3 项（Button）的中心
-            span = int(4 * sc)
+            span = max(2, int(2 * sc))
             while time.time() < end:
                 move_to(nav_x - pt.x, (cy - pt.y) + (span if (i // 4) % 2 else -span))
                 i += 1
