@@ -197,7 +197,15 @@ const std::vector<std::pair<const char*, int>>& group_stats();
 //
 // 反过来，用户自己关掉演示窗口时线程会正常走完 run() 并析构 Window，句柄回收。
 void open_quickstart_window() {
-    std::thread([] {
+    // 子窗口的诊断口：WIN32 子系统没有 stderr，只能落文件。
+    auto clog = [](const char* msg) {
+        if (const char* f = std::getenv("AINO_CHILD_LOG"))
+            if (std::FILE* fp = std::fopen(f, "a")) {
+                std::fprintf(fp, "%s\n", msg);
+                std::fclose(fp);
+            }
+    };
+    std::thread([clog] {
         // 这里刻意用 WindowConfig 而不是三参数构造：演示一下新加的配置项
         // （最小尺寸、居中）。标题里的版本号顺便当个"这窗口是谁开的"标记。
         aino::WindowConfig cfg;
@@ -208,7 +216,9 @@ void open_quickstart_window() {
         cfg.min_height = 260;
         cfg.center     = true;
 
+        clog("cfg 就绪，开始建窗口");
         aino::Window win(cfg);
+        clog(win.ok() ? "窗口已创建" : "窗口创建失败 (ok=false)");
         if (!win.ok()) return;
 
         std::string email;
@@ -2613,6 +2623,12 @@ int main() {
     // 截图钩子：在**下一帧开头**取上一帧的后备缓冲。
     // 弹层（下拉 / 菜单 / 对话框）都是 deferred 到帧末才画的，回调里立刻取会
     // 全部漏掉 —— 之前截出来的"下拉根本没展开"就是这个原因。
+    // 复现钩子：AINO_CHILD_AT=N —— 第 N 帧打开"在新窗口运行这段代码"那个演示窗口。
+    // 子窗口在这里建（帧回调查内部 = 主线程正在绘制），才是"点按钮那一下"的时序；
+    // 脚本去点按钮得靠像素找坐标，布局一改就点空。
+    int child_at = -1;
+    if (const char* ca = std::getenv("AINO_CHILD_AT")) child_at = std::atoi(ca);
+    bool child_fired = false;
     const char* shot = std::getenv("AINO_SHOT_BMP");
     const bool shot_every = std::getenv("AINO_SHOT_EVERY") != nullptr;
     bool shot_pending = false;
@@ -2627,6 +2643,10 @@ int main() {
             shot_pending = false;
         }
         build_ui(ui, app);
+        if (child_at >= 0 && !child_fired && frames + 1 >= child_at) {
+            child_fired = true;
+            open_quickstart_window();
+        }
         if (app.quit) win.close();     // 红绿灯的红
         ++frames;
         shot_pending = true;

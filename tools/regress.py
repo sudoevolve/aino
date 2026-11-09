@@ -502,6 +502,27 @@ PROBES = (
 )
 
 
+def child_window_probe():
+    """多窗口：子窗口在主窗口运行中打开后，主窗口还能不能应答消息。
+
+    回归的是一个真实假死：detail::win_timer() 原本是进程级单例，两个窗口
+    各自一条消息循环时会抢同一个可等待定时器 —— 主窗口在补帧预算时永远等不到
+    信号，界面完全冻住。具体见 tools/child_window.py 的模块注释。
+    """
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "child_window.py")
+    try:
+        r = subprocess.run([sys.executable, script], capture_output=True, text=True,
+                           timeout=90)
+    except Exception as e:                       # noqa: BLE001
+        return True, "SKIP: " + str(e)
+    out = ((r.stdout or "") + (r.stderr or "")).strip()
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    tail = lines[-1][:110] if lines else "(无输出)"
+    if "SKIP" in out:
+        return True, "SKIP: " + tail
+    return r.returncode == 0, tail
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-build", action="store_true")
@@ -556,6 +577,12 @@ def main():
     print("\n== 交互 CPU（指针持续移动）==")
     ok3, note3 = move_probe()
     step("移动指针时的 CPU", ok3, note3)
+
+    # 多窗口：画廊"在新窗口运行这段代码"是真的再开一个 Window（另起线程）。
+    # 这条钉的是"两个窗口各自的消息循环不会互相卡住"。
+    print("\n== 多窗口 ==")
+    ok4, note4 = child_window_probe()
+    step("子窗口打开后主窗口仍响应消息", ok4, note4)
 
     nfail = sum(1 for _, ok, _ in results if not ok)
     print("\n===== 共 %d 项，失败 %d 项 =====" % (len(results), nfail))

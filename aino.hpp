@@ -9585,6 +9585,8 @@ struct Window::Impl {
     int min_pw = 0, min_ph = 0, max_pw = 0, max_ph = 0;
     bool running = true;
     bool need_frame = true;
+    // 上一帧的时刻（毫秒）。每窗口独立 —— 见 render() 里的说明。
+    uint64_t last_frame_ms = 0;
     // 上一帧的"再要一帧"是组件自己提的（spinner / 光标闪烁 / hover 插值），
     // 而不是用户输入触发的。主循环靠它决定要不要按 60fps 节流：
     // 区分不出来的话，只要有一个连续动画在跑，need_frame 就恒为真 →
@@ -10591,7 +10593,15 @@ struct WinPreciseTimer {
 };
 
 inline WinPreciseTimer& win_timer() {
-    static WinPreciseTimer t;      // 进程内一个就够，主循环是单线程的
+    // **必须每线程一个**。可等待定时器是"设置一次、唤醒一个等待者"的：两个窗口
+    // 各自跑在自己的线程里，共用一个句柄时，A 设的到期时间会被 B 的 Set 覆盖；
+    // 信号被 B 取走后 A 还在 WaitForSingleObject(INFINITE) 里 —— 如果 B 这一帧
+    // 之后空闲进了 WaitMessage（不再 Set），A 就**永远等不到**，表现就是主窗口
+    // 完全假死（消息不处理、画面不刷新），而子窗口是好的。
+    //
+    // 之前这里写的是 `static WinPreciseTimer t` 并注着"主循环是单线程的" ——
+    // 多窗口一开就破了这个前提。thread_local 的代价只是每线程一个内核句柄。
+    thread_local WinPreciseTimer t;
     return t;
 }
 
@@ -10671,11 +10681,13 @@ inline void Window::render() {
     detail::Win32State* s = reinterpret_cast<detail::Win32State*>(o->native);
     if (!s || !s->has_backbuffer) return;
 
-    static uint64_t last = 0;
+    // 帧间隔基准必须是**每个窗口自己的**。写成函数内 static 时，两个窗口在同一
+    // 进程里会轮流改写它：A 画完置为 t，B 紧接着画 → dt ≈ 0；再下一次 A 的 dt
+    // 变成两帧之和。表现是子窗口的 spinner / 光标闪烁顿得没有规律。
     uint64_t now = detail::win_ticks_ms();
-    float dt = last ? float(now - last) / 1000.0f : (1.0f / 60.0f);
+    float dt = o->last_frame_ms ? float(now - o->last_frame_ms) / 1000.0f : (1.0f / 60.0f);
     if (dt > 0.25f) dt = 0.25f;
-    last = now;
+    o->last_frame_ms = now;
 
     const bool prof = o->frame_log;
     uint64_t p0 = prof ? detail::win_ticks_us() : 0;

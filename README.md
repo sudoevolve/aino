@@ -94,6 +94,13 @@ cmake --build build --config Release
 `aino::Window`（另一个线程、另一条消息循环、另一块后备缓冲），不是照着画的假框子 ——
 顺便演示 `WindowConfig` 的最小尺寸与居中。
 
+多窗口是支持的，但**帧预算的高精度定时器必须每线程一个**（`win_timer()` 是
+`thread_local`）。可等待定时器是"设置一次、唤醒一个等待者"的：两个窗口共用一个句柄
+时，A 设的到期时间会被 B 的 `SetWaitableTimer` 覆盖，信号被 B 取走后 A 还卡在
+`WaitForSingleObject(INFINITE)` —— 而 B 建好窗口就空闲进了 `WaitMessage`，A 于是永远
+等不到，表现是**主窗口完全假死、子窗口正常**。这条已经钉进回归
+（`tools/child_window.py`，判据是向主窗口发 `WM_NULL` 量回执时间）。
+
 `win.run(frame_cb)` 就是完整主循环：没事件时阻塞在 `WaitMessage`，帧回调只在需要重绘时被调用 —— 窗口静止时 0 帧 / 0.00% CPU，不是低帧率空转。
 
 平台状态：三个后端都能编译、能开窗画帧，**也都跑同一套 44 项像素断言**（其中 4 项是 X11 标题属性专有，只在 Linux 实跑）
