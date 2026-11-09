@@ -72,6 +72,9 @@ struct App {
     // 文本
     std::string email, keyword, note = "第一行\n第二行：Enter 换行，长文自动折行";
     std::string amount = "128", otp = "2048", uname = "张三", phone = "", cpwd = "";
+    std::string search = "aino";     // 搜索框页
+    int         side_sel = 0;        // 侧边栏示例的选中行
+    int         well = 2;            // 颜色池示例的选中色
 
     // 布尔
     bool remember = true, autosave = false;
@@ -1803,91 +1806,128 @@ void page_materials(Ui& ui, App& a, const Rect& area) {
     const bool dark = ui.theme().window_bg.luminance() < 0.5f;
     const float GAP = 16.0f;
 
-    const float strip_h = 176.0f;      // 壁纸条（含块）
-    const float sem_h   = 132.0f;      // 语义材质行
-    const float stack_h = 196.0f;      // 层叠演示
-    const float total   = strip_h + GAP + sem_h + GAP + stack_h + 30.0f;
+    const float band_h  = 148.0f;
+    const float label_h = 22.0f;
+    const float sec_h   = label_h + band_h + 24.0f;
+    const float total   = sec_h * 4.0f + GAP * 3.0f + 16.0f;
 
     auto sc = ui.scroll(area, total);
     (void)sc;
-    const float off = ui.scroll_y();
-    const float y0 = area.y - off;
+    float y = area.y - ui.scroll_y();
 
-    // ---------------- Blur 厚度 ----------------
+    auto section = [&](const char* title, const char* note) {
+        ui.subheading(title, Rect(area.x, y, area.w * 0.45f, label_h),
+                      Style().left().semi_bold().font(15.0f));
+        ui.muted_text(note, Rect(area.x + area.w * 0.25f, y, area.w * 0.75f, label_h),
+                      Style().right().font(11.0f));
+        y += label_h;
+    };
+
+    // ------------------------------------------------------------------
+    // 1) Liquid Glass —— 用"背景模糊"代替折射与色散
+    // ------------------------------------------------------------------
+    // kit 的玻璃由 Depth 30 / Refraction 70 / Dispersion 20 三个参数定义，那是
+    // 逐像素光线模拟的活。CPU 光栅化的库做不了，也不该假装做得了 —— 这里只实现
+    // 其中**看得见的那一半**：背后内容被柔化（Frost 4~24）+ 一层 25% 的冷白材质
+    // + 顶部一圈高光。色散/折射不做。
+    section("Liquid Glass", "模糊半径 = kit 的 Frost：4 / 6 / 10 / 16 / 24");
     {
-        const float cw = (area.w - GAP * 4.0f) / 5.0f;
-        // 壁纸是一整条（不是每块各画一张）—— 这样五块透出的是同一张图的不同
-        // 部位，厚度差异才可比。
-        const Rect strip(area.x, y0, area.w, strip_h - 22.0f);
+        const Rect strip(area.x, y, area.w, band_h);
         desktop_wallpaper(ui, strip, 12.0f);
-
+        const float cw = (strip.w - GAP * 4.0f) / 5.0f;
+        static const float kFrost[5] = {4.0f, 6.0f, 10.0f, 16.0f, 24.0f};
+        static const char* kName[5] = {"4", "6", "10", "16", "24"};
         for (int i = 0; i < 5; ++i) {
             const Rect cell(strip.x + float(i) * (cw + GAP), strip.y, cw, strip.h);
-            ui.push_clip(cell);
-            material_face(ui, cell, kBlurMats[i].alpha, dark, 12.0f);
-            // 底下一行字：厚度名，压在材质上（用材质自己的对比色）
-            ui.pop_clip();
-            const Color ink = dark ? Color(255, 255, 255, 200) : Color(0, 0, 0, 200);
-            ui.draw_text(kBlurMats[i].name,
-                         Rect(cell.x, cell.bottom() + 6.0f, cell.w, 14.0f),
-                         ui.theme().label2, Style().center().font(9.5f));
-            (void)ink;
+            ui.glass(cell, 12.0f, Style().blur(kFrost[i]));
+            ui.draw_text("Aa", Rect(cell.x, cell.y + 12.0f, cell.w, 34.0f),
+                         dark ? Color(255, 255, 255, 220) : Color(0, 0, 0, 190),
+                         Style().center().semi_bold().font(22.0f));
+            ui.muted_text("Frost " + std::string(kName[i]),
+                          Rect(cell.x, cell.bottom() + 5.0f, cell.w, 14.0f),
+                          Style().center().font(9.5f));
         }
     }
+    y += band_h + 24.0f;
 
-    // ---------------- 语义材质 ----------------
+    // ------------------------------------------------------------------
+    // 2) 传统 vibrancy —— 只有"透"，没有模糊
+    // ------------------------------------------------------------------
+    // NSVisualEffectView 的五个厚度档：背后是同一张壁纸，按 alpha 压上去。
+    // 和上一组对比就能看出：玻璃的边界从"背后是什么色"变成了"光从哪来"。
+    section("Vibrancy", "只有透明度，没有模糊：Ultra Thick → Ultra Thin");
     {
-        const float cw = (area.w - GAP * 5.0f) / 6.0f;
-        const float y = y0 + strip_h + GAP;
-        const Rect strip(area.x, y, area.w, sem_h - 22.0f);
+        const Rect strip(area.x, y, area.w, band_h);
         desktop_wallpaper(ui, strip, 12.0f);
+        const float cw = (strip.w - GAP * 4.0f) / 5.0f;
+        for (int i = 0; i < 5; ++i) {
+            const Rect cell(strip.x + float(i) * (cw + GAP), strip.y, cw, strip.h);
+            material_face(ui, cell, kBlurMats[i].alpha, dark, 12.0f);
+            ui.draw_text("Aa", Rect(cell.x, cell.y + 12.0f, cell.w, 34.0f),
+                         dark ? Color(255, 255, 255, 220) : Color(0, 0, 0, 190),
+                         Style().center().semi_bold().font(22.0f));
+            ui.muted_text(kBlurMats[i].name,
+                          Rect(cell.x, cell.bottom() + 5.0f, cell.w, 14.0f),
+                          Style().center().font(9.5f));
+        }
+    }
+    y += band_h + 24.0f;
 
+    // ------------------------------------------------------------------
+    // 3) 语义材质 —— 同一个模糊面，不同的使用场景
+    // ------------------------------------------------------------------
+    section("Semantic Materials", "Sidebar / Menu / Popover / HUD / Window / Content");
+    {
+        const Rect strip(area.x, y, area.w, band_h);
+        desktop_wallpaper(ui, strip, 12.0f);
+        const float cw = (strip.w - GAP * 5.0f) / 6.0f;
         for (int i = 0; i < 6; ++i) {
             const Rect cell(strip.x + float(i) * (cw + GAP), strip.y, cw, strip.h);
             const bool cell_dark = kSemanticMats[i].always_dark || dark;
-            material_face(ui, cell, kSemanticMats[i].alpha, cell_dark, 12.0f);
-            const Color ink = cell_dark ? Color(255, 255, 255, 210) : Color(0, 0, 0, 210);
+            if (std::string(kSemanticMats[i].name) == "Menu" ||
+                std::string(kSemanticMats[i].name) == "Popover") {
+                ui.glass(cell, 12.0f, Style().blur(16.0f));   // 系统菜单是玻璃
+            } else {
+                material_face(ui, cell, kSemanticMats[i].alpha, cell_dark, 12.0f);
+            }
             ui.draw_text(kSemanticMats[i].name,
                          Rect(cell.x + 10.0f, cell.y + 10.0f, cell.w - 20.0f, 14.0f),
-                         ink, Style().left().semi_bold().font(10.0f));
-            ui.draw_text(kSemanticMats[i].name,
-                         Rect(cell.x, cell.bottom() + 6.0f, cell.w, 14.0f),
-                         ui.theme().label2, Style().center().font(9.5f));
+                         cell_dark ? Color(255, 255, 255, 210) : Color(0, 0, 0, 210),
+                         Style().left().semi_bold().font(10.0f));
+            ui.muted_text(kSemanticMats[i].name,
+                          Rect(cell.x, cell.bottom() + 5.0f, cell.w, 14.0f),
+                          Style().center().font(9.5f));
         }
     }
+    y += band_h + 24.0f;
 
-    // ---------------- 层叠：一个窗口浮在壁纸上 ----------------
-    // 单看一张材质块只能看出"透多少"，看不出它们怎么叠。这里画一个真的窗口：
-    // 标题栏 90% / 侧边栏 55% / 内容 96%，三层的透过率不一样，侧边栏能看见
-    // 壁纸的色，内容区几乎实心 —— 这才是材质在实际界面里的样子。
+    // ------------------------------------------------------------------
+    // 4) 叠放：一个玻璃窗口浮在壁纸上
+    // ------------------------------------------------------------------
+    section("Layered", "标题栏与侧边栏是玻璃，内容面是实心 —— 三层的透过率不同");
     {
-        const float y = y0 + strip_h + GAP + sem_h + GAP;
-        const Rect strip(area.x, y, area.w, stack_h - 24.0f);
+        const Rect strip(area.x, y, area.w, band_h + 40.0f);
         desktop_wallpaper(ui, strip, 12.0f);
 
-        const Rect win(strip.x + strip.w * 0.26f, strip.y + 30.0f,
-                       strip.w * 0.48f, strip.h - 56.0f);
-        const float bar = 26.0f, side_w = win.w * 0.32f;
+        const Rect win(strip.x + strip.w * 0.28f, strip.y + 22.0f,
+                       strip.w * 0.44f, strip.h - 40.0f);
+        const float bar = 28.0f, side_w = win.w * 0.34f;
 
-        material_face(ui, win, 0.96f, dark, 10.0f);                 // 内容区
+        material_face(ui, win, 0.96f, dark, 10.0f);
         ui.push_clip(win);
-        material_face(ui, Rect(win.x, win.y + bar, side_w, win.h - bar), 0.55f, dark, 0.0f);
+        ui.glass(Rect(win.x, win.y + bar, side_w, win.h - bar), 0.0f, Style().blur(18.0f));
         ui.fill_rect(Rect(win.x + side_w, win.y + bar, 1.0f, win.h - bar),
                      dark ? Color(255, 255, 255, 26) : Color(0, 0, 0, 18), 0.0f);
-        // 侧边栏里的几行"条目"
         for (int i = 0; i < 4; ++i)
             ui.fill_rect(Rect(win.x + 12.0f, win.y + bar + 12.0f + float(i) * 20.0f,
-                              side_w - 24.0f, 10.0f),
-                         ui.theme().label4, 5.0f);
-        // 内容区的几行占位
+                              side_w - 24.0f, 10.0f), ui.theme().label4, 5.0f);
         for (int i = 0; i < 3; ++i)
             ui.fill_rect(Rect(win.x + side_w + 16.0f, win.y + bar + 16.0f + float(i) * 22.0f,
-                              win.w - side_w - 32.0f, 10.0f),
-                         ui.theme().label4, 5.0f);
+                              win.w - side_w - 32.0f, 10.0f), ui.theme().label4, 5.0f);
         ui.pop_clip();
 
-        // 标题栏压在最上层（带圆角）
-        material_face(ui, Rect(win.x, win.y, win.w, bar), 0.90f, dark, 10.0f);
+        // 标题栏压在侧边栏之上（玻璃，圆角 10）
+        ui.glass(Rect(win.x, win.y, win.w, bar), 10.0f, Style().blur(20.0f));
         const float lr = 4.5f;
         const Color dots[3] = {Color::hex(0xFF5F57), Color::hex(0xFEBC2E), Color::hex(0x28C840)};
         for (int i = 0; i < 3; ++i)
@@ -1898,103 +1938,264 @@ void page_materials(Ui& ui, App& a, const Rect& area) {
     }
 }
 
+// =============================================================================
+//  第九轮：kit 里有、库里原来没有的控件
+// =============================================================================
+void d_search(Ui& ui, App& a, const Rect& box) {
+    Stack c = demo_col(ui, box, 10.0f);
+    Rect r = c.next(24.0f);
+    r.w = std::min(r.w, 260.0f);
+    ui.search_field(&a.search, r, Style().hint("搜索"));
+    ui.muted_text("胶囊轨道 + 框内放大镜；有内容时右端出现清除徽标。",
+                  c.next(18.0f), Style().left().font(11.5f));
+}
+
+void d_color_well(Ui& ui, App& a, const Rect& box) {
+    static const Color kWells[5] = {Color::hex(0x0088FF), Color::hex(0xFF383C),
+                                    Color::hex(0x34C759), Color::hex(0xFFCC00),
+                                    Color(255, 255, 255)};
+    const float w = 48.0f, gap = 12.0f;
+    float x = box.x;
+    for (int i = 0; i < 5; ++i) {
+        const Rect r(x, box.y + 6.0f, w, 24.0f);
+        if (ui.color_well(kWells[i], r)) a.well = i;
+        if (a.well == i)
+            ui.stroke_rect(r.expand(3.0f), ui.theme().ring.scaled_alpha(0.8f), 9.0f, 1.5f);
+        x += w + gap;
+    }
+    ui.muted_text("48×24 的色块；白色也看得见轮廓（内侧 1px 白边 + 外侧分隔线）。",
+                  Rect(box.x, box.y + 44.0f, box.w, 18.0f), Style().left().font(11.5f));
+}
+
+void d_image_well(Ui& ui, App& a, const Rect& box) {
+    ui.image_well(Rect(box.x, box.y, 200.0f, 110.0f), Style().hint("拖入图片"));
+    ui.muted_text("5% 凹面 + 1px 分隔线；本库不做文件拖放，点击由调用方接。",
+                  Rect(box.x + 216.0f, box.y + 24.0f, std::max(box.w - 216.0f, 90.0f), 18.0f),
+                  Style().left().font(11.5f));
+    (void)a;
+}
+
+void d_sidebar(Ui& ui, App& a, const Rect& box) {
+    const aino::Theme& th = ui.theme();
+    const float w = std::min(box.w, 200.0f);
+    const Rect nav(box.x, box.y, w, 240.0f);
+    ui.fill_rect(nav, th.sidebar_bg, 10.0f);
+    ui.stroke_rect(nav, th.separator, 10.0f, 1.0f);
+
+    float y = nav.y + 10.0f;
+    const char* titles[2] = {"收藏", "标签"};
+    const char* items[2][4] = {{"应用程序", "桌面", "文稿", "下载"},
+                               {"重要", "待办", "归档", ""}};
+    for (int s = 0; s < 2; ++s) {
+        if (s) { y += 8.0f; }
+        ui.muted_text(titles[s], Rect(nav.x + 16.0f, y, nav.w - 24.0f, 16.0f),
+                      Style().left().semi_bold().font(11.0f));
+        y += 18.0f;
+        for (int i = 0; i < 4; ++i) {
+            if (!items[s][i][0]) continue;
+            const int idx = s * 4 + i;
+            if (ui.nav_item(items[s][i], a.side_sel == idx,
+                            Rect(nav.x + 10.0f, y, nav.w - 20.0f, 24.0f),
+                            Style().padding(8.0f).font(13.0f)))
+                a.side_sel = idx;
+            y += 24.0f;
+        }
+    }
+    ui.muted_text("源列表：分组标题（11 Semibold 次要色）+ 24 高的行；选中 = 强调色 23% 圆角块。",
+                  Rect(box.x, nav.bottom() + 10.0f, box.w, 18.0f),
+                  Style().left().font(11.5f));
+}
+
+void d_toolbar(Ui& ui, App& a, const Rect& box) {
+    const aino::Theme& th = ui.theme();
+    const Rect bar(box.x, box.y, box.w, 52.0f);
+    ui.fill_rect(bar, th.title_bg, 10.0f);
+    ui.fill_rect(Rect(bar.x, bar.bottom() - 1.0f, bar.w, 1.0f), th.separator, 0.0f);
+
+    float x = bar.x + 12.0f;
+    ui.icon_button("‹", Rect(x, bar.cy() - 12.0f, 26.0f, 24.0f), Style().ghost());
+    x += 26.0f;
+    ui.icon_button("›", Rect(x, bar.cy() - 12.0f, 26.0f, 24.0f), Style().ghost());
+    x += 40.0f;
+    ui.segmented({"日", "周", "月"}, &a.tg, Rect(x, bar.cy() - 12.0f, 126.0f, 24.0f));
+    ui.search_field(&a.search, Rect(bar.right() - 178.0f, bar.cy() - 12.0f, 164.0f, 24.0f),
+                    Style().hint("搜索"));
+    ui.muted_text("工具栏 = 图标按钮 + 分段控件 + 搜索框，整条用 title_bg 材质。",
+                  Rect(box.x, bar.bottom() + 12.0f, box.w, 18.0f),
+                  Style().left().font(11.5f));
+}
+
+void d_window(Ui& ui, App& a, const Rect& box) {
+    const aino::Theme& th = ui.theme();
+    const Rect win(box.x, box.y, std::min(box.w, 420.0f), 210.0f);
+    ui.drop_shadow(win, 12.0f, 22.0f, Color(0, 0, 0, 60), 6.0f);
+    ui.fill_rect(win, th.title_bg, 12.0f);
+    // 内容面：顶部两角跟着标题栏圆，向下铺满
+    ui.fill_rect(Rect(win.x, win.y + 34.0f, win.w, win.h - 34.0f), th.window_bg, 12.0f);
+
+    // kit `Title Bars/Window`：标题栏 46、红绿灯 14 直径、间距 9
+    const Color lights[3] = {Color::hex(0xFA9891), Color::hex(0xFFDA66), Color::hex(0xADE392)};
+    for (int i = 0; i < 3; ++i) {
+        const float cx = win.x + 21.0f + 23.0f * float(i);
+        ui.fill_circle(cx, win.y + 23.0f, 7.0f, lights[i]);
+        ui.stroke_rect(Rect(cx - 7.0f, win.y + 16.0f, 14.0f, 14.0f), Color(0, 0, 0, 26), 7.0f, 0.5f);
+    }
+    ui.draw_text("未命名", Rect(win.x, win.y, win.w, 46.0f), th.foreground,
+                 Style().center().semi_bold().font(13.0f));
+    ui.muted_text("标题栏 46 · 红绿灯 14/间距 9 · 内容面从 34 起（圆角跟着窗口）",
+                  Rect(win.x + 16.0f, win.y + 56.0f, win.w - 32.0f, 18.0f),
+                  Style().left().font(11.5f));
+    (void)a;
+}
+
+void d_sheet(Ui& ui, App& a, const Rect& box) {
+    // 截图钩子：AINO_OPEN=sheet 直接把它打开（点出来的状态脚本抓不到）
+    if (const char* o = std::getenv("AINO_OPEN"); o && std::string(o) == "sheet")
+        a.drawer = true;
+    if (ui.button("显示 sheet", Rect(box.x, box.y, 110.0f, 24.0f), Style().secondary()))
+        a.drawer = true;
+    ui.muted_text("sheet 贴在标题栏下方，上平下圆；窗口其余部分只失去焦点、不压黑。",
+                  Rect(box.x, box.y + 44.0f, box.w, 18.0f), Style().left().font(11.5f));
+}
+
+// 覆层：真的从窗口顶部降下来（不是画一张示意图）
+void o_sheet(Ui& ui, App& a) {
+    const float w = std::min(ui.width() * 0.56f, 460.0f);
+    const float kTitleH = 52.0f;      // 与窗口外壳同高（定义在下面，这里先局部取）
+    ui.sheet("保存更改", "是否保存对「未命名」的更改？此操作会覆盖磁盘上的旧版本。",
+             &a.drawer, Rect((ui.width() - w) * 0.5f, kTitleH, w, 132.0f));
+    if (!a.drawer) return;
+    const Rect base((ui.width() - w) * 0.5f, kTitleH, w, 132.0f);
+    const float bw = 96.0f, bh = 24.0f, gap = 10.0f;
+    const float by = base.bottom() - 16.0f - bh;
+    const float bx = base.right() - 20.0f - bw;
+    if (ui.button("保存", Rect(bx, by, bw, bh), Style().primary())) a.drawer = false;
+    if (ui.button("取消", Rect(bx - gap - bw, by, bw, bh), Style().secondary())) a.drawer = false;
+}
+
+// ---- 合并页：kit 把同一族控件放在一页，这里跟着它合 ----
+// Toggles = 复选框 + 单选 + 开关（HIG 的 Toggles 页）；Segmented Controls =
+// 标签栏 + 分段 + 切换组（AppKit 里都是 NSSegmentedControl 一族）。
+const Demo kToggles[]  = {kCheckbox[0], kRadio[0], kSwitch[0]};
+const Demo kSegCtl[]   = {kTabs[0], kToggle[0], kButtonGroup[0]};
+const Demo kTextF[]    = {kInput[0], kInput[1], kInput[2]};
+const Demo kMenusPage[] = {kMenu[0], kContextMenu[0]};
+
+const Demo kSearchPage[] = {
+    {"搜索框", "NSSearchField 的胶囊皮：input 复用 + 放大镜 + 清除钮",
+     R"cpp(ui.search_field(&q, Rect(x, y, 260.0f, 24.0f), Style().hint("搜索"));)cpp",
+     44.0f, d_search},
+};
+const Demo kColorWellPage[] = {
+    {"颜色池", "NSColorWell：48×24；白色也有轮廓",
+     R"cpp(if (ui.color_well(c, Rect(x, y, 48.0f, 24.0f))) open_picker();)cpp",
+     70.0f, d_color_well},
+};
+const Demo kImageWellPage[] = {
+    {"图像池", "NSImageView 的拖放占位：5% 凹面 + 图片符号",
+     R"cpp(ui.image_well(Rect(x, y, 200.0f, 110.0f), Style().hint("拖入图片"));)cpp",
+     130.0f, d_image_well},
+};
+const Demo kSidebarPage[] = {
+    {"源列表", "分组标题 + 24 高的行；选中 = 强调色 23%",
+     R"cpp(ui.nav_item("文稿", active, Rect(x, y, w, 24.0f), Style().padding(8.0f));)cpp",
+     300.0f, d_sidebar},
+};
+const Demo kToolbarPage[] = {
+    {"工具栏", "图标按钮 + 分段控件 + 搜索框，整条是一种材质",
+     R"cpp(ui.segmented({"日", "周", "月"}, &v, r);
+ui.search_field(&q, r2, Style().hint("搜索"));)cpp",
+     104.0f, d_toolbar},
+};
+const Demo kWindowPage[] = {
+    {"窗口", "标题栏 46 · 红绿灯 14/9 · 内容面圆角跟着窗口",
+     R"cpp(// 窗口外壳：title_bg 标题栏 + window_bg 内容面 + 12 圆角)cpp",
+     264.0f, d_window},
+};
+const Demo kSheetPage[] = {
+    {"工作表", "上平下圆、贴标题栏；不压黑窗口",
+     R"cpp(ui.sheet("保存更改", "是否保存？", &open, Rect(x, kTitleH, w, 132.0f));)cpp",
+     96.0f, d_sheet},
+};
+
 const Page kPages[] = {
-    {"入门", "概览", "库的定位、结构与实测数据。", "—", nullptr, 0},
-    {"基础", "Button", "触发一个动作。六种语义变体，统一 24 高度（Medium 档）。", "NSButton",
-     kBasic, COUNT(kBasic)},
-    {"基础", "Badge", "状态标记与键帽。", "—",
-     kBadge, COUNT(kBadge)},
-    {"基础", "Avatar", "以首字成像的圆形头像。", "NSImage",
-     kAvatar, COUNT(kAvatar)},
-    {"基础", "Progress", "进度、骨架与加载指示。", "NSProgressIndicator",
-     kProgress, COUNT(kProgress)},
-    {"表单", "Input", "单行与多行文本输入。", "NSTextField / NSTextView",
-     kInput, COUNT(kInput)},
-    {"表单", "Input Group", "带前后缀的输入框。", "NSTextField",
-     kInputGroup, COUNT(kInputGroup)},
-    {"表单", "Input OTP", "定长数字验证码。", "NSSecureTextField",
-     kOtp, COUNT(kOtp)},
-    {"表单", "Checkbox", "多选，整行可点。", "NSButton · switch",
-     kCheckbox, COUNT(kCheckbox)},
-    {"表单", "Switch", "二态开关。", "NSSwitch",
-     kSwitch, COUNT(kSwitch)},
-    {"表单", "Radio Group", "互斥单选。", "NSButton · radio",
-     kRadio, COUNT(kRadio)},
-    {"表单", "Slider", "连续值区间选择。", "NSSlider",
-     kSlider, COUNT(kSlider)},
-    {"表单", "Select", "下拉单选。", "NSPopUpButton",
-     kSelect, COUNT(kSelect)},
-    {"表单", "Combobox", "可键入过滤的下拉。", "NSComboBox",
-     kCombobox, COUNT(kCombobox)},
-    {"表单", "Toggle", "按下态按钮与分组。", "NSSegmentedControl",
-     kToggle, COUNT(kToggle)},
-    {"表单", "Button Group", "凹槽轨道内分段，支持多选。", "NSSegmentedControl",
-     kButtonGroup, COUNT(kButtonGroup)},
-    {"表单", "Stepper", "数值步进与星级评分。", "—",
-     kStepper, COUNT(kStepper)},
-    {"表单", "Form Field", "标签、说明、错误的纵向组合。", "—",
-     kField, COUNT(kField)},
-    {"表单", "Calendar", "月视图日期选择。", "NSDatePicker",
-     kCalendar, COUNT(kCalendar)},
-    {"数据展示", "Tabs", "标签栏与胶囊分段。", "NSTabView",
-     kTabs, COUNT(kTabs)},
-    {"数据展示", "Table", "只读表格。", "NSTableView",
-     kTable, COUNT(kTable)},
-    {"数据展示", "Card", "容器与带插槽的列表项。", "NSBox",
-     kCard, COUNT(kCard)},
-    {"数据展示", "Empty", "空状态占位。", "—",
-     kEmpty, COUNT(kEmpty)},
-    {"数据展示", "Pagination", "页码导航。", "—",
-     kPagination, COUNT(kPagination)},
-    {"数据展示", "Accordion", "单段折叠。", "NSDisclosureGroup",
-     kAccordion, COUNT(kAccordion)},
-    {"数据展示", "Alert", "提示条。", "—",
-     kAlert, COUNT(kAlert)},
-    {"数据展示", "Breadcrumb", "路径导航。", "NSPathControl",
-     kBreadcrumb, COUNT(kBreadcrumb)},
-    {"数据展示", "Chart", "折线与柱状。", "Swift Charts",
-     kChart, COUNT(kChart)},
-    {"浮层", "Menu", "锚定下拉菜单。", "NSMenu",
-     kMenu, COUNT(kMenu)},
-    {"浮层", "Menubar", "窗口级菜单栏。", "NSMenu · main",
-     kMenubar, COUNT(kMenubar)},
-    {"浮层", "Popover", "任意内容的浮出面板。", "NSPopover",
-     kPopover, COUNT(kPopover)},
-    {"浮层", "Hover Card", "悬停预览卡片。", "NSPopover · transient",
-     kHoverCard, COUNT(kHoverCard)},
-    {"浮层", "Dialog", "模态对话框与确认弹层。", "NSAlert",
-     kDialog, COUNT(kDialog), o_dialog},
-    {"浮层", "Drawer", "侧边抽屉。", "NSWindow · sheet",
-     kDrawer, COUNT(kDrawer), o_drawer},
-    {"浮层", "Toast", "短暂的操作反馈。", "—",
-     kToast, COUNT(kToast)},
-    {"浮层", "Tooltip", "悬停说明。", "NSView.toolTip",
-     kTooltip, COUNT(kTooltip)},
-    {"浮层", "Context Menu", "右键菜单。", "NSMenu · context",
-     kContextMenu, COUNT(kContextMenu)},
-    {"布局", "Layout", "Stack 与均分。", "—",
-     kLayout, COUNT(kLayout)},
-    {"布局", "Scroll", "通用滚动与虚拟列表。", "NSScrollView",
-     kScroll, COUNT(kScroll)},
-    {"布局", "Split Pane", "可拖动的分割面板。", "NSSplitView",
-     kSplit, COUNT(kSplit)},
-    {"布局", "Clip", "矩形裁剪。", "—",
-     kClip, COUNT(kClip)},
-    {"布局", "Aspect Ratio", "按比例推导高度。", "—",
-     kAspect, COUNT(kAspect)},
-    {"图形与动效", "Primitives", "八个绘制图元。", "—",
-     kPrimitives, COUNT(kPrimitives)},
-    {"图形与动效", "Transform", "平移、缩放、旋转。", "—",
-     kTransform, COUNT(kTransform)},
-    {"图形与动效", "Tween", "补间与缓动。", "—",
-     kTween, COUNT(kTween)},
-    // 规范页：不是控件示例，是设计系统的取值表（整页自绘，见 Page::custom）
-    {"规范", "Colors", "语义色、填充层级与文本层级在两种外观下的取值。", "—",
+    // ── 侧边栏顺序 = Figma `macOS 27` 的页面顺序（HIG 的字母序），分组只是
+    //    把 kit 的 30 个页面收成 5 段，页面本身一个不多一个不少。
+    {"开始", "概览", "库的定位、结构与实测数据。", "—", nullptr, 0},
+
+    // ── 外观（kit 的 Colors / Text Styles / Materials）──
+    {"外观", "Colors", "语义色、填充层级与文本层级在两种外观下的取值。", "—",
      nullptr, 0, nullptr, page_colors},
-    {"规范", "Typography", "11 个文本样式在 3 个层级 × 4 种材质下的样子。", "—",
+    {"外观", "Text Styles", "11 个文本样式在 3 个层级 × 4 种材质下的样子。", "—",
      nullptr, 0, nullptr, page_typography},
-    {"规范", "Materials", "传统 vibrancy：五档模糊厚度与六个语义场景。", "—",
+    {"外观", "Materials", "液态玻璃（模糊替身）与传统 vibrancy 的对比。", "—",
      nullptr, 0, nullptr, page_materials},
+
+    // ── 控件（字母序）──
+    {"控件", "Buttons", "推按钮的六种语义变体，统一 24 高度（Medium 档）。", "NSButton",
+     kBasic, COUNT(kBasic)},
+    {"控件", "Color Wells", "颜色池：48×24 的实心色块。", "NSColorWell",
+     kColorWellPage, COUNT(kColorWellPage)},
+    {"控件", "Combo Boxes", "可键入过滤的下拉。", "NSComboBox",
+     kCombobox, COUNT(kCombobox)},
+    {"控件", "Disclosure Controls", "披露行：三角在行首，展开区域由调用方绘制。", "NSDisclosureGroup",
+     kAccordion, COUNT(kAccordion)},
+    {"控件", "Image Wells", "图像池的空位。", "NSImageView",
+     kImageWellPage, COUNT(kImageWellPage)},
+    {"控件", "Pop-up and Pull-down Buttons", "下拉按钮：8% 面 + 上下双箭头。", "NSPopUpButton",
+     kSelect, COUNT(kSelect)},
+    {"控件", "Search Fields", "胶囊搜索框。", "NSSearchField",
+     kSearchPage, COUNT(kSearchPage)},
+    {"控件", "Segmented Controls", "凹槽内分段；选中 = 强调色内缩 2。", "NSSegmentedControl",
+     kSegCtl, COUNT(kSegCtl)},
+    {"控件", "Sliders and Dials", "轨道 4px、把手 20×16 的白色胶囊。", "NSSlider",
+     kSlider, COUNT(kSlider)},
+    {"控件", "Steppers", "20 宽的竖条：上半 ＋、下半 −。", "NSStepper",
+     kStepper, COUNT(kStepper)},
+    {"控件", "Text Fields", "单行、多行与带前后缀的输入框。", "NSTextField / NSTextView",
+     kTextF, COUNT(kTextF)},
+    {"控件", "Toggles", "复选框、单选与开关。", "NSButton · switch",
+     kToggles, COUNT(kToggles)},
+
+    // ── 容器 ──
+    {"容器", "Forms", "标签、说明、错误的纵向组合。", "—",
+     kField, COUNT(kField)},
+    {"容器", "Group Boxes", "面板与带插槽的列表项。", "NSBox",
+     kCard, COUNT(kCard)},
+    {"容器", "Lists and Tables", "表头 + 行分隔线，数字列右对齐。", "NSTableView",
+     kTable, COUNT(kTable)},
+    {"容器", "Sidebars", "源列表：分组标题 + 选中胶囊。", "NSOutlineView · source list",
+     kSidebarPage, COUNT(kSidebarPage)},
+    {"容器", "Split Views", "可拖动的分割面板。", "NSSplitView",
+     kSplit, COUNT(kSplit)},
+    {"容器", "Toolbars", "图标按钮 + 分段 + 搜索的整条材质。", "NSToolbar",
+     kToolbarPage, COUNT(kToolbarPage)},
+    {"容器", "Windows", "标题栏、红绿灯与内容面。", "NSWindow",
+     kWindowPage, COUNT(kWindowPage)},
+
+    // ── 菜单与浮层 ──
+    {"浮层", "Alerts", "提示条：符号 + 两行文字，不是一张色卡。", "—",
+     kAlert, COUNT(kAlert)},
+    {"浮层", "Dialogs", "模态面板与确认弹层。", "NSAlert",
+     kDialog, COUNT(kDialog), o_dialog},
+    {"浮层", "Menu Bar and Dock", "窗口级菜单栏。", "NSMenu · main",
+     kMenubar, COUNT(kMenubar)},
+    {"浮层", "Menus", "锚定下拉与右键菜单，共用同一个面板。", "NSMenu",
+     kMenusPage, COUNT(kMenusPage)},
+    {"浮层", "Notifications", "右下角的短暂反馈。", "NSUserNotification",
+     kToast, COUNT(kToast)},
+    {"浮层", "Popovers", "任意内容的浮出面板。", "NSPopover",
+     kPopover, COUNT(kPopover)},
+    {"浮层", "Sheets", "贴在标题栏下方的工作表。", "NSWindow · sheet",
+     kSheetPage, COUNT(kSheetPage), o_sheet},
+    {"浮层", "Tooltips", "悬停说明。", "NSView.toolTip",
+     kTooltip, COUNT(kTooltip)},
+
+    // ── 反馈 ──
+    {"反馈", "Progress Indicators", "进度条、骨架与旋转指示。", "NSProgressIndicator",
+     kProgress, COUNT(kProgress)},
+    {"反馈", "Scrollbar", "通用滚动与虚拟列表。", "NSScrollView",
+     kScroll, COUNT(kScroll)},
 };
 
 const int kPageCount = COUNT(kPages);
@@ -2030,11 +2231,11 @@ const int kGroupCount = kPageGroup.empty() ? 0 : kPageGroup.back() + 1;
 // =============================================================================
 //  导航
 // =============================================================================
-constexpr float kNavW      = 220.0f;
+constexpr float kNavW      = 244.0f;
 constexpr float kNavItemH  = 26.0f;
 constexpr float kNavGroupH = 24.0f;
 constexpr float kTitleH    = 52.0f;
-constexpr float kPageHeadH = 74.0f;   // 页头（Title 1 + 副标）占的高度
+constexpr float kPageHeadH = 84.0f;   // 页头（Large Title 26 + Callout 14）占的高度
 constexpr std::uint64_t kNavTweenId = 0x6e61765f7731ull;
 
 // ---------------------------------------------------------------- 侧边栏的行表
@@ -2130,7 +2331,13 @@ void group_glyph(Ui& ui, int gi, float cx, float cy, const Color& c) {
         ui.stroke_rect(Rect(cx - h, cy - h * 0.95f, h * 1.45f, h * 1.1f), c.scaled_alpha(0.65f), 2.4f, 1.2f);
         ui.stroke_rect(Rect(cx - h * 0.4f, cy - h * 0.15f, h * 1.4f, h * 1.05f), c, 2.4f, 1.2f);
         break;
-    default:                                    // 布局：两栏
+    case 5:                                     // 反馈：两条进度（一长一短）
+        ui.stroke_rect(Rect(cx - h, cy - 4.4f, h * 2.0f, 3.2f), c.scaled_alpha(0.55f), 1.6f, 1.2f);
+        ui.fill_rect(Rect(cx - h + 0.6f, cy - 3.8f, h * 1.05f, 2.0f), c, 1.0f);
+        ui.stroke_rect(Rect(cx - h, cy + 1.6f, h * 2.0f, 3.2f), c.scaled_alpha(0.55f), 1.6f, 1.2f);
+        ui.fill_rect(Rect(cx - h + 0.6f, cy + 2.2f, h * 0.55f, 2.0f), c, 1.0f);
+        break;
+    default:                                    // 容器：两栏
         ui.stroke_rect(Rect(cx - h, cy - h * 0.85f, h * 0.85f, h * 1.7f), c, 2.0f, 1.2f);
         ui.stroke_rect(Rect(cx + h * 0.15f, cy - h * 0.85f, h * 0.85f, h * 1.7f), c, 2.0f, 1.2f);
         break;
@@ -2265,38 +2472,36 @@ void draw_nav(Ui& ui, App& a, const Rect& nav) {
 // =============================================================================
 //  内容区
 // =============================================================================
-// macOS 的分组语汇只有一种：**Group Box** —— 1px 细线 + r10，内部不铺底，
-// 内容直接坐在窗口背景上；一个框里可以有多行，行与行之间是内缩的细线。
-// System Settings、检查器、NSAlert 的 accessoryView 全是这个写法。
+// Figma `macOS 27` 的组件页 = **Header + 一串 section**。section 只有"标题 +
+// 内容"，没有边框、没有底板：控件直接坐在窗口面上，条目之间靠留白分级。
 //
-// 之前每条示例是"左预览底板 + 右源码块"两栏并列，底板还自带底色和圆角 ——
-// 那是 shadcn 文档站的 Preview / Code 双栏。现在一条示例 = 一个 Group Box：
+// 之前这里是"Group Box 套表头 + 源码"，那是文档站（shadcn Preview/Code）的写法 ——
+// 控件被关进一个框里，和 kit 里"控件浮在内容面上"的样子差一层。
 //
-//   表头行   13 Semibold 名字（左边带披露三角）        11 说明（右）
-//   ──────── 内缩 14 的细线 ────────
-//   预览     整宽，左右各内缩 20
+//   标题行   15 Semibold（Title 3）              11 次要色说明（右）
+//   内容     整宽，控件自己决定左右留白
 //   ──────── 细线（只在展开源码时出现）────────
-//   源码     11.5 等宽，行号靠颜色区分
+//   源码     11.5 等宽
 //
-// 表头整行可点 = 展开 / 收起源码。默认只展开当页第一条：一进来看到的是干净的
-// 组件列表（像系统设置），想看用法再点开，而不是每条下面都拖着一块代码。
-constexpr float kBoxPadX = 20.0f;   // 预览左右内缩
-constexpr float kBoxPadY = 16.0f;   // 预览上下内缩
-constexpr float kRowH    = 30.0f;   // 表头行高
+// 标题行整行可点 = 展开 / 收起源码；默认不展开，页面上看到的就是 kit 那种
+// 纯组件表，想看用法再点开。
+constexpr float kSecH    = 40.0f;   // section 标题行（15 Semibold + 11 说明）
+constexpr float kSecTop  = 6.0f;    // 标题 → 内容
+constexpr float kRowH    = 22.0f;
 constexpr float kCodePad = 10.0f;   // 源码块与细线之间的留白
-constexpr float kBoxGap  = 18.0f;   // 两个 Group Box 之间
+constexpr float kBoxGap  = 26.0f;   // 两条 section 之间
 
 struct BoxGeom {
     float demo_h  = 0.0f;    // 预览实测高度
     float code_h  = 0.0f;    // 源码块高度（收起时 0）
     float inner_w = 0.0f;    // 交给示例函数的宽度
-    float box_h   = 0.0f;    // Group Box 总高
+    float box_h   = 0.0f;    // section 总高
 };
 
 // 交给示例函数的**内容宽度**。测量和绘制必须共用这一个函数，否则量出来的
-// 高度和画出来的对不上。
+// 高度和画出来的对不上。kit 的 section 是整宽的，只留 2px 给描边级别的溢出。
 float demo_inner_w(float page_w) {
-    return std::max(page_w - 2.0f * kBoxPadX, 80.0f);
+    return std::max(page_w - 2.0f, 80.0f);
 }
 
 // 内容实测高度：让示例在测量模式下空跑一遍（不落像素、不响应、不排帧）。
@@ -2313,7 +2518,7 @@ BoxGeom box_geom(Ui& ui, const Demo& d, float page_w, float need_h, bool expande
     g.inner_w = demo_inner_w(page_w);
     g.demo_h  = need_h > 1.0f ? need_h : d.preview_h;
     g.code_h  = expanded ? ui.code_block_height(d.code, Style().font(11.5f)) : 0.0f;
-    g.box_h   = kRowH + 1.0f + kBoxPadY + g.demo_h + kBoxPadY;
+    g.box_h   = kSecH + kSecTop + g.demo_h;
     if (expanded) g.box_h += 1.0f + kCodePad + g.code_h + kCodePad;
     return g;
 }
@@ -2321,43 +2526,31 @@ BoxGeom box_geom(Ui& ui, const Demo& d, float page_w, float need_h, bool expande
 void draw_demo_box(Ui& ui, App& a, int idx, const Demo& d, const Rect& box,
                    const BoxGeom& g, bool expanded) {
     const aino::Theme& th = ui.theme();
-    ui.panel(box);                     // 1px 细线 + r10，不铺底
 
-    // ---- 表头（整行可点：展开 / 收起源码）----
-    const Rect head(box.x + 1.0f, box.y + 1.0f, box.w - 2.0f, kRowH - 1.0f);
-    // 不在绘制途中翻状态：这一帧的 box 高度是按旧状态算的，就地翻转会让展开出来
-    // 的源码画进一个矮了一截的框里（闪一帧，压到下一个框上）。记下来，下一帧在
+    // ---- 标题行（整行可点：展开 / 收起源码）----
+    const Rect head(box.x, box.y, box.w, kSecH);
+    // 不在绘制途中翻状态：这一帧的高度是按旧状态算的，就地翻转会让展开出来的
+    // 源码画进一个矮了一截的区域里（压到下一个 section 上）。记下来，下一帧在
     // 算高度之前翻。
     if (ui.button("", head, Style().ghost())) {
         a.toggle_pending = idx;
         ui.set_focus(nullptr);
     }
-    // 披露三角在名字左边（Finder / 系统设置的位置）
-    {
-        const float cx = head.x + 10.0f, cy = head.cy();
-        const aino::Color cc = th.label3;
-        if (expanded) {
-            ui.draw_line(cx - 4.0f, cy - 2.0f, cx, cy + 2.0f, cc, 1.4f);
-            ui.draw_line(cx, cy + 2.0f, cx + 4.0f, cy - 2.0f, cc, 1.4f);
-        } else {
-            ui.draw_line(cx - 2.0f, cy - 4.0f, cx + 2.0f, cy, cc, 1.4f);
-            ui.draw_line(cx + 2.0f, cy, cx - 2.0f, cy + 4.0f, cc, 1.4f);
-        }
-    }
-    ui.label(d.name, Rect(head.x + 22.0f, head.y, head.w * 0.5f, head.h),
-             Style().left().semi_bold().font(13.0f));
-    ui.muted_text(d.note, Rect(head.x + 22.0f, head.y, head.w - 42.0f, head.h),
-                  Style().right().font(11.0f));
-    ui.fill_rect(Rect(box.x + 14.0f, head.bottom() - 0.5f, box.w - 28.0f, 1.0f),
-                 th.separator, 0.0f);
+    // Title 3 = 15 / Semibold。kit 的 section 标题就是这个档，不是 13 也不是 17。
+    // 说明跟在标题**下面**（11 次要色），不是甩到最右边 —— 右对齐的一行长字
+    // 会跑到离控件很远的地方，读起来像页脚。
+    ui.subheading(d.name, Rect(head.x, head.y, head.w, 22.0f),
+                  Style().left().semi_bold().font(15.0f));
+    ui.muted_text(d.note, Rect(head.x, head.y + 21.0f, head.w, 16.0f),
+                  Style().left().font(11.0f));
 
-    // ---- 预览：直接坐在窗口底上，不套底板、不描边 ----
-    const float dy = head.bottom() + kBoxPadY;
-    d.draw(ui, a, Rect(box.x + kBoxPadX, dy, g.inner_w, g.demo_h));
+    // ---- 内容：直接坐在窗口底上，不套底板、不描边 ----
+    const float dy = head.bottom() + kSecTop;
+    d.draw(ui, a, Rect(box.x, dy, g.inner_w, g.demo_h));
 
     // ---- 源码（展开时）----
     if (expanded) {
-        const float sy = dy + g.demo_h + kBoxPadY;
+        const float sy = dy + g.demo_h + kSecTop;
         ui.fill_rect(Rect(box.x + 14.0f, sy, box.w - 28.0f, 1.0f), th.separator, 0.0f);
         ui.code_block(d.code, Rect(box.x + kCodePad, sy + kCodePad,
                                    box.w - 2.0f * kCodePad, g.code_h),
@@ -2369,11 +2562,12 @@ void draw_page(Ui& ui, App& a, const Rect& area) {
     const Page& p = kPages[a.page];
 
     // ---- 页头 ----
-    // macOS 的窗口标题下面没有分隔线：Title 1 (22 Bold) + Body (13) 副标，
-    // 靠留白分级。之前这里画了一条贯穿内容区的 1px 线，是文档站的写法。
-    ui.heading(p.name, Rect(area.x, area.y, area.w, 30.0f), Style().left());
-    ui.muted_text(p.desc, Rect(area.x, area.y + 31.0f, area.w * 0.72f, 20.0f),
-                  Style().left().font(13.0f));
+    // kit 的每个组件页都以一个 Header 开场：大标题（Bold）+ 一行说明 + 一个
+    // 指向 HIG 的链接。比例按 1400 宽的画布折算回来 = Large Title 26 / Callout 14。
+    // 副标用次要色，不加分隔线 —— 分隔线是文档站的写法，mac 靠留白分级。
+    ui.heading(p.name, Rect(area.x, area.y, area.w, 34.0f), Style().left().font(26.0f));
+    ui.muted_text(p.desc, Rect(area.x, area.y + 36.0f, area.w * 0.78f, 20.0f),
+                  Style().left().font(14.0f));
 
     // 右上角：对应的 AppKit 控件（本库唯一需要"对外解释自己"的元信息）
     if (std::string(p.appkit) != "—") {
@@ -2406,7 +2600,7 @@ void draw_page(Ui& ui, App& a, const Rect& area) {
     // 翻页时回到"只展开第一条"：否则上一页展开的位会套到这一页别的示例上。
     if (a.code_page != a.page) {
         a.code_page = a.page;
-        a.code_mask = std::getenv("AINO_CODE") ? 0xffffffffu : 1u;
+        a.code_mask = std::getenv("AINO_CODE") ? 0xffffffffu : 0u;
     }
 
     // 先量高度，再定滚动范围。测量必须在 scroll 之外做：scroll 会给绘制加裁剪

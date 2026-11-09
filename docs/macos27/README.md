@@ -984,3 +984,122 @@ python tools/verify_gallery.py   # 16 项 / 0 失败（连跑三次）
 > 这台机器上 `verify_gallery` 偶发"点了没反应"（窗口抢不到前台，点击被系统吞掉），
 > 表现是一整屏采样全等值。同一份代码连跑三次都过，就按通过算；但**同一项连续两次
 > 红**必须当成真问题查，不能拿"环境抖动"糊过去。
+
+---
+
+## 十五、第九轮：把"库的面"改成 kit 的组织方式
+
+前八轮改的是**每个控件怎么画**。这一轮改的是**库由哪些页面组成、每页怎么排** ——
+因为 Figma 的 kit 不只是一堆组件，它还是一张"macOS 有哪些控件"的清单。抽查
+kit 的页面表（`canvas.fig` 的 CANVAS 顺序）得到 30 个组件页：
+
+```
+Alerts · Toggles · Color Wells · Combo Boxes · Pointers · Menu Bar and Dock
+Disclosure Controls · Forms · Group Boxes · Image Wells · Menus · Notifications
+Popovers · Pop-up and Pull-down Buttons · Progress Indicators · Buttons · Dialogs
+Search Fields · Segmented Controls · Sheets · Sliders and Dials · Sidebars
+Steppers · Lists and Tables · Text Fields · Toolbars · Tooltips · Windows
+```
+
+对照之下，本库原来有 45 个页面，其中 16 个在 kit 里**没有对应物**，而且分组的
+名字（基础 / 表单 / 数据展示 / 浮层 / 布局）是文档站的分类，不是 AppKit 的分类。
+
+### 15.1 侧边栏：按 kit 的页面顺序重排
+
+| 组 | 页面（字母序，与 kit 一致） |
+|---|---|
+| 开始 | 概览 |
+| 外观 | Colors · Text Styles · Materials |
+| 控件 | Buttons · Color Wells · Combo Boxes · Disclosure Controls · Image Wells · Pop-up and Pull-down Buttons · Search Fields · Segmented Controls · Sliders and Dials · Steppers · Text Fields · Toggles |
+| 容器 | Forms · Group Boxes · Lists and Tables · Sidebars · Split Views · Toolbars · Windows |
+| 浮层 | Alerts · Dialogs · Menu Bar and Dock · Menus · Notifications · Popovers · Sheets · Tooltips |
+| 反馈 | Progress Indicators · Scrollbar |
+
+合并的页面（kit 本来就是同一页，AppKit 里也是同一族控件）：
+
+- `Toggles` = Checkbox + Radio + Switch
+- `Segmented Controls` = Tabs + Toggle Group + Button Group
+- `Text Fields` = Input + Textarea + Input Group
+- `Menus` = Menu + Context Menu
+
+### 15.2 删掉的 16 个"没有 AppKit 对应物"的页面
+
+`Badge`、`Avatar`、`Input OTP`、`Calendar`（月视图是 iOS 的日历，不是 NSDatePicker）、
+`Pagination`（NSPageController 不是页码条）、`Empty`、`Chart`（Swift Charts 是框架）、
+`Breadcrumb`、`Hover Card`（与 Popover/Tooltip 重叠）、`Drawer`（mac 用 sheet）、
+`Layout`、`Clip`、`Aspect Ratio`、`Primitives`、`Transform`、`Tween`。
+
+> 前 11 个是**控件**层面的多余（Web 组件库的语汇）；后 5 个是库的**能力**，不是控件 ——
+> 它们在 `docs/03-layout.md` / `09-primitives.md` 里有完整说明，只是不该占组件页。
+
+### 15.3 页面版式：Header + section，不再是"卡片 + 代码"
+
+kit 的每个组件页是同一个骨架：一个 Header（大标题 + 一行说明 + 指向 HIG 的链接），
+下面若干 **section** —— 只有标题和内容，没有边框、没有底板。
+
+| 元素 | 之前 | 现在（kit） |
+|---|---|---|
+| 页标题 | Title 1 · 22 Bold | **Large Title · 26 Bold**（1400 宽的 Header 折算） |
+| 页说明 | 13 | **Callout · 14**，次要色 |
+| 条目 | Group Box（1px 线 + r10）+ 表头 | **section：15 Semibold 标题 + 11 次要色说明** |
+| 内容 | 左右内缩 20 | 整宽，控件自己决定留白 |
+| 源码 | 默认展开第一条 | 默认全收起，点标题展开 |
+
+### 15.4 液态玻璃：用"背景模糊"代替折射与色散
+
+kit 的玻璃由 `Depth 30 / Refraction 70 / Dispersion 20 / Frost 6~16 / Opacity 25`
+定义，那是逐像素光线模拟。CPU 光栅化的库做不了，这一轮实现的是它**看得见的那一半**：
+
+```
+backdrop_blur(rect, radius, blur)
+  1. 采样范围外扩 1.5·blur（边缘也要有"外面的内容"可糊）
+  2. 降采样 1/2 或 1/4（模糊本身是低通，降采样不改变观感）
+  3. 三趟可分离盒式模糊（≈ 高斯，σ = blur/2，代价与半径无关）
+  4. 8.8 定点双线性放大 + 圆角 SDF 遮罩写回（直边段走无遮罩快路径）
+
+glass(rect, radius, style)
+  = 投影 + backdrop_blur + 25% 冷白材质 + 顶部高光边 + 内侧白雾 + 外描边
+```
+
+实测（`tools/probe/blur_bench.cpp`，1180×760 后备缓冲，60 次取平均）：
+
+| 区域 | frost 6 | frost 16 | frost 24 |
+|---|---|---|---|
+| 170×148（一块面板） | 0.45 ms | 0.29 ms | — |
+| 900×300（整条） | 4.39 ms | 2.73 ms | 2.77 ms |
+| 940×740（满窗） | — | 6.41 ms | — |
+
+代价只在**重绘帧**付一次；静态页面依旧空闲 0% CPU（回归里的空闲断言仍是 0.00%）。
+不做折射与色散 —— 那两样要么上 GPU，要么逐像素光线求交，不属于这个库的取舍。
+
+### 15.5 新增的四个控件
+
+| 控件 | AppKit | 关键实现 |
+|---|---|---|
+| `search_field` | NSSearchField | 胶囊皮 + 框内放大镜 + 清除徽标；编辑逻辑整套复用 `input` |
+| `color_well` | NSColorWell | 48×24，色块 + 内侧白边 + 外侧分隔线（白块也有轮廓） |
+| `image_well` | NSImageView | 5% 凹面 + 图片符号 + 说明；不做文件拖放 |
+| `sheet` | NSWindow · sheet | 上平下圆：面板往上多画 12px 再裁掉，窗口不压黑 |
+
+### 15.6 这一轮修掉的三处"看着像、其实不是"
+
+| 位置 | 之前 | kit 实际 |
+|---|---|---|
+| `stepper` 指示符 | 实心小三角 | **chevron**（􀆇/􀆈，20×12，12px Medium 85%） |
+| `stepper` 中缝 | 通栏 1px 分隔线 | **14×1、r10、12%**，左右各留 3 |
+| `disclosure` 三角 | 实心三角（注释还写着"不是 V 形箭头"） | **chevron**（Bold 13），macOS 26/27 的披露行已换成 V 形 |
+
+### 15.7 仍与 kit 有差距的地方（明确不做或待做）
+
+- **Color Well 没有取色器**：点开只是返回 true，颜色面板由调用方提供。
+- **Image Well 没有拖放**：本库没有文件拖放通道。
+- **菜单项右侧 chevron**（子菜单指示）与**快捷键列**未画：kit 的 `Menu Item/*/Chevron`
+  与 `/*/Shortcut` 是两个变体，本库的菜单还没有子菜单。
+- **Tabs 的图标 + 标签**：kit `Tabs/7/1` 是 45×45 的"符号在上、11px 标签在下"，
+  本库的 tabs 只有文字。
+- **kit 每页的 Light/Dark 双例并排**：本库靠窗口右上角的外观开关切换，不并排。
+- **Push Button 的五档尺寸**、**Switch 的按下形变**（50×31）：仍未做。
+- 组件仍保留在库里但**没有页面**：`badge` / `avatar` / `toast` / `hover_card` /
+  `drawer` / `pagination` / `empty_state` / `breadcrumb` / `kbd` / `sparkline` /
+  `bars` / `calendar` / `input_otp`。删 API 会连带改 12 个探针与一批回归断言，
+  留作单独一轮（先让"面"对上，再动 API）。

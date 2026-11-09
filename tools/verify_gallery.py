@@ -40,7 +40,7 @@ for _sub in ("", "Release", "Debug"):
 
 LOGICAL_W = 1180.0
 LOGICAL_H = 760.0
-NAV_W = 220.0        # 侧边栏宽（整窗高，红绿灯浮在它上面）
+NAV_W = 244.0        # 侧边栏宽（整窗高，红绿灯浮在它上面）
 TITLE_H = 52.0      # 标题栏高
 
 
@@ -400,14 +400,14 @@ def main():
         v = sh.avg(NAV_W + 40.0, 10.0, LOGICAL_W - 40.0, TITLE_H - 10.0)
         return p2, h2, (sh, sc2, v)
 
-    p_b, h_b, base = nav_luma_of({"AINO_START_PAGE": "Dialog"})
+    p_b, h_b, base = nav_luma_of({"AINO_START_PAGE": "Dialogs"})
     if base is None:
         print("  [FAIL] 对话框页没建起来")
         return 2
     stop(p_b)
     nav_base = base[2]
 
-    proc, hwnd = launch({"AINO_START_PAGE": "Dialog", "AINO_OPEN": "dialog"})
+    proc, hwnd = launch({"AINO_START_PAGE": "Dialogs", "AINO_OPEN": "dialog"})
     if not hwnd:
         print("  [FAIL] 对话框窗口没建起来")
         return 2

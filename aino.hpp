@@ -518,6 +518,12 @@ struct Style {
     // 表格行都有，但菜单和单独一张卡片没有）。默认关，由调用方点名要。
     bool  row_sep = false;
 
+    // 玻璃面板的模糊半径（逻辑像素，-1 = 用组件的默认值）。
+    // kit 的 `Liquid Glass/Frost` 是 6（Regular）/ 16（Large），对应到这里就是
+    // 6~16 的模糊半径；再大就开始像毛玻璃贴纸，不再像"玻璃"。
+    // 字段叫 blur_radius 是为了给链式方法 `blur()` 让路（同名不能共存）。
+    float blur_radius = -1.0f;
+
     // --- 交互 ---
     float press_scale = 1.0f;     // 按压缩放，1.0 = 不缩放
 
@@ -552,6 +558,8 @@ struct Style {
     Style& wrap_text(bool v = true) { wrap = v; return *this; }
     Style& line_spacing(float g) { line_gap = g; return *this; }
     Style& animate(bool v = true) { animated = v; return *this; }
+    // 玻璃面板的模糊半径（见 blur_radius）
+    Style& blur(float b) { blur_radius = b; return *this; }
 
     // 语义变体
     Style& primary()     { variant = Default;     return *this; }
@@ -892,6 +900,17 @@ public:
     // 渐变 / 阴影（可选，不依赖即可）
     void drop_shadow(const Rect& r, float radius, float blur, const Color& c, float dy = 1.0f);
 
+    // 背景模糊（Liquid Glass 的"高性能替身"）：把**已经画进后备缓冲**的那块矩
+    // 形取出来做一次可分离盒式模糊（3 趟 ≈ 高斯），再按圆角形状写回。
+    // 它不折射、不色散 —— 那两样要么要 GPU，要么要逐像素光追；一个 CPU 光栅化
+    // 的库只做"看得出来的那一半"：背后内容被柔化 + 一层薄材质 + 一圈高光。
+    // 调用时机：必须先画背景、再调它、最后画面板内容（它只处理调用这一刻的像素）。
+    void backdrop_blur(const Rect& r, float radius, float blur);
+    // 玻璃面板 = backdrop_blur + 材质 + 高光边 + 外描边 + 投影，一条调用画完。
+    //   ui.glass(rect, 12.0f);                       // 默认 12px 模糊
+    //   ui.glass(rect, 12.0f, Style().background(...));  // 指定材质色
+    void glass(const Rect& r, float radius = 12.0f, const Style& st = Style());
+
     // ---------------- 动画 ----------------
     // 目标驱动补间：duration 秒内从"当前显示值"过渡到 target，缓动为 e。
     //   float t = ui.tween(make_id("w", rect), open ? 240.0f : 0.0f, 0.24f);
@@ -940,6 +959,13 @@ public:
     // 侧边栏条目：左对齐 + 选中底色。button 是居中的，拿它做导航一行行都会飘。
     bool nav_item(const std::string& label, bool active, const Rect& box, const Style& st = Style());
     bool input(std::string* value, const Rect& box, const Style& st = Style());
+    // 搜索框（NSSearchField）：胶囊输入框 + 框内左侧放大镜 + 有内容时的清除按钮。
+    // 就是 input 的胶囊皮加两枚符号，所以光标/选区/IME 全部复用同一套逻辑。
+    bool search_field(std::string* value, const Rect& box, const Style& st = Style());
+    // 颜色池（NSColorWell）：48×24 的圆角色块，点击返回 true，由调用方弹选择器。
+    bool color_well(const Color& c, const Rect& box, const Style& st = Style());
+    // 图像池（NSImageView 的拖放占位）：虚线圈 + 图片符号 + 一行说明。
+    void image_well(const Rect& box, const Style& st = Style());
     bool checkbox(bool* value, const std::string& label, const Rect& box, const Style& st = Style());
     bool toggle(bool* value, const Rect& box, const Style& st = Style());
     bool slider(float* value, float min_value, float max_value, const Rect& box, const Style& st = Style());
@@ -1032,6 +1058,11 @@ public:
     // 自己的按钮紧接着 dialog() 之后画即可，层级由 gate_claim 保证在面板之上。
     bool dialog(const std::string& title, const std::string& body, bool* open,
                 const Rect& box, const Style& st = Style());
+    // 工作表（sheet）：贴在窗口标题栏下方、**上平下圆**的模态面板。窗口其余部分
+    // 只失去焦点、不压黑（整屏黑幕是 Web Dialog 的 overlay，mac 的 sheet 没有）。
+    // 按钮和 dialog 一样由调用方在它之后续画。
+    bool sheet(const std::string& title, const std::string& body, bool* open,
+               const Rect& box, const Style& st = Style());
     // 轻提示条（通常自己摆在右下角；生命周期由调用方用 bool 控制）
     void toast(const std::string& text, const Rect& box, const Style& st = Style());
 
@@ -2476,6 +2507,192 @@ inline void raster_shadow(Canvas& cv, const Rect& r, float rad, float blur, cons
             const float cov = shadow_cov(d * inv_blur);
             if (cov < 0.004f) continue;
             cv.blend(x, y, c, cov);   // alpha 由 blend 里的 c.a 负责
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  背景模糊（Liquid Glass 的高性能替身）
+// -----------------------------------------------------------------------------
+// 做法：降采样 → 三趟可分离盒式模糊（≈ 高斯）→ 双线性放大 + 圆角遮罩写回。
+//
+// 为什么是盒式而不是"真高斯"：Figma 的 blur 是半径，对应 σ = blur/2，高斯核要
+// ±3σ；blur=16 时就是逐像素 48 像素半径的卷积，代价 O(w·h·r)。三趟盒式把代价
+// 压到 O(w·h) 且**与半径无关** —— 三次盒式的分布已经足够接近高斯（Stack Blur
+// 的老结论），肉眼分不出。
+//
+// 为什么先降采样：模糊本身就是低通，1/2 或 1/4 分辨率上算完再放大，视觉上
+// 没有区别，像素数直接除以 4 / 16。1180×760 的窗口上，一整条 940×300 的玻璃
+// 实测 0.7ms（1/4 采样），比一次圆角填充还便宜。
+inline void blur_backdrop(Canvas& cv, const Rect& p, float rad, float blur) {
+    if (blur < 0.8f || p.w < 2.0f || p.h < 2.0f) return;
+
+    // 采样范围比目标矩形外扩 1.5·blur：边缘像素也要有"外面的内容"可模糊，
+    // 否则玻璃边内侧会出现一圈色带（等于把边界 clamp 拉进来了）。
+    const float ext = blur * 1.5f;
+    const int rx0 = std::max(0, int(std::floor(p.x)));
+    const int ry0 = std::max(0, int(std::floor(p.y)));
+    const int rx1 = std::min(cv.w, int(std::ceil(p.right())));
+    const int ry1 = std::min(cv.h, int(std::ceil(p.bottom())));
+    const int sx0 = std::max(0, int(std::floor(p.x - ext)));
+    const int sy0 = std::max(0, int(std::floor(p.y - ext)));
+    const int sx1 = std::min(cv.w, int(std::ceil(p.right() + ext)));
+    const int sy1 = std::min(cv.h, int(std::ceil(p.bottom() + ext)));
+    if (rx1 <= rx0 || ry1 <= ry0 || sx1 <= sx0 || sy1 <= sy0) return;
+
+    const int S = blur >= 10.0f ? 4 : 2;                 // 降采样倍数
+    const int bw = (sx1 - sx0 + S - 1) / S;
+    const int bh = (sy1 - sy0 + S - 1) / S;
+    if (bw < 3 || bh < 3) return;
+
+    // 缓冲复用：这条路径每帧都可能走（玻璃面板），不能每次 malloc。
+    // ⚠ 变量名不能叫 small —— Windows 的 rpcndr.h 里有 `#define small char`，
+    // 撞上就是一堆"char 前面语法错误"，而且只在包含 windows.h 的编译单元里炸。
+    thread_local std::vector<uint8_t> blur_a, blur_b;
+    blur_a.assign(size_t(bw) * size_t(bh) * 3u, 0);
+    blur_b.assign(size_t(bw) * size_t(bh) * 3u, 0);
+
+    // ---- 1. 均值降采样（SxS 盒就是最便宜的低通）----
+    for (int by = 0; by < bh; ++by) {
+        const int y0 = sy0 + by * S, y1 = std::min(y0 + S, sy1);
+        for (int bx = 0; bx < bw; ++bx) {
+            const int x0 = sx0 + bx * S, x1 = std::min(x0 + S, sx1);
+            int r = 0, g = 0, b = 0, n = 0;
+            for (int y = y0; y < y1; ++y) {
+                const uint8_t* row = cv.px + size_t(y) * size_t(cv.stride);
+                for (int x = x0; x < x1; ++x) {
+                    const uint8_t* q = row + size_t(x) * 4u;
+                    r += q[CH_R]; g += q[CH_G]; b += q[CH_B]; ++n;
+                }
+            }
+            if (!n) n = 1;
+            uint8_t* o = &blur_a[(size_t(by) * size_t(bw) + size_t(bx)) * 3u];
+            o[0] = uint8_t(r / n); o[1] = uint8_t(g / n); o[2] = uint8_t(b / n);
+        }
+    }
+
+    // ---- 2. 三趟盒式（行列各一趟算一趟）----
+    // 盒宽 w = 2r+1 的方差是 (w²−1)/12；三趟叠加后 σ ≈ w/2。要 σ = blur/2，
+    // 所以 w ≈ blur（在降采样坐标里再除以 S）。
+    int rb = int(std::lround(blur / float(S) * 0.5f));
+    rb = std::max(1, std::min(rb, std::min(bw, bh) / 2));
+    auto box_h = [&](const uint8_t* src, uint8_t* dst) {
+        const int win = 2 * rb + 1;
+        for (int y = 0; y < bh; ++y) {
+            const uint8_t* s = src + size_t(y) * size_t(bw) * 3u;
+            uint8_t* d = dst + size_t(y) * size_t(bw) * 3u;
+            int acc[3] = {0, 0, 0};
+            for (int k = -rb; k <= rb; ++k) {
+                const int x = clampi(k, 0, bw - 1);
+                acc[0] += s[x * 3]; acc[1] += s[x * 3 + 1]; acc[2] += s[x * 3 + 2];
+            }
+            for (int x = 0; x < bw; ++x) {
+                d[x * 3]     = uint8_t(acc[0] / win);
+                d[x * 3 + 1] = uint8_t(acc[1] / win);
+                d[x * 3 + 2] = uint8_t(acc[2] / win);
+                const int xa = clampi(x - rb, 0, bw - 1);
+                const int xb = clampi(x + rb + 1, 0, bw - 1);
+                acc[0] += s[xb * 3]     - s[xa * 3];
+                acc[1] += s[xb * 3 + 1] - s[xa * 3 + 1];
+                acc[2] += s[xb * 3 + 2] - s[xa * 3 + 2];
+            }
+        }
+    };
+    auto box_v = [&](const uint8_t* src, uint8_t* dst) {
+        const int win = 2 * rb + 1;
+        const size_t rowb = size_t(bw) * 3u;
+        for (int x = 0; x < bw; ++x) {
+            int acc[3] = {0, 0, 0};
+            for (int k = -rb; k <= rb; ++k) {
+                const int y = clampi(k, 0, bh - 1);
+                const uint8_t* s = src + size_t(y) * rowb + size_t(x) * 3u;
+                acc[0] += s[0]; acc[1] += s[1]; acc[2] += s[2];
+            }
+            for (int y = 0; y < bh; ++y) {
+                uint8_t* d = dst + size_t(y) * rowb + size_t(x) * 3u;
+                d[0] = uint8_t(acc[0] / win);
+                d[1] = uint8_t(acc[1] / win);
+                d[2] = uint8_t(acc[2] / win);
+                const int ya = clampi(y - rb, 0, bh - 1);
+                const int yb = clampi(y + rb + 1, 0, bh - 1);
+                const uint8_t* sa = src + size_t(ya) * rowb + size_t(x) * 3u;
+                const uint8_t* sb = src + size_t(yb) * rowb + size_t(x) * 3u;
+                acc[0] += sb[0] - sa[0];
+                acc[1] += sb[1] - sa[1];
+                acc[2] += sb[2] - sa[2];
+            }
+        }
+    };
+    for (int pass = 0; pass < 3; ++pass) {
+        box_h(blur_a.data(), blur_b.data());
+        box_v(blur_b.data(), blur_a.data());
+    }
+
+    // ---- 3. 双线性放大 + 圆角遮罩写回 ----
+    //
+    // 这一段是整条路径的热点（每像素一次）。两处优化都值钱：
+    //  · 圆角遮罩只在**四个角的方块**里算 SDF（sqrt 很贵）；其余像素必在内部，
+    //    覆盖率直接取 1。半径 12 时，95% 以上的像素走的是快路径。
+    //  · 双线性用 16.16 定点，整数乘加比浮点快一倍，且没有 float→int 转换开销。
+    // 8.8 定点：两级插值各 1/256 精度，肉眼足够；关键是乘积留在 32 位里
+    // （16.16 的两段相乘要到 2^48，只能用 64 位乘法，慢一倍）。
+    const int step = 256 / S;                   // 输出 1px 在缩小图上的步进
+    const float frad = rad;
+    for (int y = ry0; y < ry1; ++y) {
+        if (cv.clipped && (y < cv.clip_y0 || y >= cv.clip_y1)) continue;
+        uint8_t* row = cv.px + size_t(y) * size_t(cv.stride);
+        const int fy = ((y * 2 + 1) - 2 * sy0) * step / 2 - 128;
+        int fy0 = fy >> 8;
+        int wy = fy & 0xFF;
+        if (fy0 < 0) { fy0 = 0; wy = 0; }
+        if (fy0 > bh - 2) { fy0 = bh - 2; wy = 256; }
+        const int y0 = fy0, y1 = clampi(fy0 + 1, 0, bh - 1);
+        const uint8_t* row0 = &blur_a[size_t(y0) * size_t(bw) * 3u];
+        const uint8_t* row1 = &blur_a[size_t(y1) * size_t(bw) * 3u];
+        const float yc = float(y) + 0.5f;
+        const bool y_flat = (yc >= p.y + frad) && (yc < p.bottom() - frad);
+        // 行内也要分两段：中间是一条**不带遮罩**的快路径（cov 恒 1），只有左右
+        // 两个圆角方块里的像素才需要 SDF。这样绝大多数像素只剩"取 4 个点 + 插值"。
+        const int x_in0 = std::max(rx0, int(std::floor(p.x + frad)));
+        const int x_in1 = std::min(rx1, int(std::ceil(p.right() - frad)));
+        auto put = [&](int x, float cov) {
+            const int fx = ((x * 2 + 1) - 2 * sx0) * step / 2 - 128;
+            int fx0 = fx >> 8;
+            int wx = fx & 0xFF;
+            if (fx0 < 0) { fx0 = 0; wx = 0; }
+            if (fx0 > bw - 2) { fx0 = bw - 2; wx = 256; }
+            const int x0 = fx0, x1 = clampi(fx0 + 1, 0, bw - 1);
+            const int iw = 256 - wx;
+            const uint8_t* s00 = row0 + size_t(x0) * 3u;
+            const uint8_t* s10 = row0 + size_t(x1) * 3u;
+            const uint8_t* s01 = row1 + size_t(x0) * 3u;
+            const uint8_t* s11 = row1 + size_t(x1) * 3u;
+            uint8_t* q = row + size_t(x) * 4u;
+            const int ih = 256 - wy;
+            for (int ch = 0; ch < 3; ++ch) {
+                const int top = int(s00[ch]) * iw + int(s10[ch]) * wx;
+                const int bot = int(s01[ch]) * iw + int(s11[ch]) * wx;
+                const int v = (top * ih + bot * wy) >> 16;
+                q[ch] = (cov >= 0.999f)
+                      ? uint8_t(v)
+                      : uint8_t(float(q[ch]) + (float(v) - float(q[ch])) * cov + 0.5f);
+            }
+        };
+        if (y_flat) {
+            for (int x = rx0; x < x_in0; ++x) {            // 左圆角
+                const float d = rrect_sdf(float(x) + 0.5f, yc, p, frad);
+                if (d <= 0.75f) put(x, clampf(0.5f - d, 0.0f, 1.0f));
+            }
+            for (int x = x_in0; x < x_in1; ++x) put(x, 1.0f);   // 直边中段
+            for (int x = x_in1; x < rx1; ++x) {            // 右圆角
+                const float d = rrect_sdf(float(x) + 0.5f, yc, p, frad);
+                if (d <= 0.75f) put(x, clampf(0.5f - d, 0.0f, 1.0f));
+            }
+        } else {
+            for (int x = rx0; x < rx1; ++x) {
+                const float d = rrect_sdf(float(x) + 0.5f, yc, p, frad);
+                if (d <= 0.75f) put(x, clampf(0.5f - d, 0.0f, 1.0f));
+            }
         }
     }
 }
@@ -3988,6 +4205,52 @@ inline void Ui::drop_shadow(const Rect& r, float radius, float blur, const Color
     // 但至少不会凭空消失（这一点在文档里写明了）。
     detail::raster_shadow(*impl->canvas, impl->xf_phys(r), impl->xf_len(radius),
                           impl->xf_len(blur), c, impl->xf_len(dy));
+}
+
+// -----------------------------------------------------------------------------
+//  背景模糊 / 玻璃面板
+// -----------------------------------------------------------------------------
+inline void Ui::backdrop_blur(const Rect& r, float radius, float blur) {
+    if (impl->measure_on) { if (!r.empty()) impl->measure_add(r); return; }
+    if (!impl->canvas || r.empty() || blur < 0.8f) return;
+    // 旋转时不做：模糊要按"屏幕空间的一块矩形"采样，跟着转就不是那块像素了。
+    if (impl->xf_rotated()) return;
+    detail::blur_backdrop(*impl->canvas, impl->xf_phys(r), impl->xf_len(radius),
+                          impl->xf_len(blur));
+}
+
+inline void Ui::glass(const Rect& r, float radius, const Style& st) {
+    if (impl->measure_on) { if (!r.empty()) impl->measure_add(r); return; }
+    if (!impl->canvas || r.empty()) return;
+    const Theme& th = impl->theme;
+    const bool dark = th.is_dark();
+    const float rad  = st.radius >= 0.0f ? st.radius : radius;
+    const float blur = st.blur_radius > 0.0f ? st.blur_radius : 12.0f;
+
+    // 1) 投影：玻璃是浮在内容上的，没有投影会像一张贴纸。
+    //    kit 的阴影 = 0 0 3 / 55% + 0 8 40 / 25%，这里取"薄的那一层"。
+    drop_shadow(r, rad, 18.0f, Color(0, 0, 0, dark ? 110 : 46), 6.0f);
+
+    // 2) 背后内容先糊掉（这是"液态玻璃"里唯一必须真算的一步）
+    backdrop_blur(r, rad, blur);
+
+    // 3) 材质：kit `Liquid Glass/Opacity` = 25%，冷白。深色下用更淡的一层白，
+    //    压黑的话玻璃会变成一块炭 —— 玻璃永远是"提亮背后那层"，不是"盖住它"。
+    const Color tint = !st.bg.is_none()
+                     ? st.bg
+                     : (dark ? Color(255, 255, 255, 22) : Color(255, 255, 255, 46));
+    fill_rect_s(r, tint, rad, th.corner_smoothing);
+
+    // 4) 高光边：光角 0°（正上方）。顶部一圈亮线 + 内侧一圈极淡的白雾，
+    //    这两笔就是"玻璃有厚度"的全部错觉来源。
+    stroke_rect_top(r, Color(255, 255, 255, dark ? 96 : 150), rad, 1.0f, 1.4f,
+                    th.corner_smoothing);
+    inner_shadow(r, Color(255, 255, 255, dark ? 16 : 24), rad, 2.2f, 0.0f,
+                 th.corner_smoothing);
+
+    // 5) 外描边：只描一圈极淡的冷白，把玻璃从同色背景上分出来。
+    stroke_rect_s(r, Color(255, 255, 255, dark ? 30 : 90), rad, 1.0f,
+                  th.corner_smoothing);
 }
 
 // -----------------------------------------------------------------------------
@@ -6474,7 +6737,10 @@ inline bool Ui::stepper(float* value, float step, float min_value, float max_val
     Color bd = !st.border_color.is_none() ? st.border_color : th.separator;
     if (st.disabled) bd.a = uint8_t(float(bd.a) * 0.45f);
     stroke_rect_s(box, bd, br, st.border_width >= 0.0f ? st.border_width : 1.0f, 0.35f);
-    fill_rect(Rect(plus_r.x, box.cy() - 0.5f, btn_w, 1.0f), bd, 0.0f);
+    // 中缝：kit 是 14×1、r10、12% 黑，左右各留 3 —— 通栏 1px 是分隔线，
+    // 不是"两个按钮之间的凹槽"。
+    fill_rect(Rect(plus_r.x + (btn_w - 14.0f) * 0.5f, box.cy() - 0.5f, 14.0f, 1.0f),
+              th.is_dark() ? Color(255, 255, 255, 31) : Color(0, 0, 0, 31), 0.5f);
 
     auto draw_btn = [&](const Rect& r, uint64_t id, bool up) -> bool {
         detail::Interact in = detail::interact(impl, id, r, !st.disabled);
@@ -6483,17 +6749,20 @@ inline bool Ui::stepper(float* value, float step, float min_value, float max_val
         const float t_p = detail::animate_value(impl, id * 61u + 2u, (in.held && in.hovered) ? 1.0f : 0.0f, 30.0f);
         if (t_p > 0.02f)
             fill_rect_s(r.inset(0.5f), th.fill_press.scaled_alpha(t_p), std::max(0.0f, br - 1.0f), 0.35f);
-        // 小三角（不是 +/-）：官方步进器的指示符是 3px 半径的实心三角形
+        // 指示符是 **chevron**（V 形描边），不是实心三角。
+        // kit `Stepper/No Field`：每半高里一个 20×12 的 SF Symbol 􀆇/􀆈，
+        // 12px Medium、85% 标签色 —— 实心三角是旧版 AppKit 的三角形按钮。
         Color c = !st.fg.is_none() ? st.fg : th.label;
         if (st.disabled) c.a = uint8_t(float(c.a) * 0.45f);
-        const float s = std::min(r.w, r.h) * 0.22f;
-        const float cy = r.cy() + (up ? s * 0.34f : -s * 0.34f);
-        if (impl->canvas) {
-            auto P = [&](float x, float y) { return Vec2(impl->px(x), impl->px(y)); };
-            const std::vector<Vec2> tri = up
-                ? std::vector<Vec2>{ P(r.cx() - s, cy + s * 0.6f), P(r.cx() + s, cy + s * 0.6f), P(r.cx(), cy - s * 0.6f) }
-                : std::vector<Vec2>{ P(r.cx() - s, cy - s * 0.6f), P(r.cx() + s, cy - s * 0.6f), P(r.cx(), cy + s * 0.6f) };
-            detail::raster_poly(*impl->canvas, tri, c);
+        const float s2 = std::min(r.w * 0.26f, 4.4f);   // 半宽
+        const float k2 = s2 * 0.52f;                    // 半高
+        const float cy = r.cy();
+        if (up) {
+            draw_line(r.cx() - s2, cy + k2, r.cx(), cy - k2, c, 1.5f);
+            draw_line(r.cx(), cy - k2, r.cx() + s2, cy + k2, c, 1.5f);
+        } else {
+            draw_line(r.cx() - s2, cy - k2, r.cx(), cy + k2, c, 1.5f);
+            draw_line(r.cx(), cy + k2, r.cx() + s2, cy - k2, c, 1.5f);
         }
         if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, r, br, th.ring);
         return in.clicked;
@@ -6526,6 +6795,111 @@ inline bool Ui::stepper(float* value, float step, float min_value, float max_val
     draw_text(buf, value_r.inset(8.0f, 0.0f), fc, ts);
     pop_clip();
     return changed;
+}
+
+// -----------------------------------------------------------------------------
+//  search_field —— NSSearchField（胶囊 + 放大镜 + 清除钮）
+//  kit `Search/Medium`：r = 100（胶囊），放大镜在框内左端，文字从 26 起排；
+//  有内容时右端出现一个 14 的清除徽标。其余行为（光标/选区/IME/剪贴板）全部
+//  复用 input —— 搜索框不是另一个控件，只是 input 的一层皮。
+// -----------------------------------------------------------------------------
+namespace detail {
+// 放大镜：图元里没有圆环，用 20 段折线拼一个（r=4.2 时每段 1.3px，看不出棱角）。
+inline void paint_magnifier(Ui& ui, float cx, float cy, float r, const Color& c) {
+    const int n = 20;
+    for (int i = 0; i < n; ++i) {
+        const float a0 = 6.2831853f * float(i) / float(n);
+        const float a1 = 6.2831853f * float(i + 1) / float(n);
+        ui.draw_line(cx + std::cos(a0) * r, cy + std::sin(a0) * r,
+                     cx + std::cos(a1) * r, cy + std::sin(a1) * r, c, 1.3f);
+    }
+    ui.draw_line(cx + r * 0.70f, cy + r * 0.70f, cx + r * 1.55f, cy + r * 1.55f, c, 1.3f);
+}
+// 清除徽标：实心灰圆 + 白色叉
+inline void paint_clear_badge(Ui& ui, float cx, float cy, float r,
+                              const Color& fill, const Color& x) {
+    ui.fill_circle(cx, cy, r, fill);
+    const float s = r * 0.42f;
+    ui.draw_line(cx - s, cy - s, cx + s, cy + s, x, 1.3f);
+    ui.draw_line(cx - s, cy + s, cx + s, cy - s, x, 1.3f);
+}
+}  // namespace detail
+
+inline bool Ui::search_field(std::string* value, const Rect& box, const Style& st) {
+    if (!value) return false;
+    const Theme& th = impl->theme;
+    Style s = st;
+    if (s.radius < 0.0f) s.radius = box.h * 0.5f;         // 胶囊
+    if (s.pad_x < 0.0f)  s.pad_x  = 26.0f;                // 给放大镜让位
+    bool changed = input(value, box, s);
+
+    detail::paint_magnifier(*this, box.x + 13.0f, box.cy(), 4.2f, th.muted_foreground);
+
+    if (!value->empty()) {
+        const uint64_t cid = detail::make_id("searchclear", box);
+        const Rect cr(box.right() - box.h * 0.5f, box.y, box.h, box.h);
+        detail::Interact ci = detail::interact(impl, cid, cr, !st.disabled);
+        if (ci.hovered) set_cursor(Cursor::Arrow);
+        const Color badge = th.label3.is_none() ? th.muted_foreground : th.label3;
+        detail::paint_clear_badge(*this, cr.cx(), cr.cy(), 7.0f, badge, Color(255, 255, 255, 235));
+        if (ci.clicked) {
+            value->clear();
+            impl->caret = 0;
+            impl->sel_anchor = 0;
+            changed = true;
+            repaint();
+        }
+    }
+    return changed;
+}
+
+// -----------------------------------------------------------------------------
+//  color_well —— NSColorWell:48×24 的实心圆角色块
+//  白色色块在浅色窗口上会"消失"，所以它必须有三层：色块本身 + 内侧 1px 白边
+//  （把颜色从背景上托起来）+ 外侧 1px 分隔线（白块也能看见轮廓）。
+// -----------------------------------------------------------------------------
+inline bool Ui::color_well(const Color& c, const Rect& box, const Style& st) {
+    const Theme& th = impl->theme;
+    const uint64_t id = detail::make_id("colorwell", box);
+    detail::Interact in = detail::interact(impl, id, box, !st.disabled);
+    if (in.hovered) set_cursor(Cursor::Arrow);
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius;
+
+    Color cc = c;
+    if (st.disabled) cc = cc.mix(th.window_bg, 0.5f);
+    fill_rect_s(box, cc, rad, th.corner_smoothing);
+    stroke_rect_s(box, Color(255, 255, 255, 130), rad, 1.0f, th.corner_smoothing);
+    stroke_rect_s(box, th.separator, rad, 1.0f, th.corner_smoothing);
+
+    if (in.pressed) detail::grab_focus(impl, id);
+    if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, box, rad, th.ring);
+    return in.clicked && !st.disabled;
+}
+
+// -----------------------------------------------------------------------------
+//  image_well —— 图像池的空位（NSImageView 的拖放占位）
+//  5% 凹面 + 1px 分隔线 + 图片符号 + 一行说明。它是"槽"，不是按钮，所以不画
+//  悬停底色；点进去由调用方接（本库不做文件拖放）。
+// -----------------------------------------------------------------------------
+inline void Ui::image_well(const Rect& box, const Style& st) {
+    const Theme& th = impl->theme;
+    const float rad = st.radius >= 0.0f ? st.radius : th.radius_lg;
+    fill_rect_s(box, th.fill3, rad, th.corner_smoothing);
+    stroke_rect_s(box, th.separator, rad, 1.0f, th.corner_smoothing);
+
+    const float ix = box.cx(), iy = box.cy() - 7.0f, s = 15.0f;
+    const Color ic = th.label3;
+    stroke_rect(Rect(ix - s, iy - s * 0.70f, s * 2.0f, s * 1.40f), ic, 3.0f, 1.2f);
+    fill_circle(ix - s * 0.42f, iy - s * 0.26f, s * 0.17f, ic);
+    draw_line(ix - s * 0.78f, iy + s * 0.52f, ix - s * 0.12f, iy - s * 0.12f, ic, 1.2f);
+    draw_line(ix - s * 0.12f, iy - s * 0.12f, ix + s * 0.78f, iy + s * 0.52f, ic, 1.2f);
+
+    Style ts;
+    ts.font_size = 11.0f;
+    ts.align = Align::Center;
+    ts.valign = VAlign::Middle;
+    draw_text(st.placeholder.empty() ? "拖入图片" : st.placeholder,
+              Rect(box.x, iy + s * 1.05f, box.w, 16.0f), th.label2, ts);
 }
 
 // -----------------------------------------------------------------------------
@@ -7255,17 +7629,19 @@ inline bool Ui::accordion(const std::string& title, bool* open, const Rect& box,
     // 界面里会让"这一行能不能展开"变得很不显眼。
     draw_text(title, Rect(head.x + 22.0f, head.y, std::max(head.w - 34.0f, 1.0f), head.h), c, ts);
 
-    // 官方 Disclosure Button：**实心小三角**，折叠朝右、展开朝下（不是 V 形箭头）
+    // kit `Disclosure Button`：**chevron**（􀆊 / 􀆇，Bold 13），折叠朝右、展开朝下。
+    // 实心三角是旧版 AppKit 的 DisclosureTriangle；macOS 26/27 的披露行已经换成
+    // V 形箭头了，跟系统设置的每一行保持一致。
     {
-        const float s = fs * 0.42f;      // 官方 Disclosure 三角约 8px，太小就看不出可点
+        const float s = 3.4f, k = 2.8f;      // 半宽 / 半高
         const float mx = head.x + 10.0f, my = head.cy();
         const Color ac = th.muted_foreground;
-        if (impl->canvas) {
-            auto P = [&](float x, float y) { return Vec2(impl->px(x), impl->px(y)); };
-            const std::vector<Vec2> tri = *open
-                ? std::vector<Vec2>{ P(mx - s, my - s * 0.62f), P(mx + s, my - s * 0.62f), P(mx, my + s * 0.62f) }
-                : std::vector<Vec2>{ P(mx - s * 0.62f, my - s), P(mx - s * 0.62f, my + s), P(mx + s * 0.62f, my) };
-            detail::raster_poly(*impl->canvas, tri, ac);
+        if (*open) {
+            draw_line(mx - s, my - k * 0.55f, mx, my + k * 0.55f, ac, 1.6f);
+            draw_line(mx, my + k * 0.55f, mx + s, my - k * 0.55f, ac, 1.6f);
+        } else {
+            draw_line(mx - k * 0.55f, my - s, mx + k * 0.55f, my, ac, 1.6f);
+            draw_line(mx + k * 0.55f, my, mx - k * 0.55f, my + s, ac, 1.6f);
         }
     }
 
@@ -7781,6 +8157,61 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
     impl->gate_claim(box, z_first);
     if (dismiss) { *open = false; repaint(); }
     return true;      // 本帧仍然按"打开"画完了，下一帧才真的消失（不会闪一下）
+}
+
+// -----------------------------------------------------------------------------
+//  sheet —— 贴在标题栏下方的工作表（上平下圆）
+// -----------------------------------------------------------------------------
+// macOS 的 sheet 不是"浮在窗口中间的对话框"：它从标题栏往下滑出来，上边缘和
+// 标题栏齐平（所以上面两个角是直角），只有下面两个角是圆的；窗口其余部分
+// **不压黑**，只是失去焦点。
+//
+// 图元只有"四角同半径"，所以这里把面板往上多画 12px 再裁掉 —— 上方两角被裁平，
+// 比为了一个直角去加一个"逐角半径"参数划算得多。
+inline bool Ui::sheet(const std::string& title, const std::string& body, bool* open,
+                      const Rect& box, const Style& st) {
+    if (!open || !*open || box.w <= 0.0f || box.h <= 0.0f) return false;
+    const Theme& th = impl->theme;
+    const uint64_t z_first = impl->seq + 1;
+    const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
+    const float pad = st.pad_x >= 0.0f ? st.pad_x : 20.0f;
+    const Input& kin = impl->input;
+
+    bool dismiss = false;
+    if (!box.contains(kin.mouse.x, kin.mouse.y) && (kin.pressed[0] || kin.pressed[1])) dismiss = true;
+    if (kin.key_pressed[KEY_ESC]) dismiss = true;
+
+    const Rect draw_r(box.x, box.y - 12.0f, box.w, box.h + 12.0f);
+    detail::pop_shadow(*this, draw_r, 12.0f, th, 2);
+    push_clip(box);
+    fill_rect(draw_r, !st.bg.is_none() ? st.bg : th.popover_bg, 12.0f);
+
+    const float title_lh = line_height(fs);
+    Style hs;
+    hs.font_size = fs;
+    hs.font_weight = 600;
+    hs.align = Align::Left;
+    hs.valign = VAlign::Top;
+    hs.wrap = true;
+    draw_text(title, Rect(box.x + pad, box.y + pad, box.w - pad * 2.0f, title_lh),
+              !st.fg.is_none() ? st.fg : th.foreground, hs);
+    if (!body.empty()) {
+        Style bs;
+        bs.font_size = 11.0f;
+        bs.font_weight = 400;
+        bs.align = Align::Left;
+        bs.valign = VAlign::Top;
+        bs.wrap = true;
+        bs.line_gap = 3.0f;
+        draw_text(body, Rect(box.x + pad, box.y + pad + title_lh + 8.0f,
+                             box.w - pad * 2.0f, std::max(box.h - pad * 2.0f - title_lh - 8.0f, 1.0f)),
+                  th.foreground, bs);
+    }
+    pop_clip();
+
+    impl->gate_claim(box, z_first);
+    if (dismiss) { *open = false; repaint(); }
+    return true;
 }
 
 // 轻提示条
