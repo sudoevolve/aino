@@ -309,9 +309,7 @@ public:
             const std::string our_kex = kname ? kname : "(未协商)";
             libssh2_session_free(sess);
             sshc_closesock(fd);
-            // -5 = KEX_FAILURE：TCP 通了、SSH 也认了，只是没有共同的算法。
-            // 这条以前被写成"对端讲的不是 SSH"，把新版 OpenSSH 的算法不匹配
-            // 误报成"端口错了"，排查方向直接跑偏。
+            // KEX_FAILURE 表示密钥交换算法不匹配，须与协议或端口错误区分。
             if (rc == LIBSSH2_ERROR_KEX_FAILURE)
                 return fail(err, "算法不匹配 —— 服务器在线、SSH 也在，但双方没有共同的"
                                  "密钥交换算法（对端多半是新版 OpenSSH，已停用 "

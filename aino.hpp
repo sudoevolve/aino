@@ -1,83 +1,30 @@
 ﻿// =============================================================================
-//  aino.hpp  —  单头文件跨平台 C++ GUI 库
-// -----------------------------------------------------------------------------
-//  设计取向
-//    · 思路来自 FLTK   : 无第三方依赖、事件驱动、空闲 0% CPU、静态链接极小
-//    · API：链式语义化组件 + 主题 token + hover/pressed 状态
-//    · 视觉参照 macOS 27（Figma `macOS 27` UI kit，参数逐项对齐）：语义色板
-//      + 4/6/8/10/12 圆角档位 + 连续圆角（squircle 0.6）+ 24 高的 Medium 控件
-//      + Group Box 分组语汇。不引入 Web 的"卡片 + 描边 + 投影"那一套。
+//  aino.hpp — 单头文件 C++17 桌面 UI 库
 //
-//  核心取舍
-//    · 立即模式(immediate mode)：UI 每帧重建，状态由调用方的变量持有。
-//      没有控件树、没有场景图、没有每控件状态机 —— 这是"体积小"的根本原因。
-//      布局只有一层顺序切分器(Stack)，边画边切，不做约束求解。
-//    · 几何图形自绘  ：圆角矩形/圆/线由本库 CPU 光栅化，带覆盖率抗锯齿
-//                      （GDI/Qt 的 RoundRect 都不抗锯齿，小圆角会糊成一坨）。
-//    · 文字交给系统  ：Win32=GDI / Linux=X11 / macOS=CoreGraphics，
-//                      天然支持中文与系统字体回退，不需要内嵌字体引擎。
+//  立即模式 API：应用持有状态，Stack 负责顺序布局，Theme 提供语义颜色。
+//  几何图形在 CPU 缓冲内光栅化；文字使用 GDI、FreeType/X11 或 CoreText。
+//  当前分支采用 macOS 风格，背景材质以模糊近似。
 //
-//  用法（两个 TU 也行，一个 TU 最省事）
-//      #define AINO_IMPLEMENTATION       // 只能在一个 .cpp 里定义
+//  用法：仅在一个编译单元定义 AINO_IMPLEMENTATION，其余编译单元直接包含。
+//      #define AINO_IMPLEMENTATION
 //      #include "aino.hpp"
 //
-//      int main() {
-//          aino::Window win(880, 560, "aino");
-//          win.run([&](aino::Ui& ui) {
-//              ui.panel({24, 24, 400, 240});
-//              aino::Stack col = ui.vbox({24, 24, 400, 240}, 10.0f, 18.0f);  // 间距 + 内边距
-//              ui.heading("设置", col.next(28), aino::Style().left());
-//              ui.input(&email, col.next(36), aino::Style().hint("you@example.com"));
-//              ui.checkbox(&notify, "邮件通知", col.next(22));
-//              if (ui.button("保存", col.next(36), aino::Style().primary())) save();
-//          });
-//      }
+//  编译：
+//      MSVC: cl /std:c++17 /utf-8 /EHsc /MT main.cpp user32.lib gdi32.lib
+//      GCC: g++ -std=c++17 main.cpp -lX11 -ldl
+//      Clang: clang++ -std=c++17 main.cpp -framework Cocoa -framework CoreText -framework CoreGraphics
 //
-//  编译
-//      MSVC : cl /std:c++17 /EHsc demo.cpp user32.lib gdi32.lib
-//      GCC  : g++ -std=c++17 demo.cpp -lX11
-//      Clang: clang++ -std=c++17 demo.cpp -framework Cocoa -framework CoreText
+//  源码为 UTF-8。保留 BOM 并为 MSVC 设置 /utf-8；字符编码回退不能替代编译设置。
+//  静态运行时与平台依赖说明见 docs/01-quickstart.md。
 //
-//  分发（不这么做，exe 到别人机器上会报缺一堆 DLL）
-//      MSVC 加 /MT；g++ 加 -static 再 -s，产物就只有一个 exe、零 DLL 依赖。
-//      CLion 自带 MinGW 15.2.0 的静态运行时是坏的（-static 链接失败），
-//      换 w64devkit / MSYS2，或退回 -static-libgcc -static-libstdc++ + 附 DLL。
-//      详见 docs/01-quickstart.md《分发：怎么做到「只有一个 exe，不带 DLL」》
-//
-//  编码（重要，两个独立的问题）
-//    1) 源码读取：本文件注释是中文 UTF-8 且带 BOM。BOM 是为了让 MSVC 不按系统
-//       代码页(GBK)去读源码 —— 否则中文注释的多字节序列会吃掉落单字节，把后面
-//       的代码"吞掉"，报出一堆莫名其妙的"uint8_t 缺少类型说明符"。
-//       若你的工具链会剥掉 BOM，请加 /utf-8。
-//    2) 字面量编码：没有 /utf-8 时，你自己代码里的中文字面量会被编成系统 ANSI
-//       代码页；更麻烦的是**混合编码** —— 串里只要有一个 ACP 里有单字节表示的
-//       字符（"·" U+00B7 最典型），那个字符被转成单字节、中文仍留 UTF-8 字节，
-//       整串既不合法 UTF-8 也不是纯 ANSI。两道防线：
-//         a. 本文件头部的 `#pragma execution_character_set("utf-8")`（MSVC），
-//            等价于 /utf-8 的执行字符集部分，对**本编译单元**余下部分生效 ——
-//            只要先 include 本头文件，你后面写的字面量也会按 UTF-8 编。
-//         b. to_wide() 逐段混合解码：合法 UTF-8 段按 UTF-8 出，孤立的坏字节才
-//            按 CP_ACP 出。所以即使字面量真的混了，中文也不会变成 "æœ€å°"。
-//       兜底归兜底，其它编译单元仍然应该加 /utf-8。
-//
-//  作者: sudoevolve <sudoevolve@gmail.com>
-//  许可: Apache-2.0（见仓库根 LICENSE）
+//  作者：sudoevolve <sudoevolve@gmail.com>
+//  许可：Apache-2.0（见 LICENSE）
 // =============================================================================
 
 #ifndef AINO_HPP
 #define AINO_HPP
 
-// 让 MSVC 把**本编译单元**里的窄字面量一律按 UTF-8 编，等价于 /utf-8 的执行
-// 字符集那一半。这不是锦上添花：
-//   不加的话，字面量按系统 ANSI 代码页编码。只要串里混进一个"ANSI 里有单字节
-//   表示"的字符，字面量就成了**混合编码** —— 中文保留 UTF-8 字节，那个字符变成
-//   单字节，整串不再是合法 UTF-8。to_wide 的逐段解码虽然能各自解回来，但源头
-//   就编成 UTF-8 更干净，也省得每个字符串都走恢复逻辑。
-//   "·"（U+00B7）是最典型的触发器：它在 1252 和 936 里都有单字节表示。
-//   症状也好认：窗口标题乱、界面里的中文却是好的 —— 因为界面那些串里没有 ACP
-//   能表示的字符，整串仍是合法 UTF-8。
-// pragma 必须出现在字面量之前。本头文件被包含在用户源码顶部，所以用户写在
-// 后面的字面量也被覆盖；用户自己的其它编译单元仍应加 /utf-8。
+// 窄字面量统一使用 UTF-8；其他编译单元仍需使用 /utf-8。
 #if defined(_MSC_VER)
 #  pragma execution_character_set("utf-8")
 #endif
@@ -814,7 +761,7 @@ struct Transform {
     Vec2  origin{0.0f, 0.0f};      // 缩放/旋转的中心（逻辑坐标）
 };
 
-// menubar() 的返回值。全关时 menu 与 item 都是 -1，用 valid() 一眼判掉。
+// menubar() 无选择时 menu 与 item 均为 -1，可通过 valid() 查询。
 struct MenuPick {
     int menu = -1;   // 第几个顶级菜单（-1 = 本帧没有选择）
     int item = -1;   // 该菜单里的第几项
@@ -2489,18 +2436,7 @@ inline void raster_rrect_inner(Canvas& cv, const Rect& r, float rad, float blur,
     }
 }
 
-// 阴影覆盖率曲线：**高斯模糊后的形状**在边界处的覆盖率是 50%，不是 100%。
-//
-// 这是之前"雷霆阴影边框"的根因：旧实现让轮廓线上直接取满 alpha，再往外平方
-// 衰减 —— 于是 drop_shadow(r, r, 3, rgba(0,0,0,.55)) 画出来的其实是一圈 3px
-// 宽、55% 黑的**实心描边**，叠上第二层柔光后边缘 α ≈ 66%，在浅色底上就是一
-// 道黑框，完全不是投影。
-//
-// Figma / CSS 的 blur 参数是"模糊半径"，对应高斯 σ = blur/2，轮廓处正好一半
-// 覆盖：α(d) = A · [1 − Φ(2d/blur)]。这里用 logistic 近似 Φ（误差 < 0.5%），
-// 查表求值，不引入 erfc 依赖也不逐像素 exp。
-//
-//   u = d/blur     -1(全实)      0(半覆盖)      +1(几乎透明)
+// 阴影轮廓边界的覆盖率为 50%；blur 对应高斯 σ = blur/2。使用 logistic 查表近似累积分布，避免逐像素 exp。
 inline float shadow_cov(float u) {
     static float tab[65];
     static bool init = false;
@@ -2886,22 +2822,7 @@ inline std::wstring to_wide(const std::string& s) {
     return out;
 }
 
-// -----------------------------------------------------------------------------
-//  选一个"看起来和系统一样"的字体族
-//
-//  踩过的坑：这里原来写死 "Microsoft YaHei UI"。中文看着没问题（雅黑本来就是
-//  Windows 的中文界面字体），但**拉丁字母用的是雅黑的西文部分** —— 比系统 UI
-//  的 Segoe UI 更宽、更圆，一眼就能看出"不是系统那个字体"。
-//
-//  Windows 自己的做法是：正文用 Segoe UI（Win11 是 Segoe UI Variable Text），
-//  中文字形交给 GDI 的**字体链接**（注册表 SystemLink 里 Segoe UI 链到 msyh），
-//  于是拉丁用 Segoe、中文用雅黑，混排时逐字替换、基线对齐。
-//  我们照抄这个链：先试 Segoe UI Variable Text，退到 Segoe UI，
-//  最后才去问系统自己的消息字体（SPI_GETNONCLIENTMETRICS）。
-//
-//  为什么不用 SPI 的结果当首选：它报的是**旧式控件**的字体，Win11 的资源管理器
-//  和设置界面其实走 DirectWrite + Segoe UI Variable，两者字面并不一样。
-// -----------------------------------------------------------------------------
+// Windows 字体依次尝试 Segoe UI Variable Text、Segoe UI、系统消息字体，中文由 GDI 字体链接回退。
 inline bool font_face_installed(const wchar_t* face) {
     LOGFONTW lf{};
     lf.lfCharSet = DEFAULT_CHARSET;
@@ -3444,11 +3365,7 @@ struct Ui::Impl {
     // 只属于其中一个 —— 否则一次点击会被画两次、动两个状态。
     bool press_taken = false;
     uint64_t next_hot = 0;
-    // 悬停**位置**：指针移动时决定"要不要重绘"的关键。
-    // 指针在一个控件内部移动，画面一个像素都不会变 —— 那种帧本来就不该画。
-    // 以前每个 WM_MOUSEMOVE 都排一帧，再用 30fps 预算把它们合并（不然一个核心
-    // 吃满）；结果是悬停高亮只有 30fps，扫过一排条目能看见"空帧"闪一下。
-    // 现在按"悬停目标有没有变"来判定：不变就不画，变了就正常 60fps 画。
+    // 仅在悬停目标变化时请求重绘，避免控件内部指针移动产生无效帧。
     Rect next_hot_rect{};
     Rect hot_rect{};
     bool hot_rect_valid = false;
@@ -3496,9 +3413,7 @@ struct Ui::Impl {
     int   sel_anchor = -1;        // 选区锚点
     float caret_blink = 0.0f;
 
-    // 组合键按下后的一小段时间内丢弃文本字符。真实 Ctrl+Z 会送 WM_CHAR(0x1A)
-    // 并被后端过滤，但某些输入法/布局会送可打印字符 —— 那就变成"撤销一次顺手
-    // 打了个 Z"。150ms 足够覆盖一次按键，又不会影响正常打字。
+    // 组合键后短暂抑制字符输入，避免输入法将快捷键同时提交为文本。
     float text_veto = 0.0f;
 
     // 撤销栈（每个编辑控件一份，按 id 记忆）
@@ -4286,15 +4201,13 @@ inline void Ui::glass(const Rect& r, float radius, const Style& st) {
     const float rad  = st.radius >= 0.0f ? st.radius : radius;
     const float blur = st.blur_radius > 0.0f ? st.blur_radius : 12.0f;
 
-    // 1) 投影：玻璃是浮在内容上的，没有投影会像一张贴纸。
-    //    kit 的阴影 = 0 0 3 / 55% + 0 8 40 / 25%，这里取"薄的那一层"。
+    // 材质面板的投影。
     drop_shadow(r, rad, 18.0f, Color(0, 0, 0, dark ? 110 : 46), 6.0f);
 
-    // 2) 背后内容先糊掉（这是"液态玻璃"里唯一必须真算的一步）
+    // 背景材质使用模糊近似。
     backdrop_blur(r, rad, blur);
 
-    // 3) 材质：kit `Liquid Glass/Opacity` = 25%，冷白。深色下用更淡的一层白，
-    //    压黑的话玻璃会变成一块炭 —— 玻璃永远是"提亮背后那层"，不是"盖住它"。
+    // 在模糊背景上叠加半透明色，深色主题降低白色填充强度。
     const Color tint = !st.bg.is_none()
                      ? st.bg
                      : (dark ? Color(255, 255, 255, 22) : Color(255, 255, 255, 46));
@@ -4695,8 +4608,7 @@ inline void Ui::draw_text(const std::string& text, const Rect& box, const Color&
     const float lh = impl->text->line_height(pfs, weight);
     const Rect pb = impl->xf_phys(box);
 
-    // 文本一律裁到自己的盒子里。溢出永远是 bug —— 对话框正文横向爬出面板
-    // 就是这么来的（只有 toast / input 少数几处自己 push_clip 了，其余全靠运气）。
+    // 文字裁剪到自身布局区域，防止内容越过容器边界。
     Rect clip = impl->effective_clip;
     if (clip.w >= 0.0f) {
         const float x0 = std::max(clip.x, pb.x), y0 = std::max(clip.y, pb.y);
@@ -4802,8 +4714,7 @@ inline float Ui::text_height(const std::string& text, float width, const Style& 
     return (float(n) - 1.0f) * step + lh;
 }
 
-// alert 在给定宽度下需要多高 —— 让"正文折行"这类情况不用拍一个高度再被裁掉。
-// 注意标题按单行处理（alert 就是这么画的，标题过长会裁），别把标题写太长。
+// 计算给定宽度下的 alert 高度；正文可折行，标题按单行裁剪。
 inline float Ui::alert_height(const std::string& title, const std::string& description,
                               float width, const Style& st) const {
     const float fs  = st.font_size > 0.0f ? st.font_size : impl->theme.font_size;
@@ -5005,13 +4916,7 @@ inline Skin make_skin(const Theme& th, const Style& st, int default_variant, flo
     sk.weight    = st.font_weight > 0 ? st.font_weight : 500;   // 官方 kit：推按钮标签是 SF Pro Medium
     sk.fg        = th.label;
 
-    // macOS 27 的推按钮只有三种"面"，没有 shadcn 那套主/次/描边：
-    //   Default    Prominent    —— 强调色实心 + 白字 + 顶部 1px 亮边
-    //   Secondary  Bordered     —— 8% 黑半透明面，**没有描边**（官方 kit 里 BG 就一层 8%）
-    //   Ghost/Link Borderless   —— 无面
-    // 官方 kit 只有 Idle / Clicked / Disabled 三态：没有 hover 变色 —— 鼠标悬停不变色是
-    // macOS 的本来行为，之前那套"悬停变深"是 Web 习惯，会让界面立刻不像 macOS。
-    // 按下 = 8% → 16%（正好翻倍，官方 Clicked 值）。
+    // Default 使用强调色，Secondary 使用半透明填充，Ghost/Link 无填充；按下时增加填充强度。
     switch (v) {
         case Style::Default:
             sk.base  = th.tint;  sk.fg = th.tint_foreground;
@@ -5026,9 +4931,7 @@ inline Skin make_skin(const Theme& th, const Style& st, int default_variant, flo
             sk.fg   = th.label;
             break;
         case Style::Outline:
-            // Bordered：8% 面 + **1px 细线**。macOS 里"有框"和"无框"是两种控件，
-            // 之前 Outline 和 Secondary 都只铺 8%、都不描边，画出来一模一样 ——
-            // 六个变体实际只有五种视觉，调用方没法靠它表达区别。
+            // Outline 保留细描边，以区别于 Secondary 的半透明填充。
             sk.base = th.fill2; sk.hover = th.fill2; sk.press = th.fill_press;
             sk.fg   = th.label;
             sk.border = th.separator; sk.border_w = 1.0f;
@@ -5090,17 +4993,7 @@ inline void paint_surface(Ui& ui, const Rect& r, const Skin& sk, float t_hover, 
     }
 }
 
-// macOS 27 的弹层投影是**两层**：一层 0/0/3 的紧贴轮廓（把边缘压住），
-// 一层大范围的柔光（拉开层次）。只画一层柔光会显得飘，只画紧轮廓会显得脏。
-//
-//   level 0 = Quaternary（菜单/右键菜单）  1 = Secondary（弹层/浮卡）  2 = Primary（模态）
-//
-// 关于"紧轮廓层"：设计稿写的是 `0 0 3 rgba(0,0,0,.55)`。按 Figma/CSS 的语义
-// 忠实渲染出来，轮廓线上是 27% 黑、且只铺开 3px —— 在 1080p 上就是一整圈
-// **深灰描边**，看着像"雷霆边框"而不是影子（用户实测就是这个反馈）。
-// AppKit 的真实观感是"没有一圈可见的暗边"，靠的是大半径柔光。所以这里把紧
-// 轮廓压到 16%（只负责把边缘咬住），并放大柔光层的半径 —— 层次感来自柔光，
-// 边缘定义交给面板自己的 1px 细线。
+// 弹层使用紧轮廓与柔光两层投影，降低紧轮廓不透明度以避免深色描边。level 0 为菜单，1 为浮卡，2 为模态。
 inline void pop_shadow(Ui& ui, const Rect& r, float rad, const Theme& th, int level = 1) {
     const bool dark = th.window_bg.luminance() < 0.5f;
     if (!dark) {
@@ -5130,9 +5023,7 @@ inline void paint_popup_chevrons(Ui& ui, const Rect& box, float pad, const Color
 inline void paint_focus_ring(Ui& ui, const Rect& r, float radius, const Color& ring,
                              bool for_text = false) {
     if (!for_text && ui.impl->focus_by_mouse) return;
-    // HIG：焦点环 3pt 宽、画在控件**外面**（不占控件自身的空间）。之前是
-    // 2px / 外扩 1.5，叠上 55% 的衰减后只有 27% 的强调色 —— 浅色下几乎看不见，
-    // 焦点跑到哪全靠猜。外扩 2 + 宽 3 才是系统那圈"贴边一圈蓝"。
+    // 焦点环在控件外绘制，宽度 3pt，不占布局空间。
     ui.stroke_rect(r.expand(2.0f), ring.scaled_alpha(0.85f), radius + 2.0f, 3.0f);
 }
 
@@ -5141,17 +5032,7 @@ inline void paint_focus_ring(Ui& ui, const Rect& r, float radius, const Color& r
 // 不透明 —— 深色主题下直接变成一块纯白实心矩形把文字盖死。必须缩现有 alpha。
 inline Color on_color(const Color& bg);   // 反色文字（定义在后面）
 
-// -----------------------------------------------------------------------------
-//  统一的菜单面板
-//
-//  menu / menubar / context_menu / select / combobox 五处弹层共用这一个画法。
-//  以前各写一份：行高 32、悬停 5% 灰、容器圆角 6、有的有勾有的没有 —— 同一个
-//  AppKit 控件在五个地方长得不一样，凑在一屏里就露馅。
-//
-//  官方参数：容器 r10（Group Box 同半径）、行高 24（Menu/Height Medium）、
-//  高亮 = 强调色实心 r5 + 反色文字、选中标记在**行首勾位**（所有行都留这个位，
-//  不选中的行也留，否则勾一出现整列文字就横跳）。
-// -----------------------------------------------------------------------------
+// menu、menubar、context_menu、select、combobox 共用菜单绘制。所有行预留勾选列，避免文字位置变化。
 inline void paint_menu(Ui& ui, const Rect& list,
                        const std::vector<std::string>& items,
                        const std::vector<Rect>& rects,
@@ -5165,9 +5046,7 @@ inline void paint_menu(Ui& ui, const Rect& list,
     // 不描边：mac 的菜单/气泡只有投影，一圈 1px 线是 Web 的下拉面板
 
     ui.push_clip(list);
-    // 菜单行的悬停高亮在 macOS 26/27 是**中性灰**（Figma：r8、#E6E6E6 / #141414），
-    // 不是强调色蓝条。蓝色高亮 + 白字是 Big Sur 之前的老观感，也是 Web 下拉框的
-    // 默认写法；mac 现在整块界面都是灰阶层次，蓝色只留给"当前选中/主操作"。
+    // 菜单行使用中性色悬停高亮。
     const Color hover_bg = th.is_dark() ? Color::hex(0x141414) : Color::hex(0xE6E6E6);
     for (size_t i = 0; i < rects.size() && i < items.size(); ++i) {
         const float t_h = animate_value(ui.impl, ids[i] * 83u + 1u, hov[i] ? 1.0f : 0.0f, 20.0f);
@@ -5244,12 +5123,7 @@ inline int caret_from_x(const Ui& ui, const std::string& s, float local_x, float
     return best;
 }
 
-// -----------------------------------------------------------------------------
-//  编辑器的共用件：按词跳转 + 撤销栈
-//  单行 input 和多行 textarea 用同一套，避免两处行为不一致（以前就是这样：
-//  input 能拖选，textarea 不能；两边都没有撤销）。
-// -----------------------------------------------------------------------------
-//  0 = 空白/标点（按词跳时先跳过），1 = 西文词，2 = CJK（逐字跳）
+// input 与 textarea 共用按词跳转和撤销栈。词类型：0 为空白或标点，1 为西文词，2 为 CJK 字符。
 inline int cp_class(uint32_t c) {
     if (c == ' ' || c == '\t' || c == '\n' || c == '\r') return 0;
     if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_') return 1;
@@ -5365,8 +5239,7 @@ inline void Ui::label(const std::string& text, const Rect& box, const Style& st)
 
 inline void Ui::heading(const std::string& text, const Rect& box, const Style& st) {
     Style s = st;
-    // kit 的文字样式表：Title 1 = 22/26 **Bold**。以前写 24 semibold，两个值都不是
-    // 官方值 —— 大一号加半粗，看着像网页标题而不是 Mac 的窗口标题。
+    // 默认标题使用 22pt Bold。
     if (s.font_size <= 0.0f) s.font_size = 22.0f;
     if (s.font_weight <= 0) s.font_weight = 700;
     const Color c = !s.fg.is_none() ? s.fg
@@ -5705,9 +5578,7 @@ inline void Ui::badge(const std::string& text, const Rect& box, const Style& st)
     // 字号 Caption 1 = 10/13。
     const float rad = st.radius >= 0.0f ? st.radius : 4.5f;
     const float fs  = st.font_size > 0.0f ? st.font_size : 10.0f;
-    // 默认变体是 Default（primary 底 + primary_foreground 字），与 shadcn 的 <Badge>
-    // 一致。以前这里把 bg / fg 硬编码成 secondary，`make_skin` 算出来的配色只被取了
-    // 字重 —— 于是 Default 和 Secondary 画出来一模一样，"四种变体"实际只有两种视觉。
+    // Badge 的背景、前景与字重由 make_skin 统一计算。
     detail::Skin sk = detail::make_skin(th, st, Style::Default, rad);
     if (sk.weight == 400) sk.weight = 500;
     // macOS 的标记（badge / tag）是**强调色 15% 底 + 强调色字**，不是实心色块 + 白字。
@@ -5779,13 +5650,9 @@ inline void Ui::skeleton(const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
     const float rad = st.radius >= 0.0f ? st.radius : th.radius;
     Color c = !st.bg.is_none() ? st.bg : th.muted;
-    // 呼吸要靠时间驱动，所以默认是**静态**的灰块：skeleton 常常只是"这里将来
-    // 会有内容"，安静不动的占位块完全够用，而它不该让整窗从 0% 变成 20% CPU。
-    //
-    // Style().animate() 点名要求它动 —— 但也只在**鼠标悬停**时动。理由同上：
-    // 一个常驻动画就是整窗每帧重画，代价和窗口面积成正比，不能默认付。
+    // Skeleton 默认静止；启用 animate 后也仅在悬停时请求动画帧，以控制空闲重绘开销。
     if (st.animated) {
-        // 被浮层盖住时不算悬停，否则遮罩底下那块还在亮暗呼吸 —— 一眼就穿。
+        // 被浮层遮挡时不触发悬停动画。
         const bool hovered = !st.disabled && this->hovered(box);
         float& ph = impl->phase[impl->widget_id("skeleton_phase", box)];
         if (hovered) {
@@ -5807,8 +5674,7 @@ inline bool Ui::button(const std::string& text, const Rect& box, const Style& st
     if (!s.valign_set) s.valign = VAlign::Middle;
 
     const bool enabled = !s.disabled;
-    // macOS 里手型指针只出现在**链接**上：按钮、菜单、列表行、日历格全是箭头。
-    // 整屏都是小手是浏览器 / Web 组件库的习惯，也是"一眼像网页"的来源之一。
+    // 链接使用手形指针，普通按钮保留箭头指针。
     detail::Interact in = detail::interact(impl, id, box, enabled);
     if (in.hovered && s.variant == Style::Link) set_cursor(Cursor::Hand);
 
@@ -5893,10 +5759,7 @@ inline bool Ui::nav_item(const std::string& label, bool active, const Rect& box,
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float pad = st.pad_x >= 0.0f ? st.pad_x : 8.0f;
 
-    // macOS 侧边栏（Item/Small/Selected，官方值是强调色 **23%** 的圆角块）：
-    // 选中态是"淡淡一层强调色 + 文字仍是 85% 黑"，**不是**实心蓝底白字 ——
-    // 实心蓝底白字是 iOS/Twitter 的语言，放到 macOS 侧边栏里一眼就假。
-    // 也没有左侧指示条（那是 Material 的语言）。
+    // 侧栏选中项使用强调色半透明填充，文字保留标签色。
     if (t_active > 0.01f) {
         Color bg = !st.bg.is_none() ? st.bg : th.tint;
         const uint8_t a = bg.a == 255 ? 59 : bg.a;   // 23% ≈ 59/255
@@ -6155,10 +6018,7 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
         }
         if (!undone && kin.key_pressed[KEY_ESC]) { detail::drop_focus(impl); focused = false; }
 
-        // 文本输入（含中文 IME 提交后的字符）
-        // 按住 Ctrl 时不落字：真实 Ctrl+Z 走 WM_CHAR(0x1A) 已经被后端过滤，但
-        // 有些输入法/键盘布局会在组合键下送来可打印字符，那就变成"撤销一次
-        // 顺手打了个 Z"。
+        // 组合键期间不提交文本，避免输入法将快捷键字符写入输入框。
         if (!undone && !kin.ctrl() && impl->text_veto <= 0.0f && !kin.text_input.empty()) {
             edit_kind = detail::EDIT_TYPE;
             delete_selection();
@@ -6178,15 +6038,7 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
 
     // ---------------- 绘制 ----------------
     const float t_hover = detail::animate_value(impl, id * 31u + 1u, (in.hovered && !focused) ? 1.0f : 0.0f, 18.0f);
-    // 内层铺不铺底，不能只看 bg 的 alpha：Color::none() 和 Color(0,0,0,0) 的
-    // is_none() 都是真（它只判 a==0），"没传背景"和"显式要透明"分不出来。于是
-    // 传了透明底时会回退成 th.background，在 inner（整高）上铺一层白 —— 把调用方
-    // 自己画的外框从**中间**吃掉，只剩前后缀那两小段。input_group 就中过这个：
-    // 用户看到的是"两个输入框中间那条横线没了"。
-    //
-    // 判据：border_width == 0 且没给 bg = 调用方在说"外壳我自己画，你别画"。
-    // 官方 Text Field/Rounded 的面：浅色纯白，暗色比窗口**亮一档**（不然黑框在黑窗上
-    // 完全看不出边界）。之前直接用 th.background，暗色下等于"没有输入框"。
+    // border_width 为 0 且未指定背景时，由调用方绘制外壳，供 input_group 组合使用；普通输入框使用 th.input。
     Color bg = !st.bg.is_none() ? st.bg
              : (th.is_dark() ? Color(255, 255, 255, 20) : th.window_bg);
     const bool bare = st.border_width == 0.0f && st.bg.is_none();
@@ -6205,8 +6057,7 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
     if (bw > 0.0f) stroke_rect(box, bd, rad, bw);
     // 焦点环：macOS 是**外面**一圈 3px 的强调色光晕，不是把边框染蓝变粗。
     if (focused && !bare) {
-        // 3px、强调色 25%（th.ring 就是 50%，这里再压一半）—— 系统焦点环比 Web 的
-        // box-shadow 更收敛，一眼能分出"这是 mac 的蓝圈"
+        // 焦点环使用低透明度强调色。
         stroke_rect(box.outset(3.0f), th.ring.scaled_alpha(0.5f), rad + 3.0f, 3.0f);
     }
 
@@ -6395,9 +6246,7 @@ inline bool Ui::toggle(bool* value, const Rect& box, const Style& st) {
     const float t       = detail::animate_state(impl, id * 41u + 1u, *value ? 1.0f : 0.0f, 22.0f);
     const float t_press = detail::animate_value(impl, id * 41u + 2u, (in.held && in.hovered) ? 1.0f : 0.0f, 30.0f);
 
-    // ---- 官方 Switch/Medium：轨道 54×24 胶囊（r=1000, cornerSmoothing 0.6）----
-    // 滑块不是圆点，是 32×20 的白色胶囊，四周内缩 2；按下时横向拉长到 50×31 的形变
-    // 这里不做玻璃/形变，只保留尺寸与位移，避免"液态玻璃"。
+    // Medium 轨道为 54×24 胶囊，滑块为 32×20，四周内缩 2。
     // 五档宽高比并不相等。宽、高都必须装进 box，不能只按高度选档。
     const float widths[] = {36.0f, 44.0f, 54.0f, 64.0f, 80.0f};
     const float knob_widths[] = {21.0f, 26.0f, 32.0f, 38.0f, 47.0f};
@@ -6465,9 +6314,7 @@ inline bool Ui::slider(float* value, float min_value, float max_value, const Rec
     }
     const float t_hover = detail::animate_value(impl, id * 43u + 1u, (in.hovered || impl->active == id) ? 1.0f : 0.0f, 18.0f);
 
-    // 官方 Slider：整体 140×24，轨道 **4px** 胶囊（kit 里 Track 是 150×4 r2，
-    // 带两道内阴影），左右各留出把手的半宽。
-    // 把手是 20×16 的白色胶囊（不是圆点）—— 圆点会让它一眼看着像 HTML range。
+    // 滑杆轨道高 4px，把手为 20×16 胶囊；两端预留把手半宽。
     const float track_h = 4.0f;
     const float knob_w = 20.0f, knob_h = 16.0f;
     const float half = knob_w * 0.5f;
@@ -6497,15 +6344,7 @@ inline bool Ui::slider(float* value, float min_value, float max_value, const Rec
     return changed;
 }
 
-// -----------------------------------------------------------------------------
-//  tabs —— 两套视觉，同一套索引语义
-//    Style()           → 标签栏（Tabs）：无容器底色，选中项浮一层 3% 圆角底，
-//                        项宽按文字宽度；其余项文字 50%
-//    Style().secondary()/outline() → 胶囊式（Segmented）：整条是一个凹槽，
-//                        选中项是浮起的一块圆角块
-//  以前 segmented() 直接转调 tabs，两者画出来一模一样，而示例文案还写着
-//  "两套视觉" —— 那是在骗调用方。现在真的分成两套。
-// -----------------------------------------------------------------------------
+// Tabs 按文字宽度排列，Segmented 等分并共用凹槽背景；两者均返回选中索引。
 inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const Rect& box, const Style& st) {
     if (!index || labels.empty()) return false;
     const Theme& th = impl->theme;
@@ -6523,9 +6362,7 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
     const Rect inner = pill ? container.inset(2.0f, 2.0f) : container;
     const float equal_w = inner.w / float(labels.size());
 
-    // 每段的横向位置：胶囊段控件等分；标签栏**按文字宽度**排（官方 44×29 的
-    // Item 就是按内容定宽）。之前标签栏也等分，一个三字标签独占 273px 的淡底，
-    // 看着像三块错位的色块。
+    // 胶囊分段等宽，普通标签栏按文字宽度计算位置。
     std::vector<float> xs(labels.size(), 0.0f), ws(labels.size(), equal_w);
     {
         float x = inner.x;
@@ -6594,9 +6431,7 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
         ts.font_weight = 500;                 // 官方：选中/未选中都是 SF Pro Medium
         ts.align = Align::Center;
         ts.valign = VAlign::Middle;
-        // 分段的未选中标签是 **85%**（kit 里三段全是 #000000D9），选中只是面上
-        // 换成强调色 + 白字；标签栏则相反 —— 未选中 55%、选中 100%（`Tabs/8`）。
-        // 之前两处都用 label2（50%），一排分段看着比旁边的按钮淡一档。
+        // 分段控件与标签栏分别使用各自的选中及未选中标签色。
         Color c;
         if (pill) c = (*index == int(i)) ? detail::on_color(th.tint) : th.label;
         else      c = (*index == int(i)) ? th.foreground : th.label2;
@@ -6625,7 +6460,7 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
     uint64_t id = impl->widget_id("select", box);
     // 本组件第一个控件的层级号。弹层下一帧用它判定"谁在下面"。
     const uint64_t z_first = impl->seq + 1;
-    // 下拉按钮和普通按钮同一个半径尺度（6），之前用 radius_sm（4）显得比方角按钮方
+    // 下拉触发器与普通按钮共用默认圆角。
     const float rad = st.radius >= 0.0f ? st.radius : th.radius;
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
     const bool enabled = !st.disabled;
@@ -6642,10 +6477,7 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
 
     const float t_hover = detail::animate_value(impl, id * 53u + 1u, (in.hovered || open) ? 1.0f : 0.0f, 18.0f);
 
-    // --- 主体 ---
-    // NSPopUpButton 是**8% 的实心圆角块 + 无描边**（Figma `_Alert Button/Pop-Up
-    // Button`），不是"白底 + 1px 边框"的输入框。之前给它套了输入框的皮，于是
-    // 和旁边的 Text Field 长得一样 —— 但一个是能打字的，一个只能选。
+    // 弹出选择器使用半透明按钮面，无输入框描边。
     Color bg = !st.bg.is_none() ? st.bg : th.fill2;
     if (t_hover > 0.01f) bg = bg.mix(th.foreground.with_alpha(38), t_hover * 0.55f);
     if (bg.a > 0) fill_rect_s(box, bg, rad, 0.35f);
@@ -6819,12 +6651,9 @@ inline bool Ui::stepper(float* value, float step, float min_value, float max_val
     const float rad = st.radius >= 0.0f ? st.radius : th.radius;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
 
-    // 官方 Stepper（Stepper/No Field，Medium）：**20 宽的竖条**，上下两个半高按钮，
-    // 各自带上下小三角；它贴在数值框的右边缘，不是"[−] 值 [+]"这种横向三段。
-    // 横向那套是 Web 的 Number Input，放在 mac 界面里一眼就不对。
+    // Stepper 位于数值框右侧，上下两个按钮竖向排列。
     const float btn_w = std::min(std::max(box.h * 0.83f, 16.0f), 20.0f);
-    // ⚠️ 上 = 加、下 = 减。之前写反了（上半减、下半加）：看着像步进器，用起来
-    // 是"点上面的三角数字变小"—— AppKit 的 NSStepper 从上到下永远是 ＋ / －。
+    // 上按钮增加数值，下按钮减少数值。
     const Rect plus_r (box.right() - btn_w, box.y, btn_w, box.h * 0.5f);
     const Rect minus_r(box.right() - btn_w, box.y + box.h * 0.5f, btn_w, box.h - box.h * 0.5f);
     const Rect value_r(box.x, box.y, std::max(box.w - btn_w, 1.0f), box.h);
@@ -6931,10 +6760,7 @@ inline bool Ui::search_field(std::string* value, const Rect& box, const Style& s
     if (st.disabled) mag.a = uint8_t(float(mag.a) * 0.45f);
     detail::paint_magnifier(*this, box.x + 13.0f, box.cy(), 4.2f, mag);
 
-    // 清除键：14px 直径的实心圆，**中心在框内 12px 处**（右侧留 5px 边距）。
-    // 之前写成 `right - h*0.5` 还给了 h 的宽度，rect 的右边界正好落在框沿上，
-    // 圆心就被推到框的右边缘 —— 半个圆跑到胶囊外面，压在边框上。
-    // 现在 rect 从 right - h 起，圆心落在 right - 12。
+    // 清除按钮限制在输入框内部，右侧预留边距。
     if (has_clear) {
         if (ci.hovered) set_cursor(Cursor::Arrow);
         // 禁用时叉照画、只是淡下去（kit 的 `State=Disabled` 变体里 Clear 还在，
@@ -7483,9 +7309,7 @@ inline void Ui::avatar(const std::string& text, const Rect& box, const Style& st
     Color bg = !st.bg.is_none() ? st.bg : th.fill;
     if (st.disabled) bg.a = uint8_t(float(bg.a) * 0.45f);
     fill_rect(c, bg, d * 0.5f);
-    // 默认 1px 描边。以前是 0——理由是"照片位通常有底图"，但那样 `muted` 圆底一旦落在
-    // 浅灰容器上（gallery 预览板、`card()`、`panel()`）就完全看不见，只剩一个孤零零的字，
-    // 用户看到的就是"头像咋只有个文字"。头像的**轮廓**比"没有边框"重要。
+    // 默认 1px 描边保证头像在浅色容器内保持可辨识轮廓。
     const float bw = st.border_width >= 0.0f ? st.border_width : 1.0f;
     if (bw > 0.0f) {
         const Color bc = !st.border_color.is_none() ? st.border_color : th.border;
@@ -7552,16 +7376,7 @@ inline void Ui::spinner(const Rect& box, const Style& st) {
     detail::raster_ring_tail(*impl->canvas, cx, cy, rad, lw, arc, ang, 0.14f);
 }
 
-// 提示条：符号 + 标题 + 描述。variant = Destructive 时符号转破坏色。
-//
-// macOS 里**没有**"整块底色的提示条"这种东西。Finder 的删除警告、系统设置的
-// 空间不足提示，都是"一枚符号 + 两行文字"直接贴在版面上：没有面、没有边、没有
-// 圆角卡片。之前那版画的是一块 3% 填充的圆角矩形，在已经有一层 Group Box 的
-// 容器里就是"卡片套卡片"，一眼后台管理系统。所以默认不铺底 —— 只有调用方
-// 显式给 bg，或者要一个安静的次级面（Secondary）时才画。
-//
-// 同理，标题**不染红**：NSAlert 的 messageText 永远是 label 色，红色只出现在
-// 符号和破坏性按钮上。整行红字是 Web 的 alert-danger。
+// Alert 默认显示符号、标题和描述；显式背景或 Secondary 变体可绘制底面。标题使用标签色。
 inline void Ui::alert(const std::string& title, const std::string& description, const Rect& box, const Style& st) {
     // 不铺底时整块区域没有 fill_rect 可登记，测量阶段会只剩文字的包围盒 —— 两条
     // 提示条叠出来的高度会比实际矮一大截，第二个的描述被裁掉。所以自己登记。
@@ -7825,7 +7640,7 @@ inline void Ui::sparkline(const std::vector<float>& values, const Rect& box, con
                   pts[i].x / impl->scale, pts[i].y / impl->scale, line_c, lw);
 }
 
-// 柱状图（迷你）。负值用 muted 画，一眼能区分出"掉下去的那几根"。
+// 迷你柱状图，负值使用 muted 色。
 inline void Ui::bars(const std::vector<float>& values, const Rect& box, const Style& st) {
     if (values.empty() || box.w < 4.0f || box.h < 4.0f) return;
     const Theme& th = impl->theme;
@@ -7876,8 +7691,7 @@ inline void Ui::tooltip(const Rect& anchor, const std::string& text, const Style
     }
 
     const Theme& th = impl->theme;
-    // 官方 Tooltip：49×18、r5、内边距 6/3、标签 11 Medium。之前是 12 号 + 8/5
-    // 的内边距，气泡比方框大一圈 —— 系统 tooltip 是很小的。
+    // Tooltip 默认 11pt Medium，水平与垂直内边距分别为 6px 和 3px。
     const float fs = st.font_size > 0.0f ? st.font_size : 11.0f;
     const float padx = 6.0f, pady = 3.0f;
     const float w = text_width(text, fs, 500) + padx * 2.0f;
@@ -8157,8 +7971,7 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
     if (!open || !*open) return false;
     const Theme& th = impl->theme;
     uint64_t cid = impl->widget_id("dialog_close", box);
-    // 关闭按钮在下面 claim 之前就 interact 了，所以层级号必须在入口处取，
-    // 否则它会被自己的闸门挡住（点了没反应，看着像"按钮坏了"）。
+    // 关闭按钮先交互，再用入口层级登记闸门，避免被自身浮层阻挡。
     const uint64_t z_first = impl->seq + 1;
     // 官方 `Alert/3 Options + Cancel`：面板 r10、无描边（层次全靠 Primary 投影）、
     // 内边距 16/20、标题 13 Bold、正文 **11 Regular 85%**（不是 50% 的次要灰）。
@@ -8214,9 +8027,7 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
     // 热区还在（close_r），所以点那个位置仍然能关，只是不露出字形。
     (void)ct;
 
-    // 登记下一帧的输入闸门：面板自己接收输入，遮罩上的点击、以及被面板
-    // 盖住的控件都不许响应（层级由 z_first 判定，不只是位置）。
-    // 即使本帧就要关闭也照登 —— 多挡一帧，免得"点遮罩关闭"那一下顺手点到后面的按钮。
+    // 关闭时仍登记闸门，多阻挡一帧，避免关闭点击穿透到后方控件。
     impl->gate_claim(box, z_first);
     if (dismiss) { *open = false; repaint(); }
     return true;      // 本帧仍然按"打开"画完了，下一帧才真的消失（不会闪一下）
@@ -8313,7 +8124,7 @@ inline void Ui::toast(const std::string& text, const Rect& box, const Style& st)
 // =============================================================================
 //  8.16  对齐 macOS 的基础控件（含 kit 里没有对应物的推导）
 //
-//  这一节的控件都遵守同一套约定，以后加组件照抄即可：
+//  本节控件的输入与绘制约定：
 //    1) 交互一律走 detail::interact()，动画一律走 detail::animate_value()；
 //    2) 浮层用 deferred() 画到帧末，并在帧内 gate_claim() 登记下一帧的输入白名单；
 //    3) **不做无条件 repaint()** —— 空闲 0% CPU 是这个库的头号承诺，
@@ -8403,11 +8214,7 @@ inline bool group_cell(Ui& ui, Ui::Impl* im, uint64_t id, const Rect& r, const s
         ui.fill_rect(Rect(r.x, r.y + (r.h - dh) * 0.5f, 1.0f, dh), th.label3, 0.0f);
     }
 
-    // 选中 = 一块**比轨道深一档的灰胶囊**，不是纯白。
-    // 依据 kit `Button Group/3`：选中钮是实体 #E6E6E6（≈10% 黑），压在玻璃轨道上
-    // —— 也就是"凹进去"的方向。之前画纯白，在白底页面上等于给选中项打了个高光，
-    // 和系统里"选中的那格看起来更沉"正好相反（深色模式则相反，要比轨道亮，
-    // 玻璃轨道在暗色下本身是 ~#2C2C2C，选中提到 #3A3A3A）。
+    // 分组按钮的选中面在浅色下加深、深色下提亮，以区别于轨道。
     const Rect inner = r.inset(2.0f, 2.0f);
     const float ir = inner.h * 0.5f;
     const Color pill = th.is_dark() ? Color::hex(0x3A3A3A) : Color::hex(0xE6E6E6);
@@ -8486,8 +8293,7 @@ inline bool Ui::toggle_button(const std::string& label, bool* value, const Rect&
     return changed;
 }
 
-// Toggle Group（单选）。再点一次已选中的项 = 取消选择 ——
-// shadcn 默认不允许取消，但桌面端这么用更顺手，也是这个库唯一偏离 shadcn 的行为。
+// 单选 Toggle Group 允许再次点击选中项以取消选择。
 inline bool Ui::toggle_group(const std::vector<std::string>& items, int* index,
                              const Rect& box, const Style& st) {
     if (!index || items.empty() || box.w <= 0.0f) return false;
@@ -8499,9 +8305,7 @@ inline bool Ui::toggle_group(const std::vector<std::string>& items, int* index,
     const float iw  = box.w / float(n);
     const uint64_t base = impl->widget_id("toggle_group", box);
 
-    // 官方 Segmented Control 的轨道：**一层 8% 黑**（凹槽），没有描边。
-    // 深色主题下也是黑 —— 凹槽是"压下去"的，比窗口暗才对；拿白色铺会立刻
-    // 变成一条浮起的工具条，这是之前最明显的"不像 mac"来源之一。
+    // 分段控件使用半透明黑色凹槽背景，无外框。
     fill_rect(box, !st.bg.is_none() ? st.bg : th.track_well(), rad);
 
     bool changed = false;
@@ -8562,8 +8366,7 @@ inline bool Ui::button_group(const std::vector<std::string>& items, int* clicked
     const float iw  = box.w / float(n);
     const uint64_t base = impl->widget_id("button_group", box);
 
-    // 和 Segmented 同一个轨道：8% 凹槽、无描边（之前是 secondary 底 + 1px 边，
-    // 那是 Web 的 button-group，mac 里相邻按钮不会长一个"外框"）
+    // 按钮组与分段控件共用凹槽背景，无外框。
     fill_rect_s(box, !st.bg.is_none() ? st.bg : th.track_well(), rad, 0.35f);
 
     bool clicked = false;
@@ -8602,10 +8405,7 @@ inline bool Ui::input_group(std::string* value, const std::string& prefix, const
     const float pre_w = prefix.empty() ? 0.0f : text_width(prefix, fs, 400) + 10.0f;
     const float suf_w = suffix.empty() ? 0.0f : text_width(suffix, fs, 400) + 10.0f;
 
-    // 和 input() 同一套皮：纯白底 + 顶部内阴影 + 极淡描边。之前是"白底 + 1px
-    // 深边框"，跟旁边真正能打字的输入框不是一张皮。
-    // 暗色下输入框必须比窗口**亮一档**（#282828 vs #1E1E1E）：取 window_bg 的话
-    // 输入框和页面同色，只剩一圈描边，看起来像"没有框"。
+    // 组合输入框与 input 共用 th.input 背景、顶部内阴影和细描边。
     fill_rect(box, !st.bg.is_none() ? st.bg
                                    : (th.is_dark() ? th.control_bg : th.window_bg), rad);
     inner_shadow(box, th.is_dark() ? Color(0, 0, 0, 70) : Color(0, 0, 0, 18), rad, 1.8f, 1.0f);
@@ -8650,15 +8450,7 @@ inline bool Ui::input_group(std::string* value, const std::string& prefix, const
         repaint();
     }
 
-    // 聚焦后补一道 ring。外框在此前已经按 th.input 画好了，可单个 input() 聚焦时
-    // 边框会变 th.ring —— 这里把边框揽过来自己画，就得把这件事一并做掉，否则点进框里
-    // 完全看不出光标落在哪一个（两个框上下排着时尤其无从判断）。
-    //
-    // 画法**照抄 input()**：边框换成 th.ring 并加粗 0.4，再叠一层 paint_focus_ring
-    // （expand 1.5 / 55% alpha / 2px）。早先只画一根 1.4px 纯黑描边，比旁边真正的
-    // input() 重一大截，看着像"这个框报错了"。
-    //
-    // 必须画在 input() 之后：它内部会 push_clip(inner) 并在里面铺绘制，先画的边框会被压掉。
+    // 组合输入框负责外层焦点边框，必须在内部 input 绘制后补画，避免被其背景覆盖。
     if (detail::is_focused(impl, impl->widget_id("input", inner))) {
         stroke_rect(box, th.ring, rad, 1.4f);
         detail::paint_focus_ring(*this, box, rad, th.ring, true);
@@ -8677,8 +8469,7 @@ inline bool Ui::input_otp(std::string* value, int length, const Rect& box, const
     if (length > 12) length = 12;
     const Theme& th = impl->theme;
     const uint64_t id = impl->widget_id("otp", box);
-    // 每格就是一个 Text Field：**24 高、r5、13 号字**。之前按 box 高撑到 36，
-    // 数字还是 15 号 —— 那是 Web 的六宫格验证码，比正常的输入框高半截。
+    // 验证码各格使用 24px 高、r5、13pt 的文本框尺寸。
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float rad = st.radius >= 0.0f ? st.radius : 5.0f;
     const float gap = 6.0f;
@@ -9006,7 +8797,7 @@ inline bool Ui::pagination(int* page, int total_pages, const Rect& box, const St
         } else {
             char buf[16];
             std::snprintf(buf, sizeof buf, "%d", s + 1);
-            // 淡底 + 主标签字（以前是实心蓝 + 反色字，那是"选中即主操作"的写法）
+            // 选中页使用浅色底与主标签色。
             draw_text(buf, r, th.foreground, ts);
             if (in.clicked && s != cur) { *page = s; changed = true; repaint(); }
         }
@@ -9145,8 +8936,7 @@ inline bool Ui::popover(const std::string& label, bool* open, const Rect& box,
     const uint64_t id = impl->widget_id("popover", box);
     // 层级号取入口处的 seq：触发器和面板都从它往后数。
     const uint64_t z_first = impl->seq + 1;
-    // 触发器是普通按钮面（r6）；**面板是 r12**（kit `Popover` 的容器）。之前拿
-    // radius_sm（4）当面板圆角，气泡四个角几乎是方的。
+    // Popover 触发器使用按钮圆角，面板圆角为 12px。
     const float rad = st.radius >= 0.0f ? st.radius : th.radius;
     const float panel_rad = 12.0f;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
@@ -9264,8 +9054,7 @@ inline bool Ui::alert_dialog(const std::string& title, const std::string& body,
     if (!open || !*open) return false;
     const Theme& th = impl->theme;
     const uint64_t z_first = impl->seq + 1;
-    // 官方 Alert 面板：r12、无描边（层次全靠 Primary 投影）、标题 Headline 13 Bold、
-    // 正文 13、四周留 20。之前 r10 + 1px 边框 + 16px 标题，是"网页模态框"的配比。
+    // Alert 面板圆角 12px，标题 13pt Bold，正文 13pt，内边距 20px。
     const float rad = st.radius >= 0.0f ? st.radius : 12.0f;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float pad = st.pad_x >= 0.0f ? st.pad_x : 20.0f;
@@ -9276,10 +9065,7 @@ inline bool Ui::alert_dialog(const std::string& title, const std::string& body,
     if (!box.contains(kin.mouse.x, kin.mouse.y) && (kin.pressed[0] || kin.pressed[1])) dismiss = true;
     if (kin.key_pressed[KEY_ESC]) dismiss = true;
 
-    // 按钮几何先算出来：交互必须在画遮罩之前处理完，否则 hover 效果会被遮罩压掉。
-    // 官方 `Alert/3 Options + Cancel`：按钮是**通宽 28 高的行**，纵向排列，最底
-    // 一行才是取消；行与行之间一条 1px 的 3% 细线。之前是"右下角两颗胶囊"，
-    // 那是网页模态框（Bootstrap/Radix）的排法。
+    // 操作按钮以通宽行纵向排列，取消位于底部；交互在遮罩绘制前处理。
     const float pad_v = 16.0f;
     const float btn_h = 28.0f;
     const float inner_w = std::max(box.w - pad * 2.0f, 1.0f);
@@ -9672,8 +9458,7 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
         stroke_rect(list, th_c.separator, lrad, 1.0f);
         push_clip(list);
 
-        // 搜索框：官方 Text Field 语法（r5、5% 面、无描边、行首放大镜），
-        // 之前是全宽灰条 + 1px 边框，像浏览器里那种搜索条。
+        // 搜索框采用文本框样式，行首绘制系统搜索图标。
         const float search_r = 5.0f;
         fill_rect_s(sr, th_c.is_dark() ? Color(255, 255, 255, 18) : Color(0, 0, 0, 13), search_r, 0.35f);
         {
@@ -10657,12 +10442,7 @@ inline LRESULT CALLBACK win_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_PAINT: {
         PAINTSTRUCT ps;
         BeginPaint(h, &ps);
-        // 两条规矩：
-        //   · 缓冲没在当前尺寸下渲染过 → 先补一帧（贴一块没画过的位图 = 贴黑）；
-        //   · 画过 → **只贴，不重画**。系统叫我们重画（遮住又露出来、拖动、别的
-        //     窗口盖住）只是要"把这块区域补上"，缓冲里就是最终画面，重渲染纯属浪费 ——
-        //     以前这里无条件 need_frame = true，于是窗口被反复遮挡/暴露时
-        //     会一路空转出帧（实测空闲 CPU 抖出 25%）。
+        // 缓冲尺寸失效时补绘一帧；有效缓冲在 WM_PAINT 中直接呈现，避免窗口暴露触发无效渲染。
         if (!s->bb_valid) win_render_sync(s);
         if (s->has_backbuffer && s->bb_valid) {
             HDC dc = ps.hdc;
@@ -10829,10 +10609,7 @@ inline LRESULT CALLBACK win_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_KEYDOWN: case WM_SYSKEYDOWN: {
         int k = win_map_vk(w);
         if (k > 0 && k < KEY_COUNT) {
-            // lParam bit 30 = 这条消息之前该键是否已经按下（即系统自动重复）。
-            // 不认这一位就只能收到"按下那一下"，长按方向键不会连发 —— 终端里
-            // 表现为"上下左右只能单点、按住不动"，文本编辑里表现为"按住退格
-            // 只删一个字"。所以重复单独记到 key_repeat，由 UI 层按需取用。
+            // lParam bit 30 标识自动重复；次数存入 key_repeat，由编辑器和终端按需使用。
             const bool os_repeat = (l & (1 << 30)) != 0;
             if (!s->key_down[k] || !os_repeat) {
                 // 首按。条件里带 !os_repeat 是兜底：焦点切回来、或我们漏收了
@@ -10891,8 +10668,7 @@ inline LRESULT CALLBACK win_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     default: break;
     }
     LRESULT dw = DefWindowProcW(h, m, w, l);
-    // 顺序很关键：系统是在 DefWindowProc 里把组合窗显示出来的，
-    // 藏在它之前等于白藏（下一句就被重新 ShowWindow 了）。
+    // 隐藏操作必须在初始 ShowWindow 调用后执行。
     if (m == WM_IME_COMPOSITION || m == WM_IME_STARTCOMPOSITION)
         detail::win_hide_ime_comp_window(s);
     return dw;
@@ -11112,14 +10888,7 @@ struct WinPreciseTimer {
 };
 
 inline WinPreciseTimer& win_timer() {
-    // **必须每线程一个**。可等待定时器是"设置一次、唤醒一个等待者"的：两个窗口
-    // 各自跑在自己的线程里，共用一个句柄时，A 设的到期时间会被 B 的 Set 覆盖；
-    // 信号被 B 取走后 A 还在 WaitForSingleObject(INFINITE) 里 —— 如果 B 这一帧
-    // 之后空闲进了 WaitMessage（不再 Set），A 就**永远等不到**，表现就是主窗口
-    // 完全假死（消息不处理、画面不刷新），而子窗口是好的。
-    //
-    // 之前这里写的是 `static WinPreciseTimer t` 并注着"主循环是单线程的" ——
-    // 多窗口一开就破了这个前提。thread_local 的代价只是每线程一个内核句柄。
+    // 每个窗口线程持有独立定时器，避免到期设置相互覆盖或信号被其他线程消费。
     thread_local WinPreciseTimer t;
     return t;
 }
@@ -11424,25 +11193,7 @@ inline void x11_trace(const char* fmt, ...) {
     va_end(ap);
 }
 
-// -----------------------------------------------------------------------------
-//  FreeType / fontconfig 的运行时绑定
-//
-//  为什么不用 Xft：它有两件事都不合这里的架构。
-//   1) XftDrawString 是把字**画到 X server 的 drawable** 上。可 aino 的每一帧
-//      都是先在客户端缓冲里画完、帧末 XPutImage 整块覆盖，所以文字会被盖掉；
-//      想保住就得画进 Pixmap 再 XGetImage 取回来 —— 一帧几百段文字就是几百次
-//      同步往返，交互直接卡成幻灯片。
-//   2) XftFontOpenName 只给出**一个**字体，没有逐字符兜底。fontconfig 的默认
-//      sans 是 DejaVu Sans，它没有汉字 —— 于是中文全变成 .notdef 的豆腐方块。
-//      「中文没了 / 全是方框」就是这么来的，不是缺字体，是没人做 fallback。
-//  FreeType 在客户端把字形光栅化，fontconfig 只负责两件事：
-//   家族名 + 字重 + 像素字号 → 字体文件；以及给出一条**排序好的兜底链**
-//   （缺字时依次试后面的字体，汉字就落到 Noto Sans CJK / WenQuanYi 上）。
-//
-//  所有结构体都是 FreeType / fontconfig 的公开 ABI 前缀，按值镜像；只读前面
-//  需要的字段，后面的一律不碰。这样没有头文件依赖，普通 Ubuntu 桌面（只有
-//  运行时包 libfreetype6 / libfontconfig1）编出来就能用。
-// -----------------------------------------------------------------------------
+// FreeType 在客户端光栅化，fontconfig 负责字体匹配与缺字回退。Xft 服务端绘制会被 XPutImage 覆盖；Pixmap 回读会引入同步往返。结构体仅镜像所需公开 ABI 前缀。
 struct FtBitmapLite {
     unsigned int rows, width;
     int pitch;
@@ -11471,9 +11222,7 @@ struct FtSlotLite {
     FtBitmapLite bitmap;
     int bitmap_left, bitmap_top;
 };
-// FT_SizeRec 的前缀。注意它以 **FT_Face face 开头** —— 漏了这 8 个字节，
-// 后面读到的 metrics 全部错位（14px 的字量出 asc=448，整行文字被推到画布外，
-// 一个墨点都不剩）。踩过一次，记在这里。
+// FT_SizeRec 以 FT_Face 指针开头，镜像结构必须保留该字段以保证 metrics 偏移正确。
 struct FtSizeLite {
     void* face;
     void* generic_data;
@@ -11631,13 +11380,7 @@ inline FcApi& fc_api() {
     return api;
 }
 
-// 兜底链最多留几条。默认 16：主字体 + 钉进来的 CJK + 十几个候选，够用了。
-// 不用"多留一些以防万一"：每多一条，凡是链首覆盖不了的码位都会多打开一个
-// face，而 FreeType 每个 face 都要 mmap 整个字体文件（Noto CJK 是 20MB）并占
-// 一个 fd。CJK 已经按 charset 钉到第 2 位了，剩下的名额只是给生僻符号兜底的。
-// AINO_X11_CHAIN_CAP 可以调小 —— 只给自检用：ci_pixels 的 S4 场景把它设成 4，
-// 精确复现用户机器上"前几条全被 DejaVu Sans 的各个 style 占满、CJK 排在后面"
-// 的状态。不读静态缓存，因为同一个进程里不同窗口要能用不同的值。
+// 回退链默认上限为 16，限制字体 face 和文件映射数量；CJK 字体置于主字体之后。AINO_X11_CHAIN_CAP 供测试逐窗口调整上限。
 inline int x11_chain_cap() {
     const char* e = std::getenv("AINO_X11_CHAIN_CAP");
     const int v = e ? std::atoi(e) : 0;
@@ -11730,18 +11473,7 @@ public:
         if (Font* f = font(size, weight, true)) return float(f->asc);
         return ascent(size, weight);
     }
-    // ---------------------------------------------------------------------
-    //  为什么文字一定要画进**客户端缓冲**
-    //
-    //  X11 后端和 Windows / macOS 的架构一样：几何图形在客户端缓冲里光栅化，
-    //  一帧结束 XPutImage 整块上屏。文字如果直接调服务端的绘制函数
-    //  （Xutf8DrawString / XftDrawString），它会先出现在屏幕上、然后被紧接着
-    //  的 XPutImage 整块盖掉 —— 「Linux 上一个字都看不见」就是这么来的。
-    //  把文字画进 Pixmap 再 XGetImage 取回来能解决"被覆盖"，代价是每次绘制
-    //  一次**同步往返**：一帧几百段文字 = 几百次往返，交互卡到不能用。
-    //  所以最终做法是让 FreeType 在进程内光栅化字形（下面 ft_draw），
-    //  X 一次都不碰。core_draw 只在 FreeType 加载失败时兜底。
-    // ---------------------------------------------------------------------
+    // 文字与几何统一绘入客户端缓冲，由 XPutImage 呈现。FreeType 本地光栅化，core_draw 仅作不可用时的回退。
     void draw(Canvas& cv, const std::string& utf8, float x, float y_top,
               float size, int weight, const Color& c, const Rect& clip) override {
         if (utf8.empty()) return;
@@ -11822,22 +11554,7 @@ private:
         void* sort = fc.font_sort(nullptr, pat, 1, nullptr, &res);
         if (sort) {
             FcFontSetLite* set = static_cast<FcFontSetLite*>(sort);
-            // -------------------------------------------------------------
-            //  兜底链怎么取：不能"取前 16 条"了事。
-            //
-            //  踩过的坑（0.4.6，Ubuntu 桌面上中文全变空白、而代码块里的中文
-            //  好好的）：FcFontSort 会把**同一家族的每个 style 都列一遍**。
-            //  DejaVu Sans 一家就能占掉 Book/Bold/Oblique/BoldOblique/Condensed
-            //  七八条，Noto Sans 再占一批，前 16 条扫完还没轮到 Noto Sans CJK。
-            //  没有 CJK 覆盖 → glyph() 一个都找不到 → 空格子（连豆腐块都没有）。
-            //  等宽链（DejaVu Sans Mono + Liberation Mono）字体种类少，CJK 挤进
-            //  了前 16，于是"代码块的中文还在" —— 这个不对称正是线索。
-            //
-            //  解法：不再靠名次猜。整张表扫一遍，用 fontconfig 的 charset 直接
-            //  问「这个字体覆盖 U+4E2D 吗」，把第一个覆盖的**钉到链的第 2 位**
-            //  （紧跟主字体）。这样无论系统装了多少字体、排序怎么变，汉字都有
-            //  确定的那一条可用，而且链长度仍然只有几十条。
-            // -------------------------------------------------------------
+            // FcFontSort 包含同一家族的多个 style；按 charset 选择覆盖 U+4E2D 的字体并置于主字体之后，避免截断回退链时遗漏 CJK。
             const int cap = x11_chain_cap();
             std::string cjk_file;
             long cjk_index = 0;
@@ -11891,12 +11608,7 @@ private:
         if (!face) return false;
         f.face = face;
 
-        // 升降部取**主字体自己的** metrics。
-        // 这里踩过一个坑：早先为了让汉字不被行盒裁掉，拿一个「国」的 ink 去撑
-        // asc —— 19px 的字量出 24px 的 asc，行高 30 > 26px 的盒子，VAlign::Middle
-        // 居中后整行上移 2px，顶部被裁，就是「aino 上面像被切了一刀」。
-        // 汉字的 ink 本来就在 em 框内（上缘约 0.88em < DejaVu 的 0.93em），
-        // 用主字体 metrics 就够，不需要撑。
+        // 升降部采用主字体 metrics，避免使用单个 CJK 字形的墨迹高度改变行高和垂直对齐。
         FtFaceLite* fr = static_cast<FtFaceLite*>(face);
         if (fr->size) {
             FtSizeLite* sz = static_cast<FtSizeLite*>(fr->size);
@@ -11943,9 +11655,7 @@ private:
         FtApi& ft = ft_api();
         Glyph g;
         int hit = -1;
-        // 主字体优先：西文必须落在链首（DejaVu Sans），字形才和 Windows /
-        // macOS 对得上。以前这里是"先试 f.hit"，汉字把 hit 推到 CJK 之后，
-        // 下一段西文就改用 CJK 的拉丁字形画了 —— 同一个界面上两种西文字形。
+        // 优先查询主字体，再查询最近命中的回退字体，避免 CJK 缓存改变西文字形来源。
         if (void* primary = open_face(f, 0)) {
             if (ft.char_index(primary, cp)) hit = 0;
         }
@@ -12136,12 +11846,7 @@ private:
         if (pm1_) gc1_ = XCreateGC(dpy_, pm1_, 0, nullptr);
     }
 
-    // 字体集里挑出来的那个字体到底"像不像字"？
-    //
-    // 踩过的坑：候选列表最后一项写 "*" 时，X 会挑到第一个能匹配的字体 ——
-    // 在 Ubuntu runner 上它挑到的是 1px 宽的点阵字体，"Hg" 量出来 2px 宽、
-    // 画上去只有 3 个墨点。所以挑完必须**体检**：拿固定字符串量一下宽度，
-    // 明显偏小就换下一个候选。
+    // 使用固定字符串测量候选 XFontSet，排除尺寸退化的点阵字体。
     bool plausible(XFontSet fs, float size) {
         if (!fs) return false;
         XRectangle ink{}, logical{};
@@ -12158,11 +11863,7 @@ private:
         if (!dpy_) return nullptr;
         const int px = int(size + 0.5f);
 
-        // XLFD 有 14 个字段：
-        //   foundry family weight slant setwidth addstyle pixel_size point_size
-        //   res_x res_y spacing avg_width registry encoding
-        // 第 7 个才是像素尺寸（以前把 %d 写在第 8 个，那一位是"点数"，
-        // 大部分 core 字体的这个字段是 0，于是永远匹配不上 → 一路落到 "*"）。
+        // XLFD 第 7 个字段为 pixel_size，第 8 个为 point_size；此处按像素字号匹配。
         const char* tmpl[] = {
             "-*-%s-*-*-*-*-%d-*-*-*-*-*-*-*",     // 指定族名 + 像素尺寸
             "-*-*-*-*-*-*-%d-*-*-*-*-*-*-*",      // 任意族名 + 像素尺寸
