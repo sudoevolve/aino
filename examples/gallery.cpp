@@ -96,6 +96,13 @@ struct MaterialEditor {
     bool open = false;
     std::string created_name, created_description;
 };
+struct BodyMeasurements {
+    aino::Theme theme;
+    float dpi = 0;
+    bool chip_removed = false;
+    std::array<bool, 3> expanded{};
+    std::array<float, CardCount> widths{}, heights{};
+};
 struct App {
     bool dark = std::getenv("AINO_DARK") && std::strcmp(std::getenv("AINO_DARK"), "0") != 0;
     int appearance = dark ? 0 : 1, well = 0, page = 0, pending_anchor = 0, nav_page = -1;
@@ -127,6 +134,7 @@ struct App {
     Rect content_view;
     float content_height = 0, content_offset = 0;
     int visible_cards = 0, virtual_drawn = 0;
+    BodyMeasurements body_measurements;
 };
 struct Card {
     CardId id;
@@ -1055,6 +1063,9 @@ bool card_matches(const App &a, int section, int index) {
            std::string::npos;
 }
 float body_height(Ui &ui, App &a, CardId id, float width) {
+    auto &cache = a.body_measurements;
+    if (cache.heights[id] > 0 && cache.widths[id] == width)
+        return cache.heights[id];
     // 绘制函数即测量函数；状态副本防止虚拟列表等测量路径修改真实应用状态。
     App measured = a;
     // 浮层不占常规内容高度；测量时不登记弹层的输入闸门。
@@ -1063,9 +1074,22 @@ float body_height(Ui &ui, App &a, CardId id, float width) {
     ui.begin_measure();
     draw_body(ui, measured, id, {0, 0, width, 400});
     Rect used = ui.end_measure();
-    return std::max(44.f, used.bottom() + 4);
+    cache.widths[id] = width;
+    cache.heights[id] = std::max(44.f, used.bottom() + 4);
+    return cache.heights[id];
 }
 GalleryLayout layout_gallery(Ui &ui, App &a, float width, bool narrow) {
+    // 普通值编辑不影响卡片高度；仅几何状态变化时重测，避免每帧测量屏幕外内容。
+    auto &cache = a.body_measurements;
+    const std::array<bool, 3> expanded = {a.expanded[0], a.expanded[1], a.expanded[2]};
+    if (cache.dpi != ui.dpi_scale() || !cache.theme.same_as(ui.theme()) ||
+        cache.chip_removed != a.chip_removed || cache.expanded != expanded) {
+        cache.heights.fill(0);
+        cache.theme = ui.theme();
+        cache.dpi = ui.dpi_scale();
+        cache.chip_removed = a.chip_removed;
+        cache.expanded = expanded;
+    }
     GalleryLayout out;
     out.section_y.fill(-1);
     float y = narrow ? 18.f : 26.f;

@@ -607,6 +607,43 @@ int main() {
     expect(material.material_editor->created_name.empty(), "child submission is consumed once");
     collect_material(material);
     expect(material.material_name == "测试素材", "idle collection preserves submitted material");
+    App cached;
+    auto matches_fresh_layout = [&](float width) {
+        auto actual = layout_gallery(f.ui, cached, width, width <= 780);
+        App fresh = cached;
+        fresh.body_measurements = BodyMeasurements{};
+        auto expected = layout_gallery(f.ui, fresh, width, width <= 780);
+        bool equal = approximately(actual.height, expected.height) && actual.cards.size() == expected.cards.size();
+        for (size_t i = 0; equal && i < actual.cards.size(); ++i) {
+            const Rect a = actual.cards[i].rect, b = expected.cards[i].rect;
+            equal = actual.cards[i].index == expected.cards[i].index &&
+                    approximately(a.x, b.x) && approximately(a.y, b.y) &&
+                    approximately(a.w, b.w) && approximately(a.h, b.h);
+        }
+        expect(equal, "cached card geometry matches a fresh measurement");
+    };
+    matches_fresh_layout(876);
+    cached.vol = 87;
+    cached.note = "edited text";
+    matches_fresh_layout(876);
+    cached.expanded[0] = false;
+    cached.expanded[1] = true;
+    matches_fresh_layout(876);
+    cached.chip_removed = true;
+    matches_fresh_layout(876);
+    matches_fresh_layout(620);
+    cached.query = "input";
+    matches_fresh_layout(620);
+    cached.query.clear();
+    matches_fresh_layout(876);
+    f.ui.set_theme(aino::Theme::dark());
+    matches_fresh_layout(876);
+    auto larger_font = f.ui.theme();
+    larger_font.font_size = 17;
+    f.ui.set_theme(larger_font);
+    matches_fresh_layout(876);
+    f.ui.impl->scale = 1.25f;
+    matches_fresh_layout(876);
     std::printf("[macos-gallery] %d passed, %d failed; verdict: %s\n", passed, failed,
                 failed ? "FAIL" : "PASS");
     return failed ? 1 : 0;
