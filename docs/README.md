@@ -188,11 +188,11 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 |---|---|
 | 在帧回调里无条件 `ui.repaint()` | 只在真的需要下一帧时请求 |
 | 在帧回调里每帧 `win.set_theme(...)` | `set_theme` 会比较值，但每帧构造主题仍是浪费，改成变化时调 |
-| 给 `spinner` 或 `skeleton` 写 `Style().animate()` | 两者默认**只在鼠标悬停时**动；`animate()` 是"无条件常驻"的显式出口，非必要别写 |
+| 给 `spinner` 或 `skeleton` 写 `Style().animate()` | 两者默认**只在鼠标悬停时**动；`Style().animate()` 对 spinner 可显式常驻，`skeleton` 仍受悬停控制。画廊预览统一悬停才动 |
 | `input` / `textarea` 处于聚焦态 | 光标闪烁天生要帧，这是设计内开销；调 `set_anim_fps` 可降 |
 
 实测：**台架上 47 项（46 个组件 + 空基线）全部**在静置 3 秒内 **0 帧 / 0.00% CPU**（`spinner`、`skeleton`
-也不例外）。只有聚焦的输入框和显式 `.animate()` 的组件会持续要帧。
+也不例外）。聚焦输入框、显式常驻的 spinner，以及应用主动启动的动画会持续要帧。
 
 ---
 
@@ -213,13 +213,13 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 
 ### 跨平台像素断言怎么做到「同一个标准、三种字形」
 
-`tools/verify_gallery.py` 那 18 项是在 Windows 真桌面上用 `PrintWindow` 抓窗口，
+`tools/verify_gallery.py` 那 19 项是在 Windows 真桌面上用 `PrintWindow` 抓窗口，
 抓的是「整窗长什么样」，换个平台就没法比 —— 三个平台的字形光栅完全不同
 （GDI 灰度 AA / FreeType / CoreText），同一段字的像素必然对不上。
 
 它补的是离屏探针补不上的那一层：探针的 `impl->canvas` 是自己塞的，绕过了
-`WM_PAINT`、DPI 缩放和 `BitBlt`。所以这 18 项验的是「导航右侧真有一条 1px 分界线、
-换页之后页头真的换了字、对话框的遮罩真的连左侧导航一起压暗、Esc 之后遮罩真的撤掉」
+`WM_PAINT`、DPI 缩放和 `BitBlt`。所以这 19 项验的是「导航右侧真有一条 1px 分界线、
+分类锚点和搜索生效、深色顶栏与原生标题栏同步、对话框显示后能用 Esc 关闭」
 —— 这些只有真窗口能验。
 
 所以 `ci_pixels.cpp` 只断言**与字形无关**的性质：
@@ -235,21 +235,36 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 | 纯 clear 后整块缓冲 130 点采样全 == 背景色 | stride 算错、新缓冲没清零（「缩放变黑」） |
 
 代价是它**证明不了**「字形排得对不对」——那仍然要人眼在真机上看。
-Windows 侧另有 18 项整窗断言兜这一层。
+Windows 侧另有 19 项整窗断言兜这一层。
 
 ### gallery 自己的两条工具钩子
 
-gallery 是唯一同时用到全部控件的程序，所以它另外挂了两个只在跑工具时才生效的开关：
+gallery 展示常用控件，另有两个供工具使用的开关（完整 API 仍见组件文档）：
 
 | 环境变量 | 作用 | 谁在用 |
 |---|---|---|
-| `AINO_LAYOUT_REPORT=<路径>` | 首帧把每一页每一条示例在**测量模式**下空跑一遍，写出「声明高度 / 实测高度 / 差值」，末尾一行 `# over=0 under=N total=M` | `regress.py` 的「卡片高度够」一项 |
-| `AINO_START_PAGE=<序号或名字>` | 直接开在指定页 | `tools/shot_pages.py` 逐页截图 |
+| `AINO_LAYOUT_REPORT=<路径>` | 首帧写出卡片名称、所属分类、位置及尺寸，首行汇总分类数与卡片数（未搜索时为 `sections=15 cards=43`） | `regress.py` 的布局清单检查 |
+| `AINO_START_PAGE=<序号或名字>` | 直接滚动到指定分类 | `tools/shot_pages.py` 按分类截图 |
 
-`over=0` 的含义是「没有任何一条示例的内容超出它自己的卡片下边框」。这条断言之所以
-能成立，是因为卡片高度不再是手填的数字，而是 `max(声明高度, 实测高度)` —— 见
-[03 布局](03-layout.md) 的 `begin_measure` / `end_measure`。`shot_pages.py` 不属于回归：
-它只落图，判断仍然靠人眼，因为「好不好看」没有像素判据。
+布局清单检查验证未搜索时包含 15 个分类与 43 张卡片。尺寸、间隔与搜索过滤由画廊探针检查。
+组件状态、内容裁剪与交互由 `tools/probe/macos_gallery_probe.cpp` 验证。
+`shot_pages.py` 只保存截图，文字排版与外观仍需人工查看。
+
+### 示例维护
+
+| 示例 | 职责与本次修正 |
+|---|---|
+| `gallery.cpp` | 常用控件画廊；删除无写入的退出状态和无读取的消息状态，素材创建通过独立窗口回填 |
+| `sidebar_demo.cpp` | 侧栏与通知偏好；清理实现说明文案，版本引用 `AINO_VERSION`，限制最小窗口尺寸 |
+| `zoom_demo.cpp` | 缩放与 Transform；预览限制在舞台内，保留底部操作区域 |
+| `function_viewer.cpp` | 函数与表达式可视化；侧栏滚动与裁剪，主题开关独立于列表 |
+| `ssh_client.cpp` | SSH/SFTP 应用；密码、按钮、复选框复用库控件，使用系统图标 |
+
+未出现在画廊中的公开 API 仍按组件文档与独立探针维护，不以画廊覆盖范围判断是否删除。
+函数动画由应用控制，SSH 网络行为不属于加载预览；本次 SSH 界面验证不连接服务器。
+
+`tools/probe/example_ui_probe.cpp` 验证函数侧栏；`python tools/build_ssh.py ui` 编译同文件的
+SSH 控件测试，产物为 `build/ssh_ui_probe.exe`，覆盖 UTF-8 编辑、选区、撤销、粘贴和弹窗输入隔离。
 
 ### 两个非 Windows 后端的真实现状
 

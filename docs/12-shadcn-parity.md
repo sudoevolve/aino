@@ -1,8 +1,8 @@
 # 与 shadcn/ui 的对照
 
-这个库的视觉语言照着 shadcn/ui 做（`Theme` 的 token 名、`Style` 的 variant 名、
-控件高度 36px、圆角 8px 都是）。但 shadcn 是 React 组件库，它的一部分组件在
-立即模式的 C++ 库里没有对应物 —— 有些是**不该有**，有些是**还没做**。
+早期版本参考 shadcn/ui 的 API 命名，当前 mac 分支已采用 macOS 控件风格。
+本页保留功能与命名的历史对照，不作为控件尺寸、圆角或配色的设计依据。
+当前样式参数见 [macOS 设计资料](macos27/README.md)。
 
 这一页按 2026-10 的官方组件清单逐条对一遍（当时是 64 项，之后 shadcn 又补了
 Button Group / Input Group / Input OTP / Field / Item / Empty / Kbd / Spinner / Code Block
@@ -28,7 +28,7 @@ Button Group / Input Group / Input OTP / Field / Item / Empty / Kbd / Spinner / 
 
 ```cpp
 bool on = true;
-ui.toggle(&on, Rect(x, y, 44, 26));      // ← 这是 shadcn 的 Switch
+ui.toggle(&on, Rect(x, y, 44, 20));      // ← 这是开关（Switch）
 ui.toggle_button("粗体", &bold, r);       // ← 这才是 shadcn 的 Toggle
 ```
 

@@ -2,7 +2,7 @@
 
 单头文件 C++17 桌面 UI 库 —— 立即模式、零第三方依赖、空闲 0.00% CPU。
 
-一个 `aino.hpp`（10593 行 / 498.8 KiB），一个 exe 640 KiB，零 DLL 依赖（只用系统 DLL）。
+核心库只有一个 `aino.hpp`，使用系统绘制和字体接口，无第三方 UI 或图标依赖。当前分支采用 macOS 风格，背景材质以模糊近似。
 
 ## Preview
 
@@ -90,23 +90,17 @@ cmake --build build --config Release
 不想编它就在配置时加 `-DAINO_BUILD_SSH=OFF`。注意 `aino_ssh.exe` 正在运行时
 链接器会以 `LNK1104` 失败 —— 先关掉客户端再构建。
 
-概览页那段 Quick Start 代码可以直接点「在新窗口运行这段代码」：它会真的再开一个
-`aino::Window`（另一个线程、另一条消息循环、另一块后备缓冲），不是照着画的假框子 ——
-顺便演示 `WindowConfig` 的最小尺寸与居中。
+画廊“空状态”卡片中的“新建素材”会打开独立窗口，填写名称与说明后回填主窗口。
+`tools/child_window.py` 验证点击、创建、取消以及两个消息循环的响应。
 
-多窗口是支持的，但**帧预算的高精度定时器必须每线程一个**（`win_timer()` 是
-`thread_local`）。可等待定时器是"设置一次、唤醒一个等待者"的：两个窗口共用一个句柄
-时，A 设的到期时间会被 B 的 `SetWaitableTimer` 覆盖，信号被 B 取走后 A 还卡在
-`WaitForSingleObject(INFINITE)` —— 而 B 建好窗口就空闲进了 `WaitMessage`，A 于是永远
-等不到，表现是**主窗口完全假死、子窗口正常**。这条已经钉进回归
-（`tools/child_window.py`，判据是向主窗口发 `WM_NULL` 量回执时间）。
+每个窗口线程使用独立的帧定时器，避免多窗口互相覆盖定时设置。
+多窗口的响应与创建流程由 `tools/child_window.py` 检查。
 
 `win.run(frame_cb)` 就是完整主循环：没事件时阻塞在 `WaitMessage`，帧回调只在需要重绘时被调用 —— 窗口静止时 0 帧 / 0.00% CPU，不是低帧率空转。
 
 平台状态：三个后端都能编译、能开窗画帧，**也都跑同一套 44 项像素断言**（其中 4 项是 X11 标题属性专有，只在 Linux 实跑）
 （`tools/ci_pixels.cpp` 直接读后备缓冲，只断言与字形无关的几何/颜色/裁剪/阴影性质）。
-Windows 另有 47 项回归（离屏行为探针 78 + 85 + 80 + 36 + 16 + 11 + 14 条断言、18 项整窗断言、
-卡片布局自检、测量不落像素、点击归属、窗口配置、hover 淡入无暗闪、空闲 CPU、交互 CPU 比值）；
+Windows 另有组件状态与布局探针、19 项整窗断言，以及空闲 CPU、交互和多窗口检查；
 Linux/macOS 的**输入、IME、剪贴板**仍未经真机核对，细节见
 [docs/README.md 的平台支持表](docs/README.md#平台支持)。
 
@@ -117,18 +111,20 @@ CI（`.github/workflows/ci.yml`）在 Windows / Linux(xvfb) / macOS 三个 runne
 
 ```text
 aino.hpp             库本体，单文件（全部实现都在这一个头里）
-examples/gallery.cpp 45 页组件画廊（Fluent Gallery 版式：左侧预览、右侧源码）
-examples/sidebar_demo.cpp 侧边栏切换（100 行，新手第一个 demo）
+examples/gallery.cpp 15 分类、43 示例卡片（固定侧栏与工具栏、连续滚动）
+examples/sidebar_demo.cpp 侧边栏切换（新手第一个 demo）
 examples/zoom_demo.cpp 缩放按钮（Transform 的最小用法）
+examples/function_viewer.cpp 函数可视化与自定义表达式
+examples/ssh_client.cpp 可选 SSH/SFTP 客户端（额外依赖见上文）
 docs/                文档，01 快速开始 … 12 与 shadcn/ui 的对照
 screenshots/         预览截图
 tools/               构建、像素断言与回归脚本
 tools/regress.py     全量回归（编译 + 探针 + 像素断言 + 布局自检 + 空闲/交互 CPU）
-tools/shot_pages.py  逐页截整窗图（改完版式先看一眼，不算回归）
+tools/shot_pages.py  按分类截整窗图（改完版式先看一眼，不算回归）
 tools/ci_smoke.cpp   CI 冒烟程序：开窗 + 跑满 20 帧就退（三平台共用）
 tools/ci_pixels.cpp  跨平台像素断言：44 项（含 4 项 X11 专有），直接读后备缓冲（三平台共用）
 tools/probe/         数值/像素探针（回归用，不参与发布）
-CMakeLists.txt       构建 gallery 与两个 demo
+CMakeLists.txt       构建四个 UI 示例与可选 SSH 客户端
 ```
 
 改完跑一遍 `python tools/regress.py`（编译 + 探针 + 像素断言 + 空闲 CPU），全绿再提交。

@@ -15,7 +15,7 @@
 //            重命名、删除；所有文件操作在后台线程，界面永不等网络
 //    · 多会话：每个标签独立连接、独立读线程、独立文件面板
 //    · 跨平台：Windows / Linux / macOS 同一份源码。SSH 用 libssh2
-//      （Windows 走 WinCNG 后端，不需要 OpenSSL；Linux 用发行版包）
+//      （Windows 静态链接 mbedTLS 后端；Linux 用发行版包）
 //
 //  编译（Windows）：
 //    cmake --build build --config Release --target aino_ssh
@@ -125,13 +125,7 @@ struct Clipboard {
     }
 };
 
-// =============================================================================
-//  二、配色
-//
-//  界面用 aino 的 dark 主题（zinc 基调），终端自己一套：底比卡片再深一档、
-//  前景不用纯白（#D6D8E0 长时间看不刺眼）。强调色只有一个蓝（#6EA8FE），
-//  只用在「目录 / 选中 / 连接成功 / 主按钮」上，别的地方一律灰阶 —— 颜色多了就花。
-// =============================================================================
+// 强调色用于目录、选择状态、连接成功和主要操作。
 const Color kTermBg  = Color::hex(0x0B0C0F);
 const Color kTermFg  = Color::hex(0xD6D8E0);
 const Color kAccent  = Color::hex(0x6EA8FE);
@@ -139,14 +133,7 @@ const Color kOk      = Color::hex(0x4ADE80);
 const Color kBad     = Color::hex(0xF87171);
 const Color kWarn    = Color::hex(0xFBBF24);
 
-// =============================================================================
-//  三、连接配置
-//
-//  存哪儿：~/.aino_ssh/profiles.json
-//  密码：不加密，只做了一层异或 + 十六进制"混淆"（obf/deobf），能防住 cat 一眼
-//        看光，防不住真想看的人。要安全就用密钥 + passphrase —— 这条也写在
-//        导入提示里，不假装自己是密码管理器。
-// =============================================================================
+// 连接配置保存于 ~/.aino_ssh/profiles.json，密码使用异或与十六进制混淆，未加密。
 struct Profile {
     std::string name;
     std::string host;
@@ -166,11 +153,7 @@ const char* src_badge(int src) {
     }
 }
 
-// 当前**登录用户**的家目录。
-//   Windows 上不能只信 USERPROFILE：它只是个环境变量，从别的账号/提权进程继承
-//   下来时会指向别人的目录（表现就是"扫到一堆不属于我的配置"）。这里先问系统
-//   "这个登录会话的 profile 到底在哪"（SHGetKnownFolderPath），拿不到再退回环境
-//   变量。用户名一律现取，不写死 —— 换台机器/换个账号都得对。
+// 优先通过系统账户 API 查询主目录，再回退到环境变量，避免继承的 USERPROFILE 指向其他账户。
 std::string home_dir() {
 #if defined(_WIN32)
     PWSTR pw = nullptr;
@@ -336,7 +319,7 @@ struct JsonScan {
     }
 };
 
-// 密码"混淆"（不是加密，别当保险柜用）
+// 密码存储编码使用混淆，不提供加密。
 std::string obf(const std::string& s) {
     static const char* hex = "0123456789abcdef";
     std::string o;
@@ -640,7 +623,7 @@ std::vector<Profile> load_all_profiles() {
     std::vector<Profile> all = load_local_profiles();
     auto add = [&](const std::vector<Profile>& v) {
         for (const Profile& p : v) {
-            // 同主机同用户同端口就别重复搬进来（本地配置优先）
+            // 按主机、用户和端口去重，本地配置优先。
             bool dup = false;
             for (const Profile& e : all) {
                 if (e.host == p.host && e.user == p.user && e.port == p.port) { dup = true; break; }
@@ -779,11 +762,7 @@ struct Session {
     std::string key;
     std::string title = "会话";
 
-    // 连接状态必须过锁。
-    // 之前这里直接共享 std::string（conn_msg / conn_err）：后台连接线程赋值时
-    // 会 free 掉旧缓冲，UI 线程同一刻正在 draw_text 里读那个指针 —— 一边释放一边读，
-    // 就是随机闪退，而且只在"连接失败 / 主动断开"这种状态切换时出现，
-    // 平时连得好好的根本复现不了。UI 每帧拷一份快照再画，写操作统一走 conn_edit。
+    // 连接状态由 conn_edit 加锁修改，UI 每帧复制快照，避免跨线程访问已释放的字符串缓冲。
     struct ConnInfo {
         bool        connecting = false;
         std::string msg = "未连接";
@@ -957,9 +936,7 @@ void begin_connect(Session& s, aino::Window& win) {
         const bool ok = sp->engine.connect(host, port, user, pass, key, &err);
         if (ok) {
             Engine& en = sp->engine;
-            // 先开 shell：终端是主功能，连上就该看见提示符。
-            // 之前是"先 open_sftp 再 open_shell"，服务器没开 SFTP 时要干等两个
-            // 20 秒超时 —— 界面一直"正在连接…"、终端全黑，正是那个"连上了啥也没有"。
+            // 优先建立 shell，避免 SFTP 不可用时延迟终端会话。
             std::string e3;
             const int cols = sp->term.cols > 0 ? sp->term.cols : 80;
             const int rows = sp->term.rows > 0 ? sp->term.rows : 24;
@@ -1086,9 +1063,7 @@ Color term_palette(int idx, bool bright) {
     return Color::hex(v);
 }
 
-// xterm 256 色：0–15 是系统色，16–231 是 6×6×6 色立方，232–255 是灰阶。
-// 之前 16 以上被当成"原始 RGB"直接塞进 Color::hex()，于是 38;5;16 变成 #000010、
-// 38;5;232 变成 #0000E8 —— 全是近黑，终端里"字看不见"就是这么来的。
+// xterm 256 色：0–15 为系统色，16–231 为 6×6×6 色立方，232–255 为灰阶。
 Color xterm256(int idx) {
     if (idx < 16) return term_palette(idx & 7, (idx & 8) != 0);
     if (idx >= 232) {
@@ -1118,10 +1093,7 @@ Color cell_bg(const Cell& c) {
     return xterm256(int(c.bg));
 }
 
-// 前景和背景"撞色" = 字彻底看不见。远端程序完全可以显式写 38;5;16 之类，
-// 把前景设成和深色底几乎一样的黑（这正是"有的文本全黑看不见"的成因）。
-// 精确比较不够用（#000010 和 #0B0C0F 不相等，却一样看不清），所以按亮度差算：
-// 差得越少往反方向靠得越多，差得够开就原样保留，不干扰用户自己配的配色。
+// 按亮度差调整与终端背景过于接近的前景色，保留其余颜色。
 Color fix_contrast(Color fg, Color bg) {
     auto lum = [](const Color& c) { return int(c.r) * 299 + int(c.g) * 587 + int(c.b) * 114; };
     const int lf = lum(fg), lb = lum(bg);
@@ -1282,10 +1254,7 @@ void send_key(Session& a, const std::string& bytes) {
 void handle_term_keys(aino::Ui& ui, Session& a) {
     const aino::Input& in = ui.input();
 
-    // 先把本帧的可打印字符发出去。必须在 Enter/退格之前 ——
-    // 之前这段放在函数末尾，而 Enter 是 `return`，于是"打完最后一个字马上回车"
-    // 会把这个字吃掉：敲 `unicode` + 回车，远端收到的是 `unicod`。
-    // （可打印字符走 WM_CHAR，系统本来就带自动重复，不需要 key_repeat）
+    // 先发送本帧文本，再处理可能提前返回的 Enter 或退格，避免遗漏同帧字符。文本重复由平台字符事件提供。
     if (!in.text_input.empty()) {
         std::string s;
         if (in.alt() && !in.ctrl()) s.push_back('\x1b');
@@ -1370,108 +1339,36 @@ void handle_term_keys(aino::Ui& ui, Session& a) {
 }
 
 // =============================================================================
-//  八、小控件（统一深色外观，不用 ui.button，理由见下）
+//  八、示例控件组合（按钮和密码编辑复用库控件）
 // =============================================================================
-// 有弹窗时，底下的页面只画不接受输入。控件不知道自己在不在弹窗下面，
-// 所以用一个开关统一切断：画启动页之前打开，弹窗开始画的时候关掉。
+// 有弹窗时，底下的页面只画不接受输入。
 bool g_block_input = false;
 
-bool tool_button(aino::Ui& ui, const aino::Theme& th, const std::string& label, const Rect& r, bool danger) {
-    const bool over = !g_block_input && r.contains(ui.input().mouse);
-    ui.fill_rect(r, over ? (danger ? Color::hex(0x3A1518) : th.secondary) : th.card, 6.0f);
-    ui.stroke_rect(r, danger ? Color::hex(0x4A1D1D) : th.border, 6.0f, 1.0f);
-    ui.draw_text(label, r, danger ? kBad : th.foreground, Style().font(12.0f).center());
-    return over && ui.input().pressed[0];
+bool tool_button(aino::Ui& ui, const aino::Theme&, const std::string& label, const Rect& r, bool danger) {
+    Style style;
+    if (danger) style.destructive();
+    else style.outline();
+    if (g_block_input) style.off();
+    return ui.button(label, r, style);
 }
 
 enum class Btn { Normal, Primary, Danger };
 
-bool dlg_button(aino::Ui& ui, const aino::Theme& th, const std::string& label, const Rect& r, Btn k) {
-    const bool over = !g_block_input && r.contains(ui.input().mouse);
-    Color fill = th.card, text = th.foreground, border = th.border;
-    if (k == Btn::Primary) { fill = over ? Color::hex(0x8CBEFF) : kAccent; text = Color::hex(0x0A1526); border = Color::none(); }
-    else if (k == Btn::Danger) { fill = over ? Color::hex(0x5A1F22) : Color::hex(0x3A1518); text = kBad; border = Color::hex(0x5E2626); }
-    else if (over) fill = Color::hex(0x2A2E37);
-    ui.fill_rect(r, fill, 6.0f);
-    if (border.a != 0) ui.stroke_rect(r, border, 6.0f, 1.0f);
-    ui.draw_text(label, r, text, Style().font(12.5f).center());
-    return over && ui.input().pressed[0];
+bool dlg_button(aino::Ui& ui, const aino::Theme&, const std::string& label, const Rect& r, Btn k) {
+    Style style;
+    if (k == Btn::Normal) style.outline();
+    else if (k == Btn::Danger) style.destructive();
+    if (g_block_input) style.off();
+    return ui.button(label, r, style);
 }
 
-// 一只眼睛：库没有画线/椭圆的接口，用参数方程点一串小方块近似
-void draw_eye(aino::Ui& ui, float cx, float cy, float s, const Color& c, bool open) {
-    const int N = 30;
-    for (int i = 0; i < N; ++i) {
-        const float t = 6.2831853f * float(i) / float(N);
-        const float x = cx + std::cos(t) * s;
-        const float y = cy + std::sin(t) * s * 0.60f;
-        ui.fill_rect(Rect(x - 0.6f, y - 0.6f, 1.2f, 1.2f), c);
-    }
-    if (open) {
-        ui.fill_circle(cx, cy, s * 0.38f, c);
-    } else {
-        for (int i = 0; i <= 22; ++i) {
-            const float u = -1.0f + 2.0f * float(i) / 22.0f;
-            ui.fill_rect(Rect(cx + u * s, cy + u * s * 0.60f - 0.6f, 1.4f, 1.4f), c);
-        }
-    }
-}
-
-// 密码输入框：默认圆点，右侧眼睛切明文。
-// 只做"尾部编辑"（输入 / 退格 / 粘贴 / 清空）：够用，而且比拿假字符串去骗
-// ui.input() 再反推用户到底改了哪儿可靠得多。
-bool masked_input(aino::Ui& ui, const aino::Theme& th, const std::string& id,
-                  std::string* v, bool* reveal, std::string* focus, const Rect& r,
-                  Clipboard* clip) {
-    const aino::Input& in = ui.input();
-    const bool over = r.contains(in.mouse);
-    if (in.pressed[0] && over) *focus = id;
-    const bool focused = (*focus == id);
-    if (focused && in.pressed[0] && !over) *focus = std::string();
-
-    ui.fill_rect(r, th.input, 6.0f);
-    ui.stroke_rect(r, focused ? kAccent : (over ? th.secondary_foreground : th.border), 6.0f, 1.0f);
-
-    // 眼睛按钮（右侧内嵌）
-    const Rect r_eye(r.right() - 30.0f, r.y + 3.0f, 26.0f, r.h - 6.0f);
-    const bool over_eye = r_eye.contains(in.mouse);
-    if (over_eye) ui.fill_rect(r_eye, Color(255, 255, 255, 16), 5.0f);
-    draw_eye(ui, r_eye.x + r_eye.w * 0.5f, r_eye.y + r_eye.h * 0.5f, 6.0f,
-             *reveal ? kAccent : (over_eye ? th.foreground : th.muted_foreground), !*reveal);
-    if (over_eye && in.pressed[0]) { *reveal = !*reveal; *focus = id; }
-
-    const Rect r_txt(r.x, r.y, r.w - 34.0f, r.h);
-    if (focused) {
-        if (!in.text_input.empty()) {
-            std::string add;
-            for (char c : in.text_input) if (static_cast<unsigned char>(c) >= 0x20) add.push_back(c);
-            *v += add;
-        }
-        if (in.key_pressed[aino::KEY_BACKSPACE] && !v->empty()) v->pop_back();
-        if (in.key_pressed[aino::KEY_DELETE]) v->clear();
-        if (in.ctrl_of('V') && clip) {
-            // 粘贴进来的密码原样追加（去掉换行）
-            for (char c : clip->get()) if (c != '\r' && c != '\n') v->push_back(c);
-        }
-        if (in.key_pressed[aino::KEY_ESC]) *focus = std::string();
-    }
-
-    std::string shown;
-    if (*reveal) shown = *v;
-    else shown.assign(v->size(), '*');
-    if (shown.empty()) {
-        ui.draw_text(focused ? "" : "输入密码", Rect(r_txt.x + 10.0f, r_txt.y, r_txt.w, r_txt.h),
-                     th.muted_foreground, Style().font(12.0f));
-    } else {
-        ui.draw_text(shown, Rect(r_txt.x + 10.0f, r_txt.y, r_txt.w - 14.0f, r_txt.h),
-                     *reveal ? th.foreground : th.secondary_foreground, Style().font(12.5f));
-    }
-    if (focused) {
-        // 光标：跟在字符串尾部（按显示宽度估个位置，密码框不必太精确）
-        const float x = r_txt.x + 10.0f + ui.text_width(shown, 12.5f);
-        ui.fill_rect(Rect(x + 1.0f, r_txt.y + r_txt.h * 0.22f, 1.5f, r_txt.h * 0.56f), kAccent);
-    }
-    return focused;
+// 密码内容交给 input() 编辑，保留 UTF-8、选区、粘贴与撤销行为。
+void password_field(aino::Ui& ui, const aino::Theme& th, std::string* value, bool* reveal, const Rect& r) {
+    ui.input(value, Rect(r.x, r.y, r.w - 32.0f, r.h), Style().secret(!*reveal).hint("输入密码"));
+    const Rect eye = Rect::centered(r.right() - 14.0f, r.cy(), 24.0f, 24.0f);
+    if (ui.button("", eye, Style().ghost())) *reveal = !*reveal;
+    ui.system_icon(aino::SystemIcon::Eye, eye.inset(5.0f), *reveal ? th.primary : th.muted_foreground);
+    ui.tooltip(eye, *reveal ? "隐藏密码" : "显示密码");
 }
 
 // 普通文本字段（标题 + 输入框）
@@ -1848,7 +1745,6 @@ struct App {
     Profile draft;
     bool draft_remember = false;
     bool draft_reveal = false;
-    std::string focus_id;              // 自绘密码框的焦点
 
     // 补录密码
     bool ask_open = false;
@@ -1992,7 +1888,7 @@ void draw_fail_panel(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, 
                      area.y + std::max(24.0f, (area.h - ph) * 0.42f), pw, ph);
     ui.fill_rect(panel, Color::hex(0x14161B), 10.0f);
     ui.stroke_rect(panel, Color::hex(0x2A2F3A), 10.0f, 1.0f);
-    // 顶部一条强调线，一眼看出这是"出事了"而不是普通提示
+    // 错误状态强调线。
     ui.fill_rect(Rect(panel.x + 1.0f, panel.y, panel.w - 2.0f, 2.0f), fx.color, 0.0f);
 
     float y = panel.y + pad;
@@ -2025,7 +1921,6 @@ void draw_fail_panel(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, 
             app.draft = app.profiles[size_t(idx)];
             app.draft_remember = app.profiles[size_t(idx)].remember;
             app.draft_reveal = false;
-            app.focus_id.clear();
         } else {
             app.status = "这条连接是从 ssh config 导入的：用启动页的「打开 ssh config」改源文件";
             app.retire(app.active);
@@ -2040,15 +1935,13 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
 // 内置 ssh config 编辑器（定义在后面，启动页要先用到）
 void open_cfg_editor(App& app);
 
-// ---- 启动页 ----
-// top = 顶部让给标签栏的高度。标签栏现在是常驻的（启动页也有），所以启动页的
-// 所有坐标都从 top 起算 —— 以前整个页面从 0 起画，和标签栏只能二选一。
+// 启动页从 top 起算，为常驻标签栏预留高度。
 void draw_start(aino::Ui& ui, App& app, const aino::Theme& th, float top) {
     const float W = ui.width(), H = ui.height();
     const float Y = top;                       // 页面内容的上边界
     const aino::Input& in = ui.input();
 
-    // 背景：一层很淡的渐变感（用两段纯色块近似，别用图片）
+    // 背景使用两段纯色填充。
     ui.fill_rect(Rect(0, Y, W, H - Y), th.background);
 
     // 头部
@@ -2057,9 +1950,7 @@ void draw_start(aino::Ui& ui, App& app, const aino::Theme& th, float top) {
                  Style().font(22.0f).bold());
     int local_n = 0, imp_n = 0;
     for (const Profile& p : app.profiles) { if (p.src == 0) ++local_n; else ++imp_n; }
-    // 副标题里写**真实**扫到的那个文件，不写死 "~/.ssh/config"：
-    // 以前这里只写死了一串说明，用户看不出到底读了哪个文件，
-    // 也分不清导入的是自己的配置还是系统级的 ssh_config。
+    // 显示实际导入路径，区别用户配置与系统配置。
     char sub[520];
     std::snprintf(sub, sizeof sub, "选一台服务器开始 · 本机 %d 个连接 · 已导入 %d 个（%s）",
                   local_n, imp_n, display_path(ssh_config_path()).c_str());
@@ -2081,7 +1972,6 @@ void draw_start(aino::Ui& ui, App& app, const aino::Theme& th, float top) {
         app.draft.port = 22;
         app.draft_reveal = false;
         app.draft_remember = false;
-        app.focus_id.clear();
     }
     if (tool_button(ui, th, "重新导入", r_imp, false)) {
         const std::string keep = app.download_dir;
@@ -2128,8 +2018,7 @@ void draw_start(aino::Ui& ui, App& app, const aino::Theme& th, float top) {
                 app.draft = p;
                 app.draft_remember = p.remember;
                 app.draft_reveal = false;
-                app.focus_id.clear();
-                return;                       // 这一帧到此为止，别再往下画/判定点击
+                return;                       // 弹窗打开后停止处理下层交互
             }
             if (tool_button(ui, th, "删除", Rect(card.right() - 50.0f, card.bottom() - 32.0f, 42.0f, 22.0f), true)) {
                 app.profiles.erase(app.profiles.begin() + i);
@@ -2152,7 +2041,6 @@ void draw_start(aino::Ui& ui, App& app, const aino::Theme& th, float top) {
                 app.ask_index = i;
                 app.ask_pass.clear();
                 app.ask_reveal = false;
-                app.focus_id.clear();
             }
         }
 
@@ -2177,7 +2065,6 @@ void draw_start(aino::Ui& ui, App& app, const aino::Theme& th, float top) {
             app.draft.port = 22;
             app.draft_reveal = false;
             app.draft_remember = false;
-            app.focus_id.clear();
         }
     }
 }
@@ -2215,8 +2102,8 @@ void draw_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
     y += lh;
     field(ui, th, "用户", &app.draft.user, Rect(x1, y, half, 30.0f));
     ui.draw_text("密码", Rect(x1 + half + 12.0f, y - 16.0f, half, 14.0f), th.muted_foreground, Style().font(11.0f));
-    masked_input(ui, th, "editor_pass", &app.draft.pass, &app.draft_reveal, &app.focus_id,
-                 Rect(x1 + half + 12.0f, y, half, 30.0f), &app.clip);
+    password_field(ui, th, &app.draft.pass, &app.draft_reveal,
+                   Rect(x1 + half + 12.0f, y, half, 30.0f));
     y += lh;
     field(ui, th, "私钥（可选，密码为空时用）", &app.draft.key, Rect(x1, y, x2 - x1, 30.0f));
     y += 40.0f;
@@ -2224,9 +2111,7 @@ void draw_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
     // 记住密码
     {
         const Rect cb(x1, y, 16.0f, 16.0f);
-        ui.stroke_rect(cb, app.draft_remember ? kAccent : th.border, 4.0f, 1.2f);
-        if (app.draft_remember) ui.fill_rect(cb.inset(3.0f, 3.0f), kAccent, 2.0f);
-        if (in.pressed[0] && cb.inset(-6.0f, -6.0f).contains(in.mouse)) app.draft_remember = !app.draft_remember;
+        ui.checkbox(&app.draft_remember, "", cb);
         ui.draw_text("记住密码（以混淆形式存在本机 ~/.aino_ssh/profiles.json）",
                      Rect(cb.right() + 10.0f, y - 2.0f, x2 - cb.right() - 20.0f, 20.0f),
                      th.muted_foreground, Style().font(11.5f));
@@ -2258,7 +2143,6 @@ void draw_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
                 app.ask_index = -1;
                 app.ask_pass.clear();
                 app.ask_reveal = false;
-                app.focus_id.clear();
                 app.draft = p;                   // 待补密码后连接
             }
         }
@@ -2282,8 +2166,8 @@ void draw_ask_password(aino::Ui& ui, App& app, const aino::Theme& th) {
     const float x1 = box.x + 24.0f, x2 = box.right() - 24.0f;
     ui.draw_text("输入密码", Rect(x1, box.y + 18.0f, x2 - x1, 22.0f), th.foreground, Style().font(14.0f).bold());
     ui.draw_text(who, Rect(x1, box.y + 44.0f, x2 - x1, 18.0f), th.muted_foreground, Style().font(11.5f));
-    masked_input(ui, th, "ask_pass", &app.ask_pass, &app.ask_reveal, &app.focus_id,
-                 Rect(x1, box.y + 68.0f, x2 - x1, 32.0f), &app.clip);
+    password_field(ui, th, &app.ask_pass, &app.ask_reveal,
+                   Rect(x1, box.y + 68.0f, x2 - x1, 32.0f));
 
     const float by = box.bottom() - 50.0f;
     const float bw = (x2 - x1 - 10.0f) * 0.5f;
@@ -2302,13 +2186,7 @@ void draw_ask_password(aino::Ui& ui, App& app, const aino::Theme& th) {
     }
 }
 
-// =============================================================================
-//  内置 ssh config 编辑器
-//
-//  为什么不直接 ShellExecute("打开")？因为那要看系统里有没有配 .txt 关联，
-//  无桌面/无记事本的环境直接哑火，用户只会觉得"点了没反应"。自己画一个编辑器，
-//  三个平台行为一致，还能保存完顺手重新导入成卡片。
-// =============================================================================
+// 内置 SSH 配置编辑器，保存后可重新导入连接。
 int prev_u8(const std::string& s, int i) {
     if (i <= 0) return 0;
     --i;
@@ -2423,7 +2301,7 @@ void draw_cfg_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
         app.cfg_caret = c;
     }
 
-    const bool focus = r_ta.contains(in.mouse) || true;   // 弹窗里唯一可编辑区域，直接吃键盘
+    const bool focus = true;   // 弹窗里唯一可编辑区域，直接吃键盘
 
     if (focus) {
         // 输入：只收可见字符（\r\n 由回车单独处理，避免粘贴时多插换行）
@@ -2596,24 +2474,24 @@ void draw_tabs(aino::Ui& ui, App& app, const aino::Theme& th, float h) {
 
         // 关闭
         const Rect r_x(tab.right() - 24.0f, tab.y + tab.h * 0.5f - 9.0f, 18.0f, 18.0f);
-        const bool over_x = r_x.contains(in.mouse);
+        const bool over_x = !g_block_input && r_x.contains(in.mouse);
         if (over_x) ui.fill_rect(r_x, Color(255, 255, 255, 18), 4.0f);
-        ui.draw_text("×", r_x, over_x ? th.foreground : th.muted_foreground, Style().font(13.0f).center());
+        ui.system_icon(aino::SystemIcon::Close, r_x.inset(4.0f), over_x ? th.foreground : th.muted_foreground);
         if (in.pressed[0] && over_x) { close_tab(app, i); return; }
         // 点标签必须同时把 show_start 清掉：标签栏现在常驻启动页，
         // 只改 active 的话首页还压在上面，点了没反应。
-        if (in.pressed[0] && tab.contains(in.mouse)) { app.active = i; app.show_start = false; }
+        if (!g_block_input && in.pressed[0] && tab.contains(in.mouse)) { app.active = i; app.show_start = false; }
 
         x += tw + 6.0f;
     }
 
     // 新建标签（回到启动页）
-    const Rect r_plus(x + 4.0f, 8.0f, 30.0f, h - 16.0f);
-    const bool over_plus = r_plus.contains(in.mouse);
+    const Rect r_plus(x + 4.0f, 8.0f, 24.0f, 24.0f);
+    const bool over_plus = !g_block_input && r_plus.contains(in.mouse);
     if (home) ui.fill_rect(r_plus, Color(255, 255, 255, 14), 6.0f);
     else if (over_plus) ui.fill_rect(r_plus, Color(255, 255, 255, 14), 6.0f);
-    ui.draw_text("＋", r_plus, (home || over_plus) ? kAccent : th.muted_foreground,
-                 Style().font(15.0f).center());
+    ui.system_icon(aino::SystemIcon::Plus, r_plus.inset(6.0f),
+                   (home || over_plus) ? th.primary : th.muted_foreground);
     if (in.pressed[0] && over_plus) app.show_start = true;
 }
 
@@ -2710,9 +2588,7 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
         std::snprintf(sz, sizeof sz, "%d × %d", a.term.cols, a.term.rows);
         ui.draw_text(sz, Rect(r_frame.x, r_frame.y, r_frame.w - 86.0f, strip_h),
                      th.muted_foreground, Style().font(11.0f).right());
-        // 「断开」= 关掉这个会话回主界面。
-        // 之前是就地 engine.disconnect()：UI 线程要等读线程 join + 网络收尾，
-        // 而连接线程可能同时在用同一个 session —— 正好撞出那个"断开就闪退"。
+        // 断开时移除会话，网络与线程清理由后台完成，避免阻塞 UI。
         if (tool_button(ui, th, "断开", Rect(r_frame.right() - 76.0f, r_frame.y + 4.0f, 64.0f, 22.0f), false)) {
             app.retire(app.active);
             return;                       // a 已经交给后台了，这一帧不要再碰
@@ -2856,15 +2732,11 @@ void frame(aino::Ui& ui, App& app, aino::Window& win, const aino::Theme& th) {
     // 页面先画、弹窗后画；页面这一趟只画不吃输入
     g_block_input = app.modal_open();
 
-    // 标签栏**常驻**：启动页也画（Windows Terminal / 浏览器都是这个模型）。
-    // 以前启动页走的是"整屏从 0 开始画"的分支，标签栏被整个跳过，于是用户看到的
-    // "主界面"没有顶部标签 —— 只有一个孤零零的窗口，看不出这程序能开多标签。
+    // 标签栏在启动页和会话页均保持可见。
     if (!app.tabs.empty() && (app.active < 0 || app.active >= int(app.tabs.size()))) app.active = 0;
     draw_tabs(ui, app, th, tab_h);
 
-    // 标签栏里的 × 会把会话摘走，连着最后一个一起关掉时 app.tabs 已经空了、
-    // active 变成 -1。这里必须重新判断，否则 active_session() 会拿
-    // tabs[size_t(-1)] 去访问一个巨大的下标 —— 就是"点断开会闪退"。
+    // draw_tabs 可能移除最后一个会话，访问 active_session 前必须重新检查索引和列表。
     if (app.tabs.empty() || app.show_start) {
         draw_start(ui, app, th, tab_h);
     } else if (app.active >= 0 && app.active < int(app.tabs.size())) {
@@ -2911,9 +2783,7 @@ void frame(aino::Ui& ui, App& app, aino::Window& win, const aino::Theme& th) {
 
 }  // namespace
 
-// 颜色映射自检：不依赖肉眼，直接断言"这个 SGR 该出什么色"。
-//   之前 256 色（16–255）被当成原始 RGB，38;5;16 算成 #000010、38;5;232 算成 #0000E8，
-//   于是远端一上 256 色/真彩色，字就变成黑的看不见。这里把几种典型序列钉死。
+// 颜色映射自检，覆盖 xterm 256 色、真彩色和暗色前景对比度。
 int color_selftest() {
     int fail = 0;
     auto check = [&](const char* what, Color c, int er, int eg, int eb) {

@@ -13,6 +13,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -88,12 +90,18 @@ const std::array<BuildRow, 5> kBuildRows = {{{"aino_demo", 128, 6.5f, "通过"},
                                              {"fltk_hello", 96, 3.1f, "待审"},
                                              {"bench_raster", 214, 26.3f, "回退"},
                                              {"layout_probe", 77, 1.9f, "通过"}}};
+struct MaterialEditor {
+    std::mutex mutex;
+    aino::Window *parent = nullptr;
+    bool open = false;
+    std::string created_name, created_description;
+};
 struct App {
     bool dark = std::getenv("AINO_DARK") && std::strcmp(std::getenv("AINO_DARK"), "0") != 0;
     int appearance = dark ? 0 : 1, well = 0, page = 0, pending_anchor = 0, nav_page = -1;
-    bool nav_open = false, quit = false;
+    bool nav_open = false;
     float nav_w = kNavW, nav_offset = 0;
-    std::string query, previous_query, last = "准备就绪";
+    std::string query, previous_query;
     int hits = 0;
     std::string project = "", email = "", search, password = "aino-demo", invalid_email = "hello@";
     std::string note = "以原生体验为先，保留细腻的层次与流畅交互。";
@@ -111,6 +119,9 @@ struct App {
     int pending_accordion = -1;
     int slide = 0, page_no = 3, filter = 0, side_sel = 0, virtual_selected = -1;
     std::vector<Notification> notices;
+    bool open_material = false;
+    std::string material_name, material_description;
+    std::shared_ptr<MaterialEditor> material_editor = std::make_shared<MaterialEditor>();
     std::array<Rect, CardCount> card_rects{};
     std::array<float, kPageCount> section_y{};
     Rect content_view;
@@ -175,7 +186,7 @@ const Card kCards[] = {
     {Breadcrumb, "面包屑", "path", "breadcrumb 资料库 设计系统"},
     {Sidebar, "侧边栏条目", "nav", "sidebar nav 工作台 素材 成员"},
     {VirtualList, "虚拟列表", "10 000 rows", "virtual list 一万 列表"},
-    {Markdown, "Markdown 渲染", "md", "markdown 标题 粗体 列表 代码"},
+    {Markdown, "Markdown 排版示例", "md", "markdown 标题 粗体 列表 代码"},
     {Empty, "空状态", "empty", "empty 无素材 新建"},
     {Typography, "分隔与排版", "layout", "typography divider 分隔 排版"},
 };
@@ -258,7 +269,6 @@ void set_accent(Ui &ui, App &a, int index) {
     ui.repaint();
 }
 void notify(Ui &ui, App &a, std::string message, int kind = 0) {
-    a.last = message;
     ++a.hits;
     if (a.notices.size() == 3)
         a.notices.erase(a.notices.begin());
@@ -965,22 +975,23 @@ void draw_advanced(Ui &ui, App &a, CardId id, Rect b) {
         });
         label(ui, "10,000 行 · 仅绘制可见区域", {b.x, b.y + 198, b.w, 20}, 11, true);
     } else if (id == Markdown) {
-        // 这张固定示例按 Markdown 的块结构组合原生文本，不伪称通用 Markdown
-        // 解析器。
-        label(ui, "轻量 Markdown", {b.x, b.y, b.w, 24}, 19, false, 650);
-        label(ui, "原生控件，也能清晰表达内容。", {b.x, b.y + 42, b.w, 24}, 12, false, 600);
-        label(ui, "• 标题、强调与列表的组合展示", {b.x, b.y + 78, b.w, 22}, 12);
-        label(ui, "• 与系统字体和强调色一致", {b.x, b.y + 106, b.w, 22}, 12);
+        // 固定排版示例，不解析 Markdown 字符串。
+        label(ui, "项目说明", {b.x, b.y, b.w, 24}, 19, false, 650);
+        label(ui, "本周计划", {b.x, b.y + 42, b.w, 24}, 12, false, 600);
+        label(ui, "• 更新组件文档", {b.x, b.y + 78, b.w, 22}, 12);
+        label(ui, "• 整理发布记录", {b.x, b.y + 106, b.w, 22}, 12);
         well(ui, {b.x, b.y + 144, b.w, 34});
         ui.draw_mono_text("ui.button(\"Hello\", rect);", b.x + 10, b.y + 154, ui.theme().tint, 11);
     } else if (id == Empty) {
         glyph(ui, Folder, {b.cx() - 18, b.y + 2, 36, 36}, ui.theme().label3);
-        ui.draw_text("暂无素材", {b.x, b.y + 53, b.w, 24}, ui.theme().label,
+        ui.draw_text(a.material_name.empty() ? "暂无素材" : a.material_name,
+                     {b.x, b.y + 53, b.w, 24}, ui.theme().label,
                      Style().font(14).semi_bold().center());
-        ui.draw_text("当前没有项目，点击下方按钮预览创建操作", {b.x, b.y + 86, b.w, 24}, ui.theme().label3,
+        ui.draw_text(a.material_name.empty() ? "创建素材以开始整理项目" : a.material_description,
+                     {b.x, b.y + 86, b.w, 24}, ui.theme().label3,
                      Style().font(11).center());
         if (ui.button("新建素材", {b.cx() - 50, b.y + 130, 100, 32}, Style().primary()))
-            notify(ui, a, "已创建新素材");
+            a.open_material = true;
     } else {
         label(ui, "标题", {b.x, b.y, b.w - 80, 32}, 20, false, 600);
         label(ui, "34 项", {b.right() - 52, b.y, 52, 32}, 12, true);
@@ -1334,14 +1345,14 @@ void build_ui(Ui &ui, App &a) {
     }
     draw_overlays(ui, a);
 }
-void dump_layout_report(Ui &ui, App &a, float width) {
+void dump_layout_report(Ui &ui, App &a, float width, bool narrow) {
     const char *path = std::getenv("AINO_LAYOUT_REPORT");
     if (!path || !*path)
         return;
     std::FILE *f = std::fopen(path, "w");
     if (!f)
         return;
-    auto layout = layout_gallery(ui, a, width, false);
+    auto layout = layout_gallery(ui, a, width, narrow);
     std::fprintf(f, "# sections=%d cards=%d content_height=%.1f\n", kPageCount, int(layout.cards.size()),
                  layout.height);
     for (const auto &c : layout.cards)
@@ -1350,57 +1361,67 @@ void dump_layout_report(Ui &ui, App &a, float width) {
     std::fclose(f);
 }
 
-void open_quickstart_window() {
-    // 子窗口的诊断口：WIN32 子系统没有 stderr，只能落文件。
-    auto clog = [](const char *msg) {
-        if (const char *f = std::getenv("AINO_CHILD_LOG"))
-            if (std::FILE *fp = std::fopen(f, "a")) {
-                std::fprintf(fp, "%s\n", msg);
-                std::fclose(fp);
-            }
-    };
-    std::thread([clog] {
-        // 这里刻意用 WindowConfig 而不是三参数构造：演示一下新加的配置项
-        // （最小尺寸、居中）。标题里的版本号顺便当个"这窗口是谁开的"标记。
+void open_material_window(const std::shared_ptr<MaterialEditor>& state, aino::Theme theme) {
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->open) return;
+        state->open = true;
+    }
+    std::thread([state, theme] {
         aino::WindowConfig cfg;
-        cfg.width = 460;
-        cfg.height = 320;
-        cfg.title = "aino 最小示例 · " AINO_VERSION;
-        cfg.min_width = 380;
-        cfg.min_height = 260;
+        cfg.width = cfg.min_width = 460;
+        cfg.height = cfg.min_height = 340;
+        cfg.title = "新建素材";
         cfg.center = true;
-
-        clog("cfg 就绪，开始建窗口");
         aino::Window win(cfg);
-        clog(win.ok() ? "窗口已创建" : "窗口创建失败 (ok=false)");
-        if (!win.ok())
-            return;
-
-        std::string email;
-        bool notify = true;
-        int saved = 0;
-
-        win.run([&](Ui &ui) {
-            ui.clear(ui.theme().background);
-            ui.panel(Rect(0.0f, 0.0f, ui.width(), ui.height()));
-            auto c = ui.vbox(Rect(0.0f, 0.0f, ui.width(), ui.height()), 10.0f, 20.0f);
-            ui.heading("设置", c.next(34.0f));
-            ui.separator(c.next(1.0f));
-            ui.input(&email, c.next(24.0f));
-            ui.checkbox(&notify, "邮件通知", c.next(22.0f));
-            if (ui.button("保存", c.next(24.0f), Style().primary()))
-                ++saved;
-            ui.muted_text(email.empty() ? std::string("输入邮箱后点保存")
-                                        : "已保存 " + std::to_string(saved) + " 次：" + email,
-                          c.next(20.0f), Style().left().font(11.5f));
-        });
+        if (win.ok()) {
+            win.set_theme(theme);
+            std::string name, description;
+            win.run([&](Ui& ui) {
+                ui.clear(ui.theme().background);
+                auto col = ui.vbox({0, 0, ui.width(), ui.height()}, 8, 24);
+                ui.heading("新建素材", col.next(28), Style().left());
+                ui.label("名称", col.next(18), Style().left());
+                ui.input(&name, col.next(26), Style().hint("素材名称"));
+                col.skip(4);
+                ui.label("说明", col.next(18), Style().left());
+                ui.textarea(&description, col.next(72), Style().hint("可选"));
+                const Rect row(24, ui.height() - 52, ui.width() - 48, 28);
+                if (ui.button("取消", {row.right() - 168, row.y, 76, row.h}, Style().outline()) ||
+                    ui.input().key_pressed[aino::KEY_ESC]) {
+                    win.close();
+                    return;
+                }
+                Style create;
+                const bool has_name = name.find_first_not_of(" \t\r\n") != std::string::npos;
+                if (!has_name) create.off();
+                if (ui.button("创建", {row.right() - 80, row.y, 80, row.h}, create)) {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    state->created_name = name;
+                    state->created_description = description;
+                    if (state->parent) state->parent->wake();
+                    win.close();
+                }
+            });
+        }
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->open = false;
     }).detach();
+}
+
+void collect_material(App& app) {
+    std::lock_guard<std::mutex> lock(app.material_editor->mutex);
+    if (!app.material_editor->created_name.empty()) {
+        app.material_name = std::move(app.material_editor->created_name);
+        app.material_description = std::move(app.material_editor->created_description);
+        app.material_editor->created_name.clear();
+        app.material_editor->created_description.clear();
+    }
 }
 
 } // namespace
 
-// 工具用的起始页：AINO_START_PAGE=<序号|名字>。截图 / 冒烟脚本要逐页拍，
-// 靠点导航得先算滚动偏移和分组折叠状态，太容易跟着版式一起坏。
+// AINO_START_PAGE=<序号|名字> 指定初始分类，供截图与冒烟测试使用。
 int start_page_from_env() {
     const char *sp = std::getenv("AINO_START_PAGE");
     if (!sp || !*sp)
@@ -1414,9 +1435,7 @@ int start_page_from_env() {
     return 0;
 }
 
-// 工具钩子：AINO_SHOT_BMP=<路径> —— 把后备缓冲存成 24bit BMP。
-// xvfb 里没有交互桌面，Linux 上想看"真画成什么样"只能这么取帧；
-// Windows 上平时不用（有 shot_pages.py 走 PrintWindow）。
+// AINO_SHOT_BMP=<路径> 将后备缓冲保存为 24bit BMP，供无桌面的环境抓取渲染结果。
 void dump_canvas_bmp(aino::Window &win, const char *path) {
     aino::Canvas &cv = win.impl->canvas;
     if (!cv.px || cv.w <= 0 || cv.h <= 0 || cv.stride <= 0)
@@ -1460,7 +1479,7 @@ static const char *app_name_from_env() {
     static std::string name;
     if (name.empty()) {
         const char *p = std::getenv("AINO_START_PAGE");
-        name = p ? p : "概览";
+        name = p ? p : "按钮";
     }
     return name.c_str();
 }
@@ -1476,6 +1495,7 @@ int main() {
     if (!win.ok())
         return 1;
     App app;
+    app.material_editor->parent = &win;
     app.page = start_page_from_env();
     app.pending_anchor = app.page;
     if (const char *open = std::getenv("AINO_OPEN")) {
@@ -1483,14 +1503,13 @@ int main() {
         app.color_open = std::strcmp(open, "color") == 0;
         app.dlg = std::strcmp(open, "dialog") == 0;
     }
-    // 截图钩子：搜索框预置关键字 / 侧边栏预置收起，省得脚本去点
+    // 截图可预设搜索词与侧栏状态。
     if (const char *q = std::getenv("AINO_QUERY"))
         app.query = q;
     if (const char *n = std::getenv("AINO_NAV"))
         app.nav_open = std::atoi(n) != 0;
     app.nav_w = app.nav_open ? kNavW : 0.0f;
-    // 性能钩子：AINO_BENCH=N 连续重绘 N 帧（不打地鼠式鼠标事件），
-    // 把每帧耗时写进 AINO_FRAME_LOG 指的文件。用来回答"交互卡是不是帧太慢"。
+    // AINO_BENCH=N 连续绘制 N 帧，将绘制耗时写入 AINO_FRAME_LOG。
     if (const char *bn = std::getenv("AINO_BENCH")) {
         const int n = std::max(1, std::atoi(bn));
         std::FILE *out = nullptr;
@@ -1524,21 +1543,15 @@ int main() {
         }
         return 0;
     }
-    // AINO_BENCH_RUN=N：走**真实主循环**连排 N 帧，记录每帧的开始时刻。
-    // 单独测绘制的 AINO_BENCH 看不到 Sleep 节流 —— 而"卡不卡"就是帧间隔决定的。
+    // AINO_BENCH_RUN=N 在主循环中记录 N 帧的开始时间，包含帧率节流。
     int bench_run = 0;
     if (const char *br = std::getenv("AINO_BENCH_RUN"))
         bench_run = std::max(1, std::atoi(br));
     std::vector<double> stamp;
     bool dumped = false;
     int frames = 0;
-    // 截图钩子：在**下一帧开头**取上一帧的后备缓冲。
-    // 弹层（下拉 / 菜单 / 对话框）都是 deferred 到帧末才画的，回调里立刻取会
-    // 全部漏掉 —— 之前截出来的"下拉根本没展开"就是这个原因。
-    // 复现钩子：AINO_CHILD_AT=N —— 第 N
-    // 帧打开"在新窗口运行这段代码"那个演示窗口。 子窗口在这里建（帧回调查内部 =
-    // 主线程正在绘制），才是"点按钮那一下"的时序；
-    // 脚本去点按钮得靠像素找坐标，布局一改就点空。
+    // 截图在下一帧读取后备缓冲，确保包含帧末绘制的浮层。
+    // AINO_CHILD_AT 指定打开素材子窗口的帧数，供多窗口回归使用。
     int child_at = -1;
     if (const char *ca = std::getenv("AINO_CHILD_AT"))
         child_at = std::atoi(ca);
@@ -1549,20 +1562,23 @@ int main() {
     win.run([&](Ui &ui) {
         if (!dumped) {
             dumped = true;
-            // 首帧量一次：此时字体引擎已就绪，量出来的宽度才是真宽度
-            dump_layout_report(ui, app, ui.width() - kNavW - 56.0f);
+            const bool narrow = ui.width() <= 900;
+            dump_layout_report(ui, app, ui.width() - (narrow ? 0 : kNavW) - (narrow ? 28 : 52), narrow);
         }
         if (shot && shot_pending && (shot_every || frames >= 2)) {
             dump_canvas_bmp(win, shot);
             shot_pending = false;
         }
+        collect_material(app);
         build_ui(ui, app);
+        if (app.open_material) {
+            app.open_material = false;
+            open_material_window(app.material_editor, ui.theme());
+        }
         if (child_at >= 0 && !child_fired && frames + 1 >= child_at) {
             child_fired = true;
-            open_quickstart_window();
+            open_material_window(app.material_editor, ui.theme());
         }
-        if (app.quit)
-            win.close(); // 红绿灯的红
         ++frames;
         shot_pending = true;
         if (bench_run > 0) {
@@ -1612,5 +1628,9 @@ int main() {
             }
         }
     });
+    {
+        std::lock_guard<std::mutex> lock(app.material_editor->mutex);
+        app.material_editor->parent = nullptr;
+    }
     return 0;
 }

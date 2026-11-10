@@ -1,20 +1,11 @@
-"""多窗口：子窗口在主窗口运行中打开后，主窗口还能不能正常响应。
+"""验证素材子窗口的打开、创建、取消与主窗口回填。
 
-这条是回归项，对应一个真实 bug：`detail::win_timer()` 原本是进程级单例
-（`static`，注释还写着"主循环是单线程的"），而画廊"在新窗口运行这段代码"
-是另起线程再建一个 Window。两个线程共用一个可等待定时器时，A 设的到期时间
-会被 B 的 Set 覆盖，信号被 B 取走后 A 还卡在 WaitForSingleObject(INFINITE)，
-而 B 建好窗口就空闲进了 WaitMessage —— 主窗口于是**永久假死**，子窗口却是好的。
-
-判据：向主窗口发 WM_NULL 并量回执时间（SendMessageTimeout）。消息循环活着
-就是 0~几毫秒；假死就是打满超时。这比"看画面有没有变"可靠 —— 后台窗口
-本来就不会因为鼠标位置变化而重绘。
-
-    python tools/child_window.py            # 判定
-    python tools/child_window.py --shot     # 顺手存一张子窗口截图
+使用 WM_NULL 回执检查两个消息循环的响应，防止共享帧定时器导致阻塞。
+python tools/child_window.py --shot 可同时保存子窗口截图。
 """
 import ctypes
 import os
+import re
 import subprocess
 import sys
 import time
@@ -72,7 +63,14 @@ def main():
         return 2
 
     env = dict(os.environ)
-    env["AINO_CHILD_AT"] = "2"        # 第 2 帧（主线程正在绘制时）打开子窗口
+    env.pop("AINO_CHILD_AT", None)
+    env["AINO_QUERY"] = "empty"
+    env["AINO_START_PAGE"] = "advanced"
+    env["AINO_NAV"] = "0"
+    layout_path = os.path.join(ROOT, "build", "material-child-layout.txt")
+    env["AINO_LAYOUT_REPORT"] = layout_path
+    if os.path.exists(layout_path):
+        os.remove(layout_path)
     p = subprocess.Popen([exe], env=env)
     try:
         hwnd = None
@@ -85,6 +83,22 @@ def main():
             print("SKIP: 主窗口起不来")
             return 2
 
+        for _ in range(40):
+            if os.path.exists(layout_path):
+                break
+            time.sleep(0.1)
+        with open(layout_path, encoding="utf-8") as f:
+            layout = f.read()
+        card = re.search(r"空状态: x=([\d.]+) y=([\d.]+) w=([\d.]+)", layout)
+        if not card:
+            print("[FAIL] 空状态布局未找到")
+            return 1
+        # 清单记录内容坐标；固定工具栏高 60，内容水平内边距 26。
+        x, y, width = map(float, card.groups())
+        scale = client_scale(hwnd)
+        time.sleep(0.5)
+        vr.click_logical(hwnd, 278 + x + width / 2, 60 + y + 48 + 146, scale)
+
         # 等子窗口真的出现（最多 6 秒）
         kids = []
         for _ in range(60):
@@ -93,7 +107,7 @@ def main():
                 break
             time.sleep(0.1)
         if not kids:
-            print("[FAIL] 子窗口没起来（AINO_CHILD_AT 钩子失效？）")
+            print("[FAIL] 点击新建素材后未打开子窗口")
             return 1
 
         time.sleep(1.5)               # 让它进空闲态：这才是假死暴露的时机
@@ -109,7 +123,7 @@ def main():
                 print("[FAIL] 子窗口「%s」不响应消息" % title)
                 return 1
             if want_shot:
-                sc = client_scale(h2)
+                sc = client_scale(h2) * 1180 / 460
                 s = Shot(h2, sc)
                 save_png(s.raw, s.w, s.h, os.path.join(ROOT, "build", "shots",
                                                        "child-window.png"))
@@ -117,6 +131,50 @@ def main():
                       % (title, ms2))
             else:
                 print("子窗口「%s」%.0f ms" % (title, ms2))
+        child = kids[0][0]
+        scale_child = client_scale(child) * 1180 / 460
+        vr.click_logical(child, 396, 302, scale_child)
+        time.sleep(0.2)
+        if not user32.IsWindow(child):
+            print("[FAIL] 空名称不应允许创建")
+            return 1
+        vr.click_logical(child, 80, 106, scale_child)
+        for ch in "Material test":
+            user32.PostMessageW(child, 0x0102, ord(ch), 0)
+        time.sleep(0.3)
+        before = Shot(hwnd, scale)
+        vr.click_logical(child, 396, 302, scale_child)
+        for _ in range(40):
+            if not [w for w in windows_of(p.pid) if w[0] != hwnd]:
+                break
+            time.sleep(0.1)
+        else:
+            print("[FAIL] 创建后子窗口未关闭")
+            return 1
+        time.sleep(0.3)
+        after = Shot(hwnd, scale)
+        changed = before.diff(after, 278 + x, 60 + y + 90,
+                              278 + x + width, 60 + y + 160)
+        if not changed:
+            print("[FAIL] 创建素材后主窗口未更新")
+            return 1
+        print("[ ok ] 点击打开子窗口，创建后主窗口更新")
+        vr.click_logical(hwnd, 278 + x + width / 2, 60 + y + 48 + 146, scale)
+        for _ in range(40):
+            reopened = [w for w in windows_of(p.pid) if w[0] != hwnd]
+            if reopened:
+                break
+            time.sleep(0.1)
+        else:
+            print("[FAIL] 创建后无法再次打开子窗口")
+            return 1
+        cancel = reopened[0][0]
+        vr.click_logical(cancel, 306, 302, client_scale(cancel) * 1180 / 460)
+        time.sleep(0.3)
+        if user32.IsWindow(cancel):
+            print("[FAIL] 取消未关闭子窗口")
+            return 1
+        print("[ ok ] 空名称禁用创建，支持重新打开与取消")
         print("[ ok ] 多窗口共存正常")
         return 0
     finally:

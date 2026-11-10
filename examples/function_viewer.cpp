@@ -824,7 +824,7 @@ struct App {
     fx::Program prog;
     fx::Program prog2;
 
-    // 每个模式的默认公式：切过去第一眼就该是个能看的图形
+    // 各模式的默认公式。
     static const char* default_src(int m) {
         switch (m) {
         case 1:  return "cos(a*u) + cos(5*u)/5";
@@ -922,7 +922,7 @@ void draw_ticks(aino::Ui& ui, const View& v, const aino::Theme& th) {
     const Color tc = th.muted_foreground.with_alpha(238);
     const float fs = 10.5f;
 
-    // 轴跑出视野就贴到边上，别把数字画丢
+    // 坐标轴超出视野时，将刻度标签约束在视口边缘。
     const bool x_in = (ay >= px.y + 2.0f && ay <= px.bottom() - 18.0f);
     const float ly = x_in ? ay + 2.0f : px.bottom() - 15.0f;
     for (float x = std::ceil((v.cx - v.half_w) / step) * step; x <= v.cx + v.half_w + 1e-5f; x += step) {
@@ -1045,7 +1045,7 @@ Grid sample_grid(const Ctx& c, float cell) {
         for (int i = 0; i <= g.nx; ++i) {
             const float x = c.v.wx(px.x + static_cast<float>(i) * cell);
             float val = eval_F(c, x, y);
-            if (!std::isfinite(val)) val = 1e9f;    // NaN 当"正无穷"处理，别让交点插值炸掉
+            if (!std::isfinite(val)) val = 1e9f;    // 非有限值按正大值处理，避免交点插值产生 NaN
             g.v[static_cast<size_t>(j) * (g.nx + 1) + i] = val;
         }
     }
@@ -1225,6 +1225,7 @@ struct UiState {
     aino::Window* win = nullptr;
     std::vector<Preset> presets;      // 当前分类的公式
     int cached_cat = -1;
+    int sidebar_cat = -1;
 
     void reset_view() {
         app.zoom = 1.0f;
@@ -1254,17 +1255,11 @@ void draw_sidebar(aino::Ui& ui, UiState& st, const aino::Theme& th) {
     const float W = ui.width(), H = ui.height();
     const float SIDE = 232.0f;
 
-    // 侧边栏材质 = Materials/Controls/Sidebar（不透明等价色，亮 #EAEAEA / 暗 #1E1E1E）。
-    //
-    // 之前这里写的是 `th.background.mix(th.muted, 0.55f)`：`muted` 不是"浅一档的
-    // 灰"，是**带 alpha 的填充色** rgba(0,0,0,13)。和一个不透明色 mix 之后得到
-    // "45% 白 + 55% 黑"再带 ~48% alpha，压在窗口上就是 #BBBBBB 的中灰 ——
-    // 又暗又脏。有专门的 token 就用 token，别拿两个颜色现调。
+    // 侧栏使用 sidebar_bg，避免混合半透明填充色与背景。
     ui.fill_rect(Rect(0.0f, 0.0f, SIDE, H), th.sidebar_bg);
     ui.fill_rect(Rect(SIDE - 1.0f, 0.0f, 1.0f, H), th.separator);
 
-    // 顶部是"类别"选择器，位置等于画廊侧边栏里的搜索框。侧边栏里不重复 App 名 ——
-    // 那是标题栏干的事（之前这里顶着 17pt 的"函数显示器" + 副标题，占掉三行）。
+    // 顶部分类选择器。
     const Rect top(10.0f, 14.0f, SIDE - 20.0f, 24.0f);
     {
         int cat = a.cat;
@@ -1281,35 +1276,34 @@ void draw_sidebar(aino::Ui& ui, UiState& st, const aino::Theme& th) {
     ui.separator(Rect(10.0f, list_y - 1.0f, SIDE - 20.0f, 1.0f));
 
     // source list：行高 26、13pt、条目左侧内缩 10（选中块再内缩 8）
-    aino::Stack col = ui.vbox(Rect(0.0f, list_y + 6.0f, SIDE, H - list_y - 6.0f - 64.0f), 1.0f, 10.0f);
+    static const char* hints[] = {
+        "在下方输入框里手打一个公式", "运算：+ - * / ^ %  |x|", "省略乘号：2x  3(x+1)", "",
+        "变量：x y u t a b c", "常量：pi tau e phi", "",
+        "三角 sin cos tan sec", "     反三角 asin acos", "     atan atan2",
+        "双曲 sinh cosh tanh", "     反双曲 asinh acosh atanh",
+        "指数 exp log log10", "     log2 sqrt cbrt", "取整 floor ceil round",
+        "     trunc frac sign", "其它 min max pow mod", "     hypot abs step", "     clamp lerp smoothstep"
+    };
+    const Rect list(0.0f, list_y + 6.0f, SIDE, H - list_y - 6.0f - 64.0f);
+    float content_h = 20.0f;
+    if (a.cat == kCustomCat) {
+        for (const char* hint : hints) content_h += *hint ? 17.0f : 4.0f;
+    } else content_h += 27.0f * float(st.presets.size());
+    auto scroll = ui.scroll(list, std::max(list.h, content_h));
+    if (st.sidebar_cat != a.cat) {
+        scroll.to(0);
+        st.sidebar_cat = a.cat;
+    }
+    aino::Stack col = ui.vbox(Rect(list.x, list.y - scroll.offset, list.w - 8.0f,
+                                  std::max(list.h, content_h)), 1.0f, 10.0f);
 
     if (a.cat == kCustomCat) {
-        auto hint = [&](const char* t) {
-            if (col.remain() < 16.0f) return;
-            ui.muted_text(t, col.next(16.0f), Style().font(11.0f).left());
-        };
-        hint("在下方输入框里手打一个公式");
-        hint("运算：+ - * / ^ %  |x|");
-        hint("省略乘号：2x  3(x+1)");
-        col.skip(4.0f);
-        hint("变量：x y u t a b c");
-        hint("常量：pi tau e phi");
-        col.skip(4.0f);
-        hint("三角 sin cos tan sec");
-        hint("     反三角 asin acos");
-        hint("     atan atan2");
-        hint("双曲 sinh cosh tanh");
-        hint("     反双曲 asinh acosh atanh");
-        hint("指数 exp log log10");
-        hint("     log2 sqrt cbrt");
-        hint("取整 floor ceil round");
-        hint("     trunc frac sign");
-        hint("其它 min max pow mod");
-        hint("     hypot abs step");
-        hint("     clamp lerp smoothstep");
+        for (const char* hint : hints) {
+            if (*hint) ui.muted_text(hint, col.next(16.0f), Style().font(11.0f).left());
+            else col.skip(4.0f);
+        }
     } else {
         for (size_t i = 0; i < st.presets.size(); ++i) {
-            if (col.remain() < 26.0f) break;
             if (ui.nav_item(st.presets[i].name, a.sel == static_cast<int>(i),
                             col.next(26.0f), Style().font(13.0f)))
             {
@@ -1320,12 +1314,14 @@ void draw_sidebar(aino::Ui& ui, UiState& st, const aino::Theme& th) {
         }
     }
 
+    scroll.close();
+
     // 底部：外观开关 + 运行状态
     const Rect foot(18.0f, H - 56.0f, SIDE - 36.0f, 26.0f);
     ui.draw_text("深色主题", Rect(foot.x, foot.y, 90.0f, 26.0f), th.foreground,
                  Style().font(12.5f).left().middle());
     bool dark = a.dark;
-    if (ui.toggle(&dark, Rect(foot.right() - 38.0f, foot.y + 3.0f, 38.0f, 20.0f))) {
+    if (ui.toggle(&dark, Rect(foot.right() - 44.0f, foot.y + 3.0f, 44.0f, 20.0f))) {
         a.dark = dark;
         if (st.win) st.win->set_theme(dark ? aino::Theme::dark() : aino::Theme::light());
     }

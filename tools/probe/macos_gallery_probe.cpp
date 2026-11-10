@@ -591,6 +591,22 @@ int main() {
                    std::abs(int(center.b) - int(surround.b)) >
                100,
            "selected radio dot contrasts with its tint");
+    App material;
+    material.query = "空状态";
+    auto empty_card = [&] { build_ui(f.ui, material); };
+    f.frame(empty_card);
+    const Rect empty = material.card_rects[Empty];
+    f.click(empty.cx(), empty.y + 48 + 146, empty_card);
+    expect(material.open_material && material.material_name.empty() && material.notices.empty(),
+           "create material requests a window without claiming creation");
+    material.material_editor->created_name = "测试素材";
+    material.material_editor->created_description = "子窗口提交的说明";
+    collect_material(material);
+    expect(material.material_name == "测试素材" && material.material_description == "子窗口提交的说明",
+           "child submission updates material content");
+    expect(material.material_editor->created_name.empty(), "child submission is consumed once");
+    collect_material(material);
+    expect(material.material_name == "测试素材", "idle collection preserves submitted material");
     std::printf("[macos-gallery] %d passed, %d failed; verdict: %s\n", passed, failed,
                 failed ? "FAIL" : "PASS");
     return failed ? 1 : 0;

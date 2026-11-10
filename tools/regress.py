@@ -433,6 +433,7 @@ def move_probe(exe=GALLERY, dur=3.0, limit=70.0, tries=2, ratio_min=4.0):
 
 
 PROBES = (
+    ("example_ui_probe", "19 passed, 0 failed",          "其他示例：侧栏滚动 / 列表裁剪 / 主题开关"),
     ("macos_gallery_probe", "verdict: PASS",              "macOS 主题联动 / 实际示例交互 / 响应式布局"),
     ("layoutprobe",      "通过 27 项，失败 0 项",        "Stack 布局计算"),
     ("newcomp_probe",    "87 passed, 0 failed",           "新增组件行为 + 像素"),

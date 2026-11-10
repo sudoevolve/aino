@@ -20,6 +20,7 @@ libssh2 从哪来：
   python tools/build_ssh.py app        # 只编 app
   python tools/build_ssh.py probe      # 只编 probe
   python tools/build_ssh.py term       # 只编纯解析器测试（不连网）
+  python tools/build_ssh.py ui         # 只编控件组合测试（不连网、不读配置）
 """
 import os
 import shutil
@@ -110,6 +111,10 @@ def main():
     if what in ("all", "probe"):
         build(os.path.join(ROOT, "tools", "probe", "ssh_probe.cpp"),
               os.path.join(ROOT, "tools", "probe", "ssh_probe.exe"), asan=asan)
+    if what in ("all", "ui"):
+        build(os.path.join(ROOT, "tools", "probe", "example_ui_probe.cpp"),
+              os.path.join(ROOT, "build", "ssh_ui_probe.exe"),
+              extra_flags=("/DAINO_PROBE_SSH",), asan=asan)
     if what in ("all", "term"):
         build(os.path.join(ROOT, "tools", "probe", "term_scroll.cpp"),
               os.path.join(ROOT, "tools", "probe", "term_scroll.exe"), asan=asan)
