@@ -1,41 +1,15 @@
-"""GUI 渲染的【像素级】验证 —— 用采样颜色断言，代替"截图看一眼"。
+"""Windows 实窗截图与逻辑坐标像素断言。
 
-为什么需要它：
-  · 截图能抓下来，不等于画对了。窗口空白、全黑、缺控件，截图都照样能存成功。
-  · 在多模态不可用 / 图太大看不清 / 只想在 CI 里跑的情况下，"看图"根本不可用。
-  · 把预期色值写下来做断言，才是可复现的证据。
+用法：python verify_render.py <exe> [选项]
+  --out <png>                  保存整窗截图
+  --logical <W>                逻辑客户区宽度，用于 DPI 换算
+  --click <LX,LY>               截图前投递鼠标消息，可重复
+  --expect <LX,LY,RRGGBB[,TOL]>  像素断言，可重复，默认容差 6
+  --wait <秒>                  截图前等待，默认 1.0
+  --title-wait <秒>            等待窗口出现的时限，默认 10
 
-顺带解决三个必然踩的坑：
-  · 模拟点击【不要用真实光标】(SetCursorPos + mouse_event)：SetForegroundWindow 常被系统
-    拒绝，而且真实用户的鼠标会立刻把光标抢走 —— 于是点到别人窗口上，现象是"点击没反应/
-    断言全失败"，看着像渲染坏了。改用 PostMessage 投递 WM_LBUTTONDOWN/UP（坐标放 lParam）。
-  · 断言点【别选在文字上】：居中文字正好压在控件中心，采到的是抗锯齿过渡色（曾实测到
-    (191,191,192)，怀疑了很久）。选控件内部但避开文字的位置，比如偏下 6~8px。
-  · 客户区在整窗位图里的偏移不能靠猜边框宽度（Win11 标题栏也是浅色，靠颜色找边界会翻车），
-    要用 ClientToScreen 精确算。
-
-用法:
-  python verify_render.py <exe> [选项]
-
-选项:
-  --out <png>                 存一张整窗截图（便于留档）
-  --logical <W>               逻辑客户区宽度；坐标断言需要它来算 DPI 缩放（如 940）
-  --click <LX,LY>             抓图前点一下这个逻辑坐标（可重复；用于切主题/点按钮）
-  --expect <LX,LY,RRGGBB[,TOL]>
-                              断言：逻辑坐标 (LX,LY) 处的像素应等于 RRGGBB，容差默认 6
-                              （可重复；坐标是【逻辑客户区坐标】，脚本自己换物理像素）
-  --wait <秒>                 抓图前等待，默认 1.0
-  --title-wait <秒>           等窗口出现的上限，默认 10
-
-退出码：全部断言通过 0，有失败 1。
-
-例（浅色主题断言背景是白的、主按钮是近黑）:
-  python verify_render.py app.exe --logical 940 \
-      --expect "20,200,FFFFFF" --expect "57,196,18181B,6" --out shot.png
-
-例（先点右上角主题按钮切深色，再断言底色变近黑）:
-  python verify_render.py app.exe --logical 940 --click 890,48 \
-      --expect "20,200,09090B" --out dark.png
+按 PID 查找窗口，以 ClientToScreen 计算客户区偏移。
+采样点应避开文字与抗锯齿边缘。像素断言不替代文字和布局的人工核对。
 """
 
 import argparse
@@ -174,20 +148,7 @@ def px(raw, w, x, y):
 
 
 def click_logical(hwnd, lx, ly, scale):
-    """向窗口直接投递鼠标消息（不动真实光标、不抢焦点）。
-
-    ⚠️ 别用 SetCursorPos + mouse_event —— 实测在真实机器上会稳定失败：
-      · SetForegroundWindow 常返回 0（系统拒绝非前台进程抢焦点），前台仍是别的窗口；
-      · SetCursorPos 之后光标会立刻被真实用户抢回去（诊断时目标 (1536,307)，
-        实际停在 (1254,936)）。
-    结果是点击落在别人的窗口上，现象是"点击没反应 / 断言全失败"，看着像渲染坏了。
-
-    PostMessage 把坐标放在 lParam 里，只要目标窗口用 GET_X_LPARAM 之类读消息坐标
-    （Win32 的常规写法）就能点中，而且完全不打扰用户、不移动光标、不要求窗口在前台。
-    前提：若目标窗口自己用 GetCursorPos 取坐标，这个方法无效，只能退回真实光标。
-
-    lParam 里是【物理客户区坐标】= 逻辑坐标 × scale。
-    """
+    """向目标窗口投递鼠标消息，坐标按客户区 DPI 换算；不依赖前台焦点。"""
     user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
                                     wintypes.WPARAM, wintypes.LPARAM]
     x = int(round(lx * scale))

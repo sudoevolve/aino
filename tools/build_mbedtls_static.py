@@ -46,12 +46,7 @@ def main():
 
     objs = sorted(glob.glob(os.path.join(OBJ, "*.obj")))
     print("目标文件 %d 个" % len(objs))
-    # 不删旧库：本机的 safe-delete 策略会拦截 os.remove 大文件，脚本会直接中断。
-    # lib.exe 自己会覆盖同名输出。
-    # 必须一次把所有 obj 交给 lib.exe。
-    # 之前按 60 个一批、每批都带 /OUT 调用，结果每批都把库**重建**了一遍，
-    # 最后只剩最后一批（bignum.c 排在前面，直接丢了）—— 链接期表现为
-    # 一堆 mbedtls_mpi_* 未解析。用响应文件绕开命令行长度限制，只建一次。
+    # 用响应文件一次传入全部对象，避免命令行长度限制；lib.exe 覆盖同名输出。
     rsp = os.path.join(SRC, "mbedtls_all.rsp")
     with open(rsp, "w", encoding="utf-8") as f:
         f.write("\n".join('"%s"' % o for o in objs))

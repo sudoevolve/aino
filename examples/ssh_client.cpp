@@ -1247,10 +1247,7 @@ void send_key(Session& a, const std::string& bytes) {
     a.view_offset = 0;
 }
 
-// 终端里的"导航键/编辑键"要用 key_hit 而不是 key_pressed：
-// 按住方向键要连续移动、按住退格要连续删，这是终端最基本的体感。
-// key_pressed 只在按下那一下为真，按住不动就收不到任何消息（Win32 的自动重复
-// 消息被库里当重复丢了），于是"只能单点一下"—— 就是用户报的那个毛病。
+// 终端导航与编辑键使用 key_hit 接收按键重复；key_pressed 仅表示首次按下。
 void handle_term_keys(aino::Ui& ui, Session& a) {
     const aino::Input& in = ui.input();
 

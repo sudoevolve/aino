@@ -1,12 +1,9 @@
-"""MSVC + Ninja 构建助手 (Windows / WorkBuddy Bash 环境专用)
+"""Windows MSVC/Ninja 构建入口。
 
-背景：本机 VS 2026 (18.7) 已完整安装，但 CMake 4.4-rc1 的
-"Visual Studio 18 2026" 生成器无法识别该实例（No CMAKE_C_COMPILER found）。
-本脚本改为：先跑 vcvars64.bat 提取纯净 MSVC 环境，再用 Ninja 生成器构建。
-
-用法:
+从 vcvars64.bat 提取编译环境，并按安装目录补齐 Windows SDK。
+用法：
   python msvc_build.py --src <源码目录> --build <构建目录> [--target T] [--config Release] [-- -DKEY=VAL ...]
-  python msvc_build.py --build <构建目录> --pretend          # 只打印探测到的 cl.exe 版本
+  python msvc_build.py --build <构建目录> --pretend
 """
 
 import argparse
@@ -16,7 +13,7 @@ import subprocess
 import sys
 
 def _find_vs_root():
-    """自动找带 vcvars64.bat 的 VS 安装（原来写死 18\\Community，换机器就废）。"""
+    """查找包含 vcvars64.bat 的 Visual Studio 安装。"""
     import glob
     for pat in (r"C:\Program Files\Microsoft Visual Studio\*\*",
                 r"C:\Program Files (x86)\Microsoft Visual Studio\*\*"):
@@ -29,7 +26,7 @@ def _find_vs_root():
 VS_ROOT = _find_vs_root()
 VCVARS = os.path.join(VS_ROOT, "VC", "Auxiliary", "Build", "vcvars64.bat")
 CMAKE = r"C:\Program Files\CMake\bin\cmake.exe"
-# ninja 跟着当前解释器的 Scripts 目录走，不再写死某个用户名
+# 从当前 Python 安装目录定位 Ninja。
 NINJA_DIR = os.path.dirname(sys.executable)
 
 # 关键：给 cmd.exe 一份干净的 Windows 环境，避免 PATH 里的 Git usr/bin
@@ -62,11 +59,7 @@ def _latest_sdk_version():
 def augment_windows_sdk(env):
     """补齐 Windows SDK 的 PATH / INCLUDE / LIB。
 
-    本机沙箱把 reg.exe 列入了程序黑名单，而 vcvars64.bat 正是靠 `reg query`
-    去登记表里查 Windows SDK 版本的。被拦之后 SDK 路径就进不了环境，
-    典型症状是链接阶段报：
-        RC Pass 1: command "rc /fo ...manifest.res ..." failed: no such file or directory
-    以及 CMake 里 CMAKE_MT-NOTFOUND。这里直接扫目录把 SDK 补回去。
+    vcvars64.bat 未能导出 SDK 路径时，从安装目录补入 rc.exe、mt.exe、头文件与库。
     """
     ver = _latest_sdk_version()
     if not ver:

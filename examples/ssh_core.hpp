@@ -359,8 +359,7 @@ public:
             libssh2_session_disconnect(sess, "auth failed");
             libssh2_session_free(sess);
             sshc_closesock(fd);
-            // 这句话要明确告诉用户"网络没问题，是账号没过" —— 否则最容易被
-            // 当成网络故障去抓瞎。密码为空时额外点明，因为那多半是没存密码。
+            // 认证阶段的错误与网络错误分开报告；无凭据时提供补充提示。
             if (pass.empty() && key_path.empty())
                 return fail(err, "认证失败 —— 网络和 SSH 都是通的，但没有可用的凭据："
                                  "这台服务器需要密码或密钥，补一个再连");

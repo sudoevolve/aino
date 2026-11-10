@@ -437,9 +437,7 @@ int main() {
         const Color av_bg = LT.fill.over(LT.window_bg);
         check(h.px_is(32, 8, av_bg), "圆内上部是 fill 底色（10% 占位，不是 5%）");
         check(h.px_is(1, 1, LT.window_bg), "圆外角落未被填（是圆形不是方块）");
-        // 默认必须有 1px border 描边。理由不是审美：圆底是 muted，一旦落在浅灰容器
-        // （gallery 预览板 / card() / panel()）上就跟背景同色，只剩一个孤零零的字。
-        // 用户原话"头像咋只有个文字"。轮廓是唯一在任何底色上都能立住的线索。
+        // 检查 1px 轮廓，使头像在与其填充相近的背景上仍有边界。
         {
             const Color edge  = h.px(32, 0);
             const Color inner = h.px(32, 8);

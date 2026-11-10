@@ -1,24 +1,8 @@
-"""用 cl.exe 直接编单个 cpp；MSVC 不可用时自动回退到 g++。
+"""用 cl.exe 编译单个 C++ 文件；MSVC 不可用时回退到 g++。
 
-坑：subprocess 传 env= 只影响"子进程自己的环境变量"，不影响 CreateProcess
-查找可执行文件的 PATH 搜索路径 —— 所以裸写 "cl" 会 FileNotFoundError。
-这里改成从 VCToolsInstallDir 拼出 cl.exe 的绝对路径。
-（shell=True 也行，但绝对路径更可控。）
-
-2026-10-17：加了 g++ 回退。原因是这台机器上 vcvars64.bat 导不出 MSVC 环境，
-msvc_env() 直接抛 SystemExit，导致 regress.py 里 10 个编译步骤全红 ——
-但那是环境问题，不是代码问题，不该让回归完全跑不动。
-回退分支只翻译参数（`*.lib` → `-l*`、丢掉 `/utf-8` 这类 MSVC 专用开关），
-刻意**不**加 `-DNDEBUG`：宁可保留 assert 多查一点，也不要让探针假通过。
-
-2026-10-19：g++ 分支加 -static-libgcc -static-libstdc++。默认动态链会让 exe 依赖
-libgcc_s_seh-1.dll / libstdc++-6.dll —— 那是 CLion 自带 MinGW 的 bin 目录，本机能跑、
-别人的机器直接报「缺 DLL」。静态链之后只剩 libwinpthread-1.dll（thread_local 要用），
-本脚本会在 exe 旁边补一份，便于整包拷走。
-
-用法:
-  python cl_one.py <src.cpp> <out.exe> [额外库或开关...]
-默认链接 user32 gdi32 msimg32（aino 在 Windows 上需要）。
+用法：python cl_one.py <src.cpp> <out.exe> [额外库或开关...]
+默认链接 user32、gdi32、msimg32。探针保留 assert。
+通过绝对路径启动 cl.exe；g++ 回退分支转换库参数并静态链接 C++ 运行时。
 """
 
 import os

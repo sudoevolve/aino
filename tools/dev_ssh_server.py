@@ -107,16 +107,7 @@ class Server(paramiko.ServerInterface):
 
 
 class _SftpServer(paramiko.SFTPServer):
-    """给 SFTP 通道打标记。
-
-    踩过的坑：一开始把标记写在 Server.check_channel_subsystem_request 里，
-    但 transport 上注册了 subsystem handler 之后 paramiko 只调 handler、不调
-    那个方法 —— 标记永远是 None，于是 accept 循环把 SFTP 通道当成 shell 通道，
-    往里面写欢迎横幅。客户端那边的现象就非常迷惑：
-      libssh2: "Timeout waiting for response from SFTP subsystem"（版本那 9 个字节读到的是 banner）
-      paramiko: SFTPError: Garbage packet received
-      自家客户端：点一下目录卡住，文件列表空白
-    """
+    """在 subsystem handler 标记 SFTP 通道，避免 shell 欢迎文本污染 SFTP 数据。"""
 
     def __init__(self, channel, name, server, sftp_si, **kwargs):
         channel._aino_subsys = name

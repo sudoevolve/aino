@@ -4,20 +4,20 @@
 // caret 顺延到它后面。这个探针不依赖真人打拼音：用 ImmSetCompositionStringW 往输入法
 // 上下文里塞串，再投 WM_IME_COMPOSITION —— 和真实输入法**同一条**消息路径。
 //
-// 踩过的坑（全是实测，别再踩）：
+// 平台与测试约束：
 //   · ImmGetContext / ImmSetCompositionString 必须由**窗口所属线程**调，且窗口要有
 //     前台焦点，否则 SetCompositionString 返回 FALSE、GCS_COMPSTR 读出来是 0。
 //   · 必须先发 WM_IME_STARTCOMPOSITION 再 SetCompositionString。
 //   · **别用 (w & GCS_COMPSTR) 当门槛**。微软拼音是 TSF 输入法，经 CUAS 转发时
 //     w = 0x73（只有 COMPREADSTR/READATTR/COMPATTR/COMPCLAUSE），就是没有 GCS_COMPSTR
-//     这一位。照那一位判断 → 永远拿不到串 → 用户看到的"拼音没有预先填充"。
+//     这一位，因此不能只按该标志决定是否查询组字串。
 //   · **别用 lParam 那个 HIMC**：CUAS 塞过来的句柄 ImmGetCompositionString 返回 0，
 //     得自己 ImmGetContext(hwnd)。两条都在 I9 里验。
 //   · 空输入框 + hint 很常见，组字时必须让 hint 让位（I4 就是拿 hint 当基线验的：
 //     没让位的话 diff 直接是 0）。
 //   · driver 线程**不要**直接读 ui->ime_comp —— std::string 跨线程读会撞上写入
 //     中间态、读出空串。要读就读 UI 线程拍的快照。
-//   · 像素断言必须有基线帧：直接和"全白"比会把背景差也算进来（第一版就这么假通过）。
+//   · 像素断言使用基线帧，排除输入框本身的背景差异。
 #define AINO_IMPLEMENTATION
 #include "../../aino.hpp"
 
@@ -243,7 +243,7 @@ int main() {
             // I12：光"藏"不够 —— 必须是"分层 + 全透明"。
             // SW_HIDE 只是改状态，输入法每次更新组字都会再 ShowWindow 一次，
             // 我们 20 ms 后才压，于是"亮一下、藏起来、再亮一下"。实测每个按键
-            // 都会在框下露出一次 11x15 的小白块（用户报的"一直闪烁"）。
+            // 都可能在下一次隐藏前短暂显示组合窗。
             // 分层 alpha=0 之后窗口**照旧可见**（输入法不会再来抢），只是画不出像素。
             ShowWindow(fake_comp, SW_SHOWNOACTIVATE);
             bool layered = false, alpha0 = false;
