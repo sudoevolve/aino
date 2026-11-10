@@ -4,7 +4,7 @@
 用的 —— 用 AINO_START_PAGE 直接翻到目标页，不去点导航。
 
     python tools/shot_pages.py                 # 全部页
-    python tools/shot_pages.py Button Dialog   # 只拍这几页
+    python tools/shot_pages.py 按钮 日期与时间   # 只拍这几页
 """
 
 import os
@@ -25,7 +25,7 @@ OUT_DIR = os.path.join(ROOT, "build", "shots")
 def names():
     """从 gallery 源码里抠出页名顺序（避免在 Python 里再抄一份）。
 
-    页表每项长这样：{"基础", "Button", "描述…", "shadcn", kBasic, COUNT(kBasic)}
+    目录每项包含分组、分类名、锚点和卡片范围。
     所以取第 2 个字符串；第 1 个是分组名。
     """
     import re

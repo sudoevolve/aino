@@ -31,8 +31,8 @@ TIMEOUT_MS = 600          # 修复前实测打满 1500ms（默认值），正常
 
 
 def _pick_exe():
-    for rel in ("build/Release/aino_gallery.exe", "build/Debug/aino_gallery.exe",
-                "build/aino_gallery.exe"):
+    for rel in ("build/aino_gallery.exe", "build/Release/aino_gallery.exe",
+                "build/Debug/aino_gallery.exe"):
         p = os.path.join(ROOT, rel)
         if os.path.exists(p):
             return p

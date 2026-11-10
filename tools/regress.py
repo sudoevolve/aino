@@ -45,7 +45,7 @@ FRAME_GAP = 0.30     # 抓两帧的间隔（秒）；spinner 约 1.4 圈/秒，0
 
 
 def run(cmd, cwd=None, env=None, timeout=300):
-    return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True,
+    return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8",
                           errors="replace", timeout=timeout)
 
 
@@ -74,7 +74,7 @@ def run_probe(name, want_tail):
     exe = os.path.join(PROBE, name + ".exe")
     r = run([exe], cwd=PROBE)
     out = (r.stdout or "") + (r.stderr or "")
-    ok = want_tail in out
+    ok = r.returncode == 0 and want_tail in out
     tail = [l for l in out.strip().splitlines() if l.strip()][-1:] or [""]
     return ok, tail[0][:90]
 
@@ -224,12 +224,9 @@ def idle_probe(exe, dur=3.0, click=None, expect_nav=None, want_anim=None, tries=
 
 
 def layout_probe():
-    """gallery 的布局自检：把每一页每一条示例都量一遍，要求"没有内容超过声明高度"。
+    """实窗目录清单必须与 15 个分类、43 张组件卡片一致。
 
-    这一条钉的是用户直接看得见的 bug：卡片高度原先全靠手填的 preview_h，
-    内容一多就爬出卡片下边框。现在绘制前先在测量模式下空跑一遍，取
-    max(声明, 实测)，所以溢出在结构上不可能发生；本断言确保测量机制没坏、
-    也没有哪条示例离声明值太远（太远说明卡片会留一大块空白）。
+    精确几何、防重叠和交互由 macos_gallery_probe 覆盖。
     """
     exe = GALLERY
     out = os.path.join(ROOT, "build", "layout_report.txt")
@@ -255,13 +252,11 @@ def layout_probe():
     if not os.path.exists(out):
         return False, "报告没生成（窗口没起来？）"
     txt = open(out, encoding="utf-8", errors="replace").read()
-    bad = [l for l in txt.splitlines() if "溢出" in l]
-    summ = [l for l in txt.splitlines() if l.startswith("# over")]
-    ok = not bad and bool(summ) and "over=0" in summ[0]
-    detail = (summ[0].lstrip("# ") if summ else "没有统计行")
-    if bad:
-        detail += "  " + "; ".join(x.split("/")[-1].strip() for x in bad[:3])
-    return ok, detail
+    lines = txt.splitlines()
+    summary = lines[0] if lines else ""
+    cards = [line for line in lines[1:] if ": x=" in line]
+    ok = "sections=15 cards=43" in summary and len(cards) == 43
+    return ok, summary.lstrip("# ") + " / recorded=%d" % len(cards)
 
 
 def _move_once(exe, dur, mode="nav"):
@@ -438,6 +433,7 @@ def move_probe(exe=GALLERY, dur=3.0, limit=70.0, tries=2, ratio_min=4.0):
 
 
 PROBES = (
+    ("macos_gallery_probe", "verdict: PASS",              "macOS 主题联动 / 实际示例交互 / 响应式布局"),
     ("layoutprobe",      "通过 27 项，失败 0 项",        "Stack 布局计算"),
     ("newcomp_probe",    "87 passed, 0 failed",           "新增组件行为 + 像素"),
     ("raster_equiv",     "通过 1602 项，失败 0 项",        "光栅化 vs 参考实现"),
@@ -511,7 +507,7 @@ def child_window_probe():
     """
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "child_window.py")
     try:
-        r = subprocess.run([sys.executable, script], capture_output=True, text=True,
+        r = subprocess.run([sys.executable, script], capture_output=True, text=True, encoding="utf-8", errors="replace",
                            timeout=90)
     except Exception as e:                       # noqa: BLE001
         return True, "SKIP: " + str(e)
@@ -545,32 +541,31 @@ def main():
     ok, d = verify_gallery()
     step("gallery 版式 / 换页 / 遮罩 / 双主题", ok, d)
     ok, d = layout_probe()
-    step("卡片高度够（内容不爬出下边框）", ok, d)
+    step("实窗布局清单与组件目录一致", ok, d)
 
     print("\n== 跨平台像素断言（直接读后备缓冲，CI 三平台同跑）==")
     ok, d = ci_pixels()
     step("图元像素断言（44 项 / 无字形依赖；4 项 X11 专有）", ok, d)
 
     print("\n== 空闲 CPU（aino 的核心承诺）==")
-    # 默认落在「概览」页：这一页没有任何常驻动画，必须真正空闲 —— 这是硬指标。
+    # 默认按钮区没有常驻动画，必须真正空闲。
     # 判据两条一起用：CPU ≤1% + 静置两帧逐格完全一致。
     cpu, moved, att, ok, note = idle_probe(GALLERY, want_anim=False)
-    step("空闲 aino_gallery（概览页）", ok and cpu <= 1.0,
+    step("空闲 aino_gallery（按钮区）", ok and cpu <= 1.0,
          "%.2f%% / 两帧差 %d 格 (上限 1.0%%，要求 0 格；第 %d 次尝试)%s"
          % (cpu, moved, att, "" if ok else "  " + note))
-    # 「展示」页有 spinner + 两条呼吸 skeleton。它们现在**只在鼠标悬停时**推进
-    # （spinner / skeleton 都改成 opt-in 的局部相位），所以不碰鼠标时这一页也必须是
-    # 0 帧 / ≤1%。这条以前是宽松的 55%（那时它们无条件 repaint），现在收紧成和概览页
-    # 同一条硬指标 —— 常驻动画从"设计内开销"降级为"必须显式点名"。
-    # 直接以 Progress 页启动。以前是"点侧边栏第 N 行翻过去"，但导航的行高/图标/
-    # 分组随着版式改过一次又一次，(100, 273) 早就落到别的行（甚至分组头上，
-    # 一点就把整组折叠了），于是这条常年报"翻页没生效"。它要证明的是"这一页
-    # 不碰鼠标时必须是 0 帧"，不是"导航能点"——后者由 verify_gallery 的换页断言管。
+    # 反馈区只在通知或交互动画存续期间重绘，静置时也应保持空闲。
     cpu2, moved2, att2, ok2, note2 = idle_probe(
-        GALLERY, page="Progress", want_anim=False)
-    step("空闲 aino_gallery（Progress 页，未悬停）", ok2 and cpu2 <= 1.0,
+        GALLERY, page="feedback", want_anim=False)
+    step("空闲 aino_gallery（反馈区，无通知）", ok2 and cpu2 <= 1.0,
          "%.2f%% / 两帧差 %d 格 (上限 1.0%%，要求 0 格；第 %d 次尝试)%s"
          % (cpu2, moved2, att2, "" if ok2 else "  " + note2))
+
+    cpu_progress, moved_progress, att_progress, ok_progress, note_progress = idle_probe(
+        GALLERY, page="progress", want_anim=False)
+    step("空闲 aino_gallery（进度区，未悬停）", ok_progress and cpu_progress <= 1.0,
+         "%.2f%% / 两帧差 %d 格 (第 %d 次尝试)%s"
+         % (cpu_progress, moved_progress, att_progress, "" if ok_progress else "  " + note_progress))
 
     # 指针持续移动时也不能把核心吃满：整窗重绘很贵，鼠标频率却可能上千 Hz。
     # 判据是"占单核 ≤25%"（≈ 全机 1.6% @16 核），对应 30fps 的移动合并预算。

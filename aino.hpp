@@ -3,7 +3,7 @@
 // -----------------------------------------------------------------------------
 //  设计取向
 //    · 思路来自 FLTK   : 无第三方依赖、事件驱动、空闲 0% CPU、静态链接极小
-//    · 写法来自 eui-neo: 链式语义化组件 + 主题 token + hover/pressed 自动状态
+//    · API：链式语义化组件 + 主题 token + hover/pressed 状态
 //    · 视觉参照 macOS 27（Figma `macOS 27` UI kit，参数逐项对齐）：语义色板
 //      + 4/6/8/10/12 圆角档位 + 连续圆角（squircle 0.6）+ 24 高的 Medium 控件
 //      + Group Box 分组语汇。不引入 Web 的"卡片 + 描边 + 投影"那一套。
@@ -271,6 +271,14 @@ enum class VAlign { Top, Middle, Bottom };
 // 鼠标光标形状
 enum class Cursor { Arrow, Hand, IBeam, ResizeH, ResizeV, Text };
 
+/** @brief 系统符号：Windows 使用 Segoe Fluent Icons，macOS 使用 SF Symbols。 */
+enum class SystemIcon {
+    Pointer, Text, Toggle, Slider, Segment, Menu, Calendar, Palette, Bell, Table,
+    Chart, Loader, Card, Navigation, List, Copy, Star, More, Upload, Download,
+    Edit, Trash, Prev, Next, Moon, Sun, Auto, Close, Eye, Plus, Folder,
+    Search, ChevronDown, ChevronUp, Check, Minus, Settings, Network, Image, Info, Warning, People, Count
+};
+
 // 键盘修饰键 / 常用键位（与平台无关的抽象码）
 enum Key {
     KEY_NONE = 0,
@@ -424,6 +432,11 @@ struct Theme {
         auto ceq = [](const Color& a, const Color& b) {
             return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
         };
+        for (int i = 0; i < 5; ++i) {
+            if (size_h[i] != o.size_h[i] || size_radius[i] != o.size_radius[i]
+                || size_font[i] != o.size_font[i] || size_line[i] != o.size_line[i]
+                || size_padx[i] != o.size_padx[i] || size_pady[i] != o.size_pady[i]) return false;
+        }
         return ceq(background, o.background) && ceq(foreground, o.foreground)
             && ceq(card, o.card) && ceq(card_foreground, o.card_foreground)
             && ceq(popover, o.popover) && ceq(popover_foreground, o.popover_foreground)
@@ -464,7 +477,19 @@ struct Theme {
             && corner_smoothing == o.corner_smoothing;
     }
 
-    // 浅色：窗口底 #ECECEC，文字 85% 黑，强调色 systemBlue
+    // 同步原生强调色、旧 primary、焦点环和选中行；accent 仍是中性的悬停面。
+    // 由应用保存选择，再对当前 light()/dark() 主题调用，避免外观切换丢失强调色。
+    Theme& set_tint(const Color& color) {
+        tint = color;
+        tint_foreground = color.luminance() > 0.55f ? Color(0, 0, 0, 217) : Color::white();
+        primary = tint;
+        primary_foreground = tint_foreground;
+        ring = tint.with_alpha(is_dark() ? 140 : 128);
+        table_sel = tint;
+        return *this;
+    }
+
+    // 浅色：窗口底 #FFFFFF，文字 85% 黑，强调色蓝
     static Theme light();
     // 深色：窗口底 #1E1E1E，文字 85% 白
     static Theme dark();
@@ -491,6 +516,7 @@ struct Style {
     float font_size = -1.0f;
     int   font_weight = -1;       // 100..900, -1 = 默认；>=600 走粗体
     bool  italic  = false;
+    bool  password = false;      // 单行输入以圆点显示，编辑值保持原文
     bool  disabled = false;
 
     // --- 组件语义变体（对应 shadcn 的 variant prop）---
@@ -554,6 +580,7 @@ struct Style {
     Style& muted_text() { muted = true; return *this; }
     Style& hint(const std::string& h) { placeholder = h; return *this; }
     Style& off() { disabled = true; return *this; }
+    Style& secret(bool on = true) { password = on; return *this; }
     Style& scale_on_press(float s) { press_scale = s; return *this; }
     Style& wrap_text(bool v = true) { wrap = v; return *this; }
     Style& line_spacing(float g) { line_gap = g; return *this; }
@@ -866,6 +893,10 @@ public:
     void draw_line(float x0, float y0, float x1, float y1, const Color& c, float width = 1.0f);
     // 画文本；Style 只读 align/valign/font_size/font_weight/bold
     void draw_text(const std::string& text, const Rect& box, const Color& c, const Style& st = Style());
+    /** @brief 在指定区域居中绘制系统图标；尊重当前裁剪、缩放和颜色。 */
+    bool system_icon(SystemIcon icon, const Rect& box, const Color& color);
+    /** @brief 注册可唤醒重绘的悬停区；被裁剪或浮层遮住时返回 false。 */
+    bool hovered(const Rect& box);
     // 度量
     float text_width(const std::string& text, float font_size, int weight = -1) const;
     float line_height(float font_size) const;
@@ -951,6 +982,8 @@ public:
     void separator(const Rect& box, const Style& st = Style());      // 水平或垂直细线
     void badge(const std::string& text, const Rect& box, const Style& st = Style());
     void progress(float value, const Rect& box, const Style& st = Style());   // value 0..1
+    /** @brief 环形进度，value 范围 0..1，使用现有主题轨道与强调色。 */
+    void progress_ring(float value, const Rect& box, const Style& st = Style());
     void skeleton(const Rect& box, const Style& st = Style());       // 占位骨架（默认静态，.animate() 才呼吸）
 
     // 交互类 —— 返回 true 表示本帧发生了"值变化"或"点击"
@@ -2282,9 +2315,10 @@ inline void raster_arc(Canvas& cv, float cx, float cy, float radius, float width
 
             float t = 1.0f;                       // alpha 在弧上的插值位置 0..1
             if (!full) {
-                float rel = std::atan2(py, px) - st;
+                float rel = std::atan2(py, px);
                 if (rel < 0.0f) rel += TAU;
-                if (rel >= TAU) rel -= TAU;
+                rel -= st;
+                if (rel < 0.0f) rel += TAU;
                 if (rel <= sweep) {
                     t = rel / sweep;
                     // 端点附近补圆帽：环带被角度切断是平头，加上圆形才能和
@@ -3251,7 +3285,7 @@ inline Theme Theme::dark() {
     t.window_bg         = Color::hex(0x1E1E1E);
     t.control_bg        = Color::hex(0x282828);
     t.sidebar_bg        = Color::hex(0x1E1E1E);
-    t.title_bg          = Color::hex(0x3C3C3C);
+    t.title_bg          = t.window_bg;
     t.popover_bg        = Color::hex(0x282828);
     t.tooltip_bg        = Color::hex(0x282828);
     t.tooltip_stroke    = Color::rgba(255, 255, 255, 38);    // #FFFFFF26
@@ -3643,6 +3677,16 @@ struct Ui::Impl {
     // begin_scroll 的嵌套上下文（支持滚动区套滚动区）
     struct ScrollCtx { uint64_t id = 0; Rect box; float offset = 0.0f; float max_offset = 0.0f; };
     std::vector<ScrollCtx> scroll_stack;
+    // ID 由滚动区内的内容位置生成，屏幕位移不会重置控件状态或串用相邻控件的动画。
+    uint64_t widget_id(const char* kind, const Rect& box, uint64_t extra = 0) const {
+        if (scroll_stack.empty()) return detail::make_id(kind, box, extra);
+        const auto& parent = scroll_stack.back();
+        Rect local = box.offset(-parent.box.x, parent.offset - parent.box.y);
+        // ID 使用半像素精度；四舍五入避免小数滚动抵消后 120 变成 119.99999 而换 ID。
+        local.x = std::round(local.x * 2.f) * .5f;
+        local.y = std::round(local.y * 2.f) * .5f;
+        return detail::hash_combine(parent.id, detail::make_id(kind, local, extra));
+    }
     float last_scroll = 0.0f;    // 最近一个滚动区的偏移（end_scroll 之后 scroll_y() 仍可读）
 
     // ---- 滚轮归属 ----
@@ -3874,14 +3918,23 @@ inline Rect Ui::end_measure() {
 }
 inline bool Ui::measuring() const { return impl->measure_on; }
 
+inline bool Ui::hovered(const Rect& box) {
+    if (impl->measure_on) return false;
+    impl->hover_region(box);
+    return box.contains(impl->input.mouse.x, impl->input.mouse.y)
+        && !impl->clip_excludes(impl->input.mouse.x, impl->input.mouse.y)
+        && !impl->gate_blocked_pointer();
+}
+
 // -----------------------------------------------------------------------------
-//  hover 等状态的帧间插值（eui-neo 的 visualState 思路，这里做成通用小工具）
+//  hover 等状态的帧间插值
 // -----------------------------------------------------------------------------
 namespace detail {
 inline float animate_value(Ui::Impl* im, uint64_t id, float target, float speed = 14.0f) {
+    // 测量不能创建动画状态；否则首次显示时会把选中控件从零重新播放。
+    auto found = im->anim.find(id);
+    if (im->measure_on) return found == im->anim.end() ? target : found->second;
     float& cur = im->anim[id];
-    // 测量模式不推进动画：绘制代码每帧要跑两遍，推两次等于动画快一倍。
-    if (im->measure_on) return cur;
     float d = target - cur;
     if (std::fabs(d) < 0.0015f) {
         if (cur != target) { cur = target; if (im->request_repaint) im->request_repaint(); }
@@ -3890,6 +3943,12 @@ inline float animate_value(Ui::Impl* im, uint64_t id, float target, float speed 
     cur += d * clampf(im->dt * speed, 0.0f, 1.0f);
     if (im->request_repaint) im->request_repaint();   // 动画没结束，继续要帧
     return cur;
+}
+
+inline float animate_state(Ui::Impl* im, uint64_t id, float target, float speed = 14.0f) {
+    // 首次出现直接显示真实值，仅对已存在控件的状态变化插值。
+    if (!im->measure_on) im->anim.emplace(id, target);
+    return animate_value(im, id, target, speed);
 }
 
 struct Interact {
@@ -5062,13 +5121,9 @@ inline void pop_shadow(Ui& ui, const Rect& r, float rad, const Theme& th, int le
 // NSPopUpButton 右侧的"上下双箭头"。这是 mac 下拉按钮最容易被忽略的一处特征：
 // 一个向下箭头是 Web 的 <select>，一上一下两个才是 Pop-Up Button。
 inline void paint_popup_chevrons(Ui& ui, const Rect& box, float pad, const Color& c) {
-    const float cx = box.right() - pad - 3.0f;
-    const float cy = box.cy();
-    const float s = 3.0f, gap = 3.6f, k = s * 0.62f;
-    ui.draw_line(cx - s, cy - gap + k, cx, cy - gap - k, c, 1.2f);
-    ui.draw_line(cx, cy - gap - k, cx + s, cy - gap + k, c, 1.2f);
-    ui.draw_line(cx - s, cy + gap - k, cx, cy + gap + k, c, 1.2f);
-    ui.draw_line(cx, cy + gap + k, cx + s, cy + gap - k, c, 1.2f);
+    const float cx = box.right() - pad - 3.0f, cy = box.cy();
+    ui.system_icon(SystemIcon::ChevronUp, Rect::centered(cx, cy - 3.6f, 8, 8), c);
+    ui.system_icon(SystemIcon::ChevronDown, Rect::centered(cx, cy + 3.6f, 8, 8), c);
 }
 
 // for_text = 文本类控件（点进去就有环，和系统一致）；其余控件只在键盘焦点时画。
@@ -5695,7 +5750,32 @@ inline void Ui::progress(float value, const Rect& box, const Style& st) {
     }
 }
 
+inline void Ui::progress_ring(float value, const Rect& box, const Style& st) {
+    if (box.empty()) return;
+    if (impl->measure_on) { impl->measure_add(box); return; }
+    if (!impl->canvas) return;
+    const float size = std::min(box.w, box.h);
+    const float stroke = st.border_width > 0 ? std::min(st.border_width, size * .4f)
+                                             : std::max(2.f, size * .075f);
+    const float radius = std::max(0.f, (size - stroke) * .5f);
+    const Color track = !st.bg.is_none() ? st.bg : impl->theme.track;
+    const Color color = !st.fg.is_none() ? st.fg : impl->theme.tint;
+    value = clampf(value, 0.f, 1.f);
+    const Vec2 center = impl->xf_map(box.cx(), box.cy());
+    auto arc = [&](float fraction, Color c) {
+        if (fraction <= 0) return;
+        if (st.disabled) c = c.scaled_alpha(.45f);
+        // 整段圆弧只混合一次，避免半透明轨道在短线接头处重复叠色。
+        detail::raster_arc(*impl->canvas, center.x, center.y, impl->xf_len(radius),
+                           impl->xf_len(stroke), c, -1.57079633f + impl->xf_angle(),
+                           fraction >= 1.f ? 0.f : 6.2831853f * fraction, 1.f);
+    };
+    arc(1.f, track);
+    arc(value, color);
+}
+
 inline void Ui::skeleton(const Rect& box, const Style& st) {
+    if (impl->measure_on) { impl->measure_add(box); return; }
     const Theme& th = impl->theme;
     const float rad = st.radius >= 0.0f ? st.radius : th.radius;
     Color c = !st.bg.is_none() ? st.bg : th.muted;
@@ -5706,10 +5786,8 @@ inline void Ui::skeleton(const Rect& box, const Style& st) {
     // 一个常驻动画就是整窗每帧重画，代价和窗口面积成正比，不能默认付。
     if (st.animated) {
         // 被浮层盖住时不算悬停，否则遮罩底下那块还在亮暗呼吸 —— 一眼就穿。
-        const bool hovered = box.contains(impl->input.mouse.x, impl->input.mouse.y)
-                          && !impl->gate_blocked_pointer();
-        impl->hover_region(box);      // 悬停才呼吸：指针移动必须能唤醒它
-        float& ph = impl->phase[detail::make_id("skeleton_phase", box)];
+        const bool hovered = !st.disabled && this->hovered(box);
+        float& ph = impl->phase[impl->widget_id("skeleton_phase", box)];
         if (hovered) {
             ph += impl->dt * 3.2f;
             repaint();
@@ -5723,7 +5801,7 @@ inline void Ui::skeleton(const Rect& box, const Style& st) {
 //  8.11  交互类组件
 // =============================================================================
 inline bool Ui::button(const std::string& text, const Rect& box, const Style& st) {
-    uint64_t id = detail::make_id("button", box, detail::hash_string(text.c_str()));
+    uint64_t id = impl->widget_id("button", box, detail::hash_string(text.c_str()));
     Style s = st;
     if (!s.align_set) s.align = Align::Center;
     if (!s.valign_set) s.valign = VAlign::Middle;
@@ -5750,7 +5828,10 @@ inline bool Ui::button(const std::string& text, const Rect& box, const Style& st
     Style ts = detail::text_style_of(s, sk, 500);
     Color fg = sk.fg;
     if (s.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
-    draw_text(text, r, fg, ts);
+    // 显式内边距作用于文字区域，背景与命中区域仍覆盖整个按钮。
+    const float padx = s.pad_x >= 0.f ? std::min(s.pad_x, r.w * .5f) : 0.f;
+    const float pady = s.pad_y >= 0.f ? std::min(s.pad_y, r.h * .5f) : 0.f;
+    draw_text(text, r.inset(padx, pady), fg, ts);
 
     if (detail::is_focused(impl, id))
         detail::paint_focus_ring(*this, r, sk.radius, impl->theme.ring, true);
@@ -5760,7 +5841,7 @@ inline bool Ui::button(const std::string& text, const Rect& box, const Style& st
 }
 
 inline bool Ui::icon_button(const std::string& glyph, const Rect& box, const Style& st) {
-    uint64_t id = detail::make_id("iconbtn", box, detail::hash_string(glyph.c_str()));
+    uint64_t id = impl->widget_id("iconbtn", box, detail::hash_string(glyph.c_str()));
     Style s = st;
     if (s.variant < 0) s.variant = Style::Ghost;
     if (!s.align_set) s.align = Align::Center;
@@ -5779,13 +5860,15 @@ inline bool Ui::icon_button(const std::string& glyph, const Rect& box, const Sty
     float fs = s.font_size > 0.0f ? s.font_size : std::min(box.w, box.h) * 0.55f;
     Style ts;
     ts.font_size = fs;
-    ts.font_weight = 400;
+    ts.font_weight = s.font_weight > 0 ? s.font_weight : 400;
     ts.align = Align::Center;
     ts.valign = VAlign::Middle;
     Color fg = sk.fg;
     if (s.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
     draw_text(glyph, box, fg, ts);
     if (in.pressed) detail::grab_focus(impl, id);
+    if (detail::is_focused(impl, id))
+        detail::paint_focus_ring(*this, box, rad, impl->theme.ring);
     return in.clicked && enabled;
 }
 
@@ -5796,13 +5879,13 @@ inline bool Ui::icon_button(const std::string& glyph, const Rect& box, const Sty
 // -----------------------------------------------------------------------------
 inline bool Ui::nav_item(const std::string& label, bool active, const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
-    uint64_t id = detail::make_id("navitem", box, detail::hash_string(label.c_str()));
+    uint64_t id = impl->widget_id("navitem", box, detail::hash_string(label.c_str()));
     const bool enabled = !st.disabled;
 
     detail::Interact in = detail::interact(impl, id, box, enabled);
     if (in.hovered) set_cursor(Cursor::Arrow);
     const float t_hover  = detail::animate_value(impl, id * 31u + 1u, (in.hovered && !active) ? 1.0f : 0.0f, 20.0f);
-    const float t_active = detail::animate_value(impl, id * 31u + 2u, active ? 1.0f : 0.0f, 24.0f);
+    const float t_active = detail::animate_state(impl, id * 31u + 2u, active ? 1.0f : 0.0f, 24.0f);
 
     // 选中底是 **r8**（kit `Item/Small/Selected` 的选中 Frame 是 178×24 r8，
     // 而整行自己的圆角只有 5）—— 用按钮的 6 会显得比系统"方"半档。
@@ -5847,7 +5930,7 @@ inline bool Ui::nav_item(const std::string& label, bool active, const Rect& box,
 inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
     if (!value) return false;
     const Theme& th = impl->theme;
-    uint64_t id = detail::make_id("input", box);
+    uint64_t id = impl->widget_id("input", box);
     const bool enabled = !st.disabled;
 
     detail::Interact in = detail::interact(impl, id, box, enabled);
@@ -5877,14 +5960,21 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
     const float rad  = st.radius >= 0.0f ? st.radius : th.radius;      // macOS 27 Medium 圆角 6
     const float pad  = st.pad_x >= 0.0f ? st.pad_x : 8.0f;             // Fields/Inset - Left = 8
     const float fs   = st.font_size > 0.0f ? st.font_size : th.font_size;
-    const float tw   = text_width(*value, fs, 400);
+    auto display = [&](const std::string& text) {
+        if (!st.password) return text;
+        std::string masked;
+        const int count = utf8_count(text);
+        for (int i = 0; i < count; ++i) masked += "•";
+        return masked;
+    };
+    const std::string hit_text = display(*value);
     const float avail = std::max(box.w - pad * 2.0f, 1.0f);
 
     if (focused) {
         // 光标定位（单击 / 拖拽 / 双击选词 / 三击全选 / Shift 扩选）
         if (impl->input.pressed[0] && in.hovered) {
             const float lx = impl->input.mouse.x - (box.x + pad);
-            impl->caret = detail::caret_from_x(*this, *value, lx, fs, 400);
+            impl->caret = detail::caret_from_x(*this, hit_text, lx, fs, 400);
             const std::vector<uint32_t> cps = utf8_codepoints(*value);
             if (impl->input.click_count >= 3) {
                 impl->sel_anchor = 0;
@@ -5902,7 +5992,7 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
         if (impl->input.down[0] && in.hovered && impl->active == id) {
             const float lx = impl->input.mouse.x - (box.x + pad);
             const int before = impl->caret;
-            impl->caret = detail::caret_from_x(*this, *value, lx, fs, 400);
+            impl->caret = detail::caret_from_x(*this, hit_text, lx, fs, 400);
             if (impl->caret != before && impl->sel_anchor < 0)
                 impl->sel_anchor = int(impl->flags[id * 31u + 7u]);
         }
@@ -6028,7 +6118,7 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
         //  · 没有选区时**不碰**系统剪贴板，否则按一下 Ctrl+C 就把用户刚复制的
         //    东西清空了；
         //  · 用 ctrl_of() 而非 ctrl()：Ctrl 的 KEYUP 可能排在字母 KEYDOWN 之后。
-        if (!undone && kin.ctrl_of('C')) {
+        if (!st.password && !undone && kin.ctrl_of('C')) {
             if (has_sel && impl->set_clipboard) {
                 std::vector<uint32_t> cps = utf8_codepoints(*value);
                 impl->set_clipboard(utf8_from_codepoints(cps, size_t(sel_from), size_t(sel_to - sel_from)));
@@ -6036,7 +6126,7 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
         }
         // 剪切必须"进了剪贴板才删"。回调不可用却照样删，等于把用户选中的东西
         // 凭空丢掉了 —— 比不响应更糟。
-        if (!undone && kin.ctrl_of('X') && has_sel && impl->set_clipboard) {
+        if (!st.password && !undone && kin.ctrl_of('X') && has_sel && impl->set_clipboard) {
             edit_kind = detail::EDIT_OTHER;
             std::vector<uint32_t> cps = utf8_codepoints(*value);
             impl->set_clipboard(utf8_from_codepoints(cps, size_t(sel_from), size_t(sel_to - sel_from)));
@@ -6128,15 +6218,18 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
     // !show_placeholder 就等于"空输入框永远不显示拼音"，正是用户截图那一幕。
     const bool composing = focused && !impl->ime_comp.empty();
     const bool show_placeholder = value->empty() && !st.placeholder.empty() && !composing;
-    const std::string& shown = show_placeholder ? st.placeholder : *value;
+    const std::string displayed = display(*value);
+    const std::string composition = display(impl->ime_comp);
+    const float tw = text_width(displayed, fs, 400);
+    const std::string& shown = show_placeholder ? st.placeholder : displayed;
 
-    const float comp_w = composing ? text_width(impl->ime_comp, fs, 400) : 0.0f;
+    const float comp_w = composing ? text_width(composition, fs, 400) : 0.0f;
     const float shown_w = (show_placeholder ? text_width(st.placeholder, fs, 400) : tw) + comp_w;
 
     // 水平滚动：保证光标可见（组字串也算进宽度，否则打长拼音时会被框边切掉）
     float scroll = 0.0f;
     if (shown_w > avail) {
-        float caret_x = text_width(utf8_from_codepoints(utf8_codepoints(*value), 0, size_t(impl->caret)), fs, 400) + comp_w;
+        float caret_x = text_width(utf8_from_codepoints(utf8_codepoints(displayed), 0, size_t(impl->caret)), fs, 400) + comp_w;
         if (caret_x - scroll > avail) scroll = caret_x - avail;
         if (caret_x - scroll < 0.0f) scroll = caret_x;
         scroll = detail::clampf(scroll, 0.0f, std::max(0.0f, shown_w - avail));
@@ -6152,7 +6245,7 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
 
     if (focused && impl->sel_anchor >= 0) {
         int sf = std::min(impl->caret, impl->sel_anchor), stt = std::max(impl->caret, impl->sel_anchor);
-        std::vector<uint32_t> cps = utf8_codepoints(*value);
+        std::vector<uint32_t> cps = utf8_codepoints(displayed);
         float x0 = text_width(utf8_from_codepoints(cps, 0, size_t(sf)), fs, 400);
         float x1 = text_width(utf8_from_codepoints(cps, 0, size_t(stt)), fs, 400);
         fill_rect(Rect(box.x + pad + x0 - scroll, box.cy() - fs * 0.72f, x1 - x0, fs * 1.44f),
@@ -6166,14 +6259,14 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
     if (composing) {
         // 分三段画：正文前半 / 预编辑串（主色 + 下划线）/ 正文后半。
         // 只在组字期间分段，平时还是一次 draw_text —— 不拖慢常规输入。
-        const std::vector<uint32_t> cps = utf8_codepoints(*value);
+        const std::vector<uint32_t> cps = utf8_codepoints(displayed);
         const size_t cut = size_t(detail::clampi(impl->caret, 0, int(cps.size())));
         const std::string before = utf8_from_codepoints(cps, 0, cut);
         const std::string after  = utf8_from_codepoints(cps, cut);
         const float bx = box.x + pad - scroll;
         const float bw = text_width(before, fs, 400);
         draw_text(before, Rect(bx, box.y, std::max(bw, 1.0f), box.h), fg, ts);
-        draw_text(impl->ime_comp, Rect(bx + bw, box.y, comp_w + 2.0f, box.h), th.primary, ts);
+        draw_text(composition, Rect(bx + bw, box.y, comp_w + 2.0f, box.h), th.primary, ts);
         fill_rect(Rect(bx + bw, box.cy() + fs * 0.60f, comp_w, 1.0f),
                   th.primary.with_alpha(170), 0.0f);
         draw_text(after, Rect(bx + bw + comp_w, box.y, std::max(box.w, 1.0f), box.h), fg, ts);
@@ -6184,7 +6277,7 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
     // 光标位置（不管闪不闪都要算：IME 的组合窗/候选窗跟着它走）
     float caret_x = box.x + pad;
     {
-        std::vector<uint32_t> cps = utf8_codepoints(*value);
+        std::vector<uint32_t> cps = utf8_codepoints(displayed);
         float cx = text_width(utf8_from_codepoints(cps, 0, size_t(impl->caret)), fs, 400);
         caret_x = detail::clampf(box.x + pad + cx - scroll + comp_w, box.x + pad - 1.0f, box.right() - pad);
     }
@@ -6214,7 +6307,7 @@ inline bool Ui::checkbox(bool* value, const std::string& label_text, const Rect&
     if (!value) return false;
     const Theme& th = impl->theme;
     const bool dark = th.window_bg.luminance() < 0.5f;
-    uint64_t id = detail::make_id("checkbox", box, detail::hash_string(label_text.c_str()));
+    uint64_t id = impl->widget_id("checkbox", box, detail::hash_string(label_text.c_str()));
     const bool enabled = !st.disabled;
 
     detail::Interact in = detail::interact(impl, id, box, enabled);
@@ -6222,15 +6315,15 @@ inline bool Ui::checkbox(bool* value, const std::string& label_text, const Rect&
     bool changed = false;
     if (in.clicked) { *value = !*value; changed = true; }
 
-    const float t = detail::animate_value(impl, id * 37u + 1u, *value ? 1.0f : 0.0f, 20.0f);
+    const float t = detail::animate_state(impl, id * 37u + 1u, *value ? 1.0f : 0.0f, 20.0f);
 
-    // ---- 官方 _Checkbox/_Checkbox Background：14×14，圆角 3.5，cornerSmoothing 0.6 ----
+    // ---- Checkbox：14×14，圆角 3.5，cornerSmoothing 0.6 ----
     //   fill   #F6F6F6 @84%
     //   stroke #000000 10% / 0.5px INSIDE
     //   fx     内阴影 (dy 0,  blur 2.0, 8%)  +  内阴影 (dy 1.5, blur 1.6, 10%)
     // 那两道内阴影就是"凹陷"的全部来源 —— 少掉它们，复选框就只是一个带边框的方块。
     const float bs  = 14.0f;
-    const float rad = 3.5f;
+    const float rad = st.radius >= 0.0f ? st.radius : 3.5f;
     const float sm  = 0.6f;
     Rect box_r(box.x, box.cy() - bs * 0.5f, bs, bs);
 
@@ -6255,9 +6348,10 @@ inline bool Ui::checkbox(bool* value, const std::string& label_text, const Rect&
     }
 
     if (t > 0.30f) {
-        // 对勾自绘（不依赖字体里有没有 ✓），线宽与 14px 的方块成比例
-        Color fg(255, 255, 255);
-        fg.a = uint8_t(255.0f * detail::clampf((t - 0.30f) / 0.45f, 0.0f, 1.0f));
+        // 对勾自绘；浅强调色上沿用主题的深色前景。
+        Color fg = th.tint_foreground;
+        fg.a = uint8_t(float(fg.a) * detail::clampf((t - 0.30f) / 0.45f, 0.0f, 1.0f)
+                       * (st.disabled ? 0.45f : 1.0f));
         const float cx = box_r.cx(), cy = box_r.cy();
         const float s = bs * 0.205f;
         const float lw = std::max(1.5f, bs * 0.115f);
@@ -6286,10 +6380,11 @@ inline bool Ui::checkbox(bool* value, const std::string& label_text, const Rect&
 //  toggle —— NSSwitch（54×24 轨道 + 32×20 白胶囊滑块）
 // -----------------------------------------------------------------------------
 inline bool Ui::toggle(bool* value, const Rect& box, const Style& st) {
-    if (!value) return false;
+    if (!value || box.empty()) return false;
+    if (impl->measure_on) { impl->measure_add(box); return false; }
     const Theme& th = impl->theme;
     const bool dark = th.window_bg.luminance() < 0.5f;
-    uint64_t id = detail::make_id("toggle", box);
+    uint64_t id = impl->widget_id("toggle", box);
     const bool enabled = !st.disabled;
 
     detail::Interact in = detail::interact(impl, id, box, enabled);
@@ -6297,17 +6392,23 @@ inline bool Ui::toggle(bool* value, const Rect& box, const Style& st) {
     bool changed = false;
     if (in.clicked) { *value = !*value; changed = true; }
 
-    const float t       = detail::animate_value(impl, id * 41u + 1u, *value ? 1.0f : 0.0f, 22.0f);
+    const float t       = detail::animate_state(impl, id * 41u + 1u, *value ? 1.0f : 0.0f, 22.0f);
     const float t_press = detail::animate_value(impl, id * 41u + 2u, (in.held && in.hovered) ? 1.0f : 0.0f, 30.0f);
 
     // ---- 官方 Switch/Medium：轨道 54×24 胶囊（r=1000, cornerSmoothing 0.6）----
     // 滑块不是圆点，是 32×20 的白色胶囊，四周内缩 2；按下时横向拉长到 50×31 的形变
     // 这里不做玻璃/形变，只保留尺寸与位移，避免"液态玻璃"。
-    // 官方四档：Mini 36×16 / Small 44×20 / Regular 54×24 / Large 64×28，
-    // 宽高比恒为 2.25。按 box 高度选档 —— 以前把 54×24 写死，调用方给的 box
-    // 再小也照画，轨道会顶出热区。
-    const float track_h = box.h < 17.5f ? 16.0f : box.h < 21.5f ? 20.0f : box.h < 25.5f ? 24.0f : 28.0f;
-    const float track_w = track_h * 2.25f;
+    // 五档宽高比并不相等。宽、高都必须装进 box，不能只按高度选档。
+    const float widths[] = {36.0f, 44.0f, 54.0f, 64.0f, 80.0f};
+    const float knob_widths[] = {21.0f, 26.0f, 32.0f, 38.0f, 47.0f};
+    const float knob_heights[] = {13.0f, 16.0f, 20.0f, 24.0f, 30.0f};
+    const float insets[] = {1.5f, 2.0f, 2.0f, 2.0f, 3.0f};
+    int size = 0;
+    for (int i = 1; i < 5; ++i)
+        if (widths[i] <= box.w && th.size_h[i] <= box.h) size = i;
+    const float fit = std::min(1.0f, std::min(box.w / widths[size], box.h / th.size_h[size]));
+    const float track_h = th.size_h[size] * fit;
+    const float track_w = widths[size] * fit;
     Rect track = Rect::centered(box.cx(), box.cy(), track_w, track_h);
     const float rad = track_h * 0.5f;
 
@@ -6320,8 +6421,8 @@ inline bool Ui::toggle(bool* value, const Rect& box, const Style& st) {
     fill_rect_s(track, track_c, rad, 0.0f);   // 胶囊：半径已到短边一半，不用再压 smoothing
 
     // kit：滑块 32×20 装在 54×24 的轨道里，四周内缩 2（比例 0.593 / h-4）
-    const float inset = 2.0f;
-    const float knob_w = track_w * 0.593f, knob_h = track_h - 4.0f;
+    const float inset = insets[size] * fit;
+    const float knob_w = knob_widths[size] * fit, knob_h = knob_heights[size] * fit;
     const float kx = detail::lerpf(track.x + inset, track.right() - inset - knob_w, t);
     Rect knob_r(kx, track.cy() - knob_h * 0.5f, knob_w, knob_h);
     // 官方 Knob 阴影：drop(y3 blur36 #0000000D) —— 36 是 Figma 的模糊半径，落到像素上取 7
@@ -6343,7 +6444,7 @@ inline bool Ui::toggle(bool* value, const Rect& box, const Style& st) {
 inline bool Ui::slider(float* value, float min_value, float max_value, const Rect& box, const Style& st) {
     if (!value) return false;
     const Theme& th = impl->theme;
-    uint64_t id = detail::make_id("slider", box);
+    uint64_t id = impl->widget_id("slider", box);
     const bool enabled = !st.disabled;
 
     Rect hit(box.x, box.y, box.w, box.h);
@@ -6354,7 +6455,10 @@ inline bool Ui::slider(float* value, float min_value, float max_value, const Rec
     float t = (max_value > min_value) ? detail::clampf((*value - min_value) / (max_value - min_value), 0.0f, 1.0f) : 0.0f;
 
     if (impl->active == id && impl->input.down[0]) {
-        float nt = detail::clampf((impl->input.mouse.x - box.x) / std::max(box.w, 1.0f), 0.0f, 1.0f);
+        // 输入与绘制共用两端把手中心之间的轨道，点到可见端点就应得到 min/max。
+        const float half = std::min(10.0f, box.w * 0.5f);
+        float nt = detail::clampf((impl->input.mouse.x - box.x - half)
+                                 / std::max(box.w - 2.0f * half, 1.0f), 0.0f, 1.0f);
         float nv = min_value + (max_value - min_value) * nt;
         if (std::fabs(nv - *value) > 1e-6f) { *value = nv; changed = true; }
         t = nt;
@@ -6405,7 +6509,7 @@ inline bool Ui::slider(float* value, float min_value, float max_value, const Rec
 inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const Rect& box, const Style& st) {
     if (!index || labels.empty()) return false;
     const Theme& th = impl->theme;
-    uint64_t base_id = detail::make_id("tabs", box);
+    uint64_t base_id = impl->widget_id("tabs", box);
     const bool pill = (st.variant == Style::Secondary || st.variant == Style::Outline);
     // 官方 Segmented Control 是**胶囊**（Figma 里 r=1000，按钮 r=100），不是
     // r6 的圆角矩形：24 高的控件整个是圆的，选中段内缩 2 之后也是胶囊。
@@ -6452,12 +6556,12 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
 
     for (size_t i = 0; i < labels.size(); ++i) {
         Rect item(xs[i], inner.y, ws[i], inner.h);
-        uint64_t id = detail::make_id("tab", item, base_id + i);
+        uint64_t id = impl->widget_id("tab", item, base_id + i);
         detail::Interact in = detail::interact(impl, id, item, !st.disabled);
         if (in.hovered) set_cursor(Cursor::Arrow);
         if (in.clicked && *index != int(i)) { *index = int(i); changed = true; }
 
-        const float t_sel = detail::animate_value(impl, id * 47u + 1u, (*index == int(i)) ? 1.0f : 0.0f, 22.0f);
+        const float t_sel = detail::animate_state(impl, id * 47u + 1u, (*index == int(i)) ? 1.0f : 0.0f, 22.0f);
         const float t_hov = detail::animate_value(impl, id * 47u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
         if (pill) {
@@ -6518,7 +6622,7 @@ inline bool Ui::segmented(const std::vector<std::string>& items, int* index, con
 inline bool Ui::select(const std::vector<std::string>& items, int* index, const Rect& box, const Style& st) {
     if (!index || items.empty()) return false;
     const Theme& th = impl->theme;
-    uint64_t id = detail::make_id("select", box);
+    uint64_t id = impl->widget_id("select", box);
     // 本组件第一个控件的层级号。弹层下一帧用它判定"谁在下面"。
     const uint64_t z_first = impl->seq + 1;
     // 下拉按钮和普通按钮同一个半径尺度（6），之前用 radius_sm（4）显得比方角按钮方
@@ -6592,7 +6696,7 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
             for (size_t i = 0; i < items.size(); ++i) {
                 rects[i] = Rect(list.x + pad, list.y + pad + item_h * float(i),
                                 list.w - pad * 2.0f, item_h);
-                ids[i] = detail::make_id("select_item", rects[i]);
+                ids[i] = impl->widget_id("select_item", rects[i]);
                 detail::Interact ii = detail::interact(impl, ids[i], rects[i], true);
                 if (ii.hovered) { set_cursor(Cursor::Arrow); hov[i] = 1; }
                 if (ii.clicked) clicked_index = int(i);
@@ -6643,7 +6747,7 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
 inline bool Ui::radio_group(const std::vector<std::string>& items, int* index, const Rect& box, const Style& st) {
     if (!index || items.empty() || box.h <= 0.0f) return false;
     const Theme& th = impl->theme;
-    uint64_t base = detail::make_id("radiogroup", box);
+    uint64_t base = impl->widget_id("radiogroup", box);
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float row_h = box.h / float(items.size());
     const float dot = std::max(16.0f, fs + 3.0f);
@@ -6651,13 +6755,13 @@ inline bool Ui::radio_group(const std::vector<std::string>& items, int* index, c
     bool changed = false;
     for (size_t i = 0; i < items.size(); ++i) {
         Rect row(box.x, box.y + row_h * float(i), box.w, row_h);
-        uint64_t id = detail::make_id("radio", row, base + i);
+        uint64_t id = impl->widget_id("radio", row, base + i);
         detail::Interact in = detail::interact(impl, id, row, !st.disabled);
         if (in.hovered) set_cursor(Cursor::Arrow);
         if (in.pressed) detail::grab_focus(impl, id);
         if (in.clicked && *index != int(i)) { *index = int(i); changed = true; }
 
-        const float t     = detail::animate_value(impl, id * 59u + 1u, (*index == int(i)) ? 1.0f : 0.0f, 22.0f);
+        const float t     = detail::animate_state(impl, id * 59u + 1u, (*index == int(i)) ? 1.0f : 0.0f, 22.0f);
         const float t_hov = detail::animate_value(impl, id * 59u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
         const Rect dot_r = Rect::centered(row.x + dot * 0.5f, row.cy(), dot, dot);
@@ -6680,11 +6784,10 @@ inline bool Ui::radio_group(const std::vector<std::string>& items, int* index, c
 
         if (t > 0.02f) {
             // 中心点用 t*(2-t) 做一次 ease-out，弹出感比线性更像"长出来"。
-            // 官方 Radio Button/Medium：16 的圆里一颗 **6** 的点（不是跟着半径比例
-            // 长到 8）—— 8 的点在 16 的圆里显得"实心"，退化成 iOS 的圆点开关。
+            // 沿用原有的 6px 中心点，只修复它与选中底色相同的问题。
             const float ir = 3.0f * (t * (2.0f - t));
             if (ir > 0.3f) {
-                Color fg = th.primary;
+                Color fg = th.tint_foreground;
                 if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
                 fill_circle(dot_r.cx(), dot_r.cy(), ir, fg);
             }
@@ -6712,7 +6815,7 @@ inline bool Ui::radio_group(const std::vector<std::string>& items, int* index, c
 inline bool Ui::stepper(float* value, float step, float min_value, float max_value, const Rect& box, const Style& st) {
     if (!value || box.w <= 12.0f) return false;
     const Theme& th = impl->theme;
-    uint64_t base = detail::make_id("stepper", box);
+    uint64_t base = impl->widget_id("stepper", box);
     const float rad = st.radius >= 0.0f ? st.radius : th.radius;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
 
@@ -6754,16 +6857,8 @@ inline bool Ui::stepper(float* value, float step, float min_value, float max_val
         // 12px Medium、85% 标签色 —— 实心三角是旧版 AppKit 的三角形按钮。
         Color c = !st.fg.is_none() ? st.fg : th.label;
         if (st.disabled) c.a = uint8_t(float(c.a) * 0.45f);
-        const float s2 = std::min(r.w * 0.26f, 4.4f);   // 半宽
-        const float k2 = s2 * 0.52f;                    // 半高
-        const float cy = r.cy();
-        if (up) {
-            draw_line(r.cx() - s2, cy + k2, r.cx(), cy - k2, c, 1.5f);
-            draw_line(r.cx(), cy - k2, r.cx() + s2, cy + k2, c, 1.5f);
-        } else {
-            draw_line(r.cx() - s2, cy - k2, r.cx(), cy + k2, c, 1.5f);
-            draw_line(r.cx(), cy + k2, r.cx() + s2, cy - k2, c, 1.5f);
-        }
+        system_icon(up ? SystemIcon::ChevronUp : SystemIcon::ChevronDown,
+                    Rect::centered(r.cx(), r.cy(), 10, 8), c);
         if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, r, br, th.ring);
         return in.clicked;
     };
@@ -6804,24 +6899,15 @@ inline bool Ui::stepper(float* value, float step, float min_value, float max_val
 //  复用 input —— 搜索框不是另一个控件，只是 input 的一层皮。
 // -----------------------------------------------------------------------------
 namespace detail {
-// 放大镜：图元里没有圆环，用 20 段折线拼一个（r=4.2 时每段 1.3px，看不出棱角）。
+// 搜索符号由系统提供，与工具栏和图标按钮保持一致。
 inline void paint_magnifier(Ui& ui, float cx, float cy, float r, const Color& c) {
-    const int n = 20;
-    for (int i = 0; i < n; ++i) {
-        const float a0 = 6.2831853f * float(i) / float(n);
-        const float a1 = 6.2831853f * float(i + 1) / float(n);
-        ui.draw_line(cx + std::cos(a0) * r, cy + std::sin(a0) * r,
-                     cx + std::cos(a1) * r, cy + std::sin(a1) * r, c, 1.3f);
-    }
-    ui.draw_line(cx + r * 0.70f, cy + r * 0.70f, cx + r * 1.55f, cy + r * 1.55f, c, 1.3f);
+    ui.system_icon(SystemIcon::Search, Rect::centered(cx, cy, r * 3, r * 3), c);
 }
 // 清除徽标：实心灰圆 + 白色叉
 inline void paint_clear_badge(Ui& ui, float cx, float cy, float r,
                               const Color& fill, const Color& x) {
     ui.fill_circle(cx, cy, r, fill);
-    const float s = r * 0.42f;
-    ui.draw_line(cx - s, cy - s, cx + s, cy + s, x, 1.3f);
-    ui.draw_line(cx - s, cy + s, cx + s, cy - s, x, 1.3f);
+    ui.system_icon(SystemIcon::Close, Rect::centered(cx, cy, r, r), x);
 }
 }  // namespace detail
 
@@ -6831,6 +6917,12 @@ inline bool Ui::search_field(std::string* value, const Rect& box, const Style& s
     Style s = st;
     if (s.radius < 0.0f) s.radius = box.h * 0.5f;         // 胶囊
     if (s.pad_x < 0.0f)  s.pad_x  = 26.0f;                // 给放大镜让位
+    const bool has_clear = !value->empty();
+    const Rect cr(box.right() - box.h, box.y, box.h, box.h);
+    detail::Interact ci;
+    // 清除键与输入框重叠，必须先认领按下事件，避免被整个输入框的热区吞掉。
+    if (has_clear)
+        ci = detail::interact(impl, impl->widget_id("searchclear", box), cr, !st.disabled);
     bool changed = input(value, box, s);
 
     // 禁用时放大镜跟着文字一起淡到 45%：只淡文字、图标还是满色的话，看着像
@@ -6843,10 +6935,7 @@ inline bool Ui::search_field(std::string* value, const Rect& box, const Style& s
     // 之前写成 `right - h*0.5` 还给了 h 的宽度，rect 的右边界正好落在框沿上，
     // 圆心就被推到框的右边缘 —— 半个圆跑到胶囊外面，压在边框上。
     // 现在 rect 从 right - h 起，圆心落在 right - 12。
-    if (!value->empty()) {
-        const uint64_t cid = detail::make_id("searchclear", box);
-        const Rect cr(box.right() - box.h, box.y, box.h, box.h);
-        detail::Interact ci = detail::interact(impl, cid, cr, !st.disabled);
+    if (has_clear) {
         if (ci.hovered) set_cursor(Cursor::Arrow);
         // 禁用时叉照画、只是淡下去（kit 的 `State=Disabled` 变体里 Clear 还在，
         // 直接不画反而对不上）。
@@ -6876,7 +6965,7 @@ inline bool Ui::search_field(std::string* value, const Rect& box, const Style& s
 // -----------------------------------------------------------------------------
 inline bool Ui::color_well(const Color& c, const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
-    const uint64_t id = detail::make_id("colorwell", box);
+    const uint64_t id = impl->widget_id("colorwell", box);
     detail::Interact in = detail::interact(impl, id, box, !st.disabled);
     if (in.hovered) set_cursor(Cursor::Arrow);
     const float rad = st.radius >= 0.0f ? st.radius : th.radius;
@@ -6904,11 +6993,7 @@ inline void Ui::image_well(const Rect& box, const Style& st) {
     stroke_rect_s(box, th.separator, rad, 1.0f, th.corner_smoothing);
 
     const float ix = box.cx(), iy = box.cy() - 7.0f, s = 15.0f;
-    const Color ic = th.label3;
-    stroke_rect(Rect(ix - s, iy - s * 0.70f, s * 2.0f, s * 1.40f), ic, 3.0f, 1.2f);
-    fill_circle(ix - s * 0.42f, iy - s * 0.26f, s * 0.17f, ic);
-    draw_line(ix - s * 0.78f, iy + s * 0.52f, ix - s * 0.12f, iy - s * 0.12f, ic, 1.2f);
-    draw_line(ix - s * 0.12f, iy - s * 0.12f, ix + s * 0.78f, iy + s * 0.52f, ic, 1.2f);
+    system_icon(SystemIcon::Image, Rect::centered(ix, iy, s * 2.f, s * 1.4f), th.label3);
 
     Style ts;
     ts.font_size = 11.0f;
@@ -6926,7 +7011,7 @@ inline void Ui::image_well(const Rect& box, const Style& st) {
 inline bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
     if (!value) return false;
     const Theme& th = impl->theme;
-    uint64_t id = detail::make_id("textarea", box);
+    uint64_t id = impl->widget_id("textarea", box);
     const bool enabled = !st.disabled;
     // 和 input() 同一档圆角（6）与同一套皮 —— 多行框不是"另一种控件"，
     // 它是同一个 Text Field 长高了。
@@ -7334,7 +7419,7 @@ inline bool Ui::rating(int* value, int max_stars, const Rect& box, const Style& 
     // 否则"先量高度"那趟会在屏幕左上角画出一排真星星。
     if (impl->measure_on) { impl->measure_add(box); return false; }
     const Theme& th = impl->theme;
-    uint64_t base = detail::make_id("rating", box);
+    uint64_t base = impl->widget_id("rating", box);
     const float gap = 4.0f;
     const float size = std::min((box.w - gap * float(max_stars - 1)) / float(max_stars), box.h);
     if (size <= 3.0f) return false;
@@ -7351,7 +7436,7 @@ inline bool Ui::rating(int* value, int max_stars, const Rect& box, const Style& 
     bool changed = false;
     for (int i = 0; i < max_stars; ++i) {
         const Rect sr(box.x + float(i) * (size + gap), top, size, size);
-        uint64_t id = detail::make_id("star", sr, base + uint64_t(i));
+        uint64_t id = impl->widget_id("star", sr, base + uint64_t(i));
         detail::Interact in = detail::interact(impl, id, sr, !st.disabled);
         if (in.hovered) set_cursor(Cursor::Arrow);
         if (in.pressed) detail::grab_focus(impl, id);
@@ -7359,7 +7444,7 @@ inline bool Ui::rating(int* value, int max_stars, const Rect& box, const Style& 
             const int nv = (*value == i + 1) ? 0 : (i + 1);
             if (nv != *value) { *value = nv; changed = true; }
         }
-        const float t   = detail::animate_value(impl, id * 67u + 1u, (i < *value) ? 1.0f : 0.0f, 24.0f);
+        const float t   = detail::animate_state(impl, id * 67u + 1u, (i < *value) ? 1.0f : 0.0f, 24.0f);
         const float t_h = detail::animate_value(impl, id * 67u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
         if (!impl->canvas) continue;
@@ -7443,10 +7528,10 @@ inline void Ui::spinner(const Rect& box, const Style& st) {
     Color arc   = !st.bg.is_none() ? st.bg : th.primary;
     if (st.disabled) { track.a = uint8_t(float(track.a) * 0.45f); arc.a = uint8_t(float(arc.a) * 0.45f); }
 
-    const bool hovered = box.contains(impl->input.mouse.x, impl->input.mouse.y)
-                      && !impl->gate_blocked_pointer();
-    impl->hover_region(box);          // 悬停才转：指针移动必须能唤醒它
-    const bool spin = st.animated || hovered;
+    const bool hovered = this->hovered(box);
+    const bool visible = !impl->clip_logic_on || !box.intersect(impl->clip_logic_cur).empty();
+    const bool spin = !st.disabled && visible && !impl->gate_blocked_pointer()
+                   && (st.animated || hovered);
 
     const float cx = impl->px(box.cx());
     const float cy = impl->px(box.cy());
@@ -7456,7 +7541,7 @@ inline void Ui::spinner(const Rect& box, const Style& st) {
     // 底环：整圈
     detail::raster_arc(*impl->canvas, cx, cy, rad, lw, track, 0.0f, 0.0f, 1.0f);
 
-    float& ang = impl->phase[detail::make_id("spinner_phase", box)];
+    float& ang = impl->phase[impl->widget_id("spinner_phase", box)];
     if (spin) {
         ang += impl->dt * 4.6f;                    // 角速度：约 0.73 圈/秒
         if (ang > 6.2831853f) ang = std::fmod(ang, 6.2831853f);
@@ -7502,33 +7587,13 @@ inline void Ui::alert(const std::string& title, const std::string& description, 
 
     if (bg.a > 0) fill_rect(box, bg, rad);
 
-    // 符号：SF Symbol 的 info.circle / exclamationmark.triangle —— 一圈 1.4px 描边
-    // 加中间的 i / !。旧版是"饱和色实心圆片里挖白字"，那是 Bootstrap 的 alert
-    // 图标，形状和配色都不是 mac 的。中文字体不一定有 ⓘ / ⚠ 字形，所以自绘。
+    // 提示符号使用系统的 info / warning，与其他图标采用同一来源。
     const float d = std::min(fs + 3.0f, std::max(12.0f, box.h - pad * 2.0f));
     const float lh = line_height(fs);
     const float icy = box.y + pad + lh * 0.5f;           // 与标题首行中心对齐
     const float icx = box.x + pad + d * 0.5f;
-    const float lw  = std::max(1.2f, d * 0.093f);
-    const float in  = 0.78f;                              // 字形线宽
-    if (impl->canvas) {
-        if (danger) {
-            // 三角：三条圆头线围合，顶点朝上（SF Symbol exclamationmark.triangle）
-            const float hw = d * 0.46f, top = icy - d * 0.44f, bot = icy + d * 0.30f;
-            draw_line(icx, top, icx - hw, bot, icon_c, lw);
-            draw_line(icx, top, icx + hw, bot, icon_c, lw);
-            draw_line(icx - hw, bot, icx + hw, bot, icon_c, lw);
-            draw_line(icx, icy - d * 0.13f, icx, icy + d * 0.06f, icon_c, lw * in);
-            fill_circle(icx, icy + d * 0.20f, std::max(0.75f, d * 0.055f), icon_c);
-        } else {
-            // 整圈描边要一次成形（拼线段会在接缝叠色），走 raster_arc 到像素层
-            detail::raster_arc(*impl->canvas, impl->px(icx), impl->px(icy),
-                               impl->px(d * 0.5f - lw * 0.5f), impl->px(lw),
-                               icon_c, 0.0f, 0.0f, 1.0f);
-            fill_circle(icx, icy - d * 0.20f, std::max(0.75f, d * 0.055f), icon_c);
-            draw_line(icx, icy - d * 0.075f, icx, icy + d * 0.21f, icon_c, lw * in);
-        }
-    }
+    system_icon(danger ? SystemIcon::Warning : SystemIcon::Info,
+                Rect::centered(icx, icy, d, d), icon_c);
 
     const float tx = icx + d * 0.5f + 9.0f;
     const float tw = std::max(box.right() - pad - tx, 1.0f);
@@ -7579,11 +7644,9 @@ inline void Ui::breadcrumb(const std::vector<std::string>& items, const Rect& bo
         draw_text(items[i], Rect(x, box.y, w + 1.0f, box.h), c, ts);
         x += w;
         if (!last) {
-            const float s = fs * 0.30f;
             const float mx = x + 7.0f, my = box.cy();
             const Color ac = th.muted_foreground.scaled_alpha(0.85f);
-            draw_line(mx - s * 0.4f, my - s, mx + s * 0.5f, my, ac, 1.3f);
-            draw_line(mx + s * 0.5f, my, mx - s * 0.4f, my + s, ac, 1.3f);
+            system_icon(SystemIcon::Next, Rect::centered(mx, my, fs * .7f, fs * .7f), ac);
             x += 14.0f;
         }
     }
@@ -7617,7 +7680,7 @@ inline void Ui::kbd(const std::string& text, const Rect& box, const Style& st) {
 inline bool Ui::accordion(const std::string& title, bool* open, const Rect& box, const Style& st) {
     if (!open || box.w <= 0.0f) return false;
     const Theme& th = impl->theme;
-    uint64_t id = detail::make_id("accordion", box, detail::hash_string(title.c_str()));
+    uint64_t id = impl->widget_id("accordion", box, detail::hash_string(title.c_str()));
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
     // 折叠行是列表行：24 高（= Global/Height Medium），不是 Web 手风琴的 38
     const float head_h = std::min(box.h, std::max(fs + 8.0f, 24.0f));
@@ -7645,21 +7708,8 @@ inline bool Ui::accordion(const std::string& title, bool* open, const Rect& box,
     // 界面里会让"这一行能不能展开"变得很不显眼。
     draw_text(title, Rect(head.x + 22.0f, head.y, std::max(head.w - 34.0f, 1.0f), head.h), c, ts);
 
-    // kit `Disclosure Button`：**chevron**（􀆊 / 􀆇，Bold 13），折叠朝右、展开朝下。
-    // 实心三角是旧版 AppKit 的 DisclosureTriangle；macOS 26/27 的披露行已经换成
-    // V 形箭头了，跟系统设置的每一行保持一致。
-    {
-        const float s = 3.4f, k = 2.8f;      // 半宽 / 半高
-        const float mx = head.x + 10.0f, my = head.cy();
-        const Color ac = th.muted_foreground;
-        if (*open) {
-            draw_line(mx - s, my - k * 0.55f, mx, my + k * 0.55f, ac, 1.6f);
-            draw_line(mx, my + k * 0.55f, mx + s, my - k * 0.55f, ac, 1.6f);
-        } else {
-            draw_line(mx - k * 0.55f, my - s, mx + k * 0.55f, my, ac, 1.6f);
-            draw_line(mx + k * 0.55f, my, mx - k * 0.55f, my + s, ac, 1.6f);
-        }
-    }
+    system_icon(*open ? SystemIcon::ChevronDown : SystemIcon::Next,
+                Rect::centered(head.x + 10, head.cy(), 12, 12), th.muted_foreground);
 
     if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, head, rad, th.ring);
     return changed;
@@ -7812,7 +7862,7 @@ inline void Ui::tooltip(const Rect& anchor, const std::string& text, const Style
 
     // 悬停 0.4 秒才出现。没有这个延时，鼠标划过一排按钮会连环闪 ——
     // 网页端（shadcn 的 delayDuration）同样是几百毫秒起步。
-    const uint64_t tid = detail::make_id("tip", anchor, uint64_t(text.size() * 131u + 7u));
+    const uint64_t tid = impl->widget_id("tip", anchor, uint64_t(text.size() * 131u + 7u));
     float& since = impl->flags[tid * 7u + 5u];
     const Input& kin = impl->input;
     if (!anchor.contains(kin.mouse.x, kin.mouse.y) || impl->gate_blocked_pointer()) {
@@ -7859,7 +7909,7 @@ inline void Ui::tooltip(const Rect& anchor, const std::string& text, const Style
 inline bool Ui::menu(const std::string& label, const std::vector<std::string>& items,
                      int* clicked_index, const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
-    uint64_t id = detail::make_id("menu", box);
+    uint64_t id = impl->widget_id("menu", box);
     // 同 select：触发器在 claim 之前就 interact 过了，层级号要取入口处。
     const uint64_t z_first = impl->seq + 1;
     const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
@@ -7885,11 +7935,8 @@ inline bool Ui::menu(const std::string& label, const std::vector<std::string>& i
     Color fg = sk.fg;
     if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
     draw_text(label, Rect(box.x + pad, box.y, std::max(box.w - pad * 2.0f - 18.0f, 1.0f), box.h), fg, ts);
-    {
-        const float ccx = box.right() - pad - 5.0f, ccy = box.cy() + 0.5f, s = 3.6f;
-        draw_line(ccx - s, ccy - s * 0.45f, ccx, ccy + s * 0.55f, fg, 1.6f);
-        draw_line(ccx, ccy + s * 0.55f, ccx + s, ccy - s * 0.45f, fg, 1.6f);
-    }
+    system_icon(SystemIcon::ChevronDown,
+                Rect::centered(box.right() - pad - 5, box.cy(), 12, 12), fg);
     if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, box, rad, th.ring);
     if (in.pressed) detail::grab_focus(impl, id);
     if (in.clicked) {
@@ -7923,7 +7970,7 @@ inline bool Ui::menu(const std::string& label, const std::vector<std::string>& i
         for (size_t i = 0; i < items.size(); ++i) {
             const Rect r(list.x + 4.0f, list.y + 4.0f + item_h * float(i), list.w - 8.0f, item_h);
             rects.push_back(r);
-            ids.push_back(detail::make_id("menu_item", r, id + i));
+            ids.push_back(impl->widget_id("menu_item", r, id + i));
             hov.push_back(0);
         }
         {
@@ -7971,7 +8018,7 @@ inline MenuPick Ui::menubar(const std::vector<std::string>& labels,
                             const Rect& box, const Style& st) {
     MenuPick pick;
     const Theme& th = impl->theme;
-    const uint64_t bar_id = detail::make_id("menubar", box);
+    const uint64_t bar_id = impl->widget_id("menubar", box);
     // 顶级项在 claim 之前就 interact 过了，层级号必须在**入口处**取。
     const uint64_t z_first = impl->seq + 1;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
@@ -8002,7 +8049,7 @@ inline MenuPick Ui::menubar(const std::vector<std::string>& labels,
     // --- 1) 顶级项交互 ---
     std::vector<uint8_t> hov(labels.size(), 0);
     for (size_t i = 0; i < labels.size(); ++i) {
-        const uint64_t tid = detail::make_id("menubar_item", trg[i], bar_id + i);
+        const uint64_t tid = impl->widget_id("menubar_item", trg[i], bar_id + i);
         detail::Interact in = detail::interact(impl, tid, trg[i], enabled);
         if (in.hovered) { set_cursor(Cursor::Arrow); hov[i] = 1; }
         if (in.clicked) {
@@ -8067,7 +8114,7 @@ inline MenuPick Ui::menubar(const std::vector<std::string>& labels,
         for (size_t i = 0; i < src.size(); ++i) {
             const Rect r(list.x + 4.0f, list.y + 4.0f + item_h * float(i), list.w - 8.0f, item_h);
             rects.push_back(r);
-            ids.push_back(detail::make_id("menubar_li", r, bar_id + i));
+            ids.push_back(impl->widget_id("menubar_li", r, bar_id + i));
             lhov.push_back(0);
         }
         int chosen = -1;
@@ -8109,7 +8156,7 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
                        const Rect& box, const Style& st) {
     if (!open || !*open) return false;
     const Theme& th = impl->theme;
-    uint64_t cid = detail::make_id("dialog_close", box);
+    uint64_t cid = impl->widget_id("dialog_close", box);
     // 关闭按钮在下面 claim 之前就 interact 了，所以层级号必须在入口处取，
     // 否则它会被自己的闸门挡住（点了没反应，看着像"按钮坏了"）。
     const uint64_t z_first = impl->seq + 1;
@@ -8345,7 +8392,7 @@ inline bool group_cell(Ui& ui, Ui::Impl* im, uint64_t id, const Rect& r, const s
     if (in.hovered) ui.set_cursor(Cursor::Arrow);
     if (in.pressed) grab_focus(im, id);
 
-    const float t_on = animate_value(im, id * 101u + 1u, on ? 1.0f : 0.0f, 22.0f);
+    const float t_on = animate_state(im, id * 101u + 1u, on ? 1.0f : 0.0f, 22.0f);
     const float t_h  = animate_value(im, id * 101u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
     // 分隔线先画，免得压在选中底上（只在相邻两项之间）。
@@ -8398,7 +8445,7 @@ inline bool group_cell(Ui& ui, Ui::Impl* im, uint64_t id, const Rect& r, const s
 inline bool Ui::toggle_button(const std::string& label, bool* value, const Rect& box, const Style& st) {
     if (!value || box.w <= 0.0f) return false;
     const Theme& th = impl->theme;
-    const uint64_t id = detail::make_id("toggle_btn", box, detail::hash_string(label.c_str()));
+    const uint64_t id = impl->widget_id("toggle_btn", box, detail::hash_string(label.c_str()));
     const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
 
@@ -8406,7 +8453,7 @@ inline bool Ui::toggle_button(const std::string& label, bool* value, const Rect&
     if (in.hovered) set_cursor(Cursor::Arrow);
     if (in.pressed) detail::grab_focus(impl, id);
 
-    const float t_on = detail::animate_value(impl, id * 97u + 1u, *value ? 1.0f : 0.0f, 22.0f);
+    const float t_on = detail::animate_state(impl, id * 97u + 1u, *value ? 1.0f : 0.0f, 22.0f);
     const float t_h  = detail::animate_value(impl, id * 97u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
     bool changed = false;
@@ -8450,7 +8497,7 @@ inline bool Ui::toggle_group(const std::vector<std::string>& items, int* index,
     // 胶囊轨道：这三个组控件在 AppKit 里就是 NSSegmentedControl，半径 = h/2
     const float rad = st.radius >= 0.0f ? st.radius : box.h * 0.5f;
     const float iw  = box.w / float(n);
-    const uint64_t base = detail::make_id("toggle_group", box);
+    const uint64_t base = impl->widget_id("toggle_group", box);
 
     // 官方 Segmented Control 的轨道：**一层 8% 黑**（凹槽），没有描边。
     // 深色主题下也是黑 —— 凹槽是"压下去"的，比窗口暗才对；拿白色铺会立刻
@@ -8460,7 +8507,7 @@ inline bool Ui::toggle_group(const std::vector<std::string>& items, int* index,
     bool changed = false;
     for (int i = 0; i < n; ++i) {
         const Rect r(box.x + iw * float(i), box.y, iw, box.h);
-        const uint64_t id = detail::make_id("tg_item", r, base + uint64_t(i));
+        const uint64_t id = impl->widget_id("tg_item", r, base + uint64_t(i));
         const bool on = (*index == i);
         // 分隔线只在两侧都没选中时画：官方 kit 的 Separator 会被 Selected 段整块盖住
         const bool div = i > 0 && !on && !(*index == i - 1);
@@ -8483,14 +8530,14 @@ inline bool Ui::toggle_group_multi(const std::vector<std::string>& items, std::u
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float rad = st.radius >= 0.0f ? st.radius : box.h * 0.5f;
     const float iw  = box.w / float(n);
-    const uint64_t base = detail::make_id("toggle_group_m", box);
+    const uint64_t base = impl->widget_id("toggle_group_m", box);
 
     fill_rect(box, !st.bg.is_none() ? st.bg : th.track_well(), rad);
 
     bool changed = false;
     for (int i = 0; i < n; ++i) {
         const Rect r(box.x + iw * float(i), box.y, iw, box.h);
-        const uint64_t id = detail::make_id("tgm_item", r, base + uint64_t(i));
+        const uint64_t id = impl->widget_id("tgm_item", r, base + uint64_t(i));
         const bool on = ((*mask >> i) & 1u) != 0u;
         const bool prev_on = i > 0 && (((*mask >> (i - 1)) & 1u) != 0u);
         if (detail::group_cell(*this, impl, id, r, items[size_t(i)], on,
@@ -8513,7 +8560,7 @@ inline bool Ui::button_group(const std::vector<std::string>& items, int* clicked
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float rad = st.radius >= 0.0f ? st.radius : box.h * 0.5f;
     const float iw  = box.w / float(n);
-    const uint64_t base = detail::make_id("button_group", box);
+    const uint64_t base = impl->widget_id("button_group", box);
 
     // 和 Segmented 同一个轨道：8% 凹槽、无描边（之前是 secondary 底 + 1px 边，
     // 那是 Web 的 button-group，mac 里相邻按钮不会长一个"外框"）
@@ -8522,7 +8569,7 @@ inline bool Ui::button_group(const std::vector<std::string>& items, int* clicked
     bool clicked = false;
     for (int i = 0; i < n; ++i) {
         const Rect r(box.x + iw * float(i), box.y, iw, box.h);
-        const uint64_t id = detail::make_id("bg_item", r, base + uint64_t(i));
+        const uint64_t id = impl->widget_id("bg_item", r, base + uint64_t(i));
         // 灰底上不能再用 accent（浅色主题里 secondary 和 accent 是同一个色，
         // hover 会完全看不出来），改用背景色提亮。
         if (detail::group_cell(*this, impl, id, r, items[size_t(i)], false,
@@ -8599,7 +8646,7 @@ inline bool Ui::input_group(std::string* value, const std::string& prefix, const
     // 必须等 input() 跑完再抢焦点 —— 它内部遇到"按下了但不在自己框内"会主动
     // 丢掉焦点，先抢会被它丢回去。晚一帧生效，肉眼无感。
     if (outside_press) {
-        detail::grab_focus(impl, detail::make_id("input", inner));
+        detail::grab_focus(impl, impl->widget_id("input", inner));
         repaint();
     }
 
@@ -8612,7 +8659,7 @@ inline bool Ui::input_group(std::string* value, const std::string& prefix, const
     // input() 重一大截，看着像"这个框报错了"。
     //
     // 必须画在 input() 之后：它内部会 push_clip(inner) 并在里面铺绘制，先画的边框会被压掉。
-    if (detail::is_focused(impl, detail::make_id("input", inner))) {
+    if (detail::is_focused(impl, impl->widget_id("input", inner))) {
         stroke_rect(box, th.ring, rad, 1.4f);
         detail::paint_focus_ring(*this, box, rad, th.ring, true);
     }
@@ -8629,7 +8676,7 @@ inline bool Ui::input_otp(std::string* value, int length, const Rect& box, const
     if (!value || length <= 0 || box.w <= 0.0f) return false;
     if (length > 12) length = 12;
     const Theme& th = impl->theme;
-    const uint64_t id = detail::make_id("otp", box);
+    const uint64_t id = impl->widget_id("otp", box);
     // 每格就是一个 Text Field：**24 高、r5、13 号字**。之前按 box 高撑到 36，
     // 数字还是 15 号 —— 那是 Web 的六宫格验证码，比正常的输入框高半截。
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
@@ -8768,7 +8815,7 @@ inline bool Ui::item(const std::string& title, const std::string& description,
                      const std::string& trailing, const Rect& box, const Style& st) {
     if (box.w <= 0.0f || box.h <= 0.0f) return false;
     const Theme& th = impl->theme;
-    const uint64_t id = detail::make_id("item", box, detail::hash_string(title.c_str()));
+    const uint64_t id = impl->widget_id("item", box, detail::hash_string(title.c_str()));
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float rad = st.radius >= 0.0f ? st.radius : 5.0f;
 
@@ -8882,7 +8929,7 @@ inline bool Ui::pagination(int* page, int total_pages, const Rect& box, const St
     int cur = detail::clampi(*page, 0, total - 1);
     const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
-    const uint64_t base = detail::make_id("pagination", box);
+    const uint64_t base = impl->widget_id("pagination", box);
 
     // 槽位编码：-1=上一页 -2=省略号 -3=下一页，>=0 是页码（0 基）。
     //
@@ -8928,7 +8975,7 @@ inline bool Ui::pagination(int* page, int total_pages, const Rect& box, const St
             continue;
         }
 
-        const uint64_t id = detail::make_id("pg", r, base + uint64_t(i));
+        const uint64_t id = impl->widget_id("pg", r, base + uint64_t(i));
         detail::Interact in = detail::interact(impl, id, r, !st.disabled);
         if (in.hovered) set_cursor(Cursor::Arrow);
         if (in.pressed) detail::grab_focus(impl, id);
@@ -8949,15 +8996,12 @@ inline bool Ui::pagination(int* page, int total_pages, const Rect& box, const St
         }
 
         if (s < 0) {
-            // 上一页 / 下一页：自绘箭头（不依赖字体里有没有 < >）
+            // 上一页 / 下一页使用系统箭头。
             const bool left = (s == -1);
             const bool enabled = left ? cur > 0 : cur < total - 1;
             const Color ac = enabled ? th.foreground : th.muted_foreground.with_alpha(110);
-            const float cx = r.cx(), cy = r.cy(), a = fs * 0.22f;
-            // dir = +1 时画出来是"尖朝左"（从右上 → 左中 → 右下）
-            const float dir = left ? 1.0f : -1.0f;
-            draw_line(cx + dir * a, cy - a, cx - dir * a, cy, ac, 1.6f);
-            draw_line(cx - dir * a, cy, cx + dir * a, cy + a, ac, 1.6f);
+            system_icon(left ? SystemIcon::Prev : SystemIcon::Next,
+                        Rect::centered(r.cx(), r.cy(), 12, 12), ac);
             if (in.clicked && enabled) { *page = cur + (left ? -1 : 1); changed = true; repaint(); }
         } else {
             char buf[16];
@@ -8996,7 +9040,7 @@ inline bool Ui::calendar(int* year, int* month, int* day, const Rect& box, const
     const float grid_h = std::max(box.bottom() - wkh.bottom(), 1.0f);
     const float cw = box.w / 7.0f;
     const float ch = grid_h / 6.0f;
-    const uint64_t base = detail::make_id("calendar", box);
+    const uint64_t base = impl->widget_id("calendar", box);
 
     bool changed = false;
 
@@ -9005,15 +9049,13 @@ inline bool Ui::calendar(int* year, int* month, int* day, const Rect& box, const
     const Rect next_r(head.right() - head_h * 0.7f - 2.0f, prev_r.y, prev_r.w, prev_r.h);
     for (int k = 0; k < 2; ++k) {
         const Rect& r = (k == 0) ? prev_r : next_r;
-        const uint64_t id = detail::make_id("cal_nav", r, base + uint64_t(k));
+        const uint64_t id = impl->widget_id("cal_nav", r, base + uint64_t(k));
         detail::Interact in = detail::interact(impl, id, r, true);
         if (in.hovered) set_cursor(Cursor::Arrow);
         const float t_h = detail::animate_value(impl, id * 109u + 1u, in.hovered ? 1.0f : 0.0f, 20.0f);
         if (t_h > 0.01f) fill_rect(r, th.accent.scaled_alpha(t_h), rad);
-        const float cx = r.cx(), cy = r.cy(), a = fs * 0.2f;
-        const float dir = (k == 0) ? 1.0f : -1.0f;   // +1 = 尖朝左（上个月）
-        draw_line(cx + dir * a, cy - a, cx - dir * a, cy, th.muted_foreground, 1.6f);
-        draw_line(cx - dir * a, cy, cx + dir * a, cy + a, th.muted_foreground, 1.6f);
+        system_icon(k == 0 ? SystemIcon::Prev : SystemIcon::Next,
+                    Rect::centered(r.cx(), r.cy(), 12, 12), th.muted_foreground);
         if (in.clicked) {
             if (k == 0) { if (--m < 1) { m = 12; --y; } }
             else        { if (++m > 12) { m = 1; ++y; } }
@@ -9053,7 +9095,7 @@ inline bool Ui::calendar(int* year, int* month, int* day, const Rect& box, const
             if (d > dim_now) break;
             const Rect r(box.x + cw * float(col), wkh.bottom() + ch * float(row), cw, ch);
             const Rect inner = r.inset(3.0f, 2.0f);
-            const uint64_t id = detail::make_id("cal_day", r, base + uint64_t(d));
+            const uint64_t id = impl->widget_id("cal_day", r, base + uint64_t(d));
             detail::Interact in = detail::interact(impl, id, inner, true);
             if (in.hovered) set_cursor(Cursor::Arrow);
             const bool is_sel = (d == sel);
@@ -9100,7 +9142,7 @@ inline bool Ui::popover(const std::string& label, bool* open, const Rect& box,
                         const Style& st) {
     if (!open || box.w <= 0.0f) return false;
     const Theme& th = impl->theme;
-    const uint64_t id = detail::make_id("popover", box);
+    const uint64_t id = impl->widget_id("popover", box);
     // 层级号取入口处的 seq：触发器和面板都从它往后数。
     const uint64_t z_first = impl->seq + 1;
     // 触发器是普通按钮面（r6）；**面板是 r12**（kit `Popover` 的容器）。之前拿
@@ -9129,11 +9171,8 @@ inline bool Ui::popover(const std::string& label, bool* open, const Rect& box,
     Color fg = sk.fg;
     if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
     draw_text(label, Rect(box.x + pad, box.y, std::max(box.w - pad * 2.0f - 18.0f, 1.0f), box.h), fg, ts);
-    {
-        const float ccx = box.right() - pad - 5.0f, ccy = box.cy() + 0.5f, s = 3.6f;
-        draw_line(ccx - s, ccy - s * 0.45f, ccx, ccy + s * 0.55f, fg, 1.6f);
-        draw_line(ccx, ccy + s * 0.55f, ccx + s, ccy - s * 0.45f, fg, 1.6f);
-    }
+    system_icon(SystemIcon::ChevronDown,
+                Rect::centered(box.right() - pad - 5, box.cy(), 12, 12), fg);
     if (detail::is_focused(impl, id)) detail::paint_focus_ring(*this, box, rad, th.ring);
 
     if (in.clicked) { *open = !*open; repaint(); }
@@ -9247,8 +9286,8 @@ inline bool Ui::alert_dialog(const std::string& title, const std::string& body,
     const Rect cancel_r(box.x + pad, box.bottom() - pad_v - btn_h, inner_w, btn_h);
     const Rect ok_r(box.x + pad, cancel_r.y - 16.0f - btn_h, inner_w, btn_h);
 
-    const uint64_t ok_id = detail::make_id("alert_ok", box);
-    const uint64_t no_id = detail::make_id("alert_no", box, 1u);
+    const uint64_t ok_id = impl->widget_id("alert_ok", box);
+    const uint64_t no_id = impl->widget_id("alert_no", box, 1u);
     detail::Interact ok_in = detail::interact(impl, ok_id, ok_r, true);
     detail::Interact no_in = detail::interact(impl, no_id, cancel_r, true);
     if (ok_in.hovered || no_in.hovered) set_cursor(Cursor::Arrow);
@@ -9292,26 +9331,24 @@ inline bool Ui::alert_dialog(const std::string& title, const std::string& body,
     }
     pop_clip();
 
-    // 选项行（确认）：通宽一条，顶部一条 3% 细线，悬停压 5% 底。
-    // 官方 `_Alert Button/No Background`：228×28，标签 13 Regular 85%，居中。
-    fill_rect(Rect(ok_r.x, ok_r.y, ok_r.w, 1.0f), th.fill4, 0.0f);
-    if (ok_t > 0.01f) fill_rect(ok_r, th.fill3.scaled_alpha(ok_t), 0.0f);
-
-    // 取消：**底部一颗胶囊**（kit 里 Cancel 是 r=100 的 #E6E6E6），不是白底描边。
+    // 两个操作复用普通按钮的表面与圆角，避免确认行在悬停时出现方形色块。
     const float cr = cancel_r.h * 0.5f;
-    const Color cancel_bg = th.is_dark() ? Color(255, 255, 255, 26) : Color::hex(0xE6E6E6);
-    fill_rect_s(cancel_r, cancel_bg, cr, 0.35f);
-    if (no_t > 0.01f) fill_rect_s(cancel_r, th.fill3.scaled_alpha(no_t), cr, 0.35f);
+    Style ok_style, cancel_style;
+    ok_style.corner(cr);
+    if (danger) ok_style.destructive(); else ok_style.primary();
+    cancel_style.secondary().corner(cr);
+    const auto ok_skin = detail::make_skin(th, ok_style, Style::Default, cr);
+    const auto cancel_skin = detail::make_skin(th, cancel_style, Style::Default, cr);
+    detail::paint_surface(*this, ok_r, ok_skin, ok_t, ok_in.held ? 1.f : 0.f, false);
+    detail::paint_surface(*this, cancel_r, cancel_skin, no_t, no_in.held ? 1.f : 0.f, false);
 
     Style bs2;
     bs2.font_size = fs;
     bs2.align = Align::Center;
     bs2.valign = VAlign::Middle;
-    // 取消是 Medium 13 85%；选项行是 Regular 13 85%（破坏性选项转系统红）
     bs2.font_weight = 500;
-    draw_text(cancel, cancel_r, th.foreground, bs2);
-    bs2.font_weight = 400;
-    draw_text(confirm, ok_r, danger ? th.destructive : th.foreground, bs2);
+    draw_text(cancel, cancel_r, cancel_skin.fg, bs2);
+    draw_text(confirm, ok_r, ok_skin.fg, bs2);
 
     impl->gate_claim(box, z_first);
 
@@ -9331,7 +9368,7 @@ inline bool Ui::drawer(const std::string& title, bool* open, int side, const Rec
     if (!open || box.w <= 0.0f || box.h <= 0.0f) return false;
     if (side < 0 || side > 3) side = 0;
     const Theme& th = impl->theme;
-    const uint64_t id = detail::make_id("drawer", box, uint64_t(side) + 1u);
+    const uint64_t id = impl->widget_id("drawer", box, uint64_t(side) + 1u);
     const uint64_t z_first = impl->seq + 1;
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float pad = st.pad_x >= 0.0f ? st.pad_x : 20.0f;
@@ -9354,7 +9391,7 @@ inline bool Ui::drawer(const std::string& title, bool* open, int side, const Rec
     if ((kin.pressed[0] || kin.pressed[1]) && !box.contains(kin.mouse.x, kin.mouse.y)) dismiss = true;
 
     const Rect close_r(box.right() - pad - 22.0f, box.y + (head_h - 22.0f) * 0.5f, 22.0f, 22.0f);
-    const uint64_t cid = detail::make_id("drawer_close", box);
+    const uint64_t cid = impl->widget_id("drawer_close", box);
     detail::Interact cin = detail::interact(impl, cid, close_r, true);
     if (cin.hovered) set_cursor(Cursor::Arrow);
     if (cin.clicked) dismiss = true;
@@ -9401,7 +9438,7 @@ inline bool Ui::context_menu(const Rect& area, const std::vector<std::string>& i
                              int* clicked_index, const Style& st) {
     if (items.empty()) return false;
     const Theme& th = impl->theme;
-    const uint64_t id = detail::make_id("ctxmenu", area, uint64_t(items.size()));
+    const uint64_t id = impl->widget_id("ctxmenu", area, uint64_t(items.size()));
     const uint64_t z_first = impl->seq + 1;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
@@ -9441,7 +9478,7 @@ inline bool Ui::context_menu(const Rect& area, const std::vector<std::string>& i
     for (size_t i = 0; i < items.size(); ++i) {
         const Rect r(list.x + 4.0f, list.y + 4.0f + item_h * float(i), list.w - 8.0f, item_h);
         rects.push_back(r);
-        ids.push_back(detail::make_id("ctx_item", r, id + uint64_t(i)));
+        ids.push_back(impl->widget_id("ctx_item", r, id + uint64_t(i)));
         hov.push_back(0);
     }
 
@@ -9489,7 +9526,7 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
                          const Rect& box, const Style& st) {
     if (!index || items.empty() || box.w <= 0.0f) return false;
     const Theme& th = impl->theme;
-    const uint64_t id = detail::make_id("combobox", box);
+    const uint64_t id = impl->widget_id("combobox", box);
     const uint64_t z_first = impl->seq + 1;
     const float rad = st.radius >= 0.0f ? st.radius : th.radius;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
@@ -9606,7 +9643,7 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
     Impl::SeqFrameEnd guard(impl);
     for (int r = 0; r < rows; ++r) {
         const Rect rr(list.x + 4.0f, sr.bottom() + 4.0f + item_h * float(r), list.w - 8.0f, item_h);
-        const uint64_t iid = detail::make_id("cb_item", rr, id + uint64_t(vis[size_t(r)]));
+        const uint64_t iid = impl->widget_id("cb_item", rr, id + uint64_t(vis[size_t(r)]));
         detail::Interact ii = detail::interact(impl, iid, rr, true);
         if (ii.hovered) { set_cursor(Cursor::Arrow); hi = r; }
         if (ii.clicked) chosen_now = vis[size_t(r)];
@@ -9640,9 +9677,7 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
         const float search_r = 5.0f;
         fill_rect_s(sr, th_c.is_dark() ? Color(255, 255, 255, 18) : Color(0, 0, 0, 13), search_r, 0.35f);
         {
-            const float gx = sr.x + 9.0f, gy = sr.cy();
-            stroke_rect(Rect(gx - 3.5f, gy - 3.5f, 7.0f, 7.0f), th_c.label2, 3.5f, 1.2f);
-            draw_line(gx + 2.2f, gy + 2.2f, gx + 5.2f, gy + 5.2f, th_c.label2, 1.3f);
+            system_icon(SystemIcon::Search, Rect::centered(sr.x + 10.f, sr.cy(), 12, 12), th_c.label2);
         }
         Style ss;
         ss.font_size = fs;
@@ -9662,9 +9697,7 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
             if (hot) fill_rect_s(rr, th_c.tint, 5.0f, 0.35f);
             const Color fg = hot ? detail::on_color(th_c.tint) : th_c.popover_foreground;
             if (on) {
-                const float cx = rr.x + 10.0f, cy = rr.cy(), s = 3.2f;
-                draw_line(cx - s, cy, cx - s * 0.15f, cy + s * 0.85f, fg, 1.8f);
-                draw_line(cx - s * 0.15f, cy + s * 0.85f, cx + s * 1.15f, cy - s * 0.9f, fg, 1.8f);
+                system_icon(SystemIcon::Check, Rect::centered(rr.x + 10.f, rr.cy(), 12, 12), fg);
             }
             Style its;
             its.font_size = fs;
@@ -9705,7 +9738,7 @@ inline bool Ui::split_pane(float* ratio, const Rect& box, Rect* first, Rect* sec
                            bool vertical, float min_ratio, const Style& st) {
     if (!ratio || box.w <= 0.0f || box.h <= 0.0f) return false;
     const Theme& th = impl->theme;
-    const uint64_t id = detail::make_id("split_pane", box, vertical ? 1u : 2u);
+    const uint64_t id = impl->widget_id("split_pane", box, vertical ? 1u : 2u);
     const float bar = 7.0f;                    // 热区宽度（视觉只有 1px）
     float r = detail::clampf(*ratio, min_ratio, 1.0f - min_ratio);
 
@@ -9779,8 +9812,18 @@ inline ScrollbarGeom scrollbar_geom(const Rect& box, float offset, float max_off
 // macOS 的滚动条是 **overlay**：只在滚动 / 悬停时出现，停手约 0.9 秒后淡出。
 // 常驻的细条是 Windows 与浏览器的习惯 —— 一条永远挂在那里的 3px 竖线，是
 // "这是个网页控件"最直白的提示。activity 记在 flags 里（按 box 区分）。
+inline uint64_t scrollbar_id(Ui::Impl* ui, const char* kind, const Rect& box) {
+    uint64_t owner = ui->widget_id("scroll", box);
+    if (!ui->scroll_stack.empty()) {
+        const auto& current = ui->scroll_stack.back();
+        if (current.box.x == box.x && current.box.y == box.y
+            && current.box.w == box.w && current.box.h == box.h) owner = current.id;
+    }
+    return hash_combine(owner, hash_string(kind));
+}
+
 inline float scrollbar_alpha(Ui::Impl* ui, const Rect& box, bool hot, bool moved) {
-    const uint64_t aid = make_id("scrollact", box);
+    const uint64_t aid = scrollbar_id(ui, "scrollact", box);
     float& act = ui->flags[aid];
     if (hot || moved) act = ui->clock;
     if (act <= 0.0f) return 0.0f;                 // 还没滚过：一帧都不画
@@ -9800,7 +9843,7 @@ inline bool scrollbar_interact(Ui::Impl* ui, const Rect& box, float max_offset, 
     ui->hover_region(g.track);        // 悬停要变亮，时钟靠帧推进
     if (ui->gate_blocked_pointer()) return on_track;   // 浮层打开时不许动下层滚动条
 
-    const uint64_t sid = make_id("scrollbar-grab", box);
+    const uint64_t sid = scrollbar_id(ui, "scrollbar-grab", box);
     float& grab = ui->flags[sid];       // 按下时鼠标在滑块内的相对位置
     const float travel = std::max(g.travel, 1.0f);
 
@@ -9831,7 +9874,7 @@ inline ScrollScope Ui::scroll(const Rect& box, float content_h) {
     if (impl->measure_on) impl->measure_add(box);
     ScrollScope sc;
     sc.ui         = this;
-    sc.id         = detail::make_id("scroll", box);
+    sc.id         = impl->widget_id("scroll", box);
     sc.box        = box;
     sc.content_h  = content_h;
     sc.max_offset = std::max(0.0f, content_h - box.h);
@@ -9931,7 +9974,7 @@ inline void Ui::end_scroll() {
         const bool hot = detail::scrollbar_interact(impl, ctx.box, ctx.max_offset, off);
         off = detail::clampf(off, 0.0f, ctx.max_offset);
         // "刚才滚过没有"：和上一帧的偏移比。滚轮、拖动、程序调用都算。
-        float& prev = impl->flags[detail::make_id("scrollprev", ctx.box)];
+        float& prev = impl->flags[detail::hash_combine(ctx.id, detail::hash_string("scrollprev"))];
         const bool moved = std::fabs(off - prev) > 0.01f;
         prev = off;
         const float a = detail::scrollbar_alpha(impl, ctx.box, hot, moved);
@@ -9975,7 +10018,7 @@ inline float Ui::scroll_visible(const Rect& box, int count, float item_h, int* f
     if (last)  *last  = -1;
     if (count < 0) count = 0;
 
-    const uint64_t id = detail::make_id("scroll", box);
+    const uint64_t id = impl->widget_id("scroll", box);
     const float content_h = float(count) * item_h;
     const float max_off   = std::max(0.0f, content_h - box.h);
 
@@ -10003,11 +10046,11 @@ inline float Ui::scroll_visible(const Rect& box, int count, float item_h, int* f
 inline void Ui::scroll_bar(const Rect& box, float content_h) {
     const float max_off = std::max(0.0f, content_h - box.h);
     if (max_off <= 0.0f) return;
-    float& off = impl->flags[detail::make_id("scroll", box)];
+    float& off = impl->flags[impl->widget_id("scroll", box)];
     off = detail::clampf(off, 0.0f, max_off);
     const bool hot = detail::scrollbar_interact(impl, box, max_off, off);
     off = detail::clampf(off, 0.0f, max_off);
-    float& prev = impl->flags[detail::make_id("scrollprev", box)];
+    float& prev = impl->flags[detail::scrollbar_id(impl, "scrollprev", box)];
     const bool moved = std::fabs(off - prev) > 0.01f;
     prev = off;
     const float a = detail::scrollbar_alpha(impl, box, hot, moved);
@@ -10018,14 +10061,14 @@ inline void Ui::scroll_bar(const Rect& box, float content_h) {
 }
 
 inline float Ui::scroll_offset(const Rect& box) const {
-    auto it = impl->flags.find(detail::make_id("scroll", box));
+    auto it = impl->flags.find(impl->widget_id("scroll", box));
     return it == impl->flags.end() ? 0.0f : it->second;
 }
 
 inline void Ui::scroll_to_index(const Rect& box, int index, float item_h, int count) {
     const float max_off = std::max(0.0f, float(std::max(count, 0)) * item_h - box.h);
     const float target  = detail::clampf(float(std::max(index, 0)) * item_h, 0.0f, max_off);
-    float& off = impl->flags[detail::make_id("scroll", box)];
+    float& off = impl->flags[impl->widget_id("scroll", box)];
     if (off != target) { off = target; repaint(); }
 }
 
@@ -10234,6 +10277,7 @@ struct Win32State {
     int pw = 0, ph = 0;
     bool tracking = false;
     bool has_backbuffer = false;
+    int caption_theme = -1;
     // 后备缓冲里装的是**当前尺寸下渲染过的**画面吗？
     // 重建缓冲（resize）后立刻变 false，渲染一帧后变 true。
     // 铁律：bb_valid 为 false 时**绝不允许 BitBlt 上屏** —— 那块新建的 DIB 全是 0，
@@ -10265,6 +10309,24 @@ struct Win32State {
     bool  key_alt[KEY_COUNT]     = {};
     uint32_t high_surrogate = 0;
 };
+
+inline void win_sync_caption_theme(Win32State* state, bool dark) {
+    if (state->caption_theme == int(dark)) return;
+    // 系统标题栏不在客户区画布中；主题变化时单独通知 DWM，避免深色窗口仍有浅色顶栏。
+    using SetAttribute = HRESULT(WINAPI *)(HWND, DWORD, LPCVOID, DWORD);
+    static SetAttribute set_attribute = []() -> SetAttribute {
+        // 函数指针在进程存续期间复用，因此系统模块也保留至进程退出。
+        HMODULE module = LoadLibraryW(L"dwmapi.dll");
+        return module ? reinterpret_cast<SetAttribute>(GetProcAddress(module, "DwmSetWindowAttribute"))
+                      : nullptr;
+    }();
+    if (set_attribute) {
+        const BOOL enabled = dark ? TRUE : FALSE;
+        if (FAILED(set_attribute(state->hwnd, 20, &enabled, sizeof(enabled))))
+            set_attribute(state->hwnd, 19, &enabled, sizeof(enabled));
+    }
+    state->caption_theme = int(dark);
+}
 
 inline UINT win_dpi_of(HWND hwnd) {
     typedef UINT (WINAPI *PFN_GetDpiForWindow)(HWND);
@@ -11180,6 +11242,7 @@ inline void Window::render() {
     ui.end_frame();
     uint64_t p2 = prof ? detail::win_ticks_us() : 0;
 
+    detail::win_sync_caption_theme(s, ui.theme().is_dark());
     o->cursor = ui.cursor();
     detail::win_present(s);
     s->bb_valid = true;          // 这块缓冲现在装的是"当前尺寸下画过的画面"
@@ -13120,6 +13183,144 @@ inline void Window::set_clipboard(const std::string&) {}
 inline std::string Window::clipboard() const { return std::string(); }
 
 #endif // AINO_PLATFORM_MACOS
+
+namespace detail {
+struct SystemIconMask {
+    int width = 0, height = 0;
+    std::vector<uint8_t> alpha;
+};
+
+inline SystemIconMask load_system_icon(SystemIcon icon, int size) {
+    SystemIconMask mask;
+#if defined(AINO_PLATFORM_WINDOWS)
+    // 来自系统 Segoe Fluent Icons 字符表；Win10 回退到系统 Segoe MDL2 Assets。
+    static const wchar_t codes[] = {
+        0xE7C9, 0xE8D2, 0xEC12, 0xE9E9, 0xE8F9, 0xE700, 0xE787, 0xE790,
+        0xEA8F, 0xE8A9, 0xE9D9, 0xE895, 0xE7C3, 0xE99C, 0xE8FD, 0xE8C8,
+        0xE734, 0xE712, 0xE898, 0xE896, 0xE70F, 0xE74D, 0xE76B, 0xE76C,
+        0xE708, 0xE706, 0xE7F4, 0xE711, 0xE890, 0xE710, 0xE8B7, 0xE721,
+        0xE70D, 0xE70E, 0xE73E, 0xE738, 0xE713, 0xE701, 0xEB9F, 0xE946, 0xE7BA, 0xE716
+    };
+    const size_t index = size_t(icon);
+    if (index >= sizeof(codes) / sizeof(codes[0])) return mask;
+    static const wchar_t* family = font_face_installed(L"Segoe Fluent Icons")
+        ? L"Segoe Fluent Icons" : L"Segoe MDL2 Assets";
+    HDC dc = CreateCompatibleDC(nullptr);
+    if (!dc) return mask;
+    HFONT font = CreateFontW(-size, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+                            DEFAULT_PITCH, family);
+    if (!font) { DeleteDC(dc); return mask; }
+    const auto previous = SelectObject(dc, font);
+    WORD glyph_index = 0xffff;
+    GetGlyphIndicesW(dc, &codes[index], 1, &glyph_index, GGI_MARK_NONEXISTING_GLYPHS);
+    if (glyph_index != 0xffff) {
+        MAT2 identity{};
+        identity.eM11.value = identity.eM22.value = 1;
+        GLYPHMETRICS metrics{};
+        const DWORD bytes = GetGlyphOutlineW(dc, codes[index], GGO_GRAY8_BITMAP, &metrics, 0, nullptr,
+                                             &identity);
+        if (bytes != GDI_ERROR && bytes > 0) {
+            std::vector<uint8_t> bitmap(bytes);
+            if (GetGlyphOutlineW(dc, codes[index], GGO_GRAY8_BITMAP, &metrics, bytes, bitmap.data(),
+                                 &identity) != GDI_ERROR) {
+                mask.width = int(metrics.gmBlackBoxX);
+                mask.height = int(metrics.gmBlackBoxY);
+                mask.alpha.resize(size_t(mask.width) * mask.height);
+                const size_t stride = (size_t(mask.width) + 3) & ~size_t(3);
+                for (int y = 0; y < mask.height; ++y)
+                    for (int x = 0; x < mask.width; ++x)
+                        mask.alpha[size_t(y) * mask.width + x] = uint8_t(
+                            std::min(255u, unsigned(bitmap[size_t(y) * stride + x]) * 255u / 64u));
+            }
+        }
+    }
+    SelectObject(dc, previous);
+    DeleteObject(font);
+    DeleteDC(dc);
+#elif defined(AINO_PLATFORM_MACOS)
+    // AppKit 只在主线程使用；图标取系统 SF Symbols，不捆绑第三方字体或仿绘路径。
+    static const char* names[] = {
+        "cursorarrow", "textformat", "switch.2", "slider.horizontal.3", "rectangle.split.3x1",
+        "line.3.horizontal", "calendar", "paintpalette", "bell", "tablecells", "chart.bar",
+        "arrow.triangle.2.circlepath", "rectangle", "sidebar.left", "list.bullet", "doc.on.doc",
+        "star", "ellipsis", "square.and.arrow.up", "square.and.arrow.down", "pencil", "trash",
+        "chevron.left", "chevron.right", "moon", "sun.max", "desktopcomputer", "xmark",
+        "eye", "plus", "folder", "magnifyingglass", "chevron.down", "chevron.up", "checkmark", "minus",
+        "gearshape", "wifi", "photo", "info.circle", "exclamationmark.triangle", "person.2"
+    };
+    const size_t index = size_t(icon);
+    if (index >= sizeof(names) / sizeof(names[0])) return mask;
+    const auto image_class = objc_getClass("NSImage");
+    const auto selector = sel_registerName("imageWithSystemSymbolName:accessibilityDescription:");
+    if (!oc_send<BOOL>(image_class, sel_registerName("respondsToSelector:"), selector)) return mask;
+    id pool = oc_send<id>(oc_send<id>(objc_getClass("NSAutoreleasePool"), sel_registerName("alloc")),
+                          sel_registerName("init"));
+    CFStringRef name = CFStringCreateWithCString(nullptr, names[index], kCFStringEncodingUTF8);
+    id image = oc_send<id>(image_class, selector, reinterpret_cast<id>(const_cast<void*>(
+                              reinterpret_cast<const void*>(name))), static_cast<id>(nullptr));
+    CGRect proposed = CGRectMake(0, 0, size, size);
+    CGImageRef cg_image = image ? oc_send<CGImageRef>(image,
+        sel_registerName("CGImageForProposedRect:context:hints:"), &proposed,
+        static_cast<id>(nullptr), static_cast<id>(nullptr)) : nullptr;
+    if (cg_image) {
+        mask.width = mask.height = size;
+        mask.alpha.resize(size_t(size) * size, 0);
+        CGContextRef context = CGBitmapContextCreate(mask.alpha.data(), size, size, 8, size, nullptr,
+                                                     kCGImageAlphaOnly);
+        if (context) {
+            const double w = CGImageGetWidth(cg_image), h = CGImageGetHeight(cg_image);
+            const double fit = size / std::max(w, h);
+            CGContextDrawImage(context, CGRectMake((size - w * fit) / 2, (size - h * fit) / 2,
+                                                   w * fit, h * fit), cg_image);
+            CGContextRelease(context);
+        } else mask = SystemIconMask{};
+    }
+    if (name) CFRelease(name);
+    oc_send<void>(pool, sel_registerName("drain"));
+#else
+    (void)icon; (void)size;
+#endif
+    return mask;
+}
+} // namespace detail
+
+inline bool Ui::system_icon(SystemIcon icon, const Rect& box, const Color& color) {
+    if (impl->measure_on) { impl->measure_add(box); return true; }
+    if (!impl->canvas || box.empty() || color.a == 0) return false;
+#if defined(AINO_PLATFORM_WINDOWS) || defined(AINO_PLATFORM_MACOS)
+    const Rect physical = impl->xf_phys(box);
+    const int size = std::max(1, int(std::floor(std::min(physical.w, physical.h))));
+    const uint64_t key = uint64_t(icon) << 32 | uint32_t(size);
+    // 按线程缓存栅格化结果，复用时只混合像素；尺寸变化不保留系统 DC、字体或 NSImage。
+    static thread_local std::unordered_map<uint64_t, detail::SystemIconMask> masks;
+    auto found = masks.find(key);
+    if (found == masks.end()) {
+        if (masks.size() >= 512) masks.clear();
+        found = masks.emplace(key, detail::load_system_icon(icon, size)).first;
+    }
+    const auto& mask = found->second;
+    if (mask.alpha.empty()) return false;
+    const int left = int(std::floor(physical.cx() - mask.width * .5f));
+    const int top = int(std::floor(physical.cy() - mask.height * .5f));
+    push_clip(box);
+    for (int y = 0; y < mask.height; ++y)
+        for (int x = 0; x < mask.width; ++x)
+            impl->canvas->blend(left + x, top + y, color,
+                                mask.alpha[size_t(y) * mask.width + x] / 255.f);
+    pop_clip();
+    return true;
+#else
+    // X11 没有统一的系统图标 API，使用系统字体的 Unicode 符号回退。
+    static const char* symbols[] = {"↖", "T", "◉", "☷", "▥", "☰", "▦", "◌", "♧", "▦",
+        "▥", "↻", "▭", "◧", "☷", "⧉", "☆", "…", "↑", "↓", "✎", "⌫", "‹", "›",
+        "☾", "☼", "▣", "×", "◉", "+", "▱", "⌕", "⌄", "⌃", "✓", "−", "⚙", "⌁", "▧", "ⓘ", "⚠", "♙"};
+    if (size_t(icon) >= sizeof(symbols) / sizeof(symbols[0])) return false;
+    draw_text(symbols[size_t(icon)], box, color,
+              Style().font(std::min(box.w, box.h)).center());
+    return true;
+#endif
+}
 
 } // namespace aino
 
