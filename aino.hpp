@@ -250,8 +250,7 @@ enum Key {
 //      由 macos_light()/dark() 映射过来。组件代码里已经写了 th.primary 的地方
 //      不需要改，就能跟着换成系统强调色。
 //
-//  色值来源：HIG 只公开语义名与用途，明确不给 hex；具体数值取 macOS 26.6
-//  实机采样（NSAlert / 控件表面）转 sRGB，见 docs/13-macos27.md 的对照表。
+//  设计资料与实现映射见 docs/macos27/README.md。
 // =============================================================================
 struct Theme {
     // ---- macOS 原生语义色 ----
@@ -327,7 +326,7 @@ struct Theme {
     Color input;
     Color ring;
 
-    // 度量 —— macOS 27 控件刻度（官方 Sizes 变量集，Medium 为默认档）
+    // 度量 —— macOS 27 控件刻度（参考资料 Sizes 变量集，Medium 为默认档）
     //   圆角：Mini~Medium 是圆角矩形（4/5/6），Large/XL 的按钮与开关是胶囊（半径 1000）
     //   字号：macOS 正文 13pt（不是 iOS 的 17pt），行高 16 = size + 3
     //   控件高度：Global/Height = 16 / 20 / 24 / 28 / 36
@@ -1702,7 +1701,7 @@ struct Span { float xl, xr; };
 //     三次贝塞尔 → 圆弧 → 三次贝塞尔
 // 三段拼成，切点落在 (1+s)·R 处，圆弧只占 90(1−s) 度。macOS 控件一律 s = 0.6。
 //
-// 下面的常数与 Figma 的 figma-squircle 实现逐项对齐（已用 R=10,s=0.6 的官方路径校验）：
+// 下面的常数与 Figma 的 figma-squircle 实现逐项对齐（已用 R=10,s=0.6 的参考资料路径校验）：
 //     p  = (1+s)R                       切点离拐角的距离
 //     a  = 2b,  b = (p − 弧长 − c − d)/3
 //     c  = R·tan(α/2)·cos(β),  d = c·tan(β),   α = β = 45s°
@@ -2482,14 +2481,13 @@ inline void raster_shadow(Canvas& cv, const Rect& r, float rad, float blur, cons
 }
 
 // -----------------------------------------------------------------------------
-//  背景模糊（Liquid Glass 的高性能替身）
+//  背景模糊与材质近似
 // -----------------------------------------------------------------------------
 // 做法：降采样 → 三趟可分离盒式模糊（≈ 高斯）→ 双线性放大 + 圆角遮罩写回。
 //
 // 为什么是盒式而不是"真高斯"：Figma 的 blur 是半径，对应 σ = blur/2，高斯核要
 // ±3σ；blur=16 时就是逐像素 48 像素半径的卷积，代价 O(w·h·r)。三趟盒式把代价
-// 压到 O(w·h) 且**与半径无关** —— 三次盒式的分布已经足够接近高斯（Stack Blur
-// 的老结论），肉眼分不出。
+// 压到 O(w·h)，以三趟盒式模糊近似高斯分布。
 //
 // 为什么先降采样：模糊本身就是低通，1/2 或 1/4 分辨率上算完再放大，视觉上
 // 没有区别，像素数直接除以 4 / 16。1180×760 的窗口上，一整条 940×300 的玻璃
@@ -3467,8 +3465,7 @@ struct Ui::Impl {
     // 立即模式的绘制顺序决定视觉层级，交互却按调用顺序处理：最后画的对话框
     // 其实最晚拿到点击，于是点遮罩会连带点到底下的按钮（穿透）。
     // 这里反过来 —— 上一帧登记过的浮层决定本帧谁能接收输入。
-    // 为什么用"上一帧"：dialog()/menu() 在帧末才调用，同一帧救不了；
-    // 差一帧肉眼看不出来（那一帧用户点的正是遮罩）。
+    // 浮层可能在普通控件之后调用，需使用上一帧记录提前阻挡输入。
     // 槽位数：一次只能有 8 个"可交互区"被放行。一个浮层通常占 2~3 个
     // （触发器 + 面板 + 面板里的按钮），所以这够 popover + dialog + drawer
     // 同时开着。超出的 claim 会被丢弃 —— 表现为那个区域点不动，不会崩。
@@ -4913,7 +4910,7 @@ inline Skin make_skin(const Theme& th, const Style& st, int default_variant, flo
     Skin sk;
     sk.radius    = st.radius >= 0.0f ? st.radius : default_radius;
     sk.font_size = st.font_size > 0.0f ? st.font_size : th.font_size;
-    sk.weight    = st.font_weight > 0 ? st.font_weight : 500;   // 官方 kit：推按钮标签是 SF Pro Medium
+    sk.weight    = st.font_weight > 0 ? st.font_weight : 500;   // 参考资料 kit：推按钮标签是 SF Pro Medium
     sk.fg        = th.label;
 
     // Default 使用强调色，Secondary 使用半透明填充，Ghost/Link 无填充；按下时增加填充强度。
@@ -5074,7 +5071,7 @@ inline Color fade(const Color& c, float t) {
 }
 
 // 实心强调色上的文字。亮强调色（黄/绿/橙）上用黑字，暗的用白字 ——
-// 官方 kit 里黄色 Selected 段就是黑字，一律白字在浅色强调色上会糊。
+// 参考资料 kit 里黄色 Selected 段就是黑字，一律白字在浅色强调色上会糊。
 inline Color on_color(const Color& bg) {
     return bg.luminance() > 0.55f ? Color(0, 0, 0, 217) : Color(255, 255, 255);
 }
@@ -5574,7 +5571,7 @@ inline void Ui::separator(const Rect& box, const Style& st) {
 
 inline void Ui::badge(const std::string& text, const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
-    // 官方标记是小圆角矩形（r4.5 = Global/Radius 的 3/4），不是胶囊；
+    // 参考资料标记是小圆角矩形（r4.5 = Global/Radius 的 3/4），不是胶囊；
     // 字号 Caption 1 = 10/13。
     const float rad = st.radius >= 0.0f ? st.radius : 4.5f;
     const float fs  = st.font_size > 0.0f ? st.font_size : 10.0f;
@@ -5603,9 +5600,9 @@ inline void Ui::badge(const std::string& text, const Rect& box, const Style& st)
 inline void Ui::progress(float value, const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
     const bool dark = th.window_bg.luminance() < 0.5f;
-    // 官方 Determinate/Medium：100×10，圆角 100（胶囊），cornerSmoothing 0.6。
+    // 参考资料 Determinate/Medium：100×10，圆角 100（胶囊），cornerSmoothing 0.6。
     // 轨道 = Fills 5% 半透明；填充 = 强调色胶囊。
-    const float h = st.radius >= 0.0f ? std::min(box.h, box.h) : std::min(box.h, 10.0f);
+    const float h = st.radius >= 0.0f ? box.h : std::min(box.h, 10.0f);
     Rect bar(box.x, box.cy() - h * 0.5f, box.w, h);
     const float rad = h * 0.5f;
     const Color track = !st.border_color.is_none() ? st.border_color
@@ -5614,7 +5611,7 @@ inline void Ui::progress(float value, const Rect& box, const Style& st) {
     fill_rect_s(bar, track, rad, 0.0f);
     const float t = detail::clampf(value, 0.0f, 1.0f);
     if (t > 0.0f) {
-        // 胶囊填充有个最小宽度：官方 10% 时填充是 19px 而不是 10px ——
+        // 胶囊填充有个最小宽度：参考资料 10% 时填充是 19px 而不是 10px ——
         // 小于两端圆角的宽度会被圆角吃掉，看起来像"没有头"。
         const float w = std::max(bar.w * t, h);
         fill_rect_s(Rect(bar.x, bar.y, w, bar.h), fill, rad, 0.0f);
@@ -5773,7 +5770,7 @@ inline bool Ui::nav_item(const std::string& label, bool active, const Rect& box,
     }
 
     // 字重固定 500：选中时换字重会让文字宽度跳一下，看着像整个侧边栏在抖。
-    // 选中只叠加底色，文字颜色不变（官方 Selected 的 Label 仍是 85% 黑）。
+    // 选中只叠加底色，文字颜色不变（参考资料 Selected 的 Label 仍是 85% 黑）。
     Color fg = !st.fg.is_none() ? st.fg : th.label;
     if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
     Style ts;
@@ -6044,13 +6041,13 @@ inline bool Ui::input(std::string* value, const Rect& box, const Style& st) {
     const bool bare = st.border_width == 0.0f && st.bg.is_none();
     if (st.disabled && bg.a > 0) bg.a = uint8_t(float(bg.a) * 0.45f);
     if (bg.a > 0 && !bare) fill_rect(box, bg, rad);
-    // 凹陷：官方 Text Field 的填色是纯白，靠**顶部内阴影 + 极淡描边**"陷"进背景。
+    // 凹陷：参考资料 Text Field 的填色是纯白，靠**顶部内阴影 + 极淡描边**"陷"进背景。
     // 只描一圈 1px 边框那是 Web 的 input，平的。
     if (!bare) {
         const Color ish = th.window_bg.luminance() < 0.5f ? Color(0, 0, 0, 70) : Color(0, 0, 0, focused ? 10 : 18);
         inner_shadow(box, ish, rad, 1.8f, 1.0f);
     }
-    // 描边就是分隔线色（10%），悬停抬到 25% —— 官方输入框只有这两级，没有"变粗"
+    // 描边就是分隔线色（10%），悬停抬到 25% —— 参考资料输入框只有这两级，没有"变粗"
     Color bd = !st.border_color.is_none() ? st.border_color : th.separator;
     if (t_hover > 0.01f && !focused) bd = bd.mix(th.label3, t_hover);
     float bw = st.border_width >= 0.0f ? st.border_width : 1.0f;
@@ -6261,8 +6258,8 @@ inline bool Ui::toggle(bool* value, const Rect& box, const Style& st) {
     Rect track = Rect::centered(box.cx(), box.cy(), track_w, track_h);
     const float rad = track_h * 0.5f;
 
-    // 关闭态 = Fills - Opaque 5%（官方 Idle/False 的 Black 层 op0.05）
-    // 打开态 = 强调色；按下再叠 13%（官方 Idle/Clicked 的 Black 层 op0.13）
+    // 关闭态 = Fills - Opaque 5%（参考资料 Idle/False 的 Black 层 op0.05）
+    // 打开态 = 强调色；按下再叠 13%（参考资料 Idle/Clicked 的 Black 层 op0.13）
     const Color off_c = dark ? Color(255, 255, 255, 26) : Color(0, 0, 0, 13);
     Color track_c = off_c.mix(th.tint, t);
     if (*value && t_press > 0.01f) track_c = track_c.mix(Color(0, 0, 0, 33), t_press * 0.5f);
@@ -6274,7 +6271,7 @@ inline bool Ui::toggle(bool* value, const Rect& box, const Style& st) {
     const float knob_w = knob_widths[size] * fit, knob_h = knob_heights[size] * fit;
     const float kx = detail::lerpf(track.x + inset, track.right() - inset - knob_w, t);
     Rect knob_r(kx, track.cy() - knob_h * 0.5f, knob_w, knob_h);
-    // 官方 Knob 阴影：drop(y3 blur36 #0000000D) —— 36 是 Figma 的模糊半径，落到像素上取 7
+    // 参考资料 Knob 阴影：drop(y3 blur36 #0000000D) —— 36 是 Figma 的模糊半径，落到像素上取 7
     drop_shadow(knob_r, knob_h * 0.5f, 7.0f, Color(0, 0, 0, 26), 1.5f);
     Color knob = Color(255, 255, 255);
     if (st.disabled) knob = knob.with_alpha(230);
@@ -6312,7 +6309,6 @@ inline bool Ui::slider(float* value, float min_value, float max_value, const Rec
         if (std::fabs(nv - *value) > 1e-6f) { *value = nv; changed = true; }
         t = nt;
     }
-    const float t_hover = detail::animate_value(impl, id * 43u + 1u, (in.hovered || impl->active == id) ? 1.0f : 0.0f, 18.0f);
 
     // 滑杆轨道高 4px，把手为 20×16 胶囊；两端预留把手半宽。
     const float track_h = 4.0f;
@@ -6328,7 +6324,7 @@ inline bool Ui::slider(float* value, float min_value, float max_value, const Rec
     if (st.disabled) fill_c.a = uint8_t(float(fill_c.a) * 0.45f);
     if (t > 0.0f) fill_rect_s(Rect(track.x, track.y, std::max(track.w * t, track_h), track.h), fill_c, rad, 0.0f);
 
-    // 官方只有 Non-ticked 20×16 与 Clicked 25×20 两态：悬停不变形，按下才拉长
+    // 参考资料只有 Non-ticked 20×16 与 Clicked 25×20 两态：悬停不变形，按下才拉长
     const float t_press = detail::animate_value(impl, id * 43u + 2u,
                                                 (impl->active == id) ? 1.0f : 0.0f, 24.0f);
     const float kw = knob_w + (25.0f - 20.0f) * t_press;
@@ -6350,7 +6346,7 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
     const Theme& th = impl->theme;
     uint64_t base_id = impl->widget_id("tabs", box);
     const bool pill = (st.variant == Style::Secondary || st.variant == Style::Outline);
-    // 官方 Segmented Control 是**胶囊**（Figma 里 r=1000，按钮 r=100），不是
+    // 参考资料 Segmented Control 是**胶囊**（Figma 里 r=1000，按钮 r=100），不是
     // r6 的圆角矩形：24 高的控件整个是圆的，选中段内缩 2 之后也是胶囊。
     const float rad = st.radius >= 0.0f ? st.radius : (pill ? box.h * 0.5f : 6.0f);
     const float inner_rad = std::max(0.0f, rad - 2.0f);
@@ -6358,7 +6354,7 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
 
     bool changed = false;
     Rect container(box.x, box.y, box.w, box.h);
-    // 官方 Segmented Control：容器 8% 半透明底，选中段内缩 2px、圆角比容器小 2（同心圆角）
+    // 参考资料 Segmented Control：容器 8% 半透明底，选中段内缩 2px、圆角比容器小 2（同心圆角）
     const Rect inner = pill ? container.inset(2.0f, 2.0f) : container;
     const float equal_w = inner.w / float(labels.size());
 
@@ -6374,7 +6370,7 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
     }
 
     if (pill) {
-        // 官方 Segmented Control 的轨道是一层**凹槽**（8%），没有描边；和
+        // 参考资料 Segmented Control 的轨道是一层**凹槽**（8%），没有描边；和
         // toggle_group 用的是同一个画法 —— 它们在 AppKit 里本来就是同一个控件。
         Color container_bg = !st.bg.is_none() ? st.bg : th.track_well();
         if (st.disabled) container_bg.a = uint8_t(float(container_bg.a) * 0.45f);
@@ -6405,9 +6401,6 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
             // 选中段 = **强调色实心 + 白字**。依据是 kit 里分段的两个变体：
             //   `Segmented Control/3/1/True`  → 活动窗口：BG #0088FF，Label #FFFFFF
             //   `Segmented Control/3/1/False` → 非活动窗口：BG #0000001A，Label 85%
-            // 上一轮照着 `Window/Segmented Control`（工具栏那套玻璃图标按钮，
-            // 选中是 #E6E6E6 玻璃胶囊）改成了"白胶囊 + 主标签字"，那是另一个控件
-            // —— 内容区的文字分段控件在活动窗口里就是强调色。
             const Rect seg = item.inset(2.0f, 2.0f);
             const float sr = std::max(0.0f, seg.h * 0.5f);
             if (t_sel > 0.02f) {
@@ -6415,11 +6408,11 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
                 sel_bg.a = uint8_t(float(sel_bg.a) * t_sel + 0.5f);
                 fill_rect_s(seg, sel_bg, sr, 0.35f);
             } else if (t_hov > 0.02f) {
-                // 悬停只浮一层 3%（官方 Idle 没有 hover 态，这层是给指针的反馈下限）
+                // 悬停只浮一层 3%（参考资料 Idle 没有 hover 态，这层是给指针的反馈下限）
                 fill_rect_s(seg, th.fill4.scaled_alpha(t_hov), sr, 0.35f);
             }
         } else {
-            // 标签栏：选中 = 3% 圆角底（官方 44×29 的 Item 就是 r6 + #00000008），
+            // 标签栏：选中 = 3% 圆角底（参考资料 44×29 的 Item 就是 r6 + #00000008），
             // 悬停 = 同款更淡的一层。没有下划线、没有滑块。
             const Rect seg = item.inset(2.0f, 2.0f);
             if (t_sel > 0.02f) fill_rect_s(seg, th.fill4.scaled_alpha(t_sel), 6.0f, 0.35f);
@@ -6428,7 +6421,7 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
 
         Style ts;
         ts.font_size = fs;
-        ts.font_weight = 500;                 // 官方：选中/未选中都是 SF Pro Medium
+        ts.font_weight = 500;                 // 参考资料：选中/未选中都是 SF Pro Medium
         ts.align = Align::Center;
         ts.valign = VAlign::Middle;
         // 分段控件与标签栏分别使用各自的选中及未选中标签色。
@@ -6627,7 +6620,7 @@ inline bool Ui::radio_group(const std::vector<std::string>& items, int* index, c
 
         Style ts;
         ts.font_size = fs;
-        // 官方 `Type=Radio Buttons`：标签 13 Medium，**选中不换字重**（换字重会让
+        // 参考资料 `Type=Radio Buttons`：标签 13 Medium，**选中不换字重**（换字重会让
         // 整行文字宽度跳一下，一排单选看着在抖）。
         ts.font_weight = 500;
         ts.align = Align::Left;
@@ -7970,26 +7963,18 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
                        const Rect& box, const Style& st) {
     if (!open || !*open) return false;
     const Theme& th = impl->theme;
-    uint64_t cid = impl->widget_id("dialog_close", box);
-    // 关闭按钮先交互，再用入口层级登记闸门，避免被自身浮层阻挡。
     const uint64_t z_first = impl->seq + 1;
-    // 官方 `Alert/3 Options + Cancel`：面板 r10、无描边（层次全靠 Primary 投影）、
+    // 参考资料 `Alert/3 Options + Cancel`：面板 r10、无描边（层次全靠 Primary 投影）、
     // 内边距 16/20、标题 13 Bold、正文 **11 Regular 85%**（不是 50% 的次要灰）。
     const float rad = st.radius >= 0.0f ? st.radius : 10.0f;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float pad = st.pad_x >= 0.0f ? st.pad_x : 20.0f;
     const Input& kin = impl->input;
 
-    // 交互：点外部 / Esc / 右上角 × 都算关闭
+    // 面板外点击或 Esc 请求关闭。
     bool dismiss = false;
     if (!box.contains(kin.mouse.x, kin.mouse.y) && (kin.pressed[0] || kin.pressed[1])) dismiss = true;
     if (kin.key_pressed[KEY_ESC]) dismiss = true;
-
-    const Rect close_r(box.right() - pad - 6.0f, box.y + pad - 8.0f, 22.0f, 22.0f);
-    detail::Interact cin = detail::interact(impl, cid, close_r, true);
-    if (cin.hovered) set_cursor(Cursor::Arrow);
-    if (cin.clicked) dismiss = true;
-    const float ct = detail::animate_value(impl, cid * 79u + 1u, cin.hovered ? 1.0f : 0.0f, 18.0f);
 
     // 绘制：面板 + 投影（**不铺整屏黑幕** —— macOS 的模态只是窗口失去焦点，
     // 不会被压暗；整屏半透明黑是 Web Dialog 的 overlay）
@@ -8022,10 +8007,6 @@ inline bool Ui::dialog(const std::string& title, const std::string& body, bool* 
                   th.foreground, bs);
     }
     pop_clip();
-
-    // 右上角不画 ×：macOS 的告警面板只有底部按钮组，没有关闭键。
-    // 热区还在（close_r），所以点那个位置仍然能关，只是不露出字形。
-    (void)ct;
 
     // 关闭时仍登记闸门，多阻挡一帧，避免关闭点击穿透到后方控件。
     impl->gate_claim(box, z_first);
@@ -8101,13 +8082,11 @@ inline void Ui::toast(const std::string& text, const Rect& box, const Style& st)
 
     Color bg = !st.bg.is_none() ? st.bg : th.popover_bg;
     Color fg = !st.fg.is_none() ? st.fg : th.popover_foreground;
-    Color bd = !st.border_color.is_none() ? st.border_color : th.separator;
     if (st.disabled) { bg.a = uint8_t(float(bg.a) * 0.6f); fg.a = uint8_t(float(fg.a) * 0.6f); }
     if (danger) fg = th.destructive;
 
     // 浮起的通知条：r10 + Secondary 投影，**不描边**（描一圈线是 Web 的 toast）。
     // Web 那种"左边一条色带"在 macOS 里也不存在，告警用**文字颜色**表达。
-    (void)bd;
     detail::pop_shadow(*this, box, rad, th, 1);
     fill_rect(box, bg, rad);
     const float text_x = box.x + 14.0f;
@@ -8207,7 +8186,7 @@ inline bool group_cell(Ui& ui, Ui::Impl* im, uint64_t id, const Rect& r, const s
     const float t_h  = animate_value(im, id * 101u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
     // 分隔线先画，免得压在选中底上（只在相邻两项之间）。
-    // 官方 Segmented Control：分隔线是 1×14 的 25% 标签色，不是 1px 边框色整条通高 ——
+    // 参考资料 Segmented Control：分隔线是 1×14 的 25% 标签色，不是 1px 边框色整条通高 ——
     // 通高会像表格竖线，缩到 14 才是 macOS 的"段间细缝"。
     if (divider) {
         const float dh = std::min(14.0f, std::max(r.h - 10.0f, 1.0f));
@@ -8224,7 +8203,7 @@ inline bool group_cell(Ui& ui, Ui::Impl* im, uint64_t id, const Rect& r, const s
         ui.fill_rect(inner, th.fill4.scaled_alpha(t_h * 0.7f), ir);
     }
 
-    // 有选中语义的组：选中项 85%，其余 50%（官方 Segmented 就是这样分级的）；
+    // 有选中语义的组：选中项 85%，其余 50%（参考资料 Segmented 就是这样分级的）；
     // 一次性动作的按钮组没有"选中"，所有标签都是主标签色。
     Color fg = !selectable ? th.foreground : (on ? th.label : th.label2);
     if (st.disabled) fg.a = uint8_t(float(fg.a) * 0.45f);
@@ -8313,7 +8292,7 @@ inline bool Ui::toggle_group(const std::vector<std::string>& items, int* index,
         const Rect r(box.x + iw * float(i), box.y, iw, box.h);
         const uint64_t id = impl->widget_id("tg_item", r, base + uint64_t(i));
         const bool on = (*index == i);
-        // 分隔线只在两侧都没选中时画：官方 kit 的 Separator 会被 Selected 段整块盖住
+        // 分隔线只在两侧都没选中时画：参考资料 kit 的 Separator 会被 Selected 段整块盖住
         const bool div = i > 0 && !on && !(*index == i - 1);
         if (detail::group_cell(*this, impl, id, r, items[size_t(i)], on,
                                fs, rad, st, true, div)) {
@@ -8615,7 +8594,7 @@ inline bool Ui::item(const std::string& title, const std::string& description,
     if (in.pressed) detail::grab_focus(impl, id);
     const float t_h = detail::animate_value(impl, id * 107u + 1u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
-    // 列表行悬停只浮 5% 一层（官方 List Item 的 hover），选中才是 23% 强调色
+    // 列表行悬停只浮 5% 一层（参考资料 List Item 的 hover），选中才是 23% 强调色
     if (t_h > 0.01f)
         fill_rect(box, th.fill3.scaled_alpha(t_h), rad);
 
@@ -8891,7 +8870,7 @@ inline bool Ui::calendar(int* year, int* month, int* day, const Rect& box, const
             if (in.hovered) set_cursor(Cursor::Arrow);
             const bool is_sel = (d == sel);
             const float t_h = detail::animate_value(impl, id * 113u + 1u, (in.hovered && !is_sel) ? 1.0f : 0.0f, 20.0f);
-            // 官方日期格是**正圆**，不是圆角方块：直径取格子的短边减 6，最小 22。
+            // 参考资料日期格是**正圆**，不是圆角方块：直径取格子的短边减 6，最小 22。
             // 选中 = 强调色实心圆 + 白字；悬停 = 5% 标签色圆。
             const float dia = std::max(22.0f, std::min(std::min(cw, ch) - 6.0f, 30.0f));
             const Rect dot = Rect::centered(r.cx(), r.cy(), dia, dia);
@@ -9146,42 +9125,24 @@ inline bool Ui::alert_dialog(const std::string& title, const std::string& body,
 // -----------------------------------------------------------------------------
 //  Drawer / Sheet —— 从某一边滑出的面板
 //
-//  只做**淡入**，不做位移：位移只动画面不动命中（box 里的控件位置是固定的），
-//  滑块滑到一半点按钮会点偏。淡入既保留了"出现"的感觉，又没有这个问题。
+//  面板位置由 box 指定，内容回调在裁剪区内绘制，不做隐式位移动画。
 // -----------------------------------------------------------------------------
 inline bool Ui::drawer(const std::string& title, bool* open, int side, const Rect& box,
                        const std::function<void(const Rect&)>& draw, const Style& st) {
     if (!open || box.w <= 0.0f || box.h <= 0.0f) return false;
-    if (side < 0 || side > 3) side = 0;
     const Theme& th = impl->theme;
-    const uint64_t id = impl->widget_id("drawer", box, uint64_t(side) + 1u);
+    (void)side;  // 位置由 box 决定；保留参数以兼容已有调用。
     const uint64_t z_first = impl->seq + 1;
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float pad = st.pad_x >= 0.0f ? st.pad_x : 20.0f;
     const float head_h = std::max(fs + 32.0f, 54.0f);
 
-    if (!*open) {
-        // 关掉时把淡入值复位，下次打开才会重新渐显
-        impl->anim[id * 113u + 1u] = 0.0f;
-        return false;
-    }
-
-    // 渐显：0 → 1。没到位之前必须 repaint() 才会继续走 ——
-    // 到位后自然停下，空闲仍是 0 帧。
-    const float t = detail::animate_value(impl, id * 113u + 1u, 1.0f, 14.0f);
-    if (t < 0.995f) repaint();
+    if (!*open) return false;
 
     const Input& kin = impl->input;
     bool dismiss = false;
     if (kin.key_pressed[KEY_ESC]) dismiss = true;
     if ((kin.pressed[0] || kin.pressed[1]) && !box.contains(kin.mouse.x, kin.mouse.y)) dismiss = true;
-
-    const Rect close_r(box.right() - pad - 22.0f, box.y + (head_h - 22.0f) * 0.5f, 22.0f, 22.0f);
-    const uint64_t cid = impl->widget_id("drawer_close", box);
-    detail::Interact cin = detail::interact(impl, cid, close_r, true);
-    if (cin.hovered) set_cursor(Cursor::Arrow);
-    if (cin.clicked) dismiss = true;
-    const float ct = detail::animate_value(impl, cid * 131u + 1u, cin.hovered ? 1.0f : 0.0f, 18.0f);
 
     // 不铺整屏黑遮罩：macOS 的 sheet / 检查器面板**不会把窗口压黑**（窗口只是
     // 失去焦点），整屏 35% 黑幕是 Radix / shadcn 的 Dialog Overlay。层次交给
@@ -9200,8 +9161,6 @@ inline bool Ui::drawer(const std::string& title, bool* open, int side, const Rec
     draw_text(title, Rect(box.x + pad, box.y, std::max(box.w - pad * 2.0f - 30.0f, 1.0f), head_h),
               !st.fg.is_none() ? st.fg : th.foreground, hs);
 
-    // Sheet 同样不画 ×：macOS 的 sheet 用底部按钮（取消/好）关闭。
-    (void)ct;
     fill_rect(Rect(box.x, box.y + head_h - 1.0f, box.w, 1.0f), th.border, 0.0f);
 
     const Rect content(box.x + pad, box.y + head_h + pad * 0.5f,
@@ -9477,7 +9436,7 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
             const Rect rr(list.x + 4.0f, sr.bottom() + 4.0f + item_h * float(r), list.w - 8.0f, item_h);
             const bool on  = (sel_c == ii);
             const bool hot = (r == hi_c);
-            // 官方弹出菜单：高亮行是**强调色实心 + 白字**，不是 13% 的一层灰。
+            // 参考资料弹出菜单：高亮行是**强调色实心 + 白字**，不是 13% 的一层灰。
             // 当前值不靠底色，靠行首的对勾（所以所有行都留出 16px 的勾位）。
             if (hot) fill_rect_s(rr, th_c.tint, 5.0f, 0.35f);
             const Color fg = hot ? detail::on_color(th_c.tint) : th_c.popover_foreground;
@@ -10249,14 +10208,8 @@ inline void win_present(Win32State* s) {
     ReleaseDC(s->hwnd, dc);
 }
 
-// 在消息处理路径上"同步补一帧"。
-//
-// 为什么需要它：拖边框/拖角缩放时，鼠标按下走的是 DefWindowProc 的非客户区逻辑，
-// user32 会在这里进入一个**模态循环**（WM_ENTERSIZEMOVE … WM_EXITSIZEMOVE），
-// 我们自己的 run() 主循环这期间一行都跑不到 —— 于是没有任何代码去渲染。
-// 而 WM_SIZE 刚把后备缓冲换成一块全零的新 DIB，紧接着的 WM_PAINT 就把它贴上去，
-// 屏幕上就是一片黑，一直黑到松手为止（用户报的"缩放窗口时候会变黑"就是这个）。
-// 所以这里直接在消息里画：拖一次画一次，跟手且不黑。
+// 交互缩放进入 user32 模态循环时，主循环暂不执行。
+// 在消息处理路径同步渲染，确保 WM_SIZE 重建的后备缓冲在 WM_PAINT 前已有内容。
 inline void win_render_sync(Win32State* s) {
     if (!s || !s->has_backbuffer) return;
     if (!s->owner || !s->owner->render_fn) return;   // run() 之前没绑，跳过
@@ -10567,11 +10520,8 @@ inline LRESULT CALLBACK win_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         const bool commit = (w & AINO_GCS_RESULTSTR) != 0;
         if (commit) ui->ime_comp.clear();  // 上屏：草稿消失，正文随后由 WM_CHAR 送到
 
-        // ⚠️ 别用 (w & GCS_COMPSTR) 当门槛。微软拼音是 TSF 输入法，经 CUAS 转发
-        // 过来时 w = 0x73 —— 只有 GCS_COMPREADSTR/READATTR/COMPATTR/COMPCLAUSE，
-        // **就是没有 GCS_COMPSTR (0x08) 这一位**，可字确实在（ImmGetCompositionString
-        // 能读到）。照那一位判断的话 ime_comp 永远是空，就是用户报的
-        // "拼音根本没有预先填充输入框"。所以除纯上屏外一律无条件去问 IMM。
+        // TSF 经 CUAS 转发时，消息可能不含 GCS_COMPSTR 位，但 IMM 仍有组字串。
+        // 除纯上屏消息外都查询 IMM，避免漏掉预编辑内容。
         if (!commit) {
             static ImmApi api;
             // ⚠️ 别用 lParam 那个 HIMC。CUAS（TSF 输入法给老式窗口做的 IMM 转发层）
@@ -10856,12 +10806,7 @@ inline uint64_t win_ticks_us() {
 
 // 高精度睡眠。
 //
-// 为什么不能直接 Sleep(ms)：Windows 的默认时钟粒度是 **15.6 ms**，Sleep(4) 实际
-// 要睡 15.6 ms，Sleep(16) 直接跨两个 tick 睡 31.2 ms。本机实测：
-//     Sleep(1)  → 15.6    Sleep(15) → 16.0    Sleep(16) → 30.9
-// 于是"每帧补足 16ms 预算"这条逻辑整个失效：绘制 12.7 ms 的一页 + Sleep(4)
-// = 28 ms/帧，也就是说画面被系统时钟钉在 33~35 fps —— 用户体感就是"卡卡的"，
-// 而渲染本身其实还有 4 ms 余量。
+// Sleep 的实际等待时间受系统时钟粒度影响，不适合补足短帧预算。
 //
 // CreateWaitableTimerExW + HIGH_RESOLUTION（Win10 1803+）不需要 timeBeginPeriod，
 // 精度约 1 ms，且**只影响本进程等的那一下**，不会让整机时钟中断变快（timeBeginPeriod
@@ -10998,9 +10943,7 @@ inline void Window::render() {
     // 它一次都不会来。线程计时器的 WM_TIMER 是**真入队**的，能把 WaitMessage 叫醒，
     // 在 poll() 里消费（见 Window::poll）。
     if (o->ui.impl->ime_owner && !o->ui.impl->ime_comp.empty()) {
-        // ⚠️ 线程计时器的 id 是**系统分配**的：SetTimer(nullptr, 0xA1, …) 返回的不一定是
-        // 0xA1（本机实测返回 0x63CD），WM_TIMER 的 wParam 也是那个分配值。所以必须存
-        // 返回值、拿它比对 —— 拿常量去比，计时器一次都命中不了，浮动窗也就一直压不住。
+        // 无关联窗口的计时器由系统分配 ID，保存 SetTimer 返回值以匹配 WM_TIMER。
         if (!s->ime_timer) s->ime_timer = SetTimer(nullptr, detail::AINO_IME_TIMER_ID, 20, nullptr);
     } else if (s->ime_timer) {
         KillTimer(nullptr, s->ime_timer);
@@ -11102,10 +11045,7 @@ inline void Window::close() {
     if (s && s->hwnd) PostMessageW(s->hwnd, WM_NULL, 0, 0);
 }
 
-// 剪贴板是**全系统独占**的资源：别的进程正开着它的时候 OpenClipboard 会失败。
-// 用户按 Ctrl+V 的那一下恰好撞上并不罕见（浏览器、截图工具、输入法都在抢），
-// 一次失败就返回空串会让粘贴"时灵时不灵"。所以重试几次再认输 —— 最多 8ms，
-// 只在按键那一帧发生，肉眼看不到。
+// OpenClipboard 可能因其它进程占用而失败；最多重试 8 次，每次间隔 1ms。
 namespace detail {
 inline bool clipboard_open_retry() {
     for (int i = 0; i < 8; ++i) {
@@ -12268,9 +12208,7 @@ inline void x11_destroy(Window* self) {
     Window::Impl* o = self->impl;
     X11State* s = reinterpret_cast<X11State*>(o->native);
     if (!s) return;
-    // 文本渲染器持有的 XFontSet / GC / Pixmap 必须在 XCloseDisplay **之前**释放：
-    // 它们都是这个连接上的资源。放后面的话 release() 会拿着一个已关闭的 Display
-    // 去 XFreeFontSet —— 本机测不出来，CI 上就是 free(): invalid pointer。
+    // 文本渲染器持有此 Display 的 XFontSet / GC / Pixmap，必须在关闭连接前释放。
     if (o->text) o->text->release();
     if (s->img) { s->img->data = nullptr; XDestroyImage(s->img); s->img = nullptr; }
     if (s->ic) { XDestroyIC(s->ic); s->ic = nullptr; }

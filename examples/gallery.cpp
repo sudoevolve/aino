@@ -396,7 +396,7 @@ void draw_buttons(Ui &ui, App &a, CardId id, Rect b) {
         const char *names[] = {"Small", "Regular", "Large"};
         const float h[] = {20, 24, 28};
         for (int i = 0; i < 3; ++i)
-            if (ui.button(names[i], flow.next(i == 0 ? 65 : 78, h[i]), Style().secondary()))
+            if (ui.button(names[i], flow.next(i == 0 ? 65.f : 78.f, h[i]), Style().secondary()))
                 notify(ui, a, names[i]);
         flow.line();
         const char *hints[] = {"复制", "收藏", "更多"};
@@ -514,7 +514,7 @@ void draw_segments(Ui &ui, App &a, CardId id, Rect b) {
                            .background(a.chips[i] ? ui.theme().tint.scaled_alpha(.2f) : ui.theme().fill)
                            .color(a.chips[i] ? ui.theme().tint : ui.theme().label2)
                            .secondary();
-            if (ui.button(names[i], flow.next(i == 3 ? 72 : 58, 26), st)) {
+            if (ui.button(names[i], flow.next(i == 3 ? 72.f : 58.f, 26), st)) {
                 if (i == 3)
                     a.chip_removed = true;
                 else
@@ -569,7 +569,7 @@ void time_wheel(Ui &ui, int *value, int count, Rect area, const char *name) {
         if (ui.button(text, {area.x + 4, area.y + float(i + 2) * 26, area.w - 8, 26},
                       Style()
                           .ghost()
-                          .font(i == 0 ? 20 : 15)
+                          .font(i == 0 ? 20.f : 15.f)
                           .color(i == 0 ? ui.theme().label : ui.theme().label3))) {
             *value = v;
             ui.repaint();
@@ -659,7 +659,7 @@ void draw_feedback(Ui &ui, App &a, CardId id, Rect b) {
         Color colors[] = {ui.theme().tint, ui.theme().green, ui.theme().orange, ui.theme().red,
                           ui.theme().label2};
         for (int i = 0; i < 5; ++i)
-            ui.badge(names[i], flow.next(i == 2 ? 64 : 52, 22),
+            ui.badge(names[i], flow.next(i == 2 ? 64.f : 52.f, 22),
                      Style().color(colors[i]).background(colors[i].scaled_alpha(.14f)).font(11).corner(11));
         flow.line();
         ui.kbd("⌘", flow.next(28, 26));
@@ -736,7 +736,7 @@ void draw_table(Ui &ui, App &a, Rect b) {
                 ui.badge(cells[col], {x + 4, y + 8, std::min(50.f, w - 8), 21},
                          Style().font(11).color(c).background(c.scaled_alpha(.14f)).corner(10));
             } else
-                label(ui, cells[col], {x + 8, y, w - 12, 36}, col == 0 ? 12 : 11);
+                label(ui, cells[col], {x + 8, y, w - 12, 36}, col == 0 ? 12.f : 11.f);
             x += w;
         }
     }

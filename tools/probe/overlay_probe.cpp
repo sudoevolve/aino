@@ -317,7 +317,10 @@ static void test_z_order_under_panel() {
 
     auto draw = [&]() {
         if (ui.button("被盖住", under_r)) ++under;
-        ui.dialog("标题", "正文", &open, panel);
+        if (ui.dialog("标题", "正文", &open, panel)) {
+            if (ui.button("关闭", {panel.x + 20, panel.bottom() - 44, panel.w - 40, 24}))
+                open = false;
+        }
     };
 
     d.idle(draw);
@@ -332,10 +335,11 @@ static void test_z_order_under_panel() {
     check(under == 0, "点面板不穿透到盖住的按钮", "under=" + std::to_string(under));
     check(open, "点面板内部不关闭");
 
-    // 面板自己的关闭按钮必须还能点 —— 层级号取错就会把自己挡住
-    const aino::Rect close_r(panel.right() - 24.0f - 6.0f, panel.y + 24.0f - 8.0f, 22, 22);
-    d.click(close_r.cx(), close_r.cy(), draw);
-    check(!open, "面板自己的关闭按钮照常可点");
+    // 无可见控件的右上角只属于面板，不能触发关闭。
+    d.click(panel.right() - 18, panel.y + 18, draw);
+    check(open, "对话框右上角没有隐藏关闭热区");
+    d.click(panel.cx(), panel.bottom() - 32, draw);
+    check(!open, "面板内可见关闭按钮照常可点");
 }
 
 // ------------------------------------------------ 7. 悬停类：tooltip / spinner

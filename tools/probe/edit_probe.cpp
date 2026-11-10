@@ -17,14 +17,12 @@ using namespace aino;
 
 static const wchar_t* kTitleW = L"aino-edit-probe";
 static const float kLogicalW = 520.0f, kLogicalH = 300.0f;
+static const Rect kSingleBox(20, 40, 300, 24);
+static const Rect kMultiBox(20, 126, 300, 120);
 
 struct State {
     std::string single = "abc";
     std::string multi  = "line1\nline2";
-    bool single_changed = false;
-    bool multi_changed = false;
-    bool focus_single = true;
-    float anim = 0.0f;
 };
 static State g;
 static std::mutex g_mu;
@@ -81,7 +79,7 @@ int main() {
         (void)org;
 
         std::printf("== 单行 input ==\n");
-        click(180.0f, 40.0f);                 // input 区域
+        click(kSingleBox.cx(), kSingleBox.cy());                 // input 区域
         key(h, VK_END);
         type_text(h, "def");
         std::string v = snapshot_single();
@@ -111,7 +109,7 @@ int main() {
         check(v == "abcdef", "撤销回到替换前", "(\"" + v + "\")");
 
         std::printf("== 多行 textarea ==\n");
-        click(180.0f, 150.0f);                 // textarea 区域
+        click(kMultiBox.cx(), kMultiBox.y + 40);                 // textarea 区域
         key(h, VK_END, true);                  // Ctrl+End 到文档末尾
         key(h, VK_RETURN);
         type_text(h, "tail");
@@ -149,9 +147,9 @@ int main() {
         std::lock_guard<std::mutex> l(g_mu);
         ui.clear(ui.theme().background);
         ui.label("单行 input", Rect(20, 14, 200, 20), Style().muted_text());
-        g.single_changed = ui.input(&g.single, Rect(20, 26, 300, 36));
+        ui.input(&g.single, kSingleBox);
         ui.label("多行 textarea", Rect(20, 100, 200, 20), Style().muted_text());
-        g.multi_changed = ui.textarea(&g.multi, Rect(20, 112, 300, 120));
+        ui.textarea(&g.multi, kMultiBox);
     });
 
     driver.join();

@@ -613,9 +613,9 @@ static void test_dialog() {
     d.idle(draw);
     check(inside > 0, "open=true 时每帧返回 true", "n=" + num(inside));
 
-    // 标题栏右上角的关闭按钮：Rect(box.right()-pad-6, box.y+pad-8, 22, 22)，pad=24
+    // 标题区域没有可见关闭控件，点击不能关闭。
     d.click(box.right() - 19.0f, box.y + 27.0f, draw);
-    check(!open, "点右上角关闭");
+    check(open, "右上角没有隐藏关闭热区");
 
     open = true;
     d.key(aino::KEY_ESC, draw);

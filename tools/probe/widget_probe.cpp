@@ -549,7 +549,10 @@ static void test_drawer() {
     check(open, "打开态");
     check(drawn > 0, "内容回调被调用");
 
-    // 点遮罩（面板左边）关闭
+    d.click(panel.right() - 30, panel.y + 27, draw);
+    check(open, "抽屉标题区域没有隐藏关闭热区");
+
+    // 点面板外关闭
     d.click(40.0f, 180.0f, draw);
     check(!open, "点遮罩 → 关闭");
 
