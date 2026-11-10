@@ -140,10 +140,10 @@ gallery 展示常用控件，另有两个供工具使用的开关（完整 API �
 
 | 环境变量 | 作用 | 谁在用 |
 |---|---|---|
-| `AINO_LAYOUT_REPORT=<路径>` | 首帧写出卡片名称、所属分类、位置及尺寸，首行汇总分类数与卡片数（未搜索时为 `sections=15 cards=43`） | `regress.py` 的布局清单检查 |
+| `AINO_LAYOUT_REPORT=<路径>` | 首帧写出卡片名称、所属分类、位置及尺寸，首行汇总分类数与卡片数（未搜索时为 `sections=15 cards=43`） | 布局诊断 |
 | `AINO_START_PAGE=<序号或名字>` | 直接滚动到指定分类 | `tools/shot_pages.py` 按分类截图 |
 
-布局清单检查验证未搜索时包含 15 个分类与 43 张卡片。尺寸、间隔与搜索过滤由画廊探针检查。
+分类、卡片数量、尺寸、间隔与搜索过滤由画廊探针检查。
 组件状态、内容裁剪与交互由 `tools/probe/macos_gallery_probe.cpp` 验证。
 `shot_pages.py` 只保存截图，文字排版与外观仍需人工查看。
 
@@ -151,11 +151,17 @@ gallery 展示常用控件，另有两个供工具使用的开关（完整 API �
 
 ```sh
 python tools/regress.py
+python tools/regress.py --only macos_gallery_probe
+python tools/regress.py --full
+python tools/perf_gallery.py
 python tools/shot_pages.py
 python tools/child_window.py --shot
 ```
 
-`regress.py` 构建并运行数值、编辑、浮层、布局、像素、空闲与多窗口检查。
+`regress.py` 默认只运行 7 个核心交互探针；`--only` 指定探针，`--list` 列出名称，
+`--full` 执行全部功能检查。探针产物已是最新时跳过编译，`--no-build` 完全禁止编译。
+性能采样独立放在 `perf_gallery.py`，不再重复启动功能回归；输出单核及整机 CPU、
+帧耗时和绘制耗时，JSON 默认保存在 `build/perf-gallery.json`。
 `shot_pages.py` 保存分类截图，不能代替断言或人工排版核对。
 `tools/probe/example_ui_probe.cpp` 检查函数侧栏；`python tools/build_ssh.py ui`
 构建 SSH 界面探针，覆盖 UTF-8、选区、撤销、粘贴与弹窗输入隔离，不连接服务器。

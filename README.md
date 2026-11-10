@@ -117,7 +117,8 @@ examples/ssh_client.cpp 可选 SSH/SFTP 客户端（额外依赖见上文）
 docs/                文档，01 快速开始 … 12 与 shadcn/ui 的对照
 screenshots/         预览截图
 tools/               构建、像素断言与回归脚本
-tools/regress.py     全量回归（编译 + 探针 + 像素断言 + 布局自检 + 空闲/交互 CPU）
+tools/regress.py     默认核心交互检查，--only 指定探针，--full 完整检查
+tools/perf_gallery.py 实际画廊空闲、移动、滚动、拖动与悬停 CPU 采样
 tools/shot_pages.py  按分类截整窗图（改完版式先看一眼，不算回归）
 tools/ci_smoke.cpp   CI 冒烟程序：开窗 + 跑满 20 帧就退（三平台共用）
 tools/ci_pixels.cpp  跨平台像素断言：44 项（含 4 项 X11 专有），直接读后备缓冲（三平台共用）
@@ -125,7 +126,8 @@ tools/probe/         数值/像素探针（回归用，不参与发布）
 CMakeLists.txt       自动为 examples/*.cpp 创建可执行目标，SSH 可选
 ```
 
-改完跑一遍 `python tools/regress.py`（编译 + 探针 + 像素断言 + 空闲 CPU），全绿再提交。
+日常修改运行 `python tools/regress.py --only macos_gallery_probe` 等相关探针，
+已有最新产物可加 `--no-build`；完整检查使用 `--full`，性能单独运行 `python tools/perf_gallery.py`。
 
 ## Docs
 

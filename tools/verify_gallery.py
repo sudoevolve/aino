@@ -73,24 +73,6 @@ def close(c1, c2, tol=6):
     return all(abs(a - b) <= tol for a, b in zip(c1[:3], c2[:3]))
 
 
-def ink_span(s, x0, y0, x1, y1, thr=200):
-    """区域内"有暗像素"的纵向跨度（逻辑坐标）。只看哪几行有墨，不看字形。"""
-    first = last = None
-    ly = y0
-    while ly < y1:
-        lx = x0
-        while lx < x1:
-            c = s.at(lx, ly)
-            if (c[0] + c[1] + c[2]) / 3 < thr:
-                if first is None:
-                    first = ly
-                last = ly
-                break
-            lx += 1
-        ly += 1
-    return first, last
-
-
 class Report:
     def __init__(self):
         self.results = []
@@ -129,18 +111,6 @@ class Shot:
             ly += step
         return n
 
-    def ink(self, x0, y0, x1, y1, bg, tol=18, step=2):
-        """与背景色明显不同的采样点数 —— 证明"这一段确实画了东西"。"""
-        n = 0
-        ly = y0
-        while ly < y1:
-            lx = x0
-            while lx < x1:
-                if not close(self.at(lx, ly), bg, tol):
-                    n += 1
-                lx += step
-            ly += step
-        return n
 
     def avg(self, x0, y0, x1, y1, step=4):
         """区域平均亮度。遮罩变暗、深色主题这类整体变化用它最稳。"""
@@ -158,10 +128,7 @@ class Shot:
         return tot / max(cnt, 1)
 
 
-# ---- 供 regress.py 的 idle_probe 复用：它要"先证明真翻到那页"再采 CPU ----
-DIFF_MIN = 20        # 换页至少要有这么多格变化（16px 网格）
-
-
+# 性能采样复用相同的内容区网格。
 def content_cells(raw, w, h, ox, oy, scale):
     """内容区的等比格采样。导航区不采 —— 那一块换页时只有高亮在动。"""
     cells = []
@@ -189,19 +156,6 @@ def client_scale(hwnd):
     r = vr.wintypes.RECT()
     vr.user32.GetClientRect(hwnd, vr.ctypes.byref(r))
     return r.right / LOGICAL_W
-
-
-def wheel(hwnd, lx, ly, delta, scale, times=1):
-    """真实滚轮。WM_MOUSEWHEEL 不更新鼠标位置，而 scroll() 按位置命中，
-    所以必须先把光标挪进去，否则滚轮落在 (0,0) 上不生效。"""
-    vr.user32.SetForegroundWindow(hwnd)
-    pt = vr.wintypes.POINT(int(lx * scale), int(ly * scale))
-    vr.user32.ClientToScreen(hwnd, vr.ctypes.byref(pt))
-    vr.user32.SetCursorPos(pt.x, pt.y)
-    time.sleep(0.15)
-    for _ in range(times):
-        vr.user32.mouse_event(0x0800, 0, 0, delta, 0)
-        time.sleep(0.05)
 
 
 def send_key(hwnd, vk):
