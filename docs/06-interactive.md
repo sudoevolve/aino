@@ -1,29 +1,17 @@
 # 06 · 交互类组件
 
-14 个能改值的组件。它们共享同一套交互机制，先读完第 0 节再读具体组件。
+本篇介绍按钮、输入与选择组件。它们共享同一套交互机制，先读完第 0 节再读具体组件。
 
 ---
 
 ## 0. 通用交互机制
 
-### 0.1 组件 id 由「种类 + 位置 + 额外键」算出
+### 0.1 组件 ID 与位置
 
-```cpp
-id = hash(kind, box.x * 2, box.y * 2, extra)
-```
-
-`extra` 是文本哈希（button/badge）或基准 id + 索引（tabs 的每一项）。
-
-**`box.w` / `box.h` 不参与**。这条规则有两个直接后果：
-
-| 行为 | 是否安全 |
-|---|---|
-| 组件的宽度随窗口变化 | ✅ 安全，状态保留 |
-| 组件整体**移动**（x/y 变） | ❌ id 变了，hover / 焦点 / 动画进度全部丢失 |
-| 两个组件画在同一个 x/y 上 | ❌ id 冲突，hover 会互相串 |
-
-所以：**不要在会移动的容器里依赖组件的持久交互态**。
-页面级切换（不同页画不同内容）没问题，因为同一时刻只有一个页面在画。
+组件 ID 由种类、半逻辑像素量化的位置和额外键生成。文本按钮还会使用文本键。
+宽高不参与主位置键。滚动作用域将位置还原为内容坐标，因此正常滚动不会创建新的组件状态。
+容器整体移动、重排、修改按钮文本可能改变 ID；同类控件不要在同一内容位置使用相同键。
+应用通过 bool、字符串等外部值持有数据，组件内部仅缓存焦点、悬停和过渡等交互状态。
 
 ### 0.2 hover / press 是插值出来的
 
@@ -114,8 +102,8 @@ bool button(const std::string& text, const Rect& box, const Style& st = Style())
 | 返回 | `true` = 本帧被点击 |
 | 变体 | `Default`（primary 填充） |
 | 对齐 | **强制居中**（除非显式 `.left()` / `.top()`） |
-| 圆角 | `theme.radius`（8） |
-| 字号 | `theme.font_size`（14） |
+| 圆角 | `theme.radius`（6） |
+| 字号 | `theme.font_size`（13） |
 | 字重 | `st.font_weight` → 否则 400 |
 | 光标 | `Hand` |
 
@@ -132,14 +120,14 @@ ui.button("按我看看", box, aino::Style().primary().scale_on_press(0.97f));
 
 ### 建议尺寸
 
-高度用 `theme.control_h`（36）。宽度按内容：
-`ui.text_width(text, 14.0f, 400) + 32.0f`；想占满一行就直接把 `box.w` 给足
+高度用 `theme.control_h`（24）。宽度按内容：
+`ui.text_width(text, 13.0f, 500) + 32.0f`；想占满一行就直接把 `box.w` 给足
 （`button` 天生按传入的 `box` 铺满，不会只包住文字）。
 
 ```cpp
-if (ui.button("保存", col.next(36.0f), aino::Style().primary())) save();
-if (ui.button("取消", col.next(36.0f), aino::Style().outline())) close();
-if (ui.button("删除", col.next(36.0f), aino::Style().destructive())) remove();
+if (ui.button("保存", col.next(24.0f), aino::Style().primary())) save();
+if (ui.button("取消", col.next(24.0f), aino::Style().outline())) close();
+if (ui.button("删除", col.next(24.0f), aino::Style().destructive())) remove();
 ```
 
 > 返回值只在「按下 + 在同一次按下期间于框内松开」时为 true。
@@ -147,67 +135,32 @@ if (ui.button("删除", col.next(36.0f), aino::Style().destructive())) remove();
 
 ---
 
-## 2. `icon_button` —— 图标按钮
+## 2. `icon_button` 与系统图标按钮
+
+`icon_button(glyph, box, st)` 保留 UTF-8 字符接口，默认 Ghost，按调用方给的盒子绘制。
+它不会修正盒子的宽高：要正方形应传 24×24、20×20 等正方形区域。
+
+系统图标按钮使用普通按钮处理交互，再绘制平台符号：
 
 ```cpp
-bool icon_button(const std::string& glyph, const Rect& box, const Style& st = Style());
+const aino::Rect icon_box(24, 24, 24, 24);
+if (ui.button("", icon_box, aino::Style().ghost())) close_panel();
+ui.system_icon(aino::SystemIcon::Close, icon_box.inset(4), ui.theme().label);
 ```
 
-| 项 | 默认值 |
-|---|---|
-| 返回 | `true` = 本帧被点击 |
-| 变体 | **`Ghost`**（透明底，hover 才出现底色） |
-| 字号 | `min(box.w, box.h) * 0.55`（自动贴合按钮大小） |
-| 字重 | 400（固定） |
-| 圆角 | `theme.radius_sm`（4） |
-| 对齐 | 居中 |
-
-**生效的属性**：变体 + `bg` `fg` `border_*` `radius` `font_size` `disabled`
-
-```cpp
-ui.icon_button(aino::icons::close, {r.right() - 36, r.y, 32, 32});
-ui.icon_button("+",  b0, aino::Style().outline());   // 带框
-```
-
-> `glyph` 是一个**字符串**，不是图标枚举。用 `aino::icons::*` 的内置常量
-> （见 [02](02-style-and-theme.md) 第 5 节）或自己写 UTF-8 字符。
-> 字体缺字形会显示成方框。
+`system_icon` 只负责绘制，图标区域应包含在按钮热区内；禁用时也应相应降低图标透明度。
 
 ---
 
-## 3. `nav_item` —— 导航条目
+## 3. `nav_item` —— 侧栏条目
 
 ```cpp
-bool nav_item(const std::string& label, bool active, const Rect& box, const Style& st = Style());
+if (ui.nav_item("设置", selected == 1, row)) selected = 1;
 ```
 
-| 项 | 默认值 |
-|---|---|
-| 返回 | `true` = 本帧被点击 |
-| 对齐 | **左对齐**（这是它与 `button` 的核心区别） |
-| `pad_x` | 14 |
-| 圆角 | `theme.radius_sm`（4） |
-| 字号 | `theme.font_size` |
-| hover 底色 | `accent` 的淡版本 |
-| 选中底色 | `accent` 满色 + 前景 `foreground` / 未选中 `muted_foreground` |
-
-**生效的属性**：`bg` `fg` `font_size` `font_weight` `pad_x` `radius` `disabled`
-
-```cpp
-for (int i = 0; i < page_count; ++i)
-    if (ui.nav_item(kNames[i], page == i, side.next(34.0f))) page = i;
-```
-
-`active` 是**外部传入的持续状态**（不是组件自己记的），这正是立即模式：
-选中谁由你的 `page` 变量决定。
-
-侧边栏里配一条左侧竖条选中指示器很常见：
-
-```cpp
-// 在 nav_item 之前画
-ui.fill_rect({side_x, row.y + 6, 3, 22},
-             page == i ? aino::Color::hex(0x18181B) : aino::Color::none(), 1.5f);
-```
+返回本帧是否点击。默认标签字号 13、字重 500，水平内边距 8，选中背景为约 23% 强调色、
+圆角 8；悬停使用淡中性填充。选中状态由调用方传入，组件不负责切页或保存路由。
+建议行高 28，图标可另外使用 `system_icon` 绘制，并为文字预留位置。
 
 ---
 
@@ -402,37 +355,18 @@ key_alt[k]`，组合键判定用 `Input::ctrl_of(k)`（= 本帧按下的 k 当�
 只有一个聚焦的输入框才会持续要帧（实测约 1~2%）。
 
 ```cpp
-ui.input(&email, col.next(36.0f), aino::Style().hint("you@example.com"));
+ui.input(&email, col.next(24.0f), aino::Style().hint("you@example.com"));
 ```
 
 > `box` 的宽度决定可见区域，文本超出后**自动横向滚动**（跟随光标）。
-> 高度建议 36（`theme.control_h`）。
+> 高度建议 24（`theme.control_h`）。
 
 ### 中文输入法（IME）
 
-聚焦时库会**每帧**把光标位置报给平台层，由平台设置输入法的两个窗口：
-
-| 窗口 | 位置 |
-|---|---|
-| 组合窗（拼音串） | 光标 `x`，输入框**下沿** |
-| 候选窗（候选字列表） | 光标 `x`，输入框下沿 **+4px** |
-
-Windows 后端用 `ImmSetCompositionWindow` / `ImmSetCandidateWindow`。
-
-**为什么必须显式做**：窗口如果什么都不说，系统会把拼音串和候选框丢在客户区
-左上角（或跟着鼠标），于是和一个放在页面中部的输入框完全对不上——这就是
-「IME 没在输入区域下方对齐」的表现。
-
-**保持零依赖**：`imm32.dll` 是 `LoadLibrary` + `GetProcAddress` 动态取的，
-所以 Windows 上编译仍然**只链 `user32` + `gdi32`**。取不到就静默降级
-（输入法的默认定位行为），不影响编译和运行。
-
-> 局限：库**不自绘**组合串，拼音由输入法自己画在输入框下沿。
-> 想做成 Chrome 那种"拼音内联显示在文字中间 + 虚线下划线"，需要在
-> `WM_IME_COMPOSITION` 里取 `GCS_COMPSTR` 并参与排版 —— 当前版本没做。
->
-> 断言在 `tools/probe/ime_probe.cpp`（6 项）：结构体布局回读、
-> 组合窗/候选窗坐标、以及"点进输入框后库确实上报了位置"。
+Windows 输入框支持内联组合串、下划线与候选窗定位，组合过程不提前写入应用字符串。
+候选窗坐标随光标、DPI 和滚动位置更新；`imm32.dll` 使用运行时加载，不增加链接参数。
+Linux/macOS 的输入法行为尚未真机核对，不能从 Windows 测试结果推断。
+相关断言见 `tools/probe/ime_probe.cpp` 和编辑探针。
 
 ---
 
@@ -445,7 +379,7 @@ bool checkbox(bool* value, const std::string& label, const Rect& box, const Styl
 | 项 | 默认值 |
 |---|---|
 | 返回 | `true` = 勾选态变了 |
-| 方框尺寸 | 高度取 `box.h`，方框是正方形 |
+| 方框尺寸 | 根据可用高度选择尺寸，方框居中于行内 |
 | 方框底（未选） | `theme.input` |
 | 方框底（选中） | `theme.primary` |
 | 对勾色 | `theme.primary_foreground` |
@@ -465,114 +399,55 @@ ui.checkbox(&remember, "记住这台设备", col.next(22.0f));
 ## 6. `toggle` —— 开关
 
 ```cpp
-bool toggle(bool* value, const Rect& box, const Style& st = Style());
+ui.toggle(&notifications, {x, y, 44, 20});
 ```
 
-| 项 | 默认值 |
-|---|---|
-| 返回 | `true` = 开关态变了 |
-| 轨道（关） | `theme.input` |
-| 轨道（开） | `theme.primary` |
-| 滑块色 | `foreground` 与 `background` 按主题自动选 |
-| 动画 | 滑块与轨道色渐变 |
+值变化返回 true，轨道与滑块过渡在初始化时直接落到当前状态。
+组件选取能同时放入 `box.w/box.h` 的档位并居中，盒子过小时等比缩小。
 
-**生效的属性**：`font_size` `disabled`（其它字段基本不吃，样式由主题决定）
+| 档位 | Mini | Small | Medium | Large | XL |
+|---|---|---|---|---|---|
+| 轨道宽高 | 36×16 | 44×20 | 54×24 | 64×28 | 80×36 |
 
-```cpp
-ui.toggle(&notifications, {r.right() - 44.0f, r.y, 44.0f, 26.0f});
-```
-
-**建议尺寸 44×26**（成比例的胶囊）。给宽高不一致的盒子会变形。
+打开使用 `theme.tint`，关闭使用中性填充，滑块为白色。
+默认滚动不会重启动画，只有值变化、按下或悬停等交互会触发相应过渡。
+`Style().off()` 禁用交互。
 
 ---
 
 ## 7. `slider` —— 滑杆
 
 ```cpp
-bool slider(float* value, float min_value, float max_value, const Rect& box, const Style& st = Style());
+ui.slider(&volume, 0, 1, {x, y, 280, 24});
 ```
 
-| 项 | 默认值 |
-|---|---|
-| 返回 | `true` = 值变了（拖动中会**连续**返回 true） |
-| 轨道高 | **4px**，水平内缩 7px |
-| 轨道色 | `st.border_color` → 否则 `theme.muted` |
-| 已选段色 | `st.bg` → 否则 `theme.primary` |
-| 滑块半径 | 7（hover 时 8） |
-| 滑块色 | `theme.background`，2px 描边用已选段色 |
-| 光标 | `ResizeH` |
-
-**生效的属性**：`bg`（已选段）`border_color`（轨道）`disabled`
-
-```cpp
-ui.slider(&volume, 0.0f, 1.0f, col.next(20.0f));
-ui.slider(&size, 8.0f, 72.0f, col.next(20.0f), aino::Style().background(aino::Color::hex(0x2563EB)));
-```
-
-拖动是**线性映射**：`value = min + (max - min) * (mouse.x - box.x) / box.w`，
-所以点是哪里就跳到哪里（不是相对拖动）。
-
-高度给 20 就够（轨道只有 4px，其余是滑块的活动空间）。
+拖动时将鼠标位置线性映射到最小值与最大值之间，值变化返回 true。
+输入与绘制使用同一段轨道：两端各留把手半宽 10，点击可见端点可达到范围两端。
+轨道高 4，`border_color` 覆盖轨道色，`bg` 覆盖强调色填充。
+白色胶囊把手默认 20×16，按下过渡到 25×20；悬停不会改变把手几何。
+建议盒高 24，为按下形态和阴影留空间。`off()` 禁用交互。
 
 ---
 
-## 8. `tabs` —— 页签（下划线式）
+## 8. `tabs` —— 页签
 
 ```cpp
-bool tabs(const std::vector<std::string>& labels, int* index, const Rect& box, const Style& st = Style());
+ui.tabs({"概览", "按钮", "表单"}, &tab, col.next(28));
 ```
 
-| 项 | 默认值 |
-|---|---|
-| 返回 | `true` = 选中项变了 |
-| 容器 | **不铺底色**，只画一条 1px 的底边线（`st.border_color` → `theme.border`） |
-| 选中标记 | 底边上方一条 **2px** 的高亮横线，`st.fg` → `theme.primary` |
-| 选中文字 | `foreground` / 字重 **600** |
-| 未选文字 | `muted_foreground` / 字重 500 |
-| 悬停 | 一层 9% 的前景色（再重就变成胶囊了） |
+普通页签按文字宽度加 36 计算项宽，字重均为 500。选中项使用淡中性圆角底与主标签色，
+未选项使用次要标签色，无下划线。布局不会自动折行，应给足所有标签需要的宽度。
+返回选中索引是否变化。
 
-那条横线是**一条**会滑动的线，不是每项各自淡入淡出 —— 后者会出现「两条线同时在」
-的中间帧。
+## 9. `segmented` —— 分段选择
 
 ```cpp
-ui.tabs({"概览", "按钮", "表单"}, &tab, col.next(38.0f));
+ui.segmented({"日", "周", "月"}, &range, col.next(24));
 ```
 
-各项**等分**容器宽度（`box.w / labels.size()`），不支持自定义每项宽度。
-高度给 38 比较合适：横线占 2px，其余是点击区。
-
----
-
-## 9. `segmented` —— 分段控件（胶囊式）
-
-```cpp
-bool segmented(const std::vector<std::string>& items, int* index, const Rect& box, const Style& st = Style());
-```
-
-| 项 | 默认值 |
-|---|---|
-| 容器 | `st.bg` → `theme.track_well()`（8% 叠加，凹槽），圆角 = 高度一半（胶囊） |
-| 内边距 | **2px**（选中段内缩） |
-| 选中段 | **强调色实心 + 白字**（`on_color(tint)`），胶囊形 |
-| 未选中标签 | 主标签色（85%）—— 三段标签一样深，选中只靠那块蓝 |
-| 段间细缝 | 1×14、25% 标签色（相邻段有选中时不画） |
-
-> 依据是 kit 的两个变体：`Segmented Control/3/1/True`（活动窗口）选出的是
-> `BG #0088FF + Label #FFFFFF`；`/False`（非活动窗口）才是 `BG #0000001A`。
-> 上一轮照着 `Window/Segmented Control`（工具栏那套**玻璃图标按钮**，选中是
-> `#E6E6E6` 玻璃胶囊）把内容区分段改成了"白胶囊"，那是另一个控件。
-
-`segmented` 走的是 `tabs` 的 **Secondary 变体**（凹槽 + 滑块），所以两者看起来不再是
-同一个东西：
-
-```cpp
-ui.tabs({"概览", "按钮", "表单"}, &page,  col.next(38.0f));   // 下划线
-ui.segmented({"日", "周", "月"},   &range, col.next(32.0f));  // 胶囊
-```
-
-语义区别：`tabs` 切的是「页面」（内容完全不同），`segmented` 选的是「同一个值的不同
-表达」（日 / 周 / 月）。**0.3.3 之前两者是同一个实现**，画出来一模一样 —— 那次是文档
-写了「两套视觉」、代码里根本没做。
+默认通过 tabs 的 Secondary 变体实现：各段等宽，中性凹槽底，内缩的强调色胶囊表示选中项。
+选中项使用对比文字色。显式传其它变体会覆盖这一默认选择。
+`tabs` 通常切换内容，`segmented` 通常选择一个值的不同范围或模式。
 
 ---
 
@@ -597,7 +472,7 @@ bool select(const std::vector<std::string>& items, int* index, const Rect& box, 
 **生效的属性**：`bg` `fg` `border_color` `border_width` `font_size` `disabled`
 
 ```cpp
-ui.select(items, &idx, col.next(36.0f));
+ui.select(items, &idx, col.next(24.0f));
 ```
 
 ### 行为细节
@@ -641,29 +516,13 @@ ui.radio_group({"选项一", "选项二", "选项三"}, &choice, col.next(100.0f
 ## 12. `stepper` —— 数值步进器
 
 ```cpp
-bool stepper(float* value, float step, float min_value, float max_value,
-             const Rect& box, const Style& st = Style());
+ui.stepper(&count, 1, 0, 99, {x, y, 120, 24});
 ```
 
-| 项 | 默认值 |
-|---|---|
-| 返回 | `true` = 值变了 |
-| 布局 | `[−]  数值  [+]` 三段式 |
-| 按钮宽 | `min(box.h, 34)` |
-| 底色 | `theme.background` |
-| 描边 | `theme.input` 1px |
-| 圆角 | `theme.radius_sm`（4） |
-| 数值显示 | 保留 **1 位小数** |
-
-**生效的属性**：`bg` `fg` `border_color` `border_width` `radius` `font_size` `disabled`
-
-```cpp
-ui.stepper(&count, 1.0f, 0.0f, 99.0f, col.next(36.0f));
-ui.stepper(&ratio, 0.1f, 0.0f, 1.0f, col.next(36.0f));
-```
-
-值会被 clamp 到 `[min, max]`。`step` 可正可负（负值让 `+` 变减）。
-最小宽度约 90（要有地方显示数字）。
+左侧为数值，右侧竖条分上下两个系统箭头按钮，上增下减。
+按钮条宽 `clamp(box.h * .83, 16, 20)`，圆角默认 `theme.radius`。
+值夹取至范围，变化返回 true；整数不显示小数，其它值显示两位小数。
+`bg/fg/border_color/border_width/radius/font_size/disabled` 可覆盖对应属性。
 
 ---
 
@@ -735,8 +594,7 @@ ui.rating(&stars, 5, col.next(28.0f));
 - 点**当前已选的最后一颗**→ 清零（`*value = 0`）
 - 悬停时给星星勾一圈细边，提示"可点"
 
-星星是**自绘五角星**（凹多边形，用 `raster_poly`），不是字体字符 ——
-所以不依赖系统字体有没有 ★ 字形。
+星形使用 `SystemIcon::Star`，通过系统符号绘制。
 
 ---
 
@@ -748,8 +606,8 @@ void composeForm(aino::Ui& ui, AppState& s, const aino::Rect& area) {
     aino::Stack c = ui.vbox(area, 12.0f, 20.0f);
 
     ui.subheading("账号", c.next(26.0f), aino::Style().left());
-    ui.input(&s.email,    c.next(36.0f), aino::Style().hint("you@example.com"));
-    ui.input(&s.password, c.next(36.0f), aino::Style().hint("密码"));
+    ui.input(&s.email,    c.next(24.0f), aino::Style().hint("you@example.com"));
+    ui.input(&s.password, c.next(24.0f), aino::Style().hint("密码").secret());
     ui.muted_text("至少 8 位，含大小写与数字", c.next(18.0f), aino::Style().font(12.0f).left());
 
     ui.separator(c.next(1.0f));
@@ -759,7 +617,7 @@ void composeForm(aino::Ui& ui, AppState& s, const aino::Rect& area) {
 
     aino::Rect row = c.next(26.0f);          // 标签 + 开关同一行
     ui.label("桌面通知", row, aino::Style().left());
-    ui.toggle(&s.notify, {row.right() - 44.0f, row.y, 44.0f, 26.0f});
+    ui.toggle(&s.notify, {row.right() - 44.0f, row.y, 44.0f, 20.0f});
 
     ui.segmented({"日", "周", "月"}, &s.range, c.next(34.0f));
     ui.slider(&s.zoom, 0.5f, 2.0f, c.next(20.0f));
@@ -779,8 +637,8 @@ void composeForm(aino::Ui& ui, AppState& s, const aino::Rect& area) {
 - 尺寸全从 `box` 推，**没有一个组件有「默认宽度」**；高度靠调用方给（`field` 例外，它有
   `field_height()`）；
 - 圆角默认 `theme.radius_sm`，字号默认 `theme.font_size`，两者都能用 `Style` 覆盖；
-- 都吃 `Style().disabled()`，禁用态靠把前景 alpha 乘 0.45 表示，不另配颜色；
-- 返回 `true` 一律表示**持久值变了**（不是"被点了一下"）。
+- 都吃 `Style().off()`，禁用态降低透明度；
+- 多数组件返回值表示值变化；`button_group` 返回本帧点击，并写入点击索引。
 
 ### 16.1 `toggle_button` —— 按下态按钮
 

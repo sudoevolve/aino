@@ -1,259 +1,144 @@
-# 09 · 图元与度量
+# 09 · 基础图元与度量
 
-组件是「语义」，图元是「笔画」。所有几何都由本库 CPU 光栅化（带覆盖率抗锯齿），
-不走 GDI 的 `RoundRect` / `AlphaBlend` / `GradientFill` —— 这是 Windows 上
-只需要 `user32 + gdi32` 的原因。
+所有坐标均为逻辑单位，内部处理 DPI。几何由 CPU 光栅化并使用覆盖率抗锯齿，
+颜色 alpha 与边缘覆盖率共同参与合成。完整交互示例见
+[primitives_demo.cpp](../examples/primitives_demo.cpp)：
 
-**所有坐标都是逻辑单位**（与 `box` 一致），内部自动乘 DPI 缩放。
+```sh
+cmake --build build --config Release --target aino_primitives_demo
+```
 
----
+程序提供圆角、线宽、不透明度调整，浅深主题切换，以及可滚动的八组图元展示。
 
-## 1. 填充与描边
+## 1. 几何
 
 ```cpp
-void clear      (const Color& c);
-void fill_rect  (const Rect& r, const Color& c, float radius = 0.0f);
-void stroke_rect(const Rect& r, const Color& c, float radius = 0.0f, float width = 1.0f);
+void clear(const Color& c);
+void fill_rect(const Rect& r, const Color& c, float radius = 0);
+void stroke_rect(const Rect& r, const Color& c, float radius = 0, float width = 1);
+void fill_rect_s(const Rect& r, const Color& c, float radius, float smooth);
+void stroke_rect_s(const Rect& r, const Color& c, float radius, float width, float smooth);
 void fill_circle(float cx, float cy, float radius, const Color& c);
 void fill_crescent(float cx, float cy, float radius,
                    float cut_cx, float cut_cy, float cut_radius, const Color& c);
-void draw_line  (float x0, float y0, float x1, float y1, const Color& c, float width = 1.0f);
+void draw_line(float x0, float y0, float x1, float y1, const Color& c, float width = 1);
 ```
 
-| 函数 | 说明 |
-|---|---|
-| `clear(c)` | 整块后备缓冲填成 `c`（每帧开头用，通常是 `theme.background`） |
-| `fill_rect(r, c, radius)` | 圆角矩形填充。`radius = 0` 是矩形；半径会被 clamp 到 `min(w,h)/2`，所以给 999 就得到胶囊或圆 |
-| `stroke_rect(r, c, radius, width)` | 圆角矩形描边。**描边画在矩形边界内侧**（不占额外空间） |
-| `fill_circle(cx, cy, r, c)` | 圆。圆角矩形给足半径也能画圆，但这个更省 |
-| `fill_crescent(cx, cy, r, cut_cx, cut_cy, cut_r, c)` | 月牙 = 圆减圆（几何差集），**不需要背景色**，见下 |
-| `draw_line(x0, y0, x1, y1, c, width)` | 任意方向线段，端点圆头 |
+`clear` 填满后备缓冲。圆角矩形半径限制到短边的一半，描边在边界内侧。
+显式连续圆角接口以 `smooth` 控制曲率，负值取主题的 `corner_smoothing`；0 为圆弧圆角。
+线段两端为圆头。透明色、空矩形或无效半径不绘制。
 
-### 月牙为什么是独立图元
-
-图标里的月牙，常见画法是「先画实心圆，再用**背景色**画一个圆挖掉」。这个挖掉的圆
-是不透明的底色，所以只要背景一换（悬停高亮、换主题、图片底、渐变底）就会露出一块
-颜色不对的斑 —— 也就是"穿帮"。
-
-`fill_crescent` 走的是距离场 CSG 差集：
-
-```
-dA = |p - A| - rA          A 内部为负
-dB = |p - B| - rB          B 内部为负
-d  = max(dA, -dB)          A 且 非 B
-coverage = clamp(0.5 - d, 0, 1)     // 1px 过渡带
-```
-
-每个像素只 `blend` 一次，**完全不需要知道底下是什么颜色**，边缘仍是灰度 AA。
-代价是一次包围盒扫描（只扫 A 的框），和画一个实心圆同一量级。
+`fill_crescent` 是圆减圆的几何差集，挖空部分保留原背景；不需要用背景色覆盖。
+它适合展示几何构造；应用里的月亮图标使用 `SystemIcon::Moon`。
 
 ```cpp
-// 16px 图标里的月亮：外圆 r=8，挖掉一个偏右上、比外圆略大的圆
-ui.fill_crescent(bx, by, 8.0f, bx + 3.6f, by - 2.8f, 8.6f, ui.theme().foreground);
+ui.fill_rect_s({24, 24, 120, 64}, ui.theme().tint, 12, .6f);
+ui.stroke_rect({160, 24, 120, 64}, ui.theme().tint, 12, 2);
+ui.fill_circle(320, 56, 24, ui.theme().orange);
+ui.draw_line(24, 110, 360, 130, ui.theme().label, 2);
 ```
 
-`cut_r` 比 `radius` 大是正常的（挖的圆更大、位置偏一点，留下的月牙更薄更尖）；
-两者差不多大时月牙最厚。回归见 `tools/probe/resize_probe`、`tools/probe/arc_probe`
-同一类像素断言口径。
-
-### 早期返回（不会画任何东西）
-
-| 条件 | 说明 |
-|---|---|
-| `c.a == 0` | 全透明直接跳过（`Color::none()` 就是这种情况） |
-| `r.empty()` | `w` 或 `h` ≤ 0 |
-| 转换到物理像素后为空 | 小于一个像素的矩形会被丢掉 |
-
-所以「用 `Color::none()` 表示不画」是安全的，不需要自己加 if。
-
-### 抗锯齿与半透明
-
-- 边缘走**覆盖率 AA**：每个像素按几何与像素方格的交集比例混合
-- `c.a < 255` 时逐像素 `blend`，**不走整像素快填**
-  （覆盖率 1 ≠ 可以写实色，这是踩过的坑）
-- 圆角、圆、线段共享同一套光栅化核心，所以它们的边缘观感一致
-
-### 示例
+## 2. 渐变与边缘
 
 ```cpp
-ui.clear(ui.theme().background);
-
-ui.fill_rect({24, 24, 200, 60}, aino::Color::hex(0x18181B), 12.0f);          // 圆角块
-ui.stroke_rect({24, 100, 200, 60}, aino::Color::hex(0xE4E4E7), 8.0f, 1.0f);  // 描边
-ui.fill_circle(300, 60, 20, aino::Color::hex(0x2563EB));                     // 圆
-ui.fill_crescent(400, 60, 18.0f, 410.0f, 52.0f, 19.0f, aino::Color::hex(0x18181B));  // 月牙
-ui.draw_line(24, 180, 400, 180, aino::Color::hex(0xE4E4E7), 1.0f);           // 细线
+void fill_rect_grad(const Rect& r, const Color& top, const Color& bottom,
+                    float radius = 0, float smooth = -1);
+void stroke_rect_top(const Rect& r, const Color& c, float radius, float width, float height,
+                     float smooth = -1);
 ```
 
----
-
-## 2. 文本
-
-```cpp
-void draw_text(const std::string& text, const Rect& box, const Color& c,
-               const Style& st = Style());
-```
-
-`Style` 在这里只读这几个字段：`align` `valign` `font_size` `font_weight` `wrap` `line_gap`。
-
-| 项 | 说明 |
-|---|---|
-| 默认字号 | `theme.font_size`（14） |
-| 默认字重 | 400 |
-| 折行 | `\n` 永远生效；`st.wrap` 为真时再按 `box.w` 自动折行 |
-| 裁剪 | **总是**裁到 `effective_clip ∩ box` |
-| 对齐 | `align` 决定水平，`valign` 决定垂直 |
-
-裁剪是强制的：文字永远不会画到 `box` 外面。这是为了保证「对话框正文
-横着爬出面板」这类问题不可能发生（早期版本只裁几何，长英文串会横穿整窗）。
-
-```cpp
-ui.draw_text("居中文字", {24, 24, 200, 40}, aino::Color::hex(0x09090B),
-             aino::Style().center().middle());
-```
-
-> 想要一层底就用 `label` / `code_text`——它们内部是 `draw_text` 加一层装饰。
-> `alert` 是例外：macOS 的 inline 提示**不铺底**，只有一枚符号 + 两行文字。
-
----
+渐变从上向下插值颜色，包含 alpha。`stroke_rect_top` 只保留圆角描边顶部指定高度，
+用于表面高光，不改变其余部分。
 
 ## 3. 阴影
 
 ```cpp
-void drop_shadow(const Rect& r, float radius, float blur, const Color& c, float dy = 1.0f);
+void drop_shadow(const Rect& r, float radius, float blur, const Color& c, float dy = 1);
+void inner_shadow(const Rect& r, const Color& c, float radius, float blur, float dy = 0,
+                   float smooth = -1);
 ```
 
-| 参数 | 说明 |
+外阴影使用距离场和高斯累积分布近似的衰减，而非多层透明矩形叠加。
+alpha 不超过传入颜色的 alpha。`dy` 为纵向偏移；绘制成本随外扩扫描区域和 DPI 增加。
+先画投影，再画主体。内阴影只作用于轮廓内部。
+
+```cpp
+ui.drop_shadow(box, 12, 10, aino::Color(0, 0, 0, 40), 3);
+ui.fill_rect(box, ui.theme().control_bg, 12);
+ui.inner_shadow(box, aino::Color(0, 0, 0, 20), 12, 3, 1);
+```
+
+## 4. 背景模糊与材质
+
+```cpp
+void backdrop_blur(const Rect& r, float radius, float blur);
+void glass(const Rect& r, float radius = 12, const Style& st = Style());
+```
+
+`backdrop_blur` 读取调用时已画进后备缓冲的区域，做三趟可分离盒式模糊并按圆角写回。
+`glass` 组合背景模糊、材质、边缘与投影，`Style().blur(12)` 控制模糊半径，
+`background(c)` 可覆盖材质色。第二个参数是圆角半径。
+先画背景，再调用模糊/材质，最后绘制前景内容。
+
+这是一种背景模糊近似，不具备液态玻璃的折射、色散或系统合成效果。
+没有先绘制背景时不会凭空产生背景细节。
+
+## 5. 文字与系统图标
+
+```cpp
+void draw_text(const std::string& text, const Rect& box, const Color& c,
+               const Style& st = Style());
+bool system_icon(SystemIcon icon, const Rect& box, const Color& color);
+void draw_mono_text(const std::string& text, float x, float y_top, const Color& c,
+                    float font_size, int weight = 400);
+```
+
+正文默认字号 13、字重 400，`Style` 控制字号、字重、斜体、对齐、折行和行距。
+`draw_text` 裁剪到当前有效裁剪区与传入盒子的交集。
+等宽文本以左上角定位，使用独立等宽字体通道。
+
+`system_icon` 只绘制符号，不提供点击交互，尊重裁剪、颜色和变换。
+Windows 使用 Segoe Fluent Icons / MDL2，macOS 使用 SF Symbols，X11 使用 Unicode 回退。
+可配合空文字按钮构造系统图标按钮，见 [02 §5](02-style-and-theme.md#5-系统图标)。
+
+## 6. 度量
+
+| API | 用途 |
 |---|---|
-| `r` | 阴影的**投影轮廓**（通常就是被投影的组件框） |
-| `radius` | 轮廓圆角，与被投影组件的圆角保持一致 |
-| `blur` | 模糊半径，越大越散 |
-| `c` | 阴影色，通常 `Color(0, 0, 0, 30~50)` |
-| `dy` | 垂直偏移（正值向下） |
+| `text_width(text, font_size, weight = -1)` | 单行比例字体宽度 |
+| `line_height(font_size)` | 字体行高 |
+| `text_height(text, width, st)` | 与绘制相同折行规则的总高度 |
+| `alert_height(title, description, width, st)` | 提示块所需高度 |
+| `mono_width(text, font_size, weight = 400)` | 等宽文本宽度 |
+| `mono_advance(font_size, weight = 400)` | 等宽半角字符步进 |
+| `mono_ascent(font_size, weight = 400)` | 顶部到基线的距离 |
 
-### 走距离场，不是叠层
-
-实现是一次成形的 SDF：
-
-```
-alpha = c.a * clamp(1 - d/blur, 0, 1)²      // d = 到轮廓的距离
-```
-
-平方衰减没有硬边。**峰值 alpha 严格不超过传入的 `c.a`** ——
-早期版本是叠 N 层半透明圆角矩形，叠加处会累积（传 46 渲出约 148，糊成一坨黑）。
-
-| 浮层 | 建议参数 |
-|---|---|
-| `tooltip` / `menu` | `blur 10, dy 3, alpha 34` |
-| `toast` | `blur 14, dy 5, alpha 38` |
-| `dialog` | `blur 22, dy 8, alpha 46` |
+测量与绘制必须使用相同的宽度、字体和折行选项。
 
 ```cpp
-ui.drop_shadow({100, 100, 260, 80}, 12.0f, 22.0f, aino::Color(0, 0, 0, 46), 8.0f);
-ui.fill_rect({100, 100, 260, 80}, aino::Color::white(), 12.0f);
+const aino::Style style = aino::Style().wrap_text().line_spacing(3);
+const float height = ui.text_height(paragraph, box.w, style);
+ui.label(paragraph, {box.x, box.y, box.w, height}, style);
 ```
 
-> 阴影是**有成本的**，而且成本按「**外扩 blur 后的包围盒**」算，不是你传进去的矩形：
-> 260×80 配 `blur 22`，在 DPI 1.5 下实际扫的是 `(390+66) × (120+66) = 456×186 ≈ 8.5 万`像素
-> （≈ 635µs）；`dialog` 的 340×170 配 `blur 22` 扫 `576×321 ≈ 18.5 万`像素（≈ 1253µs）。
-> 单价约 **6.5 ns/像素**，是普通填充的 4~10 倍 —— 因为每像素要算一次 `rrect_sdf`。
-> 大面板 + 大 blur + 每帧重绘 = 明显的帧时间。静置时没影响（不渲染）。
+大块自定义内容可用 `begin_measure/end_measure` 测量外接矩形，见 [03](03-layout.md)。
 
----
-
-## 4. 度量
+## 7. 裁剪与变换
 
 ```cpp
-float text_width  (const std::string& text, float font_size, int weight = -1) const;
-float line_height (float font_size) const;
-float text_height (const std::string& text, float width, const Style& st = Style()) const;
-float alert_height(const std::string& title, const std::string& description,
-                   float width, const Style& st = Style()) const;
+ui.push_clip(viewport);
+aino::Transform transform;
+transform.origin = {box.cx(), box.cy()};
+transform.rotate = 18;
+ui.push_transform(transform);
+ui.fill_rect(box, ui.theme().tint, 12);
+ui.pop_transform();
+ui.pop_clip();
 ```
 
-| 函数 | 返回 | 用途 |
-|---|---|---|
-| `text_width(s, fs, w)` | 单行文本的逻辑宽度 | 按钮/徽标定宽、`next_text` |
-| `line_height(fs)` | 一行的高度（含行距） | 算多行文本总高 |
-| `text_height(s, w, st)` | 给定宽度下**折行后**的总高 | 正文块留高度 |
-| `alert_height(t, d, w, st)` | `alert` 在给定宽度下需要的高度 | 给 `alert` 留高度 |
+裁剪栈逐层取交集，同时限制几何、文字和组件命中。push/pop 必须配对。
+Transform 只改变绘制，不改变布局或命中区域；旋转裁剪以包围盒近似。
+交互控件的视觉位置应与热区保持一致。更多示例见 [11](11-motion.md)。
 
-### 为什么高度要"量"而不是"自适应"
-
-宽度可以立刻量出来（系统字体引擎直接给），但**高度依赖折行**，
-折行又依赖宽度 —— 在「边画边切」的立即模式里，这需要两趟遍历。
-
-所以 aino 的立场是：**不做高度自适应，但高度必须可量**。
-而且量出来的值和实际绘制用的是**同一套折行代码**（`layout_wrapped_lines`），
-不是估算 —— 给多少就画多少，不会裁掉最后一行。
-
-```cpp
-// 正文块：先量后给
-float h = ui.text_height(paragraph, 380.0f, aino::Style().wrap_text());
-ui.label(paragraph, col.next(h), aino::Style().wrap_text());
-
-// 提示块：用专用度量
-float ah = ui.alert_height(title, desc, 380.0f, aino::Style().font(13.0f));
-ui.alert(title, desc, col.next(ah), aino::Style().font(13.0f));
-```
-
-> `text_height` 用 `st.wrap` 决定要不要折行。**如果绘制时用了 `wrap_text()`
-> 而量高度时忘了，量出来的是一行的高度**，正文会被裁成一行 —— 这是最常见的坑。
-
-### 手动排版时用 `next_text`
-
-```cpp
-aino::Stack row = ui.hbox({24, 24, 400, 36}, 8.0f);
-ui.label("确定", row.next(ui.text_width("确定", 14.0f) + 16.0f));
-```
-
-横向布局里做「刚好包住文字」的格子，`Stack::next_text` 更省事：
-
-```cpp
-ui.label("确定", row.next_text("确定", 16.0f));   // 文字宽 + 左右各 8
-```
-
----
-
-## 5. 裁剪与坐标
-
-```cpp
-void push_clip(const Rect& r);   // 压入一个裁剪区（与已有裁剪取交集）
-void pop_clip();
-```
-
-裁剪同时作用于**几何与文字**。`begin_scroll` 内部会自动处理，不需要额外包。
-
-坐标相关：
-
-| 函数 | 说明 |
-|---|---|
-| `ui.width()` / `ui.height()` | 客户区逻辑尺寸 |
-| `ui.dpi_scale()` | 逻辑→物理倍率（如 1.5） |
-| `ui.input().mouse` | 鼠标**逻辑坐标**（已除 DPI） |
-
-图元 API 全部吃逻辑坐标，所以你的代码**不需要关心 DPI** ——
-这是刻意的：一处换算，处处一致。
-
----
-
-## 6. 一帧的完整顺序
-
-自己驱动渲染时（`poll` + `render` 之外的场景），顺序是这样的：
-
-```cpp
-win.run([&](aino::Ui& ui) {
-    const aino::Theme& t = ui.theme();
-    ui.clear(t.background);              // 1. 铺底
-
-    // 2. 背景层（panel / 分隔线 / 图片位）
-    ui.panel(page);
-    // 3. 内容层（文字、控件）
-    ui.heading("标题", ...);
-    // 4. 浮层（帧末统一绘制，调用位置不影响层级）
-    ui.tooltip(...);
-});
-```
-
-`begin_frame` / `end_frame` 由 `run()` 负责，不需要手动调。
-需要手动控制时用 `win.poll()` + `win.render()`，`render()` 内部会走完整的一帧。
+一帧通常依次绘制背景、容器、内容、直接绘制的浮层；帧末浮层由 `end_frame` 处理。
+常规应用由 `Window::run` 管理帧生命周期，浮层顺序见 [08](08-overlays.md)。

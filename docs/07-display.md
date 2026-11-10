@@ -1,7 +1,7 @@
 # 07 · 展示类组件
 
 9 个只读组件（`accordion` 例外，它有点击但只切换展开态）。
-全部**静态**，静置不产生任何帧 —— `spinner` 也只有鼠标悬停时才转。
+未交互、未显式启用动画时保持静止；spinner 默认悬停才转，`.animate()` 可显式持续播放。
 
 ```cpp
 void avatar    (const std::string& text, const Rect& box, const Style& st = Style());
@@ -24,10 +24,10 @@ void bars      (const std::vector<float>& values, const Rect& box, const Style& 
 |---|---|
 | 返回 | 无 |
 | 形状 | 圆形，直径 = `min(box.w, box.h)` |
-| 底色 | `st.bg` → 否则 `theme.muted` |
+| 底色 | `st.bg` → 否则 `theme.fill`（10% 叠加填充） |
 | 字号 | `st.font_size` → 否则 `d * 0.42`（随直径缩放） |
 | 字重 | 600（固定） |
-| 前景 | `st.fg` → 否则按底色亮度自动选 `muted_foreground` / `primary_foreground` |
+| 前景 | `st.fg` → 否则按与窗口背景合成后的亮度选 `foreground` / 白色 |
 | 描边 | **默认 1px `theme.border`**；`st.border_width` 可改粗细（写 0 关掉），`st.border_color` 改色 |
 
 **生效的属性**：`bg` `fg` `border_color` `border_width` `font_size` `disabled`
@@ -42,11 +42,7 @@ ui.avatar("李",   {24, 24, 48, 48}, aino::Style().stroke(2, aino::Color::hex(0x
 
 `box` 不是正方形时按**最小边**取直径并居中，所以传 `{24,24,48,40}` 也不会变椭圆。
 
-> **为什么默认要描边**：圆底是 `theme.muted`，而浅色主题里 `muted` 和 `secondary` /
-> `accent` 是同一个 `#F4F4F5`。只要它落在一个浅灰容器上（卡片、`panel()`、任何铺了
-> `muted` 的面板），圆就和背景同色 —— 画面上只剩一个孤零零的字，看着像"头像没做出来"。
-> 1px 描边是唯一在任何底色上都能立住的线索。要纯色块（比如底下本来就有照片），
-> 传 `Style().stroke(0.0f)` 关掉。
+默认描边保证浅色容器中的轮廓可辨。使用 `Style().stroke(0, aino::Color::none())` 可关闭。
 
 ---
 
@@ -61,28 +57,14 @@ ui.avatar("李",   {24, 24, 48, 48}, aino::Style().stroke(2, aino::Color::hex(0x
 | 半径 | `d * 0.5 - 1.5` |
 | 最小尺寸 | 6px（更小直接不画） |
 | 角速度 | `4.6 rad/s`（约 0.73 圈/秒） |
-| 弧长 | 3/4 圈（`4.7123889` rad） |
+| 拖尾 | 整圈连续 alpha，最暗处保留 14%，无断开的端点 |
 
 **生效的属性**：`bg`（弧色）`border_color`（底环色）`disabled` `animated`
 
-### 画法：一次成形的环，不是拼线段
+### 环形绘制
 
-底环和弧都走 `raster_arc()` —— 一次遍历环的包围盒，用**径向距离**求覆盖率、
-**极角**求 alpha，每个像素只混合一次。
-
-早期版本是「48 段短线拼一圈 + 36 段拼弧」，看起来是一圈一节一节的"拼接块"。
-根因：`raster_line` 两端是圆头，相邻段在接缝处相互重叠，**同一个像素被 blend
-两次**，颜色叠深。段越密接缝越多，弧越长越明显。
-
-拿 `alpha=128` 的整圈沿角度采样 360 点（白底，亮度越小越黑）：
-
-| 画法 | 亮度范围 | 落差 |
-|---|---|---|
-| 拼 48 段（旧） | 31 ~ 61 | **30** |
-| 一次成形（新） | 127 ~ 127 | **0** |
-
-顺带快了 34%：`spinner` 的单帧绘制 **99.1 → 65.8 µs**（一次扫描 vs 84 次独立扫描）。
-断言在 `tools/probe/arc_probe.cpp`（10 项，含上面那组对照数据）。
+底环与周期性 alpha 拖尾直接按距离场扫描，每个像素只合成一次，避免短线段连接处叠色。
+像素断言见 `tools/probe/arc_probe.cpp`。
 
 ### 什么时候转
 
@@ -95,7 +77,7 @@ ui.spinner(box, aino::Style().animate());    // 无论鼠标在哪都转
 ui.spinner(box, aino::Style().background(aino::Color::hex(0x16A34A)));   // 绿色
 ```
 
-实测（460×300 窗口，单个 spinner）：
+历史测量（2026-10-17，460×300 窗口，单个 spinner；不代表当前版本耗时）：
 
 | 条件 | 帧 | CPU |
 |---|---|---|
@@ -117,35 +99,24 @@ ui.spinner(box, aino::Style().background(aino::Color::hex(0x16A34A)));   // 绿�
 | 圆角 | 10（只在铺底时可见） |
 | `pad_x` | **12**（同时用于垂直内边距） |
 | 字号 | `theme.font_size` |
-| 符号 | 自绘 SF Symbol 风格**描边**：`info.circle`（中性 50%）/ `exclamationmark.triangle`（系统红） |
+| 符号 | 系统符号：`info.circle`（中性 50%）/ `exclamationmark.triangle`（系统红） |
 | 标题 | 600 字重，色 `foreground`（**不因 Destructive 染红**） |
 | 描述 | 400 字重，色 `muted_foreground`，**自动折行** |
 
 **生效的属性**：`bg` `fg` `radius` `pad_x` `font_size`
 `variant`（`Default` / `Secondary` / `Destructive`）`disabled`
 
-### 为什么默认不铺底
-
-macOS 没有「整块底色的提示条」这种控件。Finder 的删除警告、系统设置里的空间不足
-提示，都是**一枚符号 + 两行文字**直接贴在版面上：没有面、没有边、没有圆角卡片。
-
-铺一层 3% 的底，在已经有一层 Group Box 的容器里就变成「卡片套卡片」——整页一眼
-后台管理系统。所以默认 `bg = none`，要面得自己给。
-
-同理，标题**不染红**：`NSAlert` 的 `messageText` 永远是 label 色，红色只出现在符号
-和破坏性按钮上。整行红字是 Web 的 `alert-danger`。
+默认只显示系统符号、标题和描述。显式指定背景或使用 Secondary 时绘制淡底；Destructive 改变符号颜色，标题保留标签色。
 
 ### 三个变体
 
 ```cpp
 ui.alert("提示", "默认：只有符号和文字，没有任何面",          box);
-ui.alert("提示", "次要：2% 淡底（少数需要分块的地方才用）",   box, aino::Style().secondary());
+ui.alert("提示", "次要：3% 淡底（少数需要分块的地方才用）",   box, aino::Style().secondary());
 ui.alert("错误", "危险：符号转系统红，标题仍是 label 色",      box, aino::Style().destructive());
 ```
 
-符号是自绘的：`info.circle` 是一圈 1.4px 描边 + 中间的 i，`exclamationmark.triangle`
-是一圈描边三角 + 感叹号。**不是**「饱和色实心圆片里挖白字」——那是 Bootstrap 的
-alert 图标，形状和配色都不是 mac 的。
+符号使用 `SystemIcon::Info` / `SystemIcon::Warning`，由平台系统图标通道绘制。
 
 ### 高度必须量
 
@@ -173,7 +144,7 @@ ui.alert(t, d, col.next(ui.alert_height(t, d, 380.0f, st)), st);
 | 字号 | `theme.font_size` |
 | 最后一段 | 500 字重 + `foreground` |
 | 其它段 | 400 字重 + `muted_foreground` |
-| 分隔符 | 自绘 `›`（两条短线），间距 **14px** |
+| 分隔符 | 系统 Next 符号，间距 **14px** |
 | 裁剪 | 自动裁到 `box` |
 
 **生效的属性**：`fg`（最后一段色）`font_size` `disabled`
@@ -222,7 +193,7 @@ bool accordion(const std::string& title, bool* open, const Rect& box, const Styl
 | 返回 | `true` = 本帧切换了展开状态 |
 | 标题行高 | `min(box.h, max(fs + 22, 38))` |
 | 标题左缩 | **12px** |
-| 箭头位置 | 右侧 20px 处，自绘上下两态 |
+| 箭头 | 系统 ChevronDown / Next，随展开状态变化 |
 | hover 底色 | `foreground` 的 4% alpha |
 | 圆角 | `theme.radius_sm`（4） |
 | 焦点环 | `theme.ring` |
@@ -238,7 +209,7 @@ bool accordion(const std::string& title, bool* open, const Rect& box, const Styl
 bool changed = ui.accordion("高级设置", &s.advanced_open, col.next(44.0f));
 if (s.advanced_open) {
     aino::Stack inner = ui.vbox(/* 在标题下方留出的区域 */, 10.0f, 12.0f);
-    ui.input(&s.api_key, inner.next(36.0f), aino::Style().hint("API Key"));
+    ui.input(&s.api_key, inner.next(24.0f), aino::Style().hint("API Key"));
     ui.checkbox(&s.dry_run, "试运行", inner.next(22.0f));
 }
 ```
@@ -259,19 +230,20 @@ void table(const std::vector<std::string>& headers,
 | 项 | 默认值 |
 |---|---|
 | 返回 | 无 |
-| 表头高 | `max(fs + 18, 36)` |
-| 行高 | `max(fs + 16, 34)` |
+| 表头高 | `max(fs + 10, 24)` |
+| 行高 | `max(fs + 7, 20)` |
 | 列宽 | **一律等分** `box.w / cols` |
-| 表头底 | `st.bg` → 否则 `theme.muted`，圆角 `theme.radius` |
-| 表头字 | 字号 `fs - 1`、字重 **600**、色 `muted_foreground` |
-| 列分隔线 | 每列左边界一条竖线（首列除外），上下各留 7px |
-| 斑马纹 | **奇数行**（1、3、5…）`muted` 50% alpha |
+| 表头底 | 默认不铺底；显式 `st.bg` 时铺底 |
+| 表头字 | 字号 11、字重 **600**、色 `muted_foreground` |
+| 列分隔线 | 无竖线 |
+| 斑马纹 | 显式 `st.bg` 时，奇数行使用 `theme.row_alt` |
 | 行分隔线 | 每行底部 1px `theme.border` |
 | 单元格 `pad_x` | **12** |
-| 外框 | 1px `theme.border`，圆角 `theme.radius` |
+| 外框 | 默认无外描边 |
 | 裁剪 | 自动裁到 `box`，超出高度的行不画 |
 
-**生效的属性**：`bg`（表头底）`fg`（正文色）`font_size` `pad_x` `radius` `disabled`
+**生效的属性**：`bg`（表头底、启用交替行）`fg`（正文色）`font_size` `pad_x` `radius` `disabled`
+数字内容右对齐，表头按该列第一个非空单元格判断对齐方式。
 
 ```cpp
 std::vector<std::string> heads = {"项目", "数值", "状态"};
@@ -399,7 +371,7 @@ if (ui.item("张伟", "zhangwei@example.com", "管理员", {x, y, w, 52}))
 | 尾部文字 | 右对齐、`fs-1`、`muted_foreground`，宽度按实测 + 12 |
 
 它的高度完全由 `box.h` 决定 —— 两行模式需要约 `line_height(fs) + 2 + line_height(fs-1)`，
-给少了会挤。常用的 52px 就是按 14px 字号算的。
+给少了会挤。52px 可为两行内容保留较充足的间距。
 
 ### 11.2 `empty_state` —— 空状态
 
@@ -429,9 +401,9 @@ if (ui.pagination(&page, 20, {x, y, 360, 36})) reload(page);
 | 槽位数 | **恒定 7 个**（`总页数 > 7` 时） |
 | 布局 | 首 · … · 当前 · … · 末（靠近两端时自动改成「1 2 3 … 末」或「首 … 倒数三 二 末」） |
 | 槽宽 | `min(box.h, box.w / 槽位数)`，整排水平居中 |
-| 当前页 | `theme.primary` 底 + `primary_foreground` 字 |
+| 当前页 | 强调色 23% 胶囊底 + 主标签色 |
 | 省略号 | **只画不 `interact`** —— 点了没意义，就不做成假控件 |
-| 上下页箭头 | 两条 `draw_line` 自绘，不依赖字体里有没有 `<` `>` |
+| 上下页箭头 | `SystemIcon::Prev` / `Next` |
 | 返回 | 本帧是否翻页（`*page` 已写好） |
 
 > 槽位数之所以恒定，是因为早期版本按"当前页附近三页"排：翻页时槽位数会从 8 变 6，

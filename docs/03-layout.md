@@ -7,9 +7,9 @@
 ```cpp
 aino::Stack col = ui.vbox({24, 24, 400, 300}, 10.0f, 18.0f);   // 纵向 / 间距 10 / 内边距 18
 ui.heading("设置",  col.next(34.0f));
-ui.input(&email,    col.next(36.0f));
+ui.input(&email,    col.next(24.0f));
 ui.checkbox(&on, "通知", col.next(22.0f));
-ui.button("保存",   col.next(36.0f));
+ui.button("保存",   col.next(24.0f));
 ```
 
 和手写 `yy += 44` 相比，它多做了四件事：
@@ -184,9 +184,9 @@ draw_my_panel(ui, app, aino::Rect(x, y, w, used.h));
 滚动区里量到的只有**视口内**的部分 —— 内嵌长列表天生超出视口，不能算进
 外层高度，否则一张卡片会被撑成几千像素。
 
-gallery 的每张示例卡片就是这么做高度的：`preview_h` 只是下限，
-运行时取 `max(声明, 实测)`，所以"内容爬出卡片下边框"这一类维护灾难不会发生。
-`AINO_LAYOUT_REPORT=<路径>` 会把 45 页全部量一遍写成报告，回归里有一条断言盯着它。
+画廊布局报告通过 `AINO_LAYOUT_REPORT=<路径>` 输出当前卡片的名称、分类、位置和尺寸。
+未搜索时为 15 个分类、43 张卡片；它与测量 API 的用途不同。
+卡片内容高度、窄窗口与搜索结果由 `macos_gallery_probe.cpp` 检查。
 
 ---
 
@@ -229,26 +229,10 @@ gallery 的每张示例卡片就是这么做高度的：`preview_h` 只是下限
 | `scroll_to(off)` | 程序化滚动，clamp 到合法范围；也可以 `sc.to(off)` |
 | 裁剪 | 视口自带 `push_clip`，内容不会画到外面 |
 
-**裁剪也管命中，不只是绘制。** 滚出视口的行看得见地没了，但它们的矩形还在坐标上 ——
-命中测试如果不看裁剪，那些看不见的行照样能接到点击。gallery 的侧边栏就是这个形态：
-45 项导航、视口只装得下二十来行，页脚的主题按钮下面平平地压着十几行。
-修好之前点主题按钮会说"没反应"，其实是页面被某一行悄悄切走了。
-现在 `interact()` 和 `hover_region()` 都先跟当前裁剪区求交，被裁掉的部分不参与命中
-（`push_clip` / `pop_clip` / `scroll()` 会同步维护一份**逻辑坐标**的裁剪栈，
-绘制用的那份是物理坐标，两者不能混用）。
-
-
-**滚动条以前是纯装饰**：只画一个 3px 的滑块，没有任何命中判定，所以除了滚轮
-根本没法操控（点不动、拖不动）。现在 `end_scroll()` 会在收尾时先吃交互再画：
-按下滑块就进入拖动、按下轨道就跳过去。热区 11px 是刻意的 —— 3px 是画给人看的
-尺寸，不是点得中的尺寸。拖动状态记在 `impl->active` 上，所以下层控件抢不走，
-鼠标拖出视口也还跟着。
-
-实现方式是把「视口」翻译成布局语义：压一个负向偏移的 group + 一个裁剪区。
-所以内部的 `row()`/`column()`/`vbox()` 自动吃到偏移，**不需要逐个组件改坐标**。
-
-用 `scroll()` 就不存在「忘了 `end_scroll`」这种事；手工配对时漏了，裁剪区会
-一直留着，**后面画的东西全被裁掉**（踩过一次，找了一小时）。
+**裁剪同时限制绘制与命中。** 滚出视口的组件不能拦截视口外按钮。
+组件在滚动作用域内按内容坐标生成 ID，滚动偏移不会重置 bool 状态、焦点和动画。
+使用 `vbox` 等库布局器时由作用域处理偏移；直接传绘图坐标时从 y 减去 `scroll_y()`，
+不要对同一盒子重复减偏移。手写动画的 ID 也应保持稳定，不要使用随滚动变化的屏幕坐标。
 
 ### 4.2 虚拟：固定行高，只画可见行
 
@@ -319,7 +303,7 @@ ui.pop_clip();
 
 ---
 
-## 7. 完整示例（gallery 的页面骨架）
+## 7. 布局组合示例
 
 ```cpp
 void composePage(aino::Ui& ui, AppState& s) {
@@ -336,14 +320,14 @@ void composePage(aino::Ui& ui, AppState& s) {
     aino::Rect right = col.part(1, 2);
     aino::Stack lc = ui.vbox(left,  10.0f);
     aino::Stack rc = ui.vbox(right, 10.0f);
-    ui.input(&s.email, lc.next(36.0f));
+    ui.input(&s.email, lc.next(24.0f));
     ui.toggle(&s.on,   rc.next(26.0f));
 
     ui.button("保存", col.fill(), aino::Style().primary());   // 吃到底部
 }
 ```
 
-这一页**没有一个手算坐标**。`gallery.cpp` 的 45 页全部是这种写法。
+该示例展示 Stack 的嵌套与切片。画廊采用固定侧栏、工具栏和连续滚动的卡片区域。
 
 ---
 

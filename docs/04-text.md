@@ -1,6 +1,6 @@
 # 04 · 文本类组件
 
-五个纯展示组件，都不响应交互、不返回 bool、不占焦点。
+前五节为纯展示组件，都不响应交互、不返回 bool、不占焦点。
 它们的共同点是都走 `draw_text`，所以 `wrap` / `line_gap` / `align` / `valign` / `italic`
 全部生效。
 
@@ -12,7 +12,7 @@ void muted_text (const std::string& text, const Rect& box, const Style& st = Sty
 void code_text  (const std::string& text, const Rect& box, const Style& st = Style());
 ```
 
-五个组件的区别**只在默认字号/字重/前景色**（`code_text` 另外多一层底衬块），
+这五个组件的区别**只在默认字号/字重/前景色**（`code_text` 另外多一层底衬块），
 其余行为完全一致。
 
 ---
@@ -22,7 +22,7 @@ void code_text  (const std::string& text, const Rect& box, const Style& st = Sty
 | 项 | 默认值 |
 |---|---|
 | 返回 | 无 |
-| 字号 | `theme.font_size`（14） |
+| 字号 | `theme.font_size`（13） |
 | 字重 | 400 |
 | 前景 | `st.fg` → 否则 `muted ? muted_foreground : foreground` |
 | 对齐 | `Style` 里的 `align`/`valign`（默认 `Left` / `Middle`） |
@@ -49,18 +49,18 @@ ui.label(段文, box, aino::Style().wrap_text().line_spacing(3.0f));
 
 | 项 | 默认值 |
 |---|---|
-| 字号 | **24** |
+| 字号 | **22** |
 | 字重 | **700** |
 | 前景 | 同 `label` |
 
-用于页面主标题。字号是硬编码的 24，不跟 `theme.font_size` 缩放
+用于页面主标题。字号是固定的 22，不跟 `theme.font_size` 缩放
 （想跟随主题就显式 `.font(theme.font_size * 1.7f)`）。
 
 ```cpp
 ui.heading("概览", col.next(34.0f), aino::Style().left());
 ```
 
-> 24px / 700 的字形需要字体里有粗体字面。系统字体引擎会做合成加粗兜底，
+> 22px / 700 的字形需要字体里有粗体字面。系统字体引擎会做合成加粗兜底，
 > 但合成粗体的笔画比真粗体脏一点。在意的话把字号降一档或换 `semi_bold()`。
 
 ---
@@ -69,7 +69,7 @@ ui.heading("概览", col.next(34.0f), aino::Style().left());
 
 | 项 | 默认值 |
 |---|---|
-| 字号 | **18** |
+| 字号 | **15** |
 | 字重 | **600** |
 | 前景 | 同 `label` |
 
@@ -86,7 +86,7 @@ ui.label("正文……", col.next(22.0f), aino::Style().left());
 
 | 项 | 默认值 |
 |---|---|
-| 字号 | `theme.font_size`（14） |
+| 字号 | `theme.font_size`（13） |
 | 字重 | 400 |
 | 前景 | `st.fg` → 否则**恒定** `muted_foreground` |
 
@@ -107,7 +107,7 @@ ui.muted_text("单头文件 · 零第三方依赖", col.next(18.0f), aino::Style
 
 | 项 | 默认值 |
 |---|---|
-| 字号 | `theme.font_size - 1`（13） |
+| 字号 | `theme.font_size - 1`（12） |
 | 字重 | 400（固定，不吃 `font_weight`） |
 | 底衬 | `st.bg` → 否则 `theme.muted` |
 | 圆角 | `st.radius` → 否则 `theme.radius_sm`（4） |
@@ -121,7 +121,7 @@ ui.muted_text("单头文件 · 零第三方依赖", col.next(18.0f), aino::Style
 （`align` 仅在显式设置时生效，默认 `Left`）
 
 ```cpp
-ui.code_text("aino.hpp · 0.1.0", col.next(30.0f), aino::Style().font(13.0f));
+ui.code_text(std::string("aino.hpp · ") + AINO_VERSION, col.next(30.0f), aino::Style().font(13.0f));
 ui.code_text(std::to_string(count), col.next(30.0f));   // 数字用底衬块更醒目
 ```
 

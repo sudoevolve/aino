@@ -8,8 +8,10 @@
 
 |  |  |
 | --- | --- |
-| ![概览](screenshots/gallery-overview.png) | ![控件](screenshots/gallery-button.png) |
-| ![浮层](screenshots/gallery-dialog.png) | ![深色](screenshots/gallery-dark.png) |
+| ![按钮与选择控件](screenshots/gallery-overview.png) | ![强调色预览](screenshots/gallery-button.png) |
+| ![对话框](screenshots/gallery-dialog.png) | ![深色](screenshots/gallery-dark.png) |
+
+![基础图元示例](screenshots/primitives.png)
 
 ## Quick Start
 
@@ -37,10 +39,10 @@ int main() {
         ui.panel({24, 24, 400, 240});
         aino::Stack col = ui.vbox({24, 24, 400, 240}, 10.0f, 18.0f);
         ui.heading("设置", col.next(34.0f), aino::Style().left());
-        ui.input(&email, col.next(36.0f), aino::Style().hint("you@example.com"));
+        ui.input(&email, col.next(24.0f), aino::Style().hint("you@example.com"));
         ui.checkbox(&notify, "邮件通知", col.next(22.0f));
-        if (ui.button("保存", col.next(36.0f), aino::Style().primary())) {
-            // 点到了
+        if (ui.button("保存", col.next(24.0f), aino::Style().primary())) {
+            win.set_title("设置已保存");
         }
     });
     return 0;
@@ -53,16 +55,16 @@ Build：
 # MSVC（/utf-8 必须加，否则中文字面量按 GBK 编；/MT = 静态链 CRT，目标机不用装运行库）
 cl /std:c++17 /utf-8 /EHsc /O2 /MT main.cpp user32.lib gdi32.lib
 
-# MinGW（-static = 静态链运行时，产物一个 DLL 都不带）
+# MinGW（-static = 静态链接编译器运行时）
 g++ -std=c++17 -O2 -mwindows -s -static main.cpp -o app.exe -lgdi32 -luser32
 
 # GCC / X11
 g++ -std=c++17 -O2 main.cpp -o app -lX11 -ldl
 ```
 
-`-static` 要求工具链的静态运行时完整：CLion 自带的那套 MinGW 15.2.0 链接不过
-（缺 `__intrinsic_setjmpex`），换 w64devkit / MSYS2 即可；坚持用它就只能退回
-`-static-libgcc -static-libstdc++` 并随附一个 `libwinpthread-1.dll`。MSVC 用 `/MT` 则零 DLL。
+`-static` 需要工具链提供完整静态运行时；不能全静态链接时，可使用
+`-static-libgcc -static-libstdc++` 并按导入表随附所需的 `libwinpthread-1.dll`。
+MSVC 的 `/MT` 静态链接 CRT；应用仍使用平台系统 DLL。
 
 Run：
 
@@ -75,37 +77,32 @@ Run：
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
-./build/aino_gallery.exe
+./build/Release/aino_gallery.exe  # Visual Studio；Ninja/Makefiles 使用 ./build/aino_gallery
 ```
 
-同一份 CMake 工程还会编出 `examples/ssh_client.cpp`（SSH 客户端，产物
-`build/Release/aino_ssh.exe`）。它额外需要静态 libssh2 + mbedTLS，产物不在源码树里：
+CMake 自动扫描 `examples/*.cpp`，每个文件生成 `aino_<文件名>`；
+新增或删除顶层示例源码后，构建会触发重新配置；Visual Studio 可能需重新加载后再构建一次。
+也可先执行 `cmake -S . -B build` 更新目标。`.hpp` 不生成程序。
+Visual Studio 产物在 `build/Release/`，Ninja/Makefiles 通常在 `build/`。
 
 ```sh
-python build/third_party/_mk.py     # 下载源码并编成静态库（只需跑一次）
-cmake --build build --config Release
+cmake --build build --config Release --target aino_primitives_demo
 ```
 
-缺依赖时 CMake 只在配置期打一条警告并跳过 `aino_ssh`，其余 demo 照常构建；
-不想编它就在配置时加 `-DAINO_BUILD_SSH=OFF`。注意 `aino_ssh.exe` 正在运行时
-链接器会以 `LNK1104` 失败 —— 先关掉客户端再构建。
+`ssh_client.cpp` 保留兼容目标名 `aino_ssh`，需额外安装 libssh2（MSVC 使用预编译 libssh2 + mbedTLS）。
+缺依赖仅跳过此目标，`-DAINO_BUILD_SSH=OFF` 可禁用；详见 [构建说明](docs/01-quickstart.md)。
 
 画廊“空状态”卡片中的“新建素材”会打开独立窗口，填写名称与说明后回填主窗口。
 `tools/child_window.py` 验证点击、创建、取消以及两个消息循环的响应。
 
-每个窗口线程使用独立的帧定时器，避免多窗口互相覆盖定时设置。
-多窗口的响应与创建流程由 `tools/child_window.py` 检查。
+Windows 每个窗口线程使用独立帧定时器，多窗口实测不等于 Cocoa 支持后台线程建窗。
 
 `win.run(frame_cb)` 就是完整主循环：没事件时阻塞在 `WaitMessage`，帧回调只在需要重绘时被调用 —— 窗口静止时 0 帧 / 0.00% CPU，不是低帧率空转。
 
-平台状态：三个后端都能编译、能开窗画帧，**也都跑同一套 44 项像素断言**（其中 4 项是 X11 标题属性专有，只在 Linux 实跑）
-（`tools/ci_pixels.cpp` 直接读后备缓冲，只断言与字形无关的几何/颜色/裁剪/阴影性质）。
-Windows 另有组件状态与布局探针、19 项整窗断言，以及空闲 CPU、交互和多窗口检查；
-Linux/macOS 的**输入、IME、剪贴板**仍未经真机核对，细节见
-[docs/README.md 的平台支持表](docs/README.md#平台支持)。
-
-CI（`.github/workflows/ci.yml`）在 Windows / Linux(xvfb) / macOS 三个 runner 上各跑一遍
-「编译 + 冒烟 + 像素断言」，三个都是硬门槛：任何一个后端退步，CI 直接红。
+Windows 本地回归覆盖组件状态、滚动布局、编辑、19 项整窗行为、空闲 CPU 与多窗口。
+仓库 CI 配置在 Windows/Linux/macOS 上编译、开窗冒烟并运行几何像素断言；
+当前 mac 风格尚未完成 Linux/macOS 真机核对。输入、IME、剪贴板与 Cocoa 多窗口的限制见
+[平台支持](docs/README.md#平台支持)。
 
 ## Project Layout
 
@@ -114,6 +111,7 @@ aino.hpp             库本体，单文件（全部实现都在这一个头里�
 examples/gallery.cpp 15 分类、43 示例卡片（固定侧栏与工具栏、连续滚动）
 examples/sidebar_demo.cpp 侧边栏切换（新手第一个 demo）
 examples/zoom_demo.cpp 缩放按钮（Transform 的最小用法）
+examples/primitives_demo.cpp 基础图元、裁剪、变换与背景模糊
 examples/function_viewer.cpp 函数可视化与自定义表达式
 examples/ssh_client.cpp 可选 SSH/SFTP 客户端（额外依赖见上文）
 docs/                文档，01 快速开始 … 12 与 shadcn/ui 的对照
@@ -124,7 +122,7 @@ tools/shot_pages.py  按分类截整窗图（改完版式先看一眼，不算�
 tools/ci_smoke.cpp   CI 冒烟程序：开窗 + 跑满 20 帧就退（三平台共用）
 tools/ci_pixels.cpp  跨平台像素断言：44 项（含 4 项 X11 专有），直接读后备缓冲（三平台共用）
 tools/probe/         数值/像素探针（回归用，不参与发布）
-CMakeLists.txt       构建四个 UI 示例与可选 SSH 客户端
+CMakeLists.txt       自动为 examples/*.cpp 创建可执行目标，SSH 可选
 ```
 
 改完跑一遍 `python tools/regress.py`（编译 + 探针 + 像素断言 + 空闲 CPU），全绿再提交。
@@ -140,7 +138,7 @@ CMakeLists.txt       构建四个 UI 示例与可选 SSH 客户端
 - [07 展示类组件](docs/07-display.md)
 - [08 浮层类组件](docs/08-overlays.md)
 - [09 图元与度量](docs/09-primitives.md)
-- [10 逐组件性能实测](docs/10-performance.md)
+- [10 逐组件性能实测（历史基准）](docs/10-performance.md)
 - [11 动画与变换](docs/11-motion.md)
 - [12 与 shadcn/ui 的对照](docs/12-shadcn-parity.md)
 - [文档索引](docs/README.md)

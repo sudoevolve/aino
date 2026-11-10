@@ -8,7 +8,7 @@
 Button Group / Input Group / Input OTP / Field / Item / Empty / Kbd / Spinner / Code Block
 几项，都已经收进下表），说清楚三种情况：
 
-- **一对一** —— 名字和行为都能对上，可以直接照 shadcn 的用法写；
+- **一对一** —— 名字和行为都能对上，API 作用相近，具体签名与返回值见 aino 文档；
 - **名字不同** —— 功能有，但名字被别的东西占了（下面单独解释）；
 - **没有** —— 没做，或者在这个库里不成立。
 
@@ -77,7 +77,7 @@ ui.toggle_button("粗体", &bold, r);       // ← 这才是 shadcn 的 Toggle
 | Scroll Area | `scroll()` / `begin_scroll()` | ✅ | 唯一入口，滚动条自己画 |
 | Sidebar | `nav_item()` | ⚠️ | 只有条目，没有 Sidebar 容器；`examples/sidebar_demo.cpp` 手搭 |
 | Sheet | `drawer()` | ✅ | `side` 参数控制从哪边出来 |
-| Drawer | `drawer()` | ➕ | 只做淡入，不做位移（见下文「取舍」） |
+| Drawer | `drawer()` | ➕ | 直接绘制，无隐式位移动画 |
 | Aspect Ratio | `Ui::aspect_rect()` | ➕ | 没有图片管线，所以它就是个算 `Rect` 的 helper（立即模式里本来也不需要容器组件） |
 | Collapsible | `accordion()` | ⚠️ | 传空标题就是纯折叠面板 |
 | Accordion | `accordion()` | ✅ | 每一项一个 `bool*`，多开/互斥由调用方决定 |
@@ -92,12 +92,12 @@ ui.toggle_button("粗体", &bold, r);       // ← 这才是 shadcn 的 Toggle
 | Kbd | `kbd()` | ✅ | |
 | Label | `label()` | ✅ | |
 | Typography | `heading()` `subheading()` `label()` `muted_text()` `code_text()` | ✅ | 拆成五个函数而不是一个 `Typography` 组件树 |
-| Table | `table()` | ✅ | 等宽列 + 斑马纹 |
+| Table | `table()` | ✅ | 等宽列，交替行需显式启用 |
 | Data Table | `table()` | ⚠️ | 静态表。排序/勾选/分页要自己接（用 `pagination()` + `checkbox()`） |
-| Progress | `progress()` | ✅ | |
-| Skeleton | `skeleton()` | ✅ | 默认静止，`.animate()` 才呼吸 |
-| Spinner | `spinner()` | ✅ | 默认静止（空闲 0% CPU 的承诺），`set_anim_fps()` 才转 |
-| Empty | `empty_state()` | ➕ | 虚线框 + 标题 + 描述 |
+| Progress | `progress()` / `progress_ring()` | ✅ | |
+| Skeleton | `skeleton()` | ✅ | 默认静止，`.animate()` 后悬停才呼吸 |
+| Spinner | `spinner()` | ✅ | 默认悬停播放，`.animate()` 可持续播放；set_anim_fps 只限帧率 |
+| Empty | `empty_state()` | ➕ | 标题 + 描述，具体外观见展示组件文档 |
 | Item | `item()` | ➕ | 标题 + 描述 + 尾部文字，整行可点 |
 | Chart | `sparkline()` / `bars()` | ⚠️ | 只有折线和柱状，没有坐标轴/图例/tooltip |
 | Code Block | `code_block()` | ✅ | 等宽字体 + 行号 + C++ 词法着色；**不滚动不折行**，高度用 `code_block_height()`。行内的 `code_text()` 只是「带灰底的小号文本」 |
@@ -284,17 +284,15 @@ const Rect thumb = Ui::aspect_rect(Rect(x, y, 160.0f, 0.0f), 16.0f / 9.0f);   //
 
 ## 四、几个刻意的取舍
 
-**Drawer 只做淡入，不做位移。**
-位移只动画面、不动命中区（`box` 里的控件位置是固定的），滑块滑到一半去点
-按钮会点偏。淡入既保留了「出现」的感觉，又不会让按钮看着和点着的地方不一致。
+**Drawer 直接绘制在调用方给出的矩形中。**
+不做隐式位移动画，避免绘制位置与命中区域分离。
 
 **Pagination 的槽位数是恒定的。**
 一开始按「当前页附近三页」写，结果翻页时槽位数从 8 变 6，整排按钮左右跳，
 用户点第二下就点偏。现在页数 > 7 时固定 7 个槽，翻页只有内容变、位置不动。
 
 **Toggle Group 支持"再点取消"。**
-shadcn 的 `type="single"` 不允许取消，但桌面端这个更顺手。这是唯一一处
-刻意和 shadcn 行为不一致的地方。
+shadcn 的 `type="single"` 不允许取消，但桌面端这个更顺手。具体行为以 aino 的 API 约定为准。
 
 **Combobox 的搜索框不是 `input()`。**
 `input()` 自己会拿一个焦点，和 `combobox` 抢焦点会互相把对方踢掉。
@@ -320,9 +318,9 @@ shadcn 的 `type="single"` 不允许取消，但桌面端这个更顺手。这�
 
 ## 五、想自己加一个控件
 
-照这一节做，不用改任何框架代码：
+如果要向库本体增加公开组件：
 
-1. 在 `struct Ui` 里加一行声明（放对应分区）；
+1. 在 `class Ui` 里加一行声明（放对应分区）；
 2. 在 `aino.hpp` 第 8.16 节加实现；
 3. 写一个探针断言它的行为（`tools/probe/widget_probe.cpp` 里照抄一节）；
 4. 加进 `tools/regress.py` 的清单。
@@ -330,6 +328,6 @@ shadcn 的 `type="single"` 不允许取消，但桌面端这个更顺手。这�
 四条硬约定（违反任意一条都会被回归挡住）：
 
 - **交互走 `detail::interact()`**，动画走 `detail::animate_value()`；
-- **浮层用 `deferred()` 画到帧末**，并在帧内 `gate_claim()` 登记下一帧的输入白名单；
+- **下拉与锚点弹层用 `deferred()` 画到帧末**，直接绘制的模态内容遵守调用顺序，并在帧内 `gate_claim()` 登记下一帧的输入白名单；
 - **不做无条件 `repaint()`** —— 只有状态真的变了才重画，否则空闲 CPU 就不是 0%；
 - **尺寸全从 `box` 推**，不写死像素。

@@ -1,10 +1,4 @@
-﻿// =============================================================================
-//  文档示例编译校验 —— docs/*.md 里出现的代码片段，集中在这里编一遍
-//
-//  目的很单纯：文档里的示例必须能编译。手写文档最容易出的错是
-//  「签名少一个参数」「变量名和上下文对不上」，肉眼看是看不出来的。
-//  这里只验证「能编过」，不验证运行效果（那样需要每个示例都建窗口）。
-// =============================================================================
+// 文档片段的编译检查；运行时不创建窗口。
 #define AINO_IMPLEMENTATION
 #include "../../aino.hpp"
 
@@ -43,9 +37,9 @@ void docs_01() {
         ui.panel({24, 24, 400, 240});
         aino::Stack col = ui.vbox({24, 24, 400, 240}, 10.0f, 18.0f);
         ui.heading("设置", col.next(34.0f), aino::Style().left());
-        ui.input(&email, col.next(36.0f), aino::Style().hint("you@example.com"));
+        ui.input(&email, col.next(24.0f), aino::Style().hint("you@example.com"));
         ui.checkbox(&notify, "邮件通知", col.next(22.0f));
-        if (ui.button("保存", col.next(36.0f), aino::Style().primary())) { /* 点了保存 */ }
+        if (ui.button("保存", col.next(24.0f), aino::Style().primary())) { /* 点了保存 */ }
     });
 }
 
@@ -58,7 +52,7 @@ void docs_01_window() {
     win.request_repaint();
 
     aino::Theme t = aino::Theme::light();
-    t.primary = Color::hex(0x2563EB);
+    t.set_tint(t.purple);
     t.radius = 4.0f;
     win.set_theme(t);
 
@@ -184,15 +178,15 @@ void docs_05(Ui& ui, Stack& r) {
 
 // ---- 06：交互 ----
 void docs_06(Ui& ui, AppState& s, Stack& col) {
-    ui.button("保存", col.next(36.0f), Style().primary());
-    ui.button("取消", col.next(36.0f), Style().outline());
-    ui.button("删除", col.next(36.0f), Style().destructive());
-    ui.button("按我看看", col.next(36.0f), Style().primary().scale_on_press(0.97f));
+    ui.button("保存", col.next(24.0f), Style().primary());
+    ui.button("取消", col.next(24.0f), Style().outline());
+    ui.button("删除", col.next(24.0f), Style().destructive());
+    ui.button("按我看看", col.next(24.0f), Style().primary().scale_on_press(0.97f));
     ui.icon_button(aino::icons::close, {100, 100, 32, 32});
     ui.icon_button("+", {140, 100, 32, 32}, Style().outline());
     if (ui.nav_item("导航", s.tab == 0, col.next(34.0f))) s.tab = 0;
 
-    ui.input(&s.email, col.next(36.0f), Style().hint("you@example.com"));
+    ui.input(&s.email, col.next(24.0f), Style().hint("you@example.com"));
     ui.checkbox(&s.remember, "记住这台设备", col.next(22.0f));
     Rect row = col.next(26.0f);
     ui.label("桌面通知", row, Style().left());
@@ -201,9 +195,9 @@ void docs_06(Ui& ui, AppState& s, Stack& col) {
     ui.slider(&s.zoom, 0.5f, 2.0f, col.next(20.0f));
     ui.tabs({"概览", "按钮", "表单"}, &s.tab, col.next(38.0f));
     ui.segmented({"日", "周", "月"}, &s.range, col.next(34.0f));
-    ui.select({"一", "二", "三"}, &s.idx, col.next(36.0f));
+    ui.select({"一", "二", "三"}, &s.idx, col.next(24.0f));
     ui.radio_group({"选项一", "选项二", "选项三"}, &s.choice, col.next(100.0f));
-    ui.stepper(&s.count, 1.0f, 0.0f, 99.0f, col.next(36.0f));
+    ui.stepper(&s.count, 1.0f, 0.0f, 99.0f, col.next(24.0f));
     ui.textarea(&s.note, col.next(92.0f), Style().font(13.0f));
     ui.rating(&s.stars, 5, col.next(28.0f));
 }
@@ -308,6 +302,18 @@ void docs_09(Ui& ui, Stack& col) {
     Stack row = ui.hbox({24, 360, 400, 36}, 8.0f);
     ui.label("确定", row.next(ui.text_width("确定", 14.0f) + 16.0f));
     ui.label("确定", row.next_text("确定", 16.0f));
+    ui.fill_rect_s({24, 24, 120, 64}, ui.theme().tint, 12, .6f);
+    ui.stroke_rect_s({160, 24, 120, 64}, ui.theme().tint, 12, 2, .6f);
+    ui.fill_rect_grad({24, 100, 120, 64}, ui.theme().fill2, ui.theme().fill5, 12);
+    ui.inner_shadow({24, 100, 120, 64}, Color(0, 0, 0, 20), 12, 3, 1);
+    ui.backdrop_blur({24, 100, 120, 64}, 12, 8);
+    ui.glass({24, 100, 120, 64}, 12, Style().blur(12));
+    ui.system_icon(aino::SystemIcon::Close, {24, 24, 16, 16}, ui.theme().label);
+    ui.draw_mono_text("0123456789", 24, 200, ui.theme().label, 13);
+    ui.progress_ring(.68f, {24, 240, 36, 36});
+    (void)ui.mono_advance(13);
+    (void)ui.mono_ascent(13);
+    (void)ui.mono_width("012", 13);
     (void)col;
 }
 

@@ -16,115 +16,37 @@
 | [02-style-and-theme.md](02-style-and-theme.md) | `Style` 全部字段与链式方法、`Theme` 全部 token、`Color`/`Rect` 全部方法 |
 | [03-layout.md](03-layout.md) | `Stack` 布局器（`vbox`/`hbox`/`next`/`fill`/`part`）、滚动容器、`split_pane` 可拖动分栏 |
 | [04-text.md](04-text.md) | 文本类：`label` `heading` `subheading` `muted_text` `code_text` `code_block` |
-| [05-containers.md](05-containers.md) | 容器类：`panel` `card` `separator` `badge` `progress` `skeleton` |
+| [05-containers.md](05-containers.md) | 容器类：`panel` `card` `separator` `badge` `progress` `progress_ring` `skeleton` |
 | [06-interactive.md](06-interactive.md) | 交互类：`button` `icon_button` `nav_item` `input` `checkbox` `toggle` `slider` `tabs` `segmented` `select` `radio_group` `stepper` `textarea` `rating`；§16 另补 `toggle_button` `toggle_group` `toggle_group_multi` `button_group` `input_group` `input_otp` `field` `combobox` `calendar` |
 | [07-display.md](07-display.md) | 展示类：`avatar` `spinner` `alert` `breadcrumb` `kbd` `accordion` `table` `sparkline` `bars`；§11 另补 `item` `empty_state` `pagination` |
-| [08-overlays.md](08-overlays.md) | 浮层类：`tooltip` `menu` `dialog` `toast`；§5 另补 `popover` `hover_card` `alert_dialog` `drawer` `context_menu` `menubar` |
-| [09-primitives.md](09-primitives.md) | 图元与度量：`fill_rect` `stroke_rect` `fill_circle` `draw_line` `draw_text` `drop_shadow` `text_width` `text_height` `alert_height` |
-| [10-performance.md](10-performance.md) | 逐组件性能实测（静置 / 连续重绘 / 交互）与归因分析；§3 开头写明覆盖范围 |
+| [08-overlays.md](08-overlays.md) | 浮层类：`tooltip` `menu` `dialog` `toast`；另含 `sheet` `popover` `hover_card` `alert_dialog` `drawer` `context_menu` `menubar` |
+| [09-primitives.md](09-primitives.md) | 图元与度量：几何、连续圆角、渐变、阴影、背景模糊、系统图标、文字与度量 |
+| [10-performance.md](10-performance.md) | 2026-10-17 历史性能基准（静置 / 连续重绘 / 交互）；§3 开头写明覆盖范围 |
 | [11-motion.md](11-motion.md) | 动画（`tween` / `tween_color` / `fade` / `smooth` / 缓动）与 `Transform`（平移 / 缩放 / 旋转） |
-| [12-shadcn-parity.md](12-shadcn-parity.md) | 与 shadcn/ui 的逐条对照（71 行）：哪些一对一、哪些只是名字不同、哪些没有 |
+| [12-shadcn-parity.md](12-shadcn-parity.md) | 与 shadcn/ui 的历史功能对照：哪些一对一、哪些只是名字不同、哪些没有 |
 
 ---
 
-## 组件速查
+## 当前示例
 
-**58 个组件 + 6 个图元**。下面的表列的是**有实测绘制耗时**的 38 个（0.3.0 之前就有的那批），
-同一组件的参数组合不重复列 —— 性能台架另测了 `empty` / `text_wrap` / `skeleton_anim` /
-`button_full` 这 4 个变体，所以 [10-performance.md](10-performance.md) 的表是 47 行。
-0.3.0 新增的 20 个在[下一张表](#030-新增的-20-个组件)，它们还没有单独的耗时数字。
-**「绘制 µs」列是实测的单帧组件绘制耗时**（460×300 逻辑窗口 / DPI 1.5，
-详见 [10-performance.md](10-performance.md)）。
+| 源文件 | 内容 |
+|---|---|
+| `gallery.cpp` | 15 分类、43 卡片、搜索、主题与强调色、独立素材子窗口 |
+| `primitives_demo.cpp` | 圆角、线宽、透明度；几何、阴影、裁剪、变换、系统图标与模糊 |
+| `sidebar_demo.cpp` | 导航与通知偏好 |
+| `zoom_demo.cpp` | 用户操作触发的缩放与舞台裁剪 |
+| `function_viewer.cpp` | 曲线与表达式、可滚动侧栏、用户控制的播放 |
+| `ssh_client.cpp` | 可选 SSH/SFTP，额外依赖 libssh2，MSVC 使用 mbedTLS 构建 |
 
-参考基准：一条 17 字的中文 `label` = **156 µs**，一个空窗口 = **0.2 µs**（上屏另计 290 µs）。
+CMake 自动扫描顶层 `examples/*.cpp` 并创建 `aino_<文件名>` 目标，SSH 保留 `aino_ssh` 名称。
+构建方法与输出位置见 [01](01-quickstart.md)。画廊卡片数量不等于公开 API 数量，
+未展示的有效 API 仍由文档与探针维护。
 
-| 分组 | 组件 | 一句话 | 绘制 µs |
-|---|---|---|---|
-| 文本 | `label` | 正文，沿用主题前景色 | 156 |
-| 文本 | `heading` | 标题，24px / 粗体 | 169 |
-| 文本 | `subheading` | 副标题，18px / 600 | 168 |
-| 文本 | `muted_text` | 次要说明，用 `muted_foreground` | 155 |
-| 文本 | `code_text` | 小号文本 + 灰底衬 | 110 |
-| 容器 | `panel` | 卡片底 + 描边 | 119 |
-| 容器 | `card` | `panel` 的别名 | 116 |
-| 容器 | `separator` | 1px 细线（自动判横竖） | **7.5** |
-| 容器 | `badge` | 胶囊小标签 | 155 |
-| 容器 | `progress` | 进度条，`value` 0..1 | **9.8** |
-| 容器 | `skeleton` | 占位骨架，默认**静态** | **12.9** |
-| 交互 | `button` | 按钮，6 种语义变体 | 137 |
-| 交互 | `icon_button` | 正方形图标按钮 | 105 |
-| 交互 | `nav_item` | 侧边栏条目（左对齐 + 选中态） | 160 |
-| 交互 | `input` | 单行输入，光标闪烁 | 169 |
-| 交互 | `checkbox` | 复选框 + 标签 | 165 |
-| 交互 | `toggle` | 开关 | **16.6** |
-| 交互 | `slider` | 滑杆，拖动改值 | **38.6** |
-| 交互 | `tabs` | 页签 | 218 |
-| 交互 | `segmented` | 分段控件（胶囊；`tabs` 是下划线） | 213 |
-| 交互 | `select` | 下拉选择 | 172 |
-| 交互 | `radio_group` | 单选组 | 215 |
-| 交互 | `stepper` | 数值步进器 `[−] 值 [+]` | 118 |
-| 交互 | `textarea` | 多行文本，光标闪烁 | 283 |
-| 交互 | `rating` | 星级评分（自绘五角星） | 102 |
-| 展示 | `avatar` | 圆形头像，取首字 | 148 |
-| 展示 | `spinner` | 旋转指示器（**悬停才转**） | 66 |
-| 展示 | `alert` | 提示块，标题 + 正文折行 | 288 |
-| 展示 | `breadcrumb` | 面包屑 | 216 |
-| 展示 | `kbd` | 键帽提示 | 101 |
-| 展示 | `accordion` | 折叠面板 | 154 |
-| 展示 | `table` | 表格（表头 + 行） | **603** |
-| 展示 | `sparkline` | 折线走势 | **868** |
-| 展示 | `bars` | 柱状图 | 129 |
-| 浮层 | `tooltip` | 悬停气泡 | 9 ⚠️ |
-| 浮层 | `menu` | 下拉菜单 | 165 |
-| 浮层 | `dialog` | 模态框（遮罩 + 面板） | **2773** |
-| 浮层 | `toast` | 轻提示条 | 411 |
-| 图元 | `fill_rect` | 圆角矩形填充（自带 AA） | 51 |
-| 图元 | `stroke_rect` | 圆角描边 | — |
-| 图元 | `fill_circle` | 圆 | 96 |
-| 图元 | `draw_line` | 线段 | 24 |
-| 图元 | `draw_text` | 文本（无容器装饰） | 170 |
-| 图元 | `drop_shadow` | 距离场阴影 | **616** |
+## 常用约定
 
-> ⚠️ `tooltip` 的 9 µs 是**未显示态**（只做命中测试）。显示态约 300~400 µs，
-> 与 `toast` 同量级 —— 测试脚本无法用 `PostMessage` 伪造持续悬停，
-> 原因见 [10-performance.md](10-performance.md) 第 6.1 节。
+返回值、样式默认值与绘制顺序如下。
 
-### 0.3.0 新增的 20 个组件
-
-这一批是照着 shadcn/ui 补的，**没有进性能台架**（所以没有耗时列），但每个都有专门章节。
-名字被占用的那三个（`Switch` / `Toggle` / `Empty`）在
-[12-shadcn-parity.md](12-shadcn-parity.md) 开头单独解释过。
-
-| 分组 | 组件 | 一句话 | 章节 |
-|---|---|---|---|
-| 文本 | `code_block` | 等宽 + 行号 + C++ 着色；不滚动不折行 | [04 §6](04-text.md) |
-| 交互 | `toggle_button` | 按下态按钮（shadcn 的 Toggle，**不是开关**） | [06 §16.1](06-interactive.md) |
-| 交互 | `toggle_group` | 单选组，再点可取消 | [06 §16.2](06-interactive.md) |
-| 交互 | `toggle_group_multi` | 多选组，`uint32_t` 位掩码（最多 32 项） | [06 §16.3](06-interactive.md) |
-| 交互 | `button_group` | 连成一片的按钮，无持久选中态 | [06 §16.4](06-interactive.md) |
-| 交互 | `input_group` | 带前后缀的输入框（`¥` / `元`） | [06 §16.5](06-interactive.md) |
-| 交互 | `input_otp` | 分格验证码，只收数字 | [06 §16.6](06-interactive.md) |
-| 交互 | `field` | 标签 + 控件槽 + 说明/错误，配 `field_height()` | [06 §16.7](06-interactive.md) |
-| 交互 | `combobox` | 可搜索的下拉（输入即过滤） | [06 §16.8](06-interactive.md) |
-| 交互 | `calendar` | 月历，纯整数日期运算 | [06 §16.9](06-interactive.md) |
-| 展示 | `item` | 标题 + 描述 + 尾部，整行可点 | [07 §11.1](07-display.md) |
-| 展示 | `empty_state` | 虚线框 + 标题 + 描述 | [07 §11.2](07-display.md) |
-| 展示 | `pagination` | 页码器，槽位数恒定 7 个 | [07 §11.3](07-display.md) |
-| 浮层 | `popover` | 点触发器弹任意内容，内容可交互 | [08 §5.1](08-overlays.md) |
-| 浮层 | `hover_card` | 悬停出卡片，不抢点击 | [08 §5.2](08-overlays.md) |
-| 浮层 | `alert_dialog` | 内建确认/取消，返回"点没点确认" | [08 §5.3](08-overlays.md) |
-| 浮层 | `drawer` | 四边滑出，**只淡入不移位** | [08 §5.4](08-overlays.md) |
-| 浮层 | `context_menu` | 区域内右键菜单 | [08 §5.5](08-overlays.md) |
-| 浮层 | `menubar` | 横排菜单栏，划到隔壁自动切 | [08 §5.6](08-overlays.md) |
-| 布局 | `split_pane` | 可拖动两栏，视觉 1px / 热区 7px | [03 §8](03-layout.md) |
-
----
-
-## 三条贯穿全库的约定
-
-读任何一篇之前，先记住这三条，能省掉大半困惑。
-
-### 1. 返回值只有两种语义
+### 1. 返回值按组件语义解释
 
 ```cpp
 bool button(...);          // true = 本帧被点击
@@ -137,7 +59,7 @@ bool tabs(...);            // true = 选中项变了
 | 组件 | 返回值含义 |
 |---|---|
 | `button` `icon_button` `nav_item` | 本帧被点击（按下并在框内松开） |
-| `checkbox` `toggle` `slider` `radio_group` `stepper` `rating` `textarea` | 值变了 |
+| `input` `checkbox` `toggle` `slider` `radio_group` `stepper` `rating` `textarea` | 值变了 |
 | `tabs` `segmented` `select` | 选中索引变了 |
 | `accordion` | 展开态变了 |
 | `menu` | 选中了某一项（同时写入 `*clicked_index`） |
@@ -153,8 +75,7 @@ bool tabs(...);            // true = 选中项变了
 | `split_pane` | 分隔线位置变了（拖动中每帧都可能是 true） |
 | `field` `empty_state` `code_block` `hover_card` `toast` `tooltip` | 无返回值 |
 
-所以不要写 `if (ui.input(&email)) { 重新校验(); }` 之外的东西 ——
-它每敲一个字都会返回 true，这是设计如此。
+输入每次改变文本都会返回 true，可在此时更新校验结果。
 
 ### 2. `Style` 是可选修饰器，不设即沿用主题
 
@@ -162,20 +83,18 @@ bool tabs(...);            // true = 选中项变了
 所有尺寸默认是 `-1.0f`。组件读到一个「未设置」的字段就用主题默认值。
 
 ```cpp
-ui.button("保存");                                  // 全用主题默认
+ui.button("保存", box);                             // 使用主题默认
 ui.button("保存", box, Style().primary());          // 显式指定变体
 ui.button("保存", box, Style().primary().corner(6));// 变体 + 覆盖圆角
 ```
 
 `Color::none()` 与 `Color::black()` 不同：前者是「没设置」，后者是「黑色」。
 
-### 3. 浮层在帧末绘制，调用方不需要手工分层
+### 3. 浮层按实际绘制时机排序
 
-`tooltip` / `menu` / `dialog` / `toast` 都是：**交互在帧内完成，绘制推迟到帧末**。
-所以它们天然盖在所有内容之上，你在页面任何位置调用都不会被后面的内容盖住。
-
-代价是：`dialog` 里如果要画自己的按钮，必须紧接着 `dialog()` 之后画 ——
-那时已经在遮罩层之上，不会再被遮罩压暗。
+菜单、tooltip、popover 等弹出内容推迟到帧末；dialog、sheet、drawer、alert_dialog、toast 直接绘制。
+直接绘制的浮层放在普通内容之后，面板内自定义按钮紧接着绘制。
+详情及内容回调的生命周期见 [08](08-overlays.md)。
 
 ---
 
@@ -191,51 +110,29 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 | 给 `spinner` 或 `skeleton` 写 `Style().animate()` | 两者默认**只在鼠标悬停时**动；`Style().animate()` 对 spinner 可显式常驻，`skeleton` 仍受悬停控制。画廊预览统一悬停才动 |
 | `input` / `textarea` 处于聚焦态 | 光标闪烁天生要帧，这是设计内开销；调 `set_anim_fps` 可降 |
 
-实测：**台架上 47 项（46 个组件 + 空基线）全部**在静置 3 秒内 **0 帧 / 0.00% CPU**（`spinner`、`skeleton`
-也不例外）。聚焦输入框、显式常驻的 spinner，以及应用主动启动的动画会持续要帧。
+Windows 回归检查空闲帧、CPU、交互动画和多窗口响应。历史逐组件耗时保留在
+[10](10-performance.md)，不代表当前 mac 风格耗时。聚焦光标、显式 spinner 动画与应用主动播放会持续请求帧。
 
 ---
 
 ## 平台支持
 
-| 平台 | 后端 | 状态 |
+| 平台 | 后端 | 验证范围 |
 |---|---|---|
-| Windows | GDI（`BitBlt` + 自绘 AA 光栅化） | **已验证**（Win11 / MSVC 与 MinGW g++，47 项回归全绿） |
-| Linux | X11 + FreeType/fontconfig（运行时 dlopen，加载不到退回 XFontSet 点阵） | **CI 通过**：编译 + xvfb 开窗跑满 20 帧 + **44 项像素断言** |
-| macOS | Cocoa / CoreText / CoreGraphics | **CI 通过**：编译 + 开窗跑满 20 帧 + **44 项像素断言** |
+| Windows | GDI 字体与 CPU 光栅化，BitBlt 上屏 | 当前本地构建、数值探针、实窗像素、输入、空闲 CPU、多窗口测试 |
+| Linux | X11，FreeType/fontconfig 运行时加载，缺失则 XFontSet | 仓库 CI 配置编译、开窗冒烟与几何像素断言；当前 mac 风格尚未完成 Linux 实机核对 |
+| macOS | Cocoa / CoreText / CoreGraphics | 仓库 CI 配置编译、开窗冒烟与几何像素断言；当前 mac 风格尚未完成 macOS 实机核对 |
 
-上表不是「能编译就算过」：
+跨平台检查入口为 `tools/ci_smoke.cpp` 与 `tools/ci_pixels.cpp`，像素断言侧重几何、颜色、裁剪、阴影与文字覆盖。
+Windows 额外通过 `tools/verify_gallery.py` 检查 19 项整窗行为；字形与实际系统效果仍需人工查看。
+Linux/macOS 的输入、IME、剪贴板与多窗口不能由这些像素断言证明。
+macOS 当前事件循环仍有轮询；Windows 的阻塞空闲结果不能直接外推到其它平台。
 
-- `tools/ci_smoke.cpp` 必须真的建出窗口、跑满 20 帧、自己退出
-  （退出码 2/3 分别代表开不了窗 / 帧没跑满）；
-- `tools/ci_pixels.cpp` 必须让 44 项断言全过，它**直接读后备缓冲**
-  （`Window::Impl::canvas.px`，三个后端都往同一块缓冲里画），不依赖任何窗口抓图 API。
+### 已知后端限制
 
-### 跨平台像素断言怎么做到「同一个标准、三种字形」
-
-`tools/verify_gallery.py` 那 19 项是在 Windows 真桌面上用 `PrintWindow` 抓窗口，
-抓的是「整窗长什么样」，换个平台就没法比 —— 三个平台的字形光栅完全不同
-（GDI 灰度 AA / FreeType / CoreText），同一段字的像素必然对不上。
-
-它补的是离屏探针补不上的那一层：探针的 `impl->canvas` 是自己塞的，绕过了
-`WM_PAINT`、DPI 缩放和 `BitBlt`。所以这 19 项验的是「导航右侧真有一条 1px 分界线、
-分类锚点和搜索生效、深色顶栏与原生标题栏同步、对话框显示后能用 Esc 关闭」
-—— 这些只有真窗口能验。
-
-所以 `ci_pixels.cpp` 只断言**与字形无关**的性质：
-
-| 断言类型 | 抓什么 bug |
-|---|---|
-| 实心填充的内部像素精确等于填充色（容差 0） | 颜色通道顺序搞反（BGRA / RGBA）、alpha 合成错 |
-| 抗锯齿必须产生过渡像素（圆心/半径刻意取非整数） | 边缘硬切、AA 区间算错 |
-| 裁剪区外一个像素都不许动（四条边分别验） | 裁剪没还原、溢出到框外 |
-| 阴影峰值不超过传入 alpha（195±8 @ alpha=60 落纯白） | 历史 bug：叠 N 层把 46 累加到 148 |
-| 文字画出了墨 + 墨迹不出框 + 与 `text_width` 同量级 | 字体没加载（全白）、量宽和画字用的不是同一套度量 |
-| 控件绘制范围 == 传入 box | DPI 缩放乘两次、布局偏移 |
-| 纯 clear 后整块缓冲 130 点采样全 == 背景色 | stride 算错、新缓冲没清零（「缩放变黑」） |
-
-代价是它**证明不了**「字形排得对不对」——那仍然要人眼在真机上看。
-Windows 侧另有 19 项整窗断言兜这一层。
+- Linux 剪贴板读取与 XIM/HiDPI 行为尚未实机核对，中文依赖已安装的字体。
+- macOS 剪贴板与部分修饰键路径尚不完整，Cocoa 上屏、交互及多窗口需真机核对；AppKit 窗口应在主线程管理。
+- Windows 系统符号与 macOS 的 SF Symbols 字形不同，系统图标一致不等于跨平台像素相同。
 
 ### gallery 自己的两条工具钩子
 
@@ -250,65 +147,21 @@ gallery 展示常用控件，另有两个供工具使用的开关（完整 API �
 组件状态、内容裁剪与交互由 `tools/probe/macos_gallery_probe.cpp` 验证。
 `shot_pages.py` 只保存截图，文字排版与外观仍需人工查看。
 
-### 示例维护
+### 回归与截图
 
-| 示例 | 职责与本次修正 |
-|---|---|
-| `gallery.cpp` | 常用控件画廊；删除无写入的退出状态和无读取的消息状态，素材创建通过独立窗口回填 |
-| `sidebar_demo.cpp` | 侧栏与通知偏好；清理实现说明文案，版本引用 `AINO_VERSION`，限制最小窗口尺寸 |
-| `zoom_demo.cpp` | 缩放与 Transform；预览限制在舞台内，保留底部操作区域 |
-| `function_viewer.cpp` | 函数与表达式可视化；侧栏滚动与裁剪，主题开关独立于列表 |
-| `ssh_client.cpp` | SSH/SFTP 应用；密码、按钮、复选框复用库控件，使用系统图标 |
+```sh
+python tools/regress.py
+python tools/shot_pages.py
+python tools/child_window.py --shot
+```
 
-未出现在画廊中的公开 API 仍按组件文档与独立探针维护，不以画廊覆盖范围判断是否删除。
-函数动画由应用控制，SSH 网络行为不属于加载预览；本次 SSH 界面验证不连接服务器。
+`regress.py` 构建并运行数值、编辑、浮层、布局、像素、空闲与多窗口检查。
+`shot_pages.py` 保存分类截图，不能代替断言或人工排版核对。
+`tools/probe/example_ui_probe.cpp` 检查函数侧栏；`python tools/build_ssh.py ui`
+构建 SSH 界面探针，覆盖 UTF-8、选区、撤销、粘贴与弹窗输入隔离，不连接服务器。
 
-`tools/probe/example_ui_probe.cpp` 验证函数侧栏；`python tools/build_ssh.py ui` 编译同文件的
-SSH 控件测试，产物为 `build/ssh_ui_probe.exe`，覆盖 UTF-8 编辑、选区、撤销、粘贴和弹窗输入隔离。
-
-### 两个非 Windows 后端的真实现状
-
-- **Linux / X11**：CI 的像素断言一上线就抓到两条真 bug，都已修：
-  ① **文字一个像素都不显示** —— 几何图形是在**客户端 XImage** 里光栅化的、一帧结束才
-  `XPutImage` 上屏，而文字走 `Xutf8DrawString` 直接画在**窗口**上，于是先出现、再被
-  整块覆盖。改成画到 Pixmap → `XGetImage` 取回 → 逐像素 `blend` 进缓冲；
-  ② **字体挑到退化字体** —— XLFD 有 14 个字段、第 7 个才是 `pixel_size`（原来写在第 8 个
-  `point_size` 位），精确匹配从来没命中过，一路落到 `"*"`，在 runner 上挑到 1px 宽的
-  字体（`text_width("Hg") = 2`）。现在有候选链 + 「量一下 `Hg` 宽不宽」的体检。
-  尚未验证：键盘/鼠标事件映射、XIM 输入法组字、剪贴板（`set_clipboard` 只声明所有权）、
-  HiDPI、中文（裸 runner 没有中文字体，汉字会缺字）。
-  **文字渲染已改为 FreeType 客户端光栅化**（0.4.6）：核心 XLFD 字体只有 1bit 点阵、
-  没有 12/13/14 这种连续字号，Ubuntu 桌面上请求 13px 会被服务端拿 12px 位图缩放上去 ——
-  中文挑全角点阵、拉丁字距被拉成等宽、字重完全拉不开，整屏像马赛克。
-  中途试过 Xft（0.4.4/0.4.5），两个问题都是架构性的：① `XftFontOpenName` 只给**一个**
-  字体、没有逐字符兜底，默认 sans 是 DejaVu Sans，中文全变 `.notdef` 豆腐方块；
-  ② `XftDrawString` 画在 X server 上，为了不被 `XPutImage` 覆盖只能走
-  Pixmap + `XGetImage` 同步往返，一帧几百段文字 = 几百次往返，交互卡死。
-  最终方案：**freetype + fontconfig 都运行时 `dlopen`**（不 include 头、不加 `-l`），
-  字形在进程内光栅化成灰度位图逐像素 `blend`；fontconfig 只负责「家族名+字重+字号 →
-  文件」和 `FcFontSort` 的兜底链（汉字落到 Noto Sans CJK）。
-  `ci_pixels` 里「文字框里有几档灰度」（1 档 = 点阵，≥4 档才算抗锯齿）和「中文是字形
-  而不是 tofu 方块」两条断言钉的就是这件事。
-  再遇到文字问题时开 `AINO_X11_TRACE=1`：会把 dlopen 结果、每个字号的命中文件与
-  asc/desc、兜底链长度打到 stderr（并立即 fflush —— 崩溃时管道里的 stderr 是全缓冲的，
-  不 flush 等于什么都没打）。
-  Linux 侧的界面长什么样，看 CI 上传的 `gallery-linux` artifact（
-  `AINO_SHOT_BMP=gallery_linux.bmp xvfb-run ./gallery` 拍的后备缓冲整窗截图）。
-- **macOS / Cocoa**：曾经一个 `.cpp` 都编不过；2026-10-20 用 CI 当编译器，一路修到能跑，
-  并跑通了 44 项像素断言（说明 CoreText 画字、裁剪、阴影这条链是真的对）：
-  ① `CocoaState` 补上 `pending_image` / `key_ctrl` / `key_shift` / `key_alt` 四个字段；
-  ② arm64 不允许裸调 `objc_msgSend`，加 `oc_send<R>(...)` 模板统一转型；
-  ③ 系统头的 QuickDraw `::Rect` / `::Style` 与 `aino::Rect` 撞名，包含前用宏改名；
-  ④ 原来用 `setTag:` 存 `CocoaState*` —— NSView 没有这个 selector，真机一进来就抛异常，
-  改成 `view → state` 的哈希表；⑤ runloop mode 名字从 `kCFRunLoopDefaultMode` 改回
-  `NSDefaultRunLoopMode`。
-  仍缺：修饰键没有任何代码写值（`ctrl_of()` 在 macOS 上恒为 false）、剪贴板两个方法
-  直接返回空串、以及「`CGImage` 交给 `drawRect:` 之后上屏是否正确」没人核对
-  （像素断言读的是 CGContext 的缓冲，在 `drawRect:` 的上游）。
-
-链接依赖：Windows 只需 `user32` + `gdi32`；Linux 是 `-lX11 -ldl`（freetype / fontconfig
-都走运行时 `dlopen`，不要开发包、也不要 `-lfreetype -lfontconfig`）；
-macOS 只需 `-framework Cocoa -framework CoreText -framework CoreGraphics`。
+系统链接库：Windows `user32/gdi32`；Linux `X11/dl`；macOS `Cocoa/CoreText/CoreGraphics`。
+原始设计资料见 [macos27](macos27/README.md)。
 
 ---
 

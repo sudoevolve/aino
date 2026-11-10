@@ -1,12 +1,11 @@
 # 02 · 样式与主题
 
-> **本分支是 macOS 27 风（`macos27`）。** 本文里的 shadcn 语义名（`--radius`、`primary`、`muted`…）仍然有效，
-> 但 `Theme::light()` / `Theme::dark()` 返回的是 Apple 官方 macOS 27 参数，数值全部来自
-> Apple Figma kit 的变量集（`Colors` / `Sizes`）。完整参数表见 **[`macos27/README.md`](macos27/README.md)**。
-> 旧的 shadcn 字段为兼容保留，内部已映射到 macOS 语义层（`label` / `fill` / `tint` / `separator` …）。
+当前主题采用 macOS 风格，保留 shadcn 命名字段供已有应用使用。
+尺寸和颜色以 `aino.hpp` 的主题工厂为准；资料来源与映射见 [设计资料](macos27/README.md)。
+背景材质使用模糊近似，没有折射与色散。
 
 `Style` 是每个组件的可选最后一个参数，`Theme` 是全局配色与度量。
-本篇把两者的**全部字段**逐项列出，并给出每个字段的默认值与生效规则。
+本篇把两者的字段逐项列出，并给出每个字段的默认值与生效规则。
 
 ---
 
@@ -39,28 +38,9 @@ struct Color { uint8_t r, g, b, a; };
 | `rgb24()` | 打包成 `0xRRGGBB` |
 | `==` / `!=` | 四通道全等 |
 
-> **坑（会被当成「没传」）**：`is_none()` 判的是 `alpha == 0`，所以 `Color(255, 0, 0, 0)`
-> （透明红）和默认的 `Color::none()` 完全没法区分 —— `Style().background(Color(0, 0, 0, 0))`
-> 只会被理解成「调用方没指定背景」，组件随即回退到自己的默认底色。
->
-> 想让组件**不画底**，得看它有没有专门的开关（`input()` 认 `stroke(0)` + 无 `bg` 这
-> 个组合，见 [06 §16.5](06-interactive.md)），或者干脆把底色画在自己的图层里、把组件
-> 叠在上面。`Color::transparent()` 并不是「画一层透明的意思」—— 它和 `none()` 是同一个值。
-
-> **坑（会闪）**：`mix()` 连 **alpha 一起**插值。所以**淡入一个颜色**时不要拿
-> `Color::none()` 当起点：
->
-> ```cpp
-> // ✗ t=0.5 得到 (122,122,122, a=128)，光栅器 blend 完比背景还暗 —— 闪一下深灰
-> Color bad = Color::none().mix(accent, t);
-> // ✓ RGB 保持 accent，只推 alpha
-> Color good = accent.with_alpha(uint8_t(255.0f * t));
-> ```
->
-> 这不是理论问题：`state_fill()` 以前就是这么写的，导致所有 ghost / outline 控件
-> 每次悬停都先闪一下深灰再回到 accent（`hover_fade_probe` 钉住中间帧亮度）。
-> 同理，别把 `with_alpha(10)` 之类**当混合权重**传进 `mix()` —— 那是在改 alpha，
-> 不是"压 10% 暗"。
+`Style` 中 alpha 为 0 的颜色表示未设置，不能用透明色覆盖组件默认背景。
+图元的透明色则直接跳过绘制。`mix()` 同时插值 RGB 与 alpha；做淡入时使用
+`accent.scaled_alpha(t)` 保持 RGB，避免从透明黑插值带来的暗色中间帧。
 
 ### 1.2 `Rect`
 
@@ -155,10 +135,13 @@ const aino::Input& in = ui.input();
 | `placeholder` | `std::string` | `""` | 占位文本（`input` / `textarea` / `select` 用） |
 | `wrap` | `bool` | `false` | 自动折行；`\n` 永远生效 |
 | `line_gap` | `float` | `0.0f` | 行距附加量（0 = 直接用字体的行高） |
-| `animated` | `bool` | `false` | 显式要求「这个组件会动」（`spinner` `skeleton` 读；不写则只在鼠标悬停时动） |
+| `animated` | `bool` | `false` | spinner 可常驻；skeleton 需显式开启，且仍只在悬停时动 |
+| `password` | `bool` | `false` | 单行输入以圆点显示，编辑值保留原文 |
+| `row_sep` | `bool` | `false` | 条目行底分隔线 |
+| `blur_radius` | `float` | `-1` | `glass()` 的背景模糊半径 |
 | `press_scale` | `float` | `1.0f` | 按下时整体缩放，`1.0` = 不缩放 |
 
-### 2.1 链式方法（全部 34 个）
+### 2.1 链式方法
 
 | 方法 | 等价于 | 说明 |
 |---|---|---|
@@ -180,15 +163,18 @@ const aino::Input& in = ui.input();
 | `muted_text()` | `muted = true` | 前景用 muted 色 |
 | `hint(s)` | `placeholder = s` | 占位文本 |
 | `off()` | `disabled = true` | 禁用 |
+| `secret(on = true)` | `password = on` | 密码输入 |
+| `row_lines()` | `row_sep = true` | 条目分隔线 |
+| `blur(b)` | `blur_radius = b` | 材质模糊半径 |
 | `scale_on_press(s)` | `press_scale = s` | 按压缩放 |
 | `wrap_text(v = true)` | `wrap = v` | 自动折行 |
 | `line_spacing(g)` | `line_gap = g` | 行距 |
-| `animate(v = true)` | `animated = v` | 声明「无条件一直动」（不写则只在悬停时动） |
+| `animate(v = true)` | `animated = v` | spinner 显式持续播放；skeleton 仍只在悬停时推进 |
 
 ### 2.2 语义变体
 
 ```cpp
-Style().primary()      // 0 Default     深色填充（浅色主题下是近黑）
+Style().primary()      // 0 Default     强调色填充
 Style().secondary()    // 1 Secondary   浅灰填充
 Style().outline()      // 2 Outline     透明底 + 1px 描边
 Style().ghost()        // 3 Ghost       透明底无描边，只有 hover 才出现底色
@@ -235,124 +221,98 @@ variant 决定 base/fg/border
 
 ---
 
-## 3. `Theme` 全部 token
+## 3. `Theme` 颜色与度量
 
-### 3.1 语义色（19 个）
+### 3.1 原生语义色
 
-| token | 浅色 | 深色 | 用在哪 |
-|---|---|---|---|
-| `background` | `#FFFFFF` | `#09090B` | 窗口底色 |
-| `foreground` | `#09090B` | `#FAFAFA` | 主文字 |
-| `card` | `#FFFFFF` | `#101012` | `panel` / `card` 底 |
-| `card_foreground` | `#09090B` | `#FAFAFA` | 卡片内文字 |
-| `popover` | `#FFFFFF` | `#131316` | 浮层底（menu / tooltip / toast） |
-| `popover_foreground` | `#09090B` | `#FAFAFA` | 浮层文字 |
-| `primary` | `#18181B` | `#FAFAFA` | 主色（按钮填充、进度条、滑杆已选段） |
-| `primary_foreground` | `#FAFAFA` | `#18181B` | 主色上的文字 |
-| `secondary` | `#F4F4F5` | `#27272A` | 次级填充（`Style::Secondary` 的按钮 / 徽章 / kbd / 分段凹槽） |
-| `secondary_foreground` | `#18181B` | `#FAFAFA` | 次级填充上的文字 |
-| `muted` | `#F4F4F5` | `#27272A` | 低强调底（skeleton、code 块、slider 轨道） |
-| `muted_foreground` | `#71717A` | `#A1A1AA` | 次要文字、占位符 |
-| `accent` | `#F4F4F5` | `#27272A` | hover 底色、选中底色 |
-| `accent_foreground` | `#18181B` | `#FAFAFA` | accent 上的文字 |
-| `destructive` | `#EF4444` | `#DC2626` | 危险色 |
-| `destructive_foreground` | `#FAFAFA` | `#FAFAFA` | 危险色上的文字 |
-| `border` | `#E4E4E7` | `#27272A` | 描边、分隔线 |
-| `input` | `#E4E4E7` | `#2E2E33` | 输入类控件的边框（深色下比 border 亮一点） |
-| `ring` | `#18181B` | `#D4D4D8` | 焦点环（以 55% alpha 画 2px） |
+颜色以 RGBA 保存。透明标签和填充应合成在当前表面上，不等同于固定灰色。
 
-> **`secondary` / `muted` / `accent` 在浅色主题里是同一个 `#F4F4F5`**（shadcn 原样）。
-> 三者语义不同（次级填充 / 低强调底 / 悬停底），视觉上却是同一个色 —— 于是
-> **铺了 `muted` 的容器不能和铺了 `secondary` 的组件叠在一起**，两者完全同色，
-> 组件会凭空消失。
->
-> 这不是理论风险。gallery 的预览底板原来铺 `muted.mix(background, 0.12)`（`#F5F5F6`），
-> 和 `secondary` 只差 1 级 —— 头像的圆、Secondary 按钮、骨架、徽章、进度条轨道
-> 全部糊在板子里，只剩文字。现在底板改铺 `background`，靠 1px `border` 分层。
->
-> 经验值：浅色主题里要让一层「浮起来」，容器与内容至少差 **8~10 级灰度**；
-> 差 1~4 级在缩放的截图上就等于看不见。
-
-### 3.2 度量（8 个）
-
-| token | 默认 | 说明 |
+| 字段 | 浅色 / 深色 | 用途 |
 |---|---|---|
-| `radius` | `8.0f` | 基准圆角（button / skeleton / progress） |
-| `radius_sm` | `4.0f` | 小圆角（code_text / nav_item / select / menu） |
-| `radius_lg` | `10.0f` | 大圆角（panel / dialog） |
-| `radius_full` | `9999.0f` | 胶囊（badge / progress 轨道） |
-| `font_size` | `14.0f` | 基准字号 |
-| `line_height` | `20.0f` | 基准行高 |
-| `control_h` | `36.0f` | 标准控件高度（建议 `button`/`input`/`select` 用） |
-| `control_h_sm` | `32.0f` | 小号控件高度 |
+| `label` | 黑 / 白，alpha 217 | 主标签 |
+| `label2` | 黑 alpha 128 / 白 alpha 140 | 次要文字 |
+| `label3/label4/label5` | 黑 / 白，alpha 64/26/13 | 低强调文字 |
+| `fill/fill2/fill3/fill4/fill5` | 黑 / 白，alpha 26/20/13/8/5 | 五级叠加填充 |
+| `fill_hover/fill_press` | 黑 / 白，alpha 38/44 | 状态填充 |
+| `window_bg` | `#FFFFFF` / `#1E1E1E` | 窗口背景 |
+| `control_bg` | `#FFFFFF` / `#282828` | 控件表面 |
+| `sidebar_bg/title_bg` | `#EAEAEA` / `#1E1E1E` | 侧栏和工具栏 |
+| `popover_bg/tooltip_bg` | `#F6F6F6` / `#282828` | 浮层表面 |
+| `separator` | 黑 / 白 alpha 26 | 分隔线 |
+| `tint` | `#0088FF` / `#0091FF` | 默认强调色 |
+| `tint_foreground` | 白色 | 强调色上的文字 |
+| `track` | 黑 alpha 18 / 白 alpha 10 | 环形进度轨道 |
+| `shadow_color` | 黑 alpha 64 / 150 | 阴影 |
+| `tooltip_stroke` | 透明 / 白 alpha 38 | 气泡边缘 |
+| `scrollbar` | 黑 alpha 128 / 白 alpha 140 | 滚动滑块 |
+| `table_sel` | `#0165E2` / `#0158D2` | 默认活动选中行 |
+| `table_sel_inactive` | 黑 alpha 36 / 白 alpha 46 | 失焦选中行 |
+| `row_alt` | 黑 / 白 alpha 13 | 交替行填充 |
+| `overlay` | `(171,171,171,153)` / `(23,23,23,158)` | 可选遮罩 token，dialog 不自动使用 |
 
-### 3.3 字体（2 个）
+强调色板包括 `blue/red/orange/yellow/green/mint/teal/cyan/indigo/purple/pink/brown/gray`。
+`track_well()` 返回随浅深色变化的中性凹槽色，`is_dark()` 依据窗口背景亮度判断。
 
-| token | 默认 | 说明 |
-|---|---|---|
-| `font_family` | `""` | 空 = **自动挑一个和系统一致的字体**，见下方 3.3.1 |
-| `font_family_mono` | `""` | 等宽字体，空 = **Consolas**。**只被 `code_block` 用**（走 `measure_mono` / `draw_mono` 这条独立通道）；`code_text` / `label` 等仍然是比例字体 |
+### 3.2 兼容字段映射
 
-#### 3.3.1 `font_family` 留空时到底用了什么字体
+工厂在创建时设置这些映射；直接改任一字段不会自动重算其它字段。
 
-不是写死的某一个名字，而是按顺序探测（Windows 后端）：
-
-1. `Segoe UI Variable Text` —— Win11 的正文字体，资源管理器和设置界面用的就是它
-2. `Segoe UI Variable` —— Win11 早期版本的命名
-3. `Segoe UI` —— Win7 起一定有
-4. 都没有就问系统 `SPI_GETNONCLIENTMETRICS` 的 `lfMessageFont`（简中机器上是 `Microsoft YaHei UI`）
-
-**中文字形由 GDI 的字体链接提供**：注册表 `SystemLink` 里 Segoe UI 链到 `msyh.ttc`，
-所以同一行里拉丁字母用 Segoe、汉字用微软雅黑，逐字替换、基线对齐 —— 这和
-Windows 自己渲染中英混排的方式完全一致，不需要你手动指定两种字体。
-
-| 你可能遇到的差别 | 原因 |
+| 兼容字段 | 来源 |
 |---|---|
-| 换了字体后中文宽度略宽约 5% | 经由字体链接取到的 CJK 字面，advance 比直接指定雅黑宽 1px/字 |
-| 文字是灰度抗锯齿，不是 ClearType | 这是刻意的。试过 `CLEARTYPE_QUALITY`：画进 32bpp DIB 再 `BitBlt` 这条路径上，GDI 给出的次像素边纹过重（实测 21px 中文最大通道差 174、8.7% 的像素带明显橙蓝彩边），比系统的 ClearType 脏得多 |
+| `background/foreground` | `window_bg/label` |
+| `card` | 浅色 `control_bg`；深色 `#252525`（panel 默认实际使用 `fill3`） |
+| `card_foreground` | `label` |
+| `popover/popover_foreground` | `popover_bg/label` |
+| `primary/primary_foreground` | `tint/tint_foreground` |
+| `secondary/secondary_foreground` | `fill/label` |
+| `muted/muted_foreground` | `fill3/label2` |
+| `accent/accent_foreground` | `fill3/label` |
+| `destructive/destructive_foreground` | `red/白色` |
+| `border/input` | `separator`（input 同为黑/白 alpha 26） |
+| `ring` | 默认强调蓝 alpha 128/140 |
 
-想强制某个字体就显式写进主题（只选一个）：
+### 3.3 尺寸
 
-```cpp
-t.font_family = "Microsoft YaHei UI";   // 全用雅黑：拉丁也走它的西文字形（更宽更圆）
-// t.font_family = "Consolas";          // 想要全等宽就换成这个
-```
+| 档位 | Mini | Small | Medium | Large | XL |
+|---|---|---|---|---|---|
+| `size_h` | 16 | 20 | 24 | 28 | 36 |
+| `size_radius` | 4 | 5 | 6 | 7 | 9 |
+| `size_font` | 10 | 11 | 13 | 13 | 13 |
+| `size_line` | 13 | 14 | 16 | 16 | 16 |
+| `size_padx` | 7 | 10 | 16 | 16 | 16 |
+| `size_pady` | 2 | 3 | 4 | 6 | 10 |
 
-> 平台差异：Windows 会做上面这套探测；X11 把 `font_family` 当 **fontconfig 家族名**
-> （留空 = `sans`，等宽通道 = `monospace`；名字在 Linux 上不存在时 fontconfig 自动代换）。
-> 汉字**不受这个家族名影响**：主字体没有的码位会沿 `FcFontSort` 的兜底链找，最终落到
-> Noto Sans CJK 之类的 CJK 字体上。macOS 原样交给 CoreText。三者留空都用各自平台默认值。
+高度别名为 `control_h_mini/control_h_sm/control_h/control_h_lg/control_h_xl`。
+默认 `radius=6`、`radius_sm=4`、`radius_lg=10`、`radius_xl=12`、`radius_full=9999`，
+`font_size=13`、`line_height=16`、`pad_x=16`、`pad_y=4`、`corner_smoothing=0.6`。
+组件可按尺寸使用自己的几何规则，不代表每个组件都直接读取所有 token。
 
-> **哪条路径是等宽的？** 只有 `code_block()`（和它背后的 `TextRenderer::measure_mono` /
-> `draw_mono`）。`code_text` / `label` / `table` 这些**都不是**等宽 —— 想要表格里数字对齐，
-> 要么给那一列用 `code_block`，要么把 `font_family` 整体换成等宽字体（连带英文一起变宽）。
->
-> 这条等宽通道是**可选实现**：后端不覆写 `measure_mono` / `draw_mono` 时，基类会退化成
-> 比例字体，照样编得过，只是代码块的列对不齐。GDI 后端用 `CreateFontW` 的
-> `FIXED_PITCH | FF_MODERN` + 家族名建字体，字体缓存键里拿**第 28 位**当 mono 标记
-> （28..31 本来是空着的），所以同一个字号的比例/等宽字体不会互相串。
+### 3.4 字体
 
-### 3.4 自定义主题
+`font_family` 为空时使用平台默认无衬线字体。Windows 优先 Segoe UI Variable Text /
+Segoe UI，中文由系统字体链接兜底；Linux 使用 fontconfig 的 sans 与逐字字体兜底；
+macOS 使用 CoreText。`font_family_mono` 控制 `code_block` 和公开等宽绘图通道，
+不改变普通 label/table 的比例字体。
+
+### 3.5 自定义强调色
 
 ```cpp
 aino::Theme t = aino::Theme::light();
-t.primary   = aino::Color::hex(0x2563EB);   // 蓝色主色
-t.radius    = 6.0f;                         // 全部圆角收紧
-t.font_size = 13.0f;
-t.font_family = "Microsoft YaHei UI";
+t.set_tint(t.purple);
 win.set_theme(t);
 ```
 
-`Theme::same_as()` 比较全部 19 色 + 8 度量 + 2 字体，
-所以每帧调 `set_theme` 也安全（不会白白请求重绘）。
+`set_tint(c)` 同步 `tint/tint_foreground`、`primary/primary_foreground`、`ring`、`table_sel`。
+`accent` 仍保留中性悬停填充。应用保存色板索引，切换浅深色后对新主题再次调用此方法。
+`same_as()` 比较全部颜色、尺寸表、度量与字体，`set_theme()` 不会对相同值重复排帧。
 
 ---
 
 ## 4. 属性生效规则
 
-`Style` 有 30 个字段，但**不是每个组件都读全部**。规则分三类：
+不同组件读取不同字段。常见规则如下，精确支持范围见组件章节：
 
-### 4.1 所有组件都读的
+### 4.1 常见字段
 
 `disabled`（除纯展示类外）、`radius`、`bg`、`fg`、`border_color`、`border_width`、
 `font_size`、`font_weight`、`align`、`valign`、`muted`、`variant`。
@@ -377,32 +337,22 @@ win.set_theme(t);
 
 ### 4.3 组件的默认值表
 
-想知道某个组件的默认圆角/字号/内边距是多少，看该组件的专章
-（`04`~`08` 每篇都有一张「默认值」表）。
+组件默认圆角、字号和内边距见 `04`~`08` 的对应章节。
 
 ---
 
-## 5. 内置图标常量
+## 5. 系统图标
 
-`aino::icons` 提供一组不依赖字体的 Unicode 符号，可直接当 `icon_button` 的 `glyph`：
-
-| 常量 | 字符 | 名称 |
-|---|---|---|
-| `icons::check` | ✓ | 对勾 |
-| `icons::chevron_down` | ⌄ | 下箭头 |
-| `icons::chevron_right` | › | 右箭头 |
-| `icons::close` | ✕ | 关闭 |
-| `icons::plus` | + | 加 |
-| `icons::minus` | − | 减（U+2212 真减号，非连字符） |
-| `icons::search` | ⌕ | 搜索 |
-| `icons::settings` | ⚙ | 设置 |
-| `icons::sun` | ☀ | 太阳 |
-| `icons::moon` | ☾ | 月亮 |
-| `icons::dot` | • | 圆点 |
+控件与示例优先使用 `SystemIcon`。Windows 使用 Segoe Fluent Icons，缺失时尝试
+Segoe MDL2 Assets；macOS 使用 SF Symbols；X11 使用系统字体的 Unicode 符号回退。
+不需要第三方图标字体。
 
 ```cpp
-ui.icon_button(aino::icons::close, box, aino::Style().ghost());
+const aino::Rect box(24, 24, 24, 24);
+if (ui.button("", box, aino::Style().ghost())) win.close();
+ui.system_icon(aino::SystemIcon::Close, box.inset(4), ui.theme().label);
 ```
 
-这些是 UTF-8 字节串，字体缺字形时会显示成方框 —— 常见符号在
-Segoe UI Symbol / 微软雅黑下都有。需要更多图标时嵌入自己的字体图标即可。
+方形按钮需传相同宽高。`system_icon()` 只绘制，按钮负责命中和状态。
+`icon_button(glyph, box)` 和 `aino::icons::*` 保留为 UTF-8 字符接口，字形依赖系统字体；
+它们不会自动把任意字符替换为系统图标。
