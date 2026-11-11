@@ -154,7 +154,7 @@ struct Page {
     bool full = false;
 };
 const Card kCards[] = {
-    {ButtonVariants, "语义层级", "5 variants", "button 按钮 继续 次要 标准 描边 ghost 删除 禁用"},
+    {ButtonVariants, "语义层级", "7 styles", "button 按钮 继续 次要 标准 描边 ghost 删除 禁用"},
     {ButtonSizes, "尺寸与图标", "size", "button icon 图标 复制 收藏 更多 small regular large"},
     {ButtonLoading, "胶囊与加载态", "pill", "button loading spinner 胶囊 加载"},
     {InputBasic, "基础输入", "focus ring", "input 项目 邮箱 输入"},
@@ -385,6 +385,8 @@ void draw_buttons(Ui &ui, App &a, CardId id, Rect b) {
             Style st = Style().font(13).secondary();
             if (i == 0)
                 st.primary();
+            else if (i == 2)
+                st.background(ui.theme().fill);
 
             if (i == 3)
                 st.outline();

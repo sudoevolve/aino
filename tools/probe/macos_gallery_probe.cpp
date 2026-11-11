@@ -342,6 +342,20 @@ int main() {
         expect(first.w == first.h && second.w == second.h, "icon buttons have square bounds");
         expect(second.x == first.right() + 10, "icon button gap follows its full width");
     }
+    {
+        App variants;
+        const Rect area{20, 20, 520, 80};
+        f.frame([&] { draw_buttons(f.ui, variants, ButtonVariants, area); });
+        Flow row(area);
+        const float width = f.ui.text_width("继续", 13) + 30;
+        row.next(width);
+        Rect secondary = row.next(f.ui.text_width("次要", 13) + 30);
+        Rect standard = row.next(f.ui.text_width("标准", 13) + 30);
+        Color secondary_surface = f.pixel(int(secondary.x + 8), int(secondary.cy()));
+        Color standard_surface = f.pixel(int(standard.x + 8), int(standard.cy()));
+        expect(secondary_surface.rgb24() != standard_surface.rgb24(),
+               "standard and secondary buttons render distinct theme surfaces");
+    }
     app = App{};
     app.date_open = true;
     app.color_open = true;
