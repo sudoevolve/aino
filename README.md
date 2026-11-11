@@ -1,15 +1,15 @@
 ﻿# aino
 
-单头文件 C++17 桌面 UI 库 —— 立即模式、零第三方依赖、空闲 0.00% CPU。
+单头文件 C++17 桌面 UI 库 —— 立即模式、零第三方依赖、空闲 0.00% CPU。（这是一个纯vibo coding项目）
 
-核心库只有一个 `aino.hpp`，使用系统绘制和字体接口，无第三方 UI 或图标依赖。当前分支采用 macOS 风格，背景材质以模糊近似。
+核心库只有一个 `aino.hpp`，使用系统绘制和字体接口，无第三方 UI 或图标依赖。采用 macOS 风格，背景材质以模糊近似。
 
 ## Preview
 
-|  |  |
-| --- | --- |
+|                                                     |                                               |
+| --------------------------------------------------- | --------------------------------------------- |
 | ![按钮与选择控件](screenshots/gallery-overview.png) | ![强调色预览](screenshots/gallery-button.png) |
-| ![对话框](screenshots/gallery-dialog.png) | ![深色](screenshots/gallery-dark.png) |
+| ![对话框](screenshots/gallery-dialog.png)           | ![深色](screenshots/gallery-dark.png)         |
 
 ![基础图元示例](screenshots/primitives.png)
 
