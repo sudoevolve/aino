@@ -100,7 +100,9 @@ Windows 每个窗口线程使用独立帧定时器，多窗口实测不等于 Co
 `win.run(frame_cb)` 就是完整主循环：没事件时阻塞在 `WaitMessage`，帧回调只在需要重绘时被调用 —— 窗口静止时 0 帧 / 0.00% CPU，不是低帧率空转。
 
 Windows 本地回归覆盖组件状态、滚动布局、编辑、19 项整窗行为、空闲 CPU 与多窗口。
-仓库 CI 配置在 Windows/Linux/macOS 上编译、开窗冒烟并运行几何像素断言；
+仓库 CI 仅在发布 GitHub Release（含预发布版本）时自动运行，也可在 Actions 页面手动触发。
+普通提交、分支推送、PR 和单独推送 tag 不触发自动 CI。
+CI 在 Windows/Linux/macOS 上编译、开窗冒烟并运行几何像素断言；
 当前 mac 风格尚未完成 Linux/macOS 真机核对。输入、IME、剪贴板与 Cocoa 多窗口的限制见
 [平台支持](docs/README.md#平台支持)。
 

@@ -16,9 +16,8 @@
 # 所以 GDI / Xft / CoreText 三种字形光栅都能过。
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  release:
+    types: [published]
   workflow_dispatch:
 
 jobs:
