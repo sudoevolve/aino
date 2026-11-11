@@ -30,7 +30,7 @@ CMake 自动扫描 `examples/*.cpp`，每个文件生成 `aino_<文件名>` 目�
 | `sidebar_demo.cpp` | `aino_sidebar_demo` | 侧栏导航与应用状态 |
 | `zoom_demo.cpp` | `aino_zoom_demo` | 用户操作触发的缩放 |
 | `primitives_demo.cpp` | `aino_primitives_demo` | 图形、阴影、裁剪、变换、系统图标和背景模糊 |
-| `function_viewer.cpp` | `aino_function_viewer` | 函数曲线、自定义表达式 |
+| `function_viewer.cpp` | `aino_function_viewer` | 函数曲线、自定义表达式、采样缓存 |
 | `ssh_client.cpp` | `aino_ssh` | 可选 SSH/SFTP 客户端 |
 
 Visual Studio 多配置生成器的程序在 `build/Release/`，Ninja/Makefiles 通常在 `build/`。
@@ -43,6 +43,11 @@ cmake --build build --config Release --target aino_primitives_demo
 Windows 回归构建入口 `python tools/build.py` 默认构建 Release 画廊，并将程序复制至
 `build/aino_gallery.exe`。也支持 `--src examples/primitives_demo.cpp --out aino_primitives_demo.exe`。
 脚本不会关闭正在运行的示例；输出文件被占用时请关闭对应窗口后再构建。
+
+函数显示器默认暂停，点击“动画”或在公式输入框外按空格开始 / 暂停。
+滚轮缩放、拖动平移、双击或 `R` 复位视图；编辑公式时不会触发绘图快捷键。
+曲线、导数和标量场网格在公式、参数、时间或视图变化时重新采样，移动准星及切换主题复用缓存。
+缓存减少计算，不缓存整幅图像；暂停时鼠标交互仍会绘制当前画面。
 
 ### 可选 SSH 示例
 

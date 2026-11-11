@@ -26,6 +26,7 @@
 #include "../aino.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdarg>
@@ -808,7 +809,7 @@ struct App {
     float zoom = 1.0f;
     float cx = 0.0f, cy = 0.0f;
     float t = 0.0f;             // 动画时钟
-    bool  anim = true;
+    bool  anim = false;
     bool  deriv = false;
     bool  contour = false;
     bool  dark = false;
@@ -855,6 +856,11 @@ const char* kCatNames[] = {
 //  六、绘制一帧
 // =============================================================================
 
+struct PlotSamples {
+    std::vector<aino::Vec2> points, derivative;
+    Grid grid;
+};
+
 struct Ctx {
     aino::Ui& ui;
     const aino::Theme& th;
@@ -869,6 +875,37 @@ struct Ctx {
     bool  deriv = false;        // 是否叠加导数曲线
     bool  contour = false;      // 场模式：等高线 vs 热力图
     Color curve_c;
+    PlotSamples& samples;
+    bool resample = true;
+};
+
+struct PlotCache {
+    PlotSamples samples;
+    std::array<float, 16> key{};
+    std::string formula;
+    CurveFn curve = nullptr;
+    ParamFn param = nullptr;
+    FieldFn field = nullptr;
+    Kind mode = Kind::Curve;
+    bool valid = false, custom = false;
+
+    bool update(const Ctx& c) {
+        const std::array<float, 16> next = {
+            c.v.px.x, c.v.px.y, c.v.px.w, c.v.px.h, c.v.cx, c.v.cy, c.v.half_w, c.v.half_h,
+            c.p[0], c.p[1], c.p[2], c.t, c.pre.u0, c.pre.u1, float(c.deriv), float(c.contour)};
+        const bool changed = !valid || key != next || formula != c.pre.formula || mode != c.mode ||
+                             custom != (c.prog != nullptr) || curve != c.pre.curve ||
+                             param != c.pre.param || field != c.pre.field;
+        if (changed) {
+            key = next;
+            formula = c.pre.formula;
+            mode = c.mode;
+            custom = c.prog != nullptr;
+            curve = c.pre.curve; param = c.pre.param; field = c.pre.field;
+            valid = true;
+        }
+        return changed;
+    }
 };
 
 float eval_curve(const Ctx& c, float x) {
@@ -957,15 +994,18 @@ void draw_curve(Ctx& c) {
     const View& v = c.v;
     const Rect& px = v.px;
     const int n = std::max(64, static_cast<int>(px.w * 1.4f));
-    std::vector<aino::Vec2> pts;
-    pts.reserve(static_cast<size_t>(n) + 1);
+    auto& pts = c.samples.points;
+    if (c.resample) {
+        pts.clear();
+        pts.reserve(static_cast<size_t>(n) + 1);
 
-    // 按"屏幕像素"采样而不是按世界单位：这样无论缩放到哪一级，
-    // 曲线密度都是一致的（也不会有长线段把包围盒撑大）。
-    for (int i = 0; i <= n; ++i) {
-        const float x = v.wx(px.x + px.w * static_cast<float>(i) / static_cast<float>(n));
-        const float y = eval_curve(c, x);
-        pts.push_back(aino::Vec2(v.sx(x), v.sy(y)));
+        // 按"屏幕像素"采样而不是按世界单位：这样无论缩放到哪一级，
+        // 曲线密度都是一致的（也不会有长线段把包围盒撑大）。
+        for (int i = 0; i <= n; ++i) {
+            const float x = v.wx(px.x + px.w * static_cast<float>(i) / static_cast<float>(n));
+            const float y = eval_curve(c, x);
+            pts.push_back(aino::Vec2(v.sx(x), v.sy(y)));
+        }
     }
 
     // 光晕（宽、低 alpha）+ 实线：两次折线，视觉上"发光"但不糊
@@ -980,13 +1020,16 @@ void draw_curve(Ctx& c) {
     // 数值导数（只对显函数有意义）
     if (c.deriv && c.mode == Kind::Curve) {
         const Color dc = c.dark ? Color::hex(0xFB923C) : Color::hex(0xEA580C);
-        std::vector<aino::Vec2> d;
-        d.reserve(static_cast<size_t>(n) + 1);
-        const float h = v.half_w * 2.0f / static_cast<float>(n) * 0.5f;
-        for (int i = 0; i <= n; ++i) {
-            const float x = v.wx(px.x + px.w * static_cast<float>(i) / static_cast<float>(n));
-            const float y0 = eval_curve(c, x - h), y1 = eval_curve(c, x + h);
-            d.push_back(aino::Vec2(v.sx(x), v.sy((y1 - y0) / (2.0f * h))));
+        auto& d = c.samples.derivative;
+        if (c.resample) {
+            d.clear();
+            d.reserve(static_cast<size_t>(n) + 1);
+            const float h = v.half_w * 2.0f / static_cast<float>(n) * 0.5f;
+            for (int i = 0; i <= n; ++i) {
+                const float x = v.wx(px.x + px.w * static_cast<float>(i) / static_cast<float>(n));
+                const float y0 = eval_curve(c, x - h), y1 = eval_curve(c, x + h);
+                d.push_back(aino::Vec2(v.sx(x), v.sy((y1 - y0) / (2.0f * h))));
+            }
         }
         polyline(ui, px, d, dc.with_alpha(210), 1.5f);
     }
@@ -996,19 +1039,22 @@ void draw_parametric(Ctx& c) {
     const View& v = c.v;
     const Rect& px = v.px;
     const int n = std::max(200, std::min(1800, static_cast<int>(px.w * 2.0f)));
-    std::vector<aino::Vec2> pts;
-    pts.reserve(static_cast<size_t>(n) + 1);
-    for (int i = 0; i <= n; ++i) {
-        const float u = c.pre.u0 + (c.pre.u1 - c.pre.u0) * static_cast<float>(i) / static_cast<float>(n);
-        float x = 0.0f, y = 0.0f;
-        if (c.prog2) {
-            // 自定义参数方程：两行表达式各算一个坐标，变量是 u
-            x = fx::eval(*c.prog, u, 0.0f, c.t, c.p[0], c.p[1], c.p[2]);
-            y = fx::eval(*c.prog2, u, 0.0f, c.t, c.p[0], c.p[1], c.p[2]);
-        } else {
-            c.pre.param(u, c.p, c.t, x, y);
+    auto& pts = c.samples.points;
+    if (c.resample) {
+        pts.clear();
+        pts.reserve(static_cast<size_t>(n) + 1);
+        for (int i = 0; i <= n; ++i) {
+            const float u = c.pre.u0 + (c.pre.u1 - c.pre.u0) * static_cast<float>(i) / static_cast<float>(n);
+            float x = 0.0f, y = 0.0f;
+            if (c.prog2) {
+                // 自定义参数方程：两行表达式各算一个坐标，变量是 u
+                x = fx::eval(*c.prog, u, 0.0f, c.t, c.p[0], c.p[1], c.p[2]);
+                y = fx::eval(*c.prog2, u, 0.0f, c.t, c.p[0], c.p[1], c.p[2]);
+            } else {
+                c.pre.param(u, c.p, c.t, x, y);
+            }
+            pts.push_back(aino::Vec2(v.sx(x), v.sy(y)));
         }
-        pts.push_back(aino::Vec2(v.sx(x), v.sy(y)));
     }
     polyline(c.ui, px, pts, c.curve_c.with_alpha(30), 6.0f);
     polyline(c.ui, px, pts, c.curve_c, 2.1f);
@@ -1018,21 +1064,23 @@ void draw_polar(Ctx& c) {
     const View& v = c.v;
     const Rect& px = v.px;
     const int n = std::max(240, std::min(2000, static_cast<int>(px.w * 2.0f)));
-    std::vector<aino::Vec2> pts;
-    pts.reserve(static_cast<size_t>(n) + 1);
-    for (int i = 0; i <= n; ++i) {
-        const float th = c.pre.u0 + (c.pre.u1 - c.pre.u0) * static_cast<float>(i) / static_cast<float>(n);
-        const float r = eval_r(c, th);
-        pts.push_back(aino::Vec2(v.sx(r * std::cos(th)), v.sy(r * std::sin(th))));
+    auto& pts = c.samples.points;
+    if (c.resample) {
+        pts.clear();
+        pts.reserve(static_cast<size_t>(n) + 1);
+        for (int i = 0; i <= n; ++i) {
+            const float th = c.pre.u0 + (c.pre.u1 - c.pre.u0) * static_cast<float>(i) / static_cast<float>(n);
+            const float r = eval_r(c, th);
+            pts.push_back(aino::Vec2(v.sx(r * std::cos(th)), v.sy(r * std::sin(th))));
+        }
     }
     polyline(c.ui, px, pts, c.curve_c.with_alpha(30), 6.0f);
     polyline(c.ui, px, pts, c.curve_c, 2.1f);
 }
 
 // 采样一张标量场网格（隐函数 / 场共用）
-Grid sample_grid(const Ctx& c, float cell) {
+void sample_grid(const Ctx& c, float cell, Grid& g) {
     const Rect& px = c.v.px;
-    Grid g;
     g.step = cell;
     g.x0 = px.x;
     g.y0 = px.y;
@@ -1049,11 +1097,11 @@ Grid sample_grid(const Ctx& c, float cell) {
             g.v[static_cast<size_t>(j) * (g.nx + 1) + i] = val;
         }
     }
-    return g;
 }
 
 void draw_implicit(Ctx& c) {
-    const Grid g = sample_grid(c, 5.0f);
+    if (c.resample) sample_grid(c, 5.0f, c.samples.grid);
+    const Grid& g = c.samples.grid;
     const Color halo = c.curve_c.with_alpha(24);
     marching(g, 0.0f, [&](float x0, float y0, float x1, float y1) {
         seg(c.ui, c.v.px, aino::Vec2(x0, y0), aino::Vec2(x1, y1), halo, 5.0f);
@@ -1066,7 +1114,8 @@ void draw_implicit(Ctx& c) {
 void draw_field(Ctx& c) {
     aino::Ui& ui = c.ui;
     const Rect& px = c.v.px;
-    const Grid g = sample_grid(c, c.contour ? 5.0f : 4.0f);
+    if (c.resample) sample_grid(c, c.contour ? 5.0f : 4.0f, c.samples.grid);
+    const Grid& g = c.samples.grid;
 
     if (!c.contour) {
         // 热力图：颜色量化到 96 级，再把同一行里同色的格子合成一条矩形。
@@ -1222,7 +1271,9 @@ void draw_legend(Ctx& c) {
 // =============================================================================
 struct UiState {
     App app;
+    PlotCache plot_cache;
     aino::Window* win = nullptr;
+    void* expression_focus[2] = {};
     std::vector<Preset> presets;      // 当前分类的公式
     int cached_cat = -1;
     int sidebar_cat = -1;
@@ -1346,7 +1397,10 @@ void draw_controls(aino::Ui& ui, UiState& st, const Rect& bar, const aino::Theme
             aino::Stack hb = ui.hbox(Rect(inner.x, y, inner.w, 36.0f), 10.0f);
             ui.draw_text(tag, hb.next(52.0f), th.muted_foreground,
                          Style().font(12.0f).left().middle());
-            ui.input(s, hb.fill(), Style().hint(hint));
+            const Rect input = hb.fill();
+            ui.input(s, input, Style().hint(hint));
+            if (ui.input().pressed[0] && input.contains(ui.input().mouse))
+                st.expression_focus[s == &a.custom_src ? 0 : 1] = ui.focused_id();
             y += 36.0f + 10.0f;
         };
         switch (a.custom_mode) {
@@ -1486,15 +1540,24 @@ void draw_plot(aino::Ui& ui, UiState& st, const Rect& card, const aino::Theme& t
         a.cx = wx - (mx - px.cx()) * (nv.half_w / (px.w * 0.5f));
         a.cy = wy + (my - px.cy()) * (nv.half_h / (px.h * 0.5f));
     }
-    if (inside && in.pressed[0]) a.dragging = true;
+    if (inside && in.pressed[0]) {
+        a.dragging = true;
+        ui.set_focus(nullptr);
+    }
     if (!in.down[0]) a.dragging = false;
     if (a.dragging) {
         a.cx -= in.mouse_delta.x * (v.half_w / (px.w * 0.5f));
         a.cy += in.mouse_delta.y * (v.half_h / (px.h * 0.5f));
     }
     if (in.double_click && inside) st.reset_view();
-    if (in.key_pressed[aino::KEY_SPACE]) a.anim = !a.anim;
-    if (in.key_pressed['R']) st.reset_view();
+    const void* focus = ui.focused_id();
+    const bool editing = custom && focus &&
+                         (focus == st.expression_focus[0] || focus == st.expression_focus[1]);
+    if (!editing && !in.super()) {
+        if (in.key_pressed[aino::KEY_SPACE] && !in.ctrl_of(aino::KEY_SPACE) && !in.alt_of(aino::KEY_SPACE))
+            a.anim = !a.anim;
+        if (in.key_pressed['R'] && !in.ctrl_of('R') && !in.alt_of('R')) st.reset_view();
+    }
     if (a.dragging) ui.set_cursor(aino::Cursor::Hand);
 
     v = make_view();   // 交互改过 zoom / cx / cy，画之前重算一次
@@ -1505,8 +1568,10 @@ void draw_plot(aino::Ui& ui, UiState& st, const Rect& card, const aino::Theme& t
           (custom && a.prog.ok) ? &a.prog : nullptr,
           (custom && a.custom_mode == 1 && a.prog2.ok) ? &a.prog2 : nullptr,
           a.p, a.t, dark, a.deriv, a.contour,
-          dark ? Color::hex(0x60A5FA) : Color::hex(0x2563EB)};
+          dark ? Color::hex(0x60A5FA) : Color::hex(0x2563EB), st.plot_cache.samples};
     if (pre.kind == Kind::Field) c.curve_c = dark ? Color::hex(0x34D399) : Color::hex(0x059669);
+    if (ok1 && ok2) c.resample = st.plot_cache.update(c);
+    else st.plot_cache.valid = false;
 
     // ---- 绘制 ----
     ui.push_clip(px);
@@ -1522,7 +1587,7 @@ void draw_plot(aino::Ui& ui, UiState& st, const Rect& card, const aino::Theme& t
     }
     if (!is_field) draw_ticks(ui, v, th);
     draw_legend(c);
-    draw_crosshair(c);
+    if (ok1 && ok2) draw_crosshair(c);
     if (is_field) draw_colorbar(ui, v, th);
     ui.pop_clip();
     ui.stroke_rect(px, th.border, 0.0f, 1.0f);

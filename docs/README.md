@@ -35,7 +35,7 @@
 | `primitives_demo.cpp` | 圆角、线宽、透明度；几何、阴影、裁剪、变换、系统图标与模糊 |
 | `sidebar_demo.cpp` | 导航与通知偏好 |
 | `zoom_demo.cpp` | 用户操作触发的缩放与舞台裁剪 |
-| `function_viewer.cpp` | 曲线与表达式、可滚动侧栏、用户控制的播放 |
+| `function_viewer.cpp` | 曲线与表达式、可滚动侧栏、默认暂停、采样缓存 |
 | `ssh_client.cpp` | 可选 SSH/SFTP，额外依赖 libssh2，MSVC 使用 mbedTLS 构建 |
 
 CMake 自动扫描顶层 `examples/*.cpp` 并创建 `aino_<文件名>` 目标，SSH 保留 `aino_ssh` 名称。
@@ -165,7 +165,7 @@ python tools/child_window.py --shot
 性能采样独立放在 `perf_gallery.py`，不再重复启动功能回归；输出单核及整机 CPU、
 帧耗时和绘制耗时，JSON 默认保存在 `build/perf-gallery.json`。
 `shot_pages.py` 保存分类截图，不能代替断言或人工排版核对。
-`tools/probe/example_ui_probe.cpp` 检查函数侧栏；`python tools/build_ssh.py ui`
+`tools/probe/example_ui_probe.cpp` 检查函数侧栏、全部绘图模式的采样缓存、无效公式及输入快捷键隔离；`python tools/build_ssh.py ui`
 构建 SSH 界面探针，覆盖 UTF-8、选区、撤销、粘贴与弹窗输入隔离，不连接服务器。
 
 系统链接库：Windows `user32/gdi32`；Linux `X11/dl`；macOS `Cocoa/CoreText/CoreGraphics`。

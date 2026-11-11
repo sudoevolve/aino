@@ -170,6 +170,124 @@ int main() {
     st.app.cat = kCustomCat;
     f.frame(draw);
     expect(f.ui.scroll_offset(list) == 0, "custom hints reset scroll position");
+
+    UiState plot;
+    plot.refresh();
+    plot.reset_params();
+    expect(!plot.app.anim, "viewer starts paused");
+    Rect card(254, 96, 684, 300);
+    auto draw_plot_only = [&] { draw_plot(f.ui, plot, card, f.ui.theme()); };
+    static int evaluations = 0;
+    plot.presets[0].curve = [](float x, const float* p, float t) {
+        ++evaluations;
+        return std::sin(x * p[0] + t);
+    };
+    f.frame(draw_plot_only);
+    expect(evaluations > 64, "first plot samples curve");
+    int before = evaluations;
+    aino::Input hover;
+    hover.mouse = {500, 200};
+    f.frame(draw_plot_only, hover);
+    expect(evaluations - before <= 1, "crosshair reuses curve samples");
+    before = evaluations;
+    f.ui.set_theme(aino::Theme::dark());
+    f.frame(draw_plot_only);
+    expect(evaluations == before, "theme change reuses samples");
+    auto changed = [&](auto change, const char* message) {
+        const int count = evaluations;
+        change();
+        f.frame(draw_plot_only);
+        expect(evaluations > count + 64, message);
+    };
+    changed([&] { plot.app.p[0] += 0.25f; }, "parameter invalidates samples");
+    changed([&] { plot.app.zoom *= 0.9f; }, "zoom invalidates samples");
+    changed([&] { plot.app.cx += 0.2f; }, "pan invalidates samples");
+    changed([&] { plot.app.t += 0.1f; }, "time invalidates samples");
+    changed([&] { card.w -= 20; }, "plot size invalidates samples");
+    changed([&] { plot.app.deriv = true; }, "derivative toggle invalidates samples");
+    expect(!plot.plot_cache.samples.derivative.empty(), "derivative samples are populated");
+
+    plot.app.cat = kCustomCat;
+    plot.refresh();
+    for (int mode = 0; mode < 5; ++mode) {
+        plot.app.custom_mode = mode;
+        plot.app.custom_src = "sin(";
+        f.frame(draw_plot_only, hover);
+        expect(!plot.app.prog.ok && !plot.plot_cache.valid,
+               "invalid custom formula is safe with crosshair");
+    }
+    plot.app.custom_mode = 1;
+    plot.app.custom_src = "cos(u)";
+    plot.app.custom_src2 = "sin(";
+    f.frame(draw_plot_only, hover);
+    expect(plot.app.prog.ok && !plot.app.prog2.ok && !plot.plot_cache.valid,
+           "invalid second parameter formula is safe");
+    plot.app.custom_mode = 0;
+    plot.app.custom_src = "sin(x)";
+    f.frame(draw_plot_only);
+    const auto samples = plot.plot_cache.samples.points;
+    plot.app.custom_src = "cos(x)";
+    f.frame(draw_plot_only);
+    const auto& updated = plot.plot_cache.samples.points;
+    expect(!updated.empty() && samples.front().y != updated.front().y,
+           "custom source invalidates samples");
+
+    Preset placeholder;
+    auto editor = [&] {
+        draw_plot_only();
+        draw_controls(f.ui, plot, Rect(254, 410, 684, 220), f.ui.theme(), Kind::Curve, placeholder);
+    };
+    f.click(editor, 420, 440);
+    expect(f.ui.focused_id() != nullptr, "formula input receives focus");
+    f.key(editor, aino::KEY_SPACE);
+    expect(!plot.app.anim, "space in formula does not start playback");
+    plot.app.zoom = 2;
+    f.key(editor, 'R');
+    expect(plot.app.zoom == 2, "R in formula does not reset view");
+    f.click(editor, 500, 200);
+    f.key(editor, aino::KEY_SPACE);
+    expect(plot.app.anim, "space toggles playback after focusing plot");
+    f.key(editor, 'R', true);
+    expect(plot.app.zoom == 2, "Ctrl+R does not reset view");
+    aino::Input quick_ctrl;
+    quick_ctrl.key_pressed['R'] = true;
+    quick_ctrl.key_ctrl['R'] = true;
+    f.frame(editor, quick_ctrl);
+    expect(plot.app.zoom == 2, "released Ctrl still protects key combination");
+    f.key(editor, 'R');
+    expect(plot.app.zoom == 1, "R resets plot view");
+    for (int cat = 1; cat < kCustomCat; ++cat) {
+        UiState cached;
+        cached.app.cat = cat;
+        cached.refresh();
+        cached.reset_params();
+        auto& preset = cached.presets[0];
+        if (preset.kind == Kind::Param)
+            preset.param = [](float u, const float*, float, float& x, float& y) {
+                ++evaluations; x = std::cos(u); y = std::sin(u);
+            };
+        else if (preset.kind == Kind::Polar)
+            preset.curve = [](float x, const float*, float) { ++evaluations; return 1 + std::cos(x); };
+        else
+            preset.field = [](float x, float y, const float*, float) { ++evaluations; return x * y; };
+        auto render = [&] { draw_plot(f.ui, cached, card, f.ui.theme()); };
+        before = evaluations;
+        f.frame(render);
+        expect(evaluations > before + 64, "each plot mode populates samples");
+        before = evaluations;
+        f.frame(render, hover);
+        expect(evaluations <= before + 1, "each plot mode reuses samples on hover");
+        before = evaluations;
+        cached.app.p[1] += 1;
+        f.frame(render);
+        expect(evaluations > before + 64, "each plot mode refreshes changed parameters");
+        if (preset.kind == Kind::Field) {
+            before = evaluations;
+            cached.app.contour = true;
+            f.frame(render);
+            expect(evaluations > before + 64, "contour toggle refreshes grid resolution");
+        }
+    }
 #endif
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
