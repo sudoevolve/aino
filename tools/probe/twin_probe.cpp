@@ -37,7 +37,7 @@ static void run_win(int idx, int w, int h, const char* title) {
         ui.label(std::string("win ") + std::to_string(idx),
                  Rect(20.0f, 20.0f, 260.0f, 24.0f), Style().font(13.0f));
         // 每帧都请求下一帧 → 两边都在跑动画，都会走"补预算"的分支
-        ui.repaint();
+        ui.set_animating(true);
         g_frames[idx].fetch_add(1, std::memory_order_relaxed);
     });
     g_alive[idx] = false;
@@ -59,7 +59,7 @@ int main() {
             ui.panel(Rect(0.0f, 0.0f, ui.width(), ui.height()));
             ui.label(std::string("win 0"), Rect(20.0f, 20.0f, 260.0f, 24.0f),
                      Style().font(13.0f));
-            ui.repaint();
+            ui.set_animating(true);
             const long n = g_frames[0].fetch_add(1, std::memory_order_relaxed);
             if (!spawned && n == 20) {
                 spawned = true;

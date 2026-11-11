@@ -134,7 +134,7 @@ static bool render_scene(aino::Window& win, const std::function<void(Ui&)>& body
     win.run([&](Ui& ui) {
         body(ui);
         if (++n >= 2) win.close();
-        else          ui.repaint();
+        else          ui.request_animation_frame();
     });
     return grab(win, out);
 }

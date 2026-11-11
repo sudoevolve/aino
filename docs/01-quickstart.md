@@ -114,7 +114,10 @@ int main() {
 
 `win.run(frame_cb)` 处理事件、建立帧、调用绘制回调并上屏；无事件和动画时阻塞等待。
 Windows 使用 `WaitMessage`，其它后端使用对应平台事件循环。
-只在需要后续帧时调用 `ui.repaint()`；聚焦输入框的光标与未结束的过渡会请求重绘。
+帧回调内不提供通用重绘请求。控件状态变化由当前输入帧处理；帧回调外的一次更新可调用
+`ui.request_next_frame()`。自定义动画在需要推进时调用 `ui.request_animation_frame()`，
+只续一帧；全局连续动画使用 `ui.set_animating(true)`，动画结束时必须关闭。
+`ui.request_next_frame()` 在帧回调期间返回 `false`，避免回调无条件续帧。
 `win.set_anim_fps(30)` 限制动画自请求帧的频率，不限制输入响应。
 
 ```cpp
@@ -134,7 +137,7 @@ win.set_anim_fps(30);
 `cfg.icon_path`：Windows 读取 `.ico`；macOS 设置应用图标；X11 忽略。
 `cfg.font_path`：Windows/macOS 可注册字体文件；X11 按字体家族与 fontconfig 查找。
 `font_family_mono` 用于等宽文本通道。`min_*` / `max_*` 均为逻辑尺寸。
-`win.close()` 请求关闭，`win.wake()` 可唤醒循环；跨线程共享应用状态仍需同步。
+`win.close()` 请求关闭，后台线程更新后调用 `win.wake()` 唤醒循环；跨线程共享应用状态仍需同步。
 多窗口示例的创建与回填目前在 Windows 实测，不能据此认定 Cocoa 支持后台线程建窗。
 
 常规应用使用 `run` 管理帧生命周期；不要在帧回调里阻塞等待或执行网络操作。
@@ -161,5 +164,5 @@ win.set_theme(t);
 | 缺少实现 | 实现宏必须在首次包含头文件前定义 |
 | 图标按钮被拉长 | 传入正方形 `Rect`；按钮不自动改变布局宽高 |
 | 滚动时状态变化 | 使用库滚动作用域，让组件 ID 按内容坐标生成；自定义动画使用稳定 ID |
-| 空闲持续绘制 | 检查无条件 `repaint()`、聚焦光标、显式 spinner 动画与应用计时器 |
+| 空闲持续绘制 | 检查显式动画帧请求、`set_animating(true)`、聚焦光标、spinner 与应用计时器 |
 | 文字被截断 | 用 `text_height()` 分配高度，绘制和测量使用相同 Style |

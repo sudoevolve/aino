@@ -282,7 +282,7 @@ void docs_08(Ui& ui, AppState& s) {
     if (s.toast_left > 0.0f) {
         ui.toast("已保存", {ui.width() - 200.0f, ui.height() - 60.0f, 180.0f, 44.0f});
         s.toast_left -= ui.frame_dt();
-        ui.repaint();
+        ui.request_animation_frame();
     }
     ui.toast("危险", {24, 300, 180, 44}, Style().destructive());
 }

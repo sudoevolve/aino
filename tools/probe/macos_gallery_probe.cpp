@@ -5,8 +5,15 @@
 #undef main
 
 #include <functional>
+#include <type_traits>
+#include <utility>
 
 namespace {
+template<class T, class = void> struct HasPublicRepaint : std::false_type {};
+template<class T> struct HasPublicRepaint<T, std::void_t<decltype(std::declval<T&>().repaint())>>
+    : std::true_type {};
+static_assert(!HasPublicRepaint<Ui>::value, "repaint must not be part of the public API");
+
 int passed = 0, failed = 0;
 void expect(bool ok, const char *name) {
     if (ok)
@@ -103,6 +110,57 @@ int main() {
     Fixture f;
     App app;
     f.frame([] {});
+    {
+        int requests = 0;
+        f.ui.impl->request_repaint = [&] { ++requests; };
+        expect(f.ui.request_next_frame() && requests == 1,
+               "one-shot frame request works outside the frame callback");
+        expect(!f.ui.request_animation_frame() && requests == 1,
+               "animation frame request requires an active frame");
+        f.ui.begin_frame(f.width, f.height, 1.f / 60.f, 1.f);
+        expect(!f.ui.request_next_frame() && requests == 1,
+               "one-shot frame request is rejected during a frame callback");
+        expect(f.ui.request_animation_frame() && requests == 2 && !f.ui.animating(),
+               "explicit animation request schedules one frame without enabling continuous mode");
+        f.ui.begin_measure();
+        expect(!f.ui.request_animation_frame() && !f.ui.request_next_frame() && requests == 2,
+               "measurement cannot request frames through public APIs");
+        f.ui.set_animating(true);
+        expect(!f.ui.animating() && requests == 2,
+               "measurement cannot enable continuous animation");
+        f.ui.end_measure();
+        f.ui.deferred([&] {
+            expect(!f.ui.request_next_frame(), "deferred callbacks cannot request general repaint");
+        });
+        f.ui.end_frame();
+        f.frame([] {});
+        expect(requests == 2 && !f.ui.animating(), "one-shot animation does not persist across frames");
+        f.ui.impl->request_repaint = {};
+    }
+    {
+        Fixture idle;
+        int requests = 0;
+        idle.ui.impl->request_repaint = [&] { ++requests; };
+        for (const auto &card : kCards) {
+            App state;
+            auto draw = [&] { draw_body(idle.ui, state, card.id, {20, 20, 360, 400}); };
+            for (int i = 0; i < 64; ++i) idle.frame(draw);
+            requests = 0;
+            idle.frame(draw);
+            if (requests || idle.ui.animating()) std::printf("  non-idle card: %s\n", card.name);
+            expect(requests == 0 && !idle.ui.animating(), "settled controls never request idle frames");
+        }
+        int selected = 0;
+        const std::vector<std::string> items{"one", "two"};
+        auto select = [&] { idle.ui.select(items, &selected, {20, 20, 160, 24}); };
+        idle.click(60, 32, select);
+        for (int i = 0; i < 64; ++i) idle.frame(select);
+        requests = 0;
+        idle.frame(select);
+        expect(requests == 0, "open select remains idle until an input event");
+        idle.click(60, 88, select);
+        expect(selected == 1, "idle open select still accepts item selection");
+    }
     {
         bool on = true, off = false, checked = true;
         int choice = 0, segment = 1;
@@ -386,6 +444,18 @@ int main() {
     int hits = app.hits;
     f.click(button.x + 38, button.y + 60, full);
     expect(app.hits == hits + 1 && !app.notices.empty(), "main button produces actual notification feedback");
+    {
+        Fixture quiet;
+        App notice;
+        notice.notices.push_back({"保存完成", 0, false});
+        quiet.ui.set_theme(gallery_theme(notice));
+        quiet.ui.begin_frame(quiet.width, quiet.height, 4.0f, 1.0f);
+        quiet.ui.clear(quiet.ui.theme().background);
+        build_ui(quiet.ui, notice);
+        quiet.ui.end_frame();
+        expect(notice.notices.size() == 1,
+               "static gallery notifications persist until explicitly dismissed");
+    }
     app.pending_anchor = 7;
     f.frame(full);
     f.frame(full);

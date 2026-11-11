@@ -28,20 +28,26 @@ int main() {
         return 2;
     }
 
-    int frames = 0;
+    win.impl->need_frame = false;
+    win.request_repaint();
+    if (!win.impl->need_frame) return 4;
+    int frames = 0, rejected_requests = 0;
     win.run([&](aino::Ui& ui) {
         ui.clear(ui.theme().background);
         ui.fill_rect(aino::Rect(20.0f, 20.0f, 120.0f, 60.0f), ui.theme().primary, 8.0f);
         ui.label("ci smoke", aino::Rect(20.0f, 96.0f, 200.0f, 24.0f));
 
-        // 界面是静态的，不去要帧的话主循环会一直阻塞在等事件上 ——
-        // 这里主动 repaint，把 20 帧跑满再自己叫停。
+        const bool pending = win.impl->need_frame;
+        win.request_repaint();
+        if (win.impl->need_frame == pending && !ui.request_next_frame()) ++rejected_requests;
+
+        // 显式动画帧仅用于验证后端帧循环。
         if (++frames >= 20) win.close();
-        else                ui.repaint();
+        else                ui.request_animation_frame();
     });
 
     std::printf("[smoke] frames = %d\n", frames);
-    if (frames < 20) {
+    if (frames < 20 || rejected_requests != frames) {
         std::printf("[smoke] 帧循环没跑满 —— 后端没要到帧或者提前退出了\n");
         return 3;
     }

@@ -84,7 +84,7 @@ int main() {
             }
         }
         const float dt = ui.frame_dt();
-        if (toast_left > 0.0f) { toast_left -= dt; ui.repaint(); }
+        if (toast_left > 0.0f) { toast_left -= dt; ui.request_animation_frame(); }
 
         Stack page = ui.vbox({ 0, 0, ui.width(), ui.height() }, 14.0f, 20.0f);
 

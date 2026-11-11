@@ -789,8 +789,13 @@ public:
     float time() const;                   // 秒
     float frame_dt() const;
 
-    // 请求下一帧再重绘一次（动画用）。默认事件驱动，静止时不重绘。
-    void repaint();
+    /** @brief 主线程在帧外请求一次更新；帧内、测量期间或未绑定窗口时返回 false。 */
+    bool request_next_frame();
+
+    /** @brief 自定义动画在当前帧申请一个后续帧；帧外或测量期间返回 false。
+     * 每帧仅在动画仍需推进时调用；停止调用即停止续帧，不改变全局动画开关。
+     */
+    bool request_animation_frame();
 
     // ---- 布局测量 ----
     // 进入后所有图元与命中测试只记账、不落地（不画、不响应、不排帧）。
@@ -804,7 +809,7 @@ public:
     void begin_measure();
     Rect end_measure();
     bool measuring() const;
-    // 声明"接下来 N 秒内持续动画"，让主循环从阻塞模式切到连续帧模式
+    // 显式启停连续动画；启用期间必须在动画结束时关闭。
     void set_animating(bool on);
     bool animating() const;
 
@@ -1142,6 +1147,10 @@ public:
 
     struct Impl;
     Impl* impl = nullptr;
+
+private:
+    void repaint();
+    friend struct ScrollScope;
 };
 
 // =============================================================================
@@ -1218,9 +1227,11 @@ public:
     bool should_close() const;
     void close();
 
+    // 请求下一帧。帧回调内会忽略此调用；帧外的主线程更新可使用它。
+    // 跨线程叫醒主循环请使用 wake()。
     void request_repaint();
 
-    // 跨线程叫醒主循环："外面有新数据了，排一帧"。
+    // 跨线程叫醒主循环。
     //
     // request_repaint() 只置一个标志位 —— 主循环空闲时是阻塞在内核里的
     // （WaitMessage / XNextEvent），光改标志叫不醒它。所以**后台线程**里有
@@ -1231,7 +1242,7 @@ public:
     //     }).detach();
     //
     // 它只做两件事：置 need_frame、往自己窗口投一条无副作用的消息/空事件。
-    // 因此在主线程调用也是安全的（等价于 request_repaint）。
+    // 主线程调用也可以用来主动唤醒窗口。
     void wake();
 
     // 常驻动画（spinner / 光标闪烁 / hover 插值）的重绘帧率上限，默认 60fps。
@@ -3310,6 +3321,7 @@ struct Ui::Impl {
     float scale = 1.0f;
     float clock = 0.0f;
     bool  animating = false;
+    bool  frame_open = false;
     Cursor cursor = Cursor::Arrow;
     // AINO_PROF=1 时按图元分项累计耗时，定位"这一帧花在哪"。
     bool     prof_on = false;
@@ -3722,6 +3734,7 @@ inline Ui::Ui() : impl(new Impl()) {}
 inline Ui::~Ui() { delete impl; impl = nullptr; }
 
 inline void Ui::begin_frame(float w, float h, float dt, float dpi) {
+    impl->frame_open = true;
     impl->width = w;
     impl->height = h;
     impl->dt = (dt > 0.0f && dt < 1.0f) ? dt : (1.0f / 60.0f);
@@ -3788,6 +3801,7 @@ inline void Ui::end_frame() {
     for (int i = 0; i < KEY_COUNT; ++i) in.key_pressed[i] = false;
     in.mouse_delta = Vec2(0, 0);
     in.mouse_prev = in.mouse;
+    impl->frame_open = false;
 }
 
 // 测量模式下浮层不入队：测量跑的是同一份绘制代码，弹层会被登记两遍。
@@ -3804,9 +3818,24 @@ inline float Ui::width() const { return impl->width; }
 inline float Ui::height() const { return impl->height; }
 inline float Ui::time() const { return impl->clock; }
 inline float Ui::frame_dt() const { return impl->dt; }
-// 测量阶段不排帧：它是"为了算出高度而跑一遍布局"，跑完这一帧本来就还要真画。
-inline void  Ui::repaint() { if (impl->measure_on) return; if (impl->request_repaint) impl->request_repaint(); }
-inline void  Ui::set_animating(bool on) { impl->animating = on; if (on) repaint(); }
+inline bool Ui::request_next_frame() {
+    if (impl->measure_on || impl->frame_open || !impl->request_repaint) return false;
+    impl->request_repaint();
+    return true;
+}
+inline void Ui::repaint() {
+    if (!impl->measure_on && impl->request_repaint) impl->request_repaint();
+}
+inline bool Ui::request_animation_frame() {
+    if (impl->measure_on || !impl->frame_open || !impl->request_repaint) return false;
+    repaint();
+    return true;
+}
+inline void Ui::set_animating(bool on) {
+    if (impl->measure_on) return;
+    impl->animating = on;
+    if (on) repaint();
+}
 inline bool  Ui::animating() const { return impl->animating; }
 inline void  Ui::set_cursor(Cursor c) { if (impl->measure_on) return; impl->cursor = c; }
 inline Cursor Ui::cursor() const { return impl->cursor; }
@@ -6554,7 +6583,6 @@ inline bool Ui::select(const std::vector<std::string>& items, int* index, const 
                 detail::paint_menu(*this, list, items_copy, rects, ids, hov, sel_now, true, fs);
             });
         }
-        repaint();
     }
 
     return changed;
@@ -9977,7 +10005,9 @@ inline int   Window::width() const { return int(float(impl->client_w) / impl->sc
 inline int   Window::height() const { return int(float(impl->client_h) / impl->scale + 0.5f); }
 inline float Window::dpi_scale() const { return impl->scale; }
 inline bool  Window::should_close() const { return !impl->running; }
-inline void  Window::request_repaint() { impl->need_frame = true; }
+inline void  Window::request_repaint() {
+    if (!impl->ui.impl->frame_open) impl->need_frame = true;
+}
 
 inline void  Window::set_anim_fps(float fps) {
     if (fps < 1.0f) fps = 1.0f;

@@ -105,7 +105,7 @@ aino 的主循环阻塞在 `WaitMessage` 上，**没有事件就不渲染**。
 
 | 会让 CPU 起飞的原因 | 正确做法 |
 |---|---|
-| 在帧回调里无条件 `ui.repaint()` | 只在真的需要下一帧时请求 |
+| 在帧回调里请求通用重绘 | 底层拒绝；局部动画用 `request_animation_frame()`，全局播放用 `set_animating()`，后台数据用 `win.wake()` |
 | 在帧回调里每帧 `win.set_theme(...)` | `set_theme` 会比较值，但每帧构造主题仍是浪费，改成变化时调 |
 | 给 `spinner` 或 `skeleton` 写 `Style().animate()` | 两者默认**只在鼠标悬停时**动；`Style().animate()` 对 spinner 可显式常驻，`skeleton` 仍受悬停控制。画廊预览统一悬停才动 |
 | `input` / `textarea` 处于聚焦态 | 光标闪烁天生要帧，这是设计内开销；调 `set_anim_fps` 可降 |

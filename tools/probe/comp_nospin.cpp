@@ -78,7 +78,7 @@ int main() {
             }
         }
         const float dt = ui.frame_dt();
-        if (toast_left > 0.0f) { toast_left -= dt; ui.repaint(); }
+        if (toast_left > 0.0f) { toast_left -= dt; ui.request_animation_frame(); }
         cpu = 0.5f + 0.5f * std::sin(ui.time() * 1.7f);
 
         Stack page = ui.vbox({ 0, 0, ui.width(), ui.height() }, 14.0f, 20.0f);

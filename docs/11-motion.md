@@ -10,6 +10,23 @@
 `smooth` 是纯函数，不注册状态，也不请求重绘。
 画廊加载预览只在悬停时动；函数示例的播放由用户显式控制。
 
+`Ui::repaint()` 为私有接口，应用不能直接调用。帧回调内的普通重绘请求会被拒绝，
+自定义动画必须使用专用入口：
+
+```cpp
+if (hovered && running) {
+    phase += ui.frame_dt();
+    ui.request_animation_frame();
+}
+```
+
+`request_animation_frame()` 只申请一个后续帧；多个控件的请求不会互相取消，
+控件离屏或不再申请后自动停止。帧外及测量期间返回 `false`。
+`set_animating(true)` 是窗口级持续动画开关，适用于显式播放与性能测量，
+必须在停止时调用 `set_animating(false)`；测量期间不改变此开关。
+主线程帧外更新使用 `request_next_frame()` 或 `win.request_repaint()`；
+后台数据更新后使用 `win.wake()`，共享状态由应用同步。
+
 ## 2. 缓动函数
 
 ```cpp
@@ -182,13 +199,14 @@ ui.pop_transform();
 ### 先分清"空闲"和"动画期间"
 
 判据不是"有没有插值"，而是**帧有没有停下来**。`tween` / `tween_color` / `animate_value`
-三者都只在 `t < dur`（或 `|剩余差| > eps`）时 `repaint()`，收敛那一帧之后**一次都不要帧**：
+三者都只在 `t < dur`（或 `|剩余差| > eps`）时申请一个后续帧，收敛那一帧之后
+**一次都不要帧**：
 
 ```cpp
 if (tw.t < tw.dur) {          // 只有还在跑才要帧
     tw.t += impl->dt;
     if (tw.t >= tw.dur) tw.t = tw.dur;
-    repaint();
+    ui.request_animation_frame();
 }
 ```
 
@@ -205,7 +223,7 @@ if (tw.t < tw.dur) {          // 只有还在跑才要帧
 
 前两行是**有界的**，第三行才是真正的问题。历史上空闲 CPU 跳到 95%~100% 的三次，
 全部是第三行：`set_theme` 无条件 `need_frame`、常驻 spinner 的光标闪烁、`skeleton`
-无条件 `repaint()`。**没有一次是因为"用了 tween"**。
+无条件申请帧。**没有一次是因为"用了 tween"**。
 
 ### 该怎么选
 
@@ -232,7 +250,7 @@ if (tw.t < tw.dur) {          // 只有还在跑才要帧
 | 反模式 | 为什么 |
 |---|---|
 | 用 `ui.time()` 算所有动画 | 全局时钟相位无法"从这里开始"；改用 `tween` 或局部相位 |
-| 每帧无条件 `ui.repaint()` | 空闲 CPU 从 0% 直接跳到 100% |
+| 在帧回调中反复申请通用重绘 | 通用入口不对应用公开；连续动画必须显式启停 |
 | 用 `smooth` 做有终点的位移 | 永远差最后一点点，永远不会停 |
 | 对 `box` 做旋转却按原矩形做命中 | 视觉和点击区域会分离（这是 `Transform` 的设计取舍，不是 bug） |
 | 用 `Transform` 替代布局 | 它不改布局，父子间距不会跟着缩放 |

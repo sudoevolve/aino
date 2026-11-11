@@ -77,7 +77,7 @@ enum CardId {
 struct Notification {
     std::string message;
     int kind;
-    float left = 3.2f;
+    bool dismissed = false;
 };
 struct BuildRow {
     const char *name;
@@ -269,19 +269,16 @@ void set_appearance(Ui &ui, App &a, int mode) {
     a.appearance = mode;
     a.dark = mode == 0 || (mode == 2 && system_dark());
     ui.set_theme(gallery_theme(a));
-    ui.repaint();
 }
 void set_accent(Ui &ui, App &a, int index) {
     a.well = std::max(0, std::min(7, index));
     ui.set_theme(gallery_theme(a));
-    ui.repaint();
 }
 void notify(Ui &ui, App &a, std::string message, int kind = 0) {
     ++a.hits;
     if (a.notices.size() == 3)
         a.notices.erase(a.notices.begin());
-    a.notices.push_back({std::move(message), kind, 3.2f});
-    ui.repaint();
+    a.notices.push_back({std::move(message), kind, false});
 }
 void label(Ui &ui, const std::string &text, Rect r, float size = 13, bool muted = false, int weight = 400) {
     ui.draw_text(text, r, muted ? ui.theme().label3 : ui.theme().label, Style().font(size).weight(weight));
@@ -423,7 +420,6 @@ void draw_buttons(Ui &ui, App &a, CardId id, Rect b) {
             loading.off();
         if (ui.button(a.loading_left > 0 ? "       加载中…" : "点我加载", r, loading)) {
             a.loading_left = 1.6f;
-            ui.repaint();
         }
         const bool loading_hover = ui.hovered(r);
         if (a.loading_left > 0) {
@@ -432,7 +428,7 @@ void draw_buttons(Ui &ui, App &a, CardId id, Rect b) {
                 a.loading_left = std::max(0.f, a.loading_left - ui.frame_dt());
                 if (a.loading_left == 0)
                     notify(ui, a, "加载完成");
-                ui.repaint();
+                ui.request_animation_frame();
             }
         }
     }
@@ -568,7 +564,6 @@ void time_wheel(Ui &ui, int *value, int count, Rect area, const char *name) {
         !ui.impl->gate_blocked_pointer() && std::fabs(ui.input().wheel) > .01f) {
         int delta = ui.input().wheel > 0 ? -1 : 1;
         *value = (*value + delta + count) % count;
-        ui.repaint();
     }
     for (int i = -2; i <= 2; ++i) {
         int v = (*value + i + count) % count;
@@ -580,7 +575,6 @@ void time_wheel(Ui &ui, int *value, int count, Rect area, const char *name) {
                           .font(i == 0 ? 20.f : 15.f)
                           .color(i == 0 ? ui.theme().label : ui.theme().label3))) {
             *value = v;
-            ui.repaint();
         }
     }
     ui.tooltip(area, name);
@@ -595,7 +589,6 @@ void draw_datetime(Ui &ui, App &a, CardId id, Rect b) {
                 int y = a.cy, m = a.cm;
                 if (ui.calendar(&a.cy, &a.cm, &a.cd, r) && a.cy == y && a.cm == m) {
                     a.date_open = false;
-                    ui.repaint();
                 }
             },
             Style().secondary());
@@ -653,7 +646,7 @@ void draw_feedback(Ui &ui, App &a, CardId id, Rect b) {
                        : i == 1 ? "有一条新的项目通知"
                                 : "操作失败，请重试",
                        i);
-        label(ui, "通知在右上方堆叠，3.2 秒后关闭", {b.x, flow.bottom() + 14, b.w, 32}, 11, true);
+        label(ui, "通知固定显示，点击关闭按钮移除", {b.x, flow.bottom() + 14, b.w, 32}, 11, true);
     } else if (id == Dialogs) {
         Flow flow(b);
         if (ui.button("标准对话框", flow.next(110), Style().secondary()))
@@ -722,7 +715,6 @@ void draw_table(Ui &ui, App &a, Rect b) {
                       Style().ghost().left().font(12).padded(8, 0).color(ui.theme().label3))) {
             a.sort_desc = a.sort_column == i ? !a.sort_desc : false;
             a.sort_column = i;
-            ui.repaint();
         }
         x += w;
     }
@@ -823,7 +815,7 @@ void draw_progress(Ui &ui, App &a, CardId id, Rect b) {
             ui.push_clip(track);
             if (ui.hovered({b.x, b.y + 61, b.w, 44})) {
                 a.progress_phase = std::fmod(a.progress_phase + ui.frame_dt() * .35f, 1.4f);
-                ui.repaint();
+                ui.request_animation_frame();
             }
             float x = track.x + (a.progress_phase - .2f) * track.w;
             ui.fill_rect({x, track.y, track.w * .4f, 6}, ui.theme().tint, 3);
@@ -853,7 +845,6 @@ void draw_cards(Ui &ui, App &a, CardId id, Rect b) {
             notify(ui, a, "aino 组件示例 · " AINO_VERSION);
         if (ui.button(a.running ? "停止" : "启动", flow.next(60), Style().primary())) {
             a.running = !a.running;
-            ui.repaint();
         }
         Rect tail = flow.next(66);
         label(ui, "刚更新", tail, 11, true);
@@ -1188,7 +1179,6 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
                 a.page = i;
                 if (ui.width() <= 900)
                     a.nav_open = false;
-                ui.repaint();
             }
             glyph(ui, i, {22, y + 8, 15, 15}, ui.theme().tint);
             char count[12];
@@ -1217,7 +1207,6 @@ void draw_toolbar(Ui &ui, App &a, bool narrow) {
     if (narrow) {
         if (icon(ui, List, "显示侧边栏", {tx, 14, 32, 32}, Style().ghost())) {
             a.nav_open = !a.nav_open;
-            ui.repaint();
         }
         tx += 40;
     }
@@ -1227,7 +1216,6 @@ void draw_toolbar(Ui &ui, App &a, bool narrow) {
     float sw = narrow ? 128.f : 188.f;
     if (ui.search_field(&a.query, {ui.width() - pad - sw, 18, sw, 24}, Style().hint("搜索组件…").font(12))) {
         a.pending_anchor = -1;
-        ui.repaint();
     }
 }
 void draw_card(Ui &ui, App &a, const Card &card, Rect r) {
@@ -1309,7 +1297,7 @@ void draw_overlays(Ui &ui, App &a) {
         ui.fill_circle(r.x + 18, r.cy(), 4, c);
         label(ui, n.message, {r.x + 34, r.y + 7, r.w - 68, 40}, 12);
         if (icon(ui, Close, "关闭通知", {r.right() - 30, r.y + 13, 26, 26}, Style().ghost()))
-            n.left = 0;
+            n.dismissed = true;
         y += 64;
     }
     if (a.dlg || a.confirm) {
@@ -1336,15 +1324,10 @@ void build_ui(Ui &ui, App &a) {
     }
     if (a.nav_open && ui.input().key_pressed[aino::KEY_ESC]) {
         a.nav_open = false;
-        ui.repaint();
     }
-    for (auto &n : a.notices)
-        n.left -= ui.frame_dt();
     a.notices.erase(
-        std::remove_if(a.notices.begin(), a.notices.end(), [](const Notification &n) { return n.left <= 0; }),
+        std::remove_if(a.notices.begin(), a.notices.end(), [](const Notification &n) { return n.dismissed; }),
         a.notices.end());
-    if (!a.notices.empty())
-        ui.repaint();
     bool narrow = ui.width() <= 900;
     a.nav_w = narrow ? 0 : kNavW;
     float pad = narrow ? 14.f : 26.f;
@@ -1610,8 +1593,9 @@ int main() {
             const auto t = std::chrono::steady_clock::now();
             stamp.push_back(std::chrono::duration<double, std::milli>(t - t_start).count());
             if (int(stamp.size()) < bench_run) {
-                ui.repaint(); // 连着要下一帧
+                ui.set_animating(true);
             } else {
+                ui.set_animating(false);
                 std::FILE *out = stderr;
                 std::FILE *f = nullptr;
                 if (const char *fl = std::getenv("AINO_FRAME_LOG"))

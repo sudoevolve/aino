@@ -1,5 +1,5 @@
 ﻿// 光栅化基准：把"文字 vs 形状 vs 图形"的开销分开量。
-// 一直 repaint()，靠 AINO_FRAME_LOG 每 120 帧打印一次分段耗时。
+// 显式连续动画，靠 AINO_FRAME_LOG 每 120 帧打印一次分段耗时。
 // 用法：bench.exe <mode>
 #define AINO_IMPLEMENTATION
 #include "../../aino.hpp"
@@ -24,7 +24,7 @@ int main(int argc, char** argv) {
     for (int r = 0; r < 7; ++r) rows[size_t(r)] = { "解析配置", "完成", "12 ms" };
 
     win.run([&](Ui& ui) {
-        ui.repaint();                        // 强制每帧都重画
+        ui.set_animating(true);
         ui.clear(ui.theme().background);
         if (mode == 0) {                     // 只清屏
         } else if (mode == 1) {              // 文字：60 个 label

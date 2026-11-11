@@ -69,14 +69,16 @@ Esc、点击面板外或调用方按钮可关闭。自定义按钮要在同一�
 if (toast_left > 0) {
     ui.toast("已保存", toast_box);
     toast_left -= ui.frame_dt();
-    ui.repaint();
+    ui.request_animation_frame();
 }
 ```
 
 纯展示，位置与生命周期由调用方管理。默认 `popover_bg`、圆角 10、字号 13/500、
 左右内缩 14、阴影；无描边或左侧危险色条。Destructive 使用危险色文字。
 支持 `bg/fg/radius/font_size/variant/disabled`；文字超出盒子时裁剪。
-倒计时需要请求后续帧；持续显示的静态 toast 不需要无条件重绘。
+倒计时需要显式申请动画帧，条件结束后自动停止；持续显示的静态 toast 不需要重绘。
+`ui.repaint()` 是库内部入口，不对应用开放。帧回调外的一次性更新使用
+`ui.request_next_frame()`；后台线程更新使用 `win.wake()`。
 
 ## 5. `popover`
 
