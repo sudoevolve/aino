@@ -9,13 +9,13 @@
 //                 一个后台读线程在收终端输出。
 //    2. Terminal  VT100/xterm 解析器 + 字符网格 + 回滚缓冲。不做渲染，
 //                 只维护"屏幕状态"，渲染在 app 那边用 ui.draw_mono_text()。
-//    3. Transfer  上传/下载的分块状态机：每帧只搬 128KB，UI 不卡。
+//    3. Transfer  上传/下载的分块状态机，由后台线程推进。
 //
 //  为什么用 libssh2 而不是调系统 ssh.exe：
 //    · 密码、密钥都在进程里做，不依赖外部程序是否存在、也不用解析 stderr；
 //    · SFTP 有结构化 API（属性、错误码），文件面板才做得出来；
 //    · 终端窗口大小变化可以主动通知对端（pty window-change）。
-//  代价是需要链一个库：Windows 用 WinCNG 后端（不依赖 OpenSSL），
+//  代价是需要链一个库：Windows 使用 mbedTLS 后端，
 //  Linux 用发行版的 libssh2（OpenSSL 后端），代码零改动。
 // =============================================================================
 #pragma once
@@ -190,7 +190,7 @@ enum class FailStage {
 class Engine {
 public:
     // SFTP 的 API 在非阻塞模式下每个调用都要处理 EAGAIN，写起来全是重试循环。
-    // 这些操作都在 UI 线程、加锁顺序里最外层，所以就地切回阻塞、退出时恢复。
+    // 调用方在后台线程持有会话锁期间临时切回阻塞，退出时恢复。
     struct BlockingGuard {
         LIBSSH2_SESSION* s;
         int prev;
@@ -410,6 +410,7 @@ public:
             shell_open_ = false;
             pty_cols_ = 0;
             pty_rows_ = 0;
+            pty_request_ = 0;
             eof_ = false;
             { std::lock_guard<std::mutex> g(rx_mtx_); rx_.clear(); }
             { std::lock_guard<std::mutex> g(tx_mtx_); tx_.clear(); }
@@ -472,6 +473,12 @@ public:
             pty_cols_ = cols;
             pty_rows_ = rows;
         }
+    }
+
+    // UI 只提交最新尺寸，网络请求由 reader 执行，避免等待 SFTP 占用的会话锁。
+    void request_pty_resize(int cols, int rows) {
+        if (cols > 0 && rows > 0)
+            pty_request_ = (uint64_t(uint32_t(cols)) << 32) | uint32_t(rows);
     }
 
     // 写终端（键盘输入、粘贴、鼠标上报）。
@@ -546,6 +553,8 @@ public:
         reader_ = std::thread([this] {
             while (!stop_reader_) {
                 bool got = false;
+                if (const uint64_t size = pty_request_.exchange(0))
+                    resize_pty(int(size >> 32), int(uint32_t(size)));
 
                 // 1) 把积压的按键发出去
                 write_pending();
@@ -805,7 +814,7 @@ public:
     Transfer& transfer() { return xfer_; }
     bool transfer_busy() const { return xfer_.kind != Transfer::None && !xfer_.finished; }
 
-    // 每帧调一次；返回 true 表示"这一帧有进展"（调用方据此继续排帧）
+    // 由传输线程分块推进；返回 true 表示本次搬运了字节。
     bool xfer_step(uint64_t budget = 128 * 1024) {
         std::lock_guard<std::mutex> lk(mtx_);
         BlockingGuard bg(sess_);
@@ -820,22 +829,30 @@ public:
                 if (n == LIBSSH2_ERROR_EAGAIN) { std::this_thread::yield(); continue; }
                 if (n < 0) { xfer_.error = "读取失败：" + sftp_err_locked(); xfer_.finished = true; break; }
                 if (n == 0) { xfer_.finished = true; break; }
-                if (xfer_.fh) std::fwrite(buf.data(), 1, size_t(n), xfer_.fh);
-                xfer_.done += uint64_t(n);
-                moved += uint64_t(n);
+                const size_t written = xfer_.fh ? std::fwrite(buf.data(), 1, size_t(n), xfer_.fh) : 0;
+                xfer_.done += written;
+                moved += written;
+                if (written != size_t(n)) {
+                    xfer_.error = "本地写入失败：" + xfer_.local;
+                    xfer_.finished = true;
+                }
             } else {
                 if (!xfer_.fh) { xfer_.finished = true; break; }
                 const size_t got = std::fread(buf.data(), 1, want, xfer_.fh);
-                if (got == 0) { xfer_.finished = true; break; }
+                if (got == 0) {
+                    if (std::ferror(xfer_.fh)) xfer_.error = "本地读取失败：" + xfer_.local;
+                    xfer_.finished = true;
+                    break;
+                }
                 size_t off = 0;
                 while (off < got) {
                     const ssize_t n = libssh2_sftp_write(xfer_.rh, buf.data() + off, got - off);
                     if (n == LIBSSH2_ERROR_EAGAIN) { std::this_thread::yield(); continue; }
-                    if (n < 0) { xfer_.error = "写入失败：" + sftp_err_locked(); xfer_.finished = true; break; }
+                    if (n <= 0) { xfer_.error = "写入失败：" + sftp_err_locked(); xfer_.finished = true; break; }
                     off += size_t(n);
                 }
-                xfer_.done += uint64_t(got);
-                moved += uint64_t(got);
+                xfer_.done += off;
+                moved += off;
             }
         }
         if (xfer_.finished) finish_locked();
@@ -844,6 +861,7 @@ public:
 
     void cancel_transfer() {
         std::lock_guard<std::mutex> lk(mtx_);
+        BlockingGuard bg(sess_);
         if (xfer_.kind == Transfer::None) return;
         xfer_.error = "已取消";
         xfer_.finished = true;
@@ -853,6 +871,8 @@ public:
     void clear_transfer() {
         std::lock_guard<std::mutex> lk(mtx_);
         if (xfer_.kind != Transfer::None && xfer_.finished) {
+            BlockingGuard bg(sess_);
+            finish_locked();
             xfer_.kind = Transfer::None;
             xfer_.done = xfer_.total = 0;
             xfer_.error.clear();
@@ -903,8 +923,9 @@ private:
     std::atomic<bool> connected_{false};
     std::atomic<bool> shell_open_{false};
     // 远端 pty 认定的尺寸。用 atomic 是因为 UI 线程每帧都要读它比对，
-    // 而写的是连接线程 / UI 自身，普通 int 构成数据竞争（TSan 会报）。
+    // 而连接线程 / reader 会更新这些值。
     std::atomic<int>  pty_cols_{0};
+    std::atomic<uint64_t> pty_request_{0};
     std::atomic<int>  pty_rows_{0};
     std::atomic<bool> eof_{false};
     std::atomic<int>  fail_stage_{0};     // 上次 connect 失败在 FailStage 的哪一层
@@ -937,7 +958,11 @@ private:
 
     void finish_locked() {
         if (xfer_.rh) { libssh2_sftp_close(xfer_.rh); xfer_.rh = nullptr; }
-        if (xfer_.fh) { std::fclose(xfer_.fh); xfer_.fh = nullptr; }
+        if (xfer_.fh) {
+            const int rc = std::fclose(xfer_.fh);
+            xfer_.fh = nullptr;
+            if (rc != 0 && xfer_.error.empty()) xfer_.error = "本地文件关闭失败：" + xfer_.local;
+        }
         if (xfer_.kind == Transfer::None) return;
         if (xfer_.error.empty() && xfer_.done == 0 && xfer_.total > 0) xfer_.error = "传输中断";
     }

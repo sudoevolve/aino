@@ -1,4 +1,6 @@
-// 示例组合的离线交互回归；SSH 模式不创建 App、不读取配置、不连接网络。
+// 默认离线；SSH 的 --local-transfer 额外验证本机测试服务器，不读取用户连接配置。
+#include <fstream>
+#include <iterator>
 #ifdef AINO_PROBE_SSH
 #define WinMain aino_ssh_entry
 #include "../../examples/ssh_client.cpp"
@@ -73,7 +75,7 @@ struct ExampleFrame {
 };
 }
 
-int main() {
+int main(int argc, char** argv) {
     ExampleFrame f;
 #ifdef AINO_PROBE_SSH
     std::string password;
@@ -126,7 +128,71 @@ int main() {
     g_block_input = true;
     f.click(tool, 80, 194);
     expect(clicks == 1, "modal blocks underlying tool button");
+    g_block_input = false;
+    if (argc > 1 && std::string(argv[1]) == "--local-transfer") {
+        Session session;
+        std::string error;
+        const int port = argc > 2 ? std::atoi(argv[2]) : 2222;
+        const bool connected = session.engine.connect("127.0.0.1", port, "demo", "demo", "", &error);
+        expect(connected, "local SSH connection");
+        if (!connected) { std::printf("%s\n", error.c_str()); return 1; }
+        expect(session.engine.open_shell(80, 24, &error), "local shell opens");
+        session.engine.start_reader();
+        expect(session.engine.open_sftp(&error), "local SFTP opens");
+        std::string body(1024 * 1024, '\0');
+        for (size_t i = 0; i < body.size(); ++i) body[i] = char(i % 251);
+        const std::string local = "build/session-upload.bin", back = "build/session-download.bin";
+        { std::ofstream out(local, std::ios::binary); out.write(body.data(), body.size()); }
+        auto wait_transfer = [&] {
+            const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            while (session.xfer_running && std::chrono::steady_clock::now() < end)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            return !session.xfer_running;
+        };
+        expect(start_transfer(session, true, local, "/session-probe.bin", nullptr), "upload starts");
+        session.engine.request_pty_resize(90, 28);
+        session.engine.request_pty_resize(100, 32);
+        expect(wait_transfer(), "upload completes without UI frames");
+        auto transfer = session.transfer_snapshot();
+        expect(transfer.finished && transfer.error.empty() && transfer.done == body.size(),
+               "upload snapshot has exact byte count");
+        const auto resize_end = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (session.engine.pty_cols() != 100 && std::chrono::steady_clock::now() < resize_end)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        expect(session.engine.pty_cols() == 100 && session.engine.pty_rows() == 32,
+               "background reader applies latest PTY size");
+        expect(start_transfer(session, false, back, "/session-probe.bin", nullptr), "download starts");
+        expect(wait_transfer(), "download completes without UI frames");
+        { std::ifstream in(back, std::ios::binary);
+          std::string got((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+          expect(got == body, "download exactly matches upload"); }
+        session.engine.unlink("/missing-probe.bin", &error);
+        expect(start_transfer(session, false, back, "/missing-probe.bin", nullptr), "missing download starts");
+        expect(wait_transfer() && !session.transfer_snapshot().error.empty(), "missing remote reports error");
+        expect(start_transfer(session, true, local, "/missing-probe/file.bin", nullptr), "invalid target starts");
+        expect(wait_transfer() && !session.transfer_snapshot().error.empty(), "invalid target reports error");
+        expect(session.engine.transfer().rh == nullptr && session.engine.transfer().fh == nullptr,
+               "failed setup closes transfer handles");
+        expect(start_transfer(session, false, "build/missing-probe/file.bin", "/session-probe.bin", nullptr),
+               "unwritable local target starts");
+        expect(wait_transfer() && !session.transfer_snapshot().error.empty(), "local open failure reports error");
+        expect(session.engine.transfer().rh == nullptr, "local failure closes remote handle");
+        expect(start_transfer(session, true, local, "/session-cancel.bin", nullptr), "cancel transfer starts");
+        session.xfer_cancel = true;
+        expect(wait_transfer() && session.transfer_snapshot().error == "已取消", "transfer cancels in background");
+        session.engine.send("unicode\r");
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        update_session(session);
+        expect(!session.engine.has_output(), "hidden session output is consumed");
+        std::string screen;
+        for (int row = 0; row < session.term.total_lines(); ++row) screen += session.term.line_text(row);
+        expect(screen.find("你好，世界！") != std::string::npos, "hidden terminal processes UTF-8 output");
+        expect(start_transfer(session, true, local, "/session-shutdown.bin", nullptr), "shutdown transfer starts");
+        session.shutdown();
+        expect(!session.xfer_running && !session.engine.connected(), "shutdown joins worker before disconnect");
+    }
 #else
+    (void)argc; (void)argv;
     UiState st;
     auto draw = [&] { draw_sidebar(f.ui, st, f.ui.theme()); };
     const Rect list(0, 55, 232, 521);

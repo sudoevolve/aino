@@ -56,6 +56,13 @@ SSH 额外依赖 libssh2。MSVC 配置使用 `AINO_SSH_DEPS` 指向的预编译 
 其它工具链通过 `find_path` / `find_library` 查找 libssh2 开发库及 Threads。
 缺少依赖时仅跳过 SSH。可以用 `-DAINO_BUILD_SSH=OFF` 禁用该目标。
 
+客户端的连接、文件操作和传输都在后台执行。切换标签或返回启动页后，传输继续，
+各标签的终端输出仍会解析；连接等待不再驱动持续动画。
+传输状态最多约每 33 ms 通知界面一次，底部“取消”在当前传输块的网络调用返回后生效。
+调整窗口尺寸只提交最新 PTY 尺寸，由后台 reader 发送。
+取消或失败可能保留已写入的部分文件；目前不提供传输队列、断点续传或递归目录下载。
+上传仍使用本地路径目录内唯一的文件；目录含多个文件时会提示，尚无上传文件选择器。
+
 MSVC x64 的依赖准备：将 libssh2 1.11.1 和 mbedTLS 3.6.2 源码分别解压到
 `build/third_party/libssh2-1.11.1` 与 `build/third_party/mbedtls-3.6.2`，
 确认其中分别包含 `include/libssh2.h` 和 `library/*.c`。然后在仓库根目录的
@@ -81,6 +88,29 @@ cmake --build build --config Release --target aino_ssh
 `--asan` 使用当前 MSVC 工具链的 ASan x64 运行库，并复制到 EXE 旁。
 libssh2 与 mbedTLS 静态链接不等于 CRT 静态链接：SSH 使用 `/MD`，目标系统仍需对应的
 VC++ 运行库；不能仅凭本机启动成功就认定可在未安装运行库的机器上独立运行。
+
+后台传输的定向检查使用仓库自带的本地服务器。测试工具另需 Python `paramiko`，
+仅用于检查，不是客户端运行依赖。在终端 A 启动：
+
+```powershell
+python tools/dev_ssh_server.py --port 2228 --root build/ssh-session-server
+```
+
+在终端 B 编译并运行；临时覆盖 `USERPROFILE`，让测试主机密钥写到独立目录：
+
+```powershell
+python tools/build_ssh.py ui
+New-Item -ItemType Directory -Force build/ssh-test-home | Out-Null
+$savedProfile = $env:USERPROFILE
+try {
+  $env:USERPROFILE = (Resolve-Path build/ssh-test-home).Path
+  .\build\ssh_ui_probe.exe --local-transfer 2228
+} finally {
+  $env:USERPROFILE = $savedProfile
+}
+```
+
+该检查只连接 `127.0.0.1`，使用 `demo/demo`；测试后在终端 A 按 `Ctrl+C` 停止服务器。
 
 ## 3. 单独编译应用
 

@@ -113,7 +113,7 @@ examples/sidebar_demo.cpp 侧边栏切换（新手第一个 demo）
 examples/zoom_demo.cpp 缩放按钮（Transform 的最小用法）
 examples/primitives_demo.cpp 基础图元、裁剪、变换与背景模糊
 examples/function_viewer.cpp 函数可视化、自定义表达式、采样缓存与手动播放
-examples/ssh_client.cpp 可选 SSH/SFTP 客户端（额外依赖见上文）
+examples/ssh_client.cpp 可选 SSH/SFTP 客户端、后台传输与取消（额外依赖见上文）
 docs/                文档，01 快速开始 … 12 组件与示例索引
 screenshots/         预览截图
 tools/               构建、像素断言与回归脚本

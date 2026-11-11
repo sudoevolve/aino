@@ -794,6 +794,21 @@ struct Session {
     Clipboard*  clip = nullptr;
     std::thread conn_thread;
 
+    struct TransferView {
+        std::string name, error;
+        uint64_t done = 0, total = 0;
+        bool busy = false, finished = false;
+    };
+    mutable std::mutex xfer_mtx;
+    TransferView xfer_view;
+    std::atomic<bool> xfer_running{false}, xfer_cancel{false};
+    std::thread xfer_thread;
+
+    TransferView transfer_snapshot() const {
+        std::lock_guard<std::mutex> lk(xfer_mtx);
+        return xfer_view;
+    }
+
     // ---- 终端 ----
     bool  term_focus = false;
     float font = 13.0f;
@@ -841,7 +856,9 @@ struct Session {
     // 幂等：正常路径已经由后台清理线程调过一次，析构时直接返回。
     void shutdown() {
         if (shutdown_done.exchange(true)) return;
+        xfer_cancel = true;
         if (conn_thread.joinable()) conn_thread.join();
+        if (xfer_thread.joinable()) xfer_thread.join();
         stop_fs_worker();
         engine.disconnect();
         clip = nullptr;
@@ -911,9 +928,59 @@ void set_notice(Session& s, const std::string& msg, bool bad) {
     s.notice_at = double(std::clock()) / CLOCKS_PER_SEC;
 }
 
+bool start_transfer(Session& s, bool upload, const std::string& local,
+                    const std::string& remote, aino::Window* win) {
+    if (s.conn_busy() || !s.engine.connected() || !s.engine.sftp_ready()) {
+        set_notice(s, "SFTP 尚未就绪", true);
+        return false;
+    }
+    if (s.xfer_running.exchange(true)) {
+        set_notice(s, "已有文件正在传输", true);
+        return false;
+    }
+    if (s.xfer_thread.joinable()) s.xfer_thread.join();
+    s.xfer_cancel = false;
+    {
+        std::lock_guard<std::mutex> lk(s.xfer_mtx);
+        s.xfer_view = {};
+        s.xfer_view.name = Engine::base_name(upload ? local : remote);
+        s.xfer_view.busy = true;
+    }
+    // 网络调用只由传输线程推进；UI 读取独立快照，不等待 libssh2 的会话锁。
+    s.xfer_thread = std::thread([&s, upload, local, remote, win] {
+        if (upload) s.engine.start_upload(local, remote);
+        else s.engine.start_download(remote, local, false);
+        auto next_update = std::chrono::steady_clock::now();
+        while (s.engine.transfer_busy() && !s.xfer_cancel) {
+            s.engine.xfer_step();
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= next_update) {
+                const auto& t = s.engine.transfer();
+                {
+                    std::lock_guard<std::mutex> lk(s.xfer_mtx);
+                    s.xfer_view = {t.name, t.error, t.done, t.total, true, false};
+                }
+                if (win) win->wake();
+                next_update = now + std::chrono::milliseconds(33);
+            }
+        }
+        if (s.xfer_cancel && s.engine.transfer_busy()) s.engine.cancel_transfer();
+        const auto& t = s.engine.transfer();
+        {
+            std::lock_guard<std::mutex> lk(s.xfer_mtx);
+            s.xfer_view = {t.name, t.error, t.done, t.total, false, true};
+        }
+        s.engine.clear_transfer();
+        s.xfer_running = false;
+        if (win) win->wake();
+    });
+    return true;
+}
+
 // 连接放后台线程：握手最多十几秒，UI 不能冻
 void begin_connect(Session& s, aino::Window& win) {
     if (s.conn_busy()) return;
+    if (s.xfer_running) { set_notice(s, "请先取消当前传输", true); return; }
     if (s.conn_thread.joinable()) s.conn_thread.join();
     s.engine.disconnect();
     s.engine.set_wake([&win] { win.wake(); });
@@ -1496,7 +1563,7 @@ std::vector<std::string> wrap_text(aino::Ui& ui, const std::string& s, float fon
 }
 
 void draw_sftp(aino::Ui& ui, Session& a, const aino::Theme& th, const Rect& area,
-               std::string* download_dir) {
+               std::string* download_dir, aino::Window* win = nullptr) {
     const Session::ConnInfo cs = a.conn_snapshot();
     const std::string& sftp_err = cs.sftp_err;
     ui.fill_rect(area, th.background);
@@ -1625,10 +1692,8 @@ void draw_sftp(aino::Ui& ui, Session& a, const aino::Theme& th, const Rect& area
                 if (it->is_regular_file(ec)) { ++files; pick = it->path().string(); count_name = it->path().filename().string(); }
             }
             if (files == 1) {
-                a.engine.start_upload(pick, join_remote(a.sftp_path, count_name));
-                const auto& t = a.engine.transfer();
-                if (!t.error.empty()) { set_notice(a, t.error, true); a.engine.clear_transfer(); }
-                else set_notice(a, "开始上传 " + count_name, false);
+                if (start_transfer(a, true, pick, join_remote(a.sftp_path, count_name), win))
+                    set_notice(a, "开始上传 " + count_name, false);
             } else if (files == 0) {
                 set_notice(a, "这个目录里没有文件可传", true);
             } else {
@@ -1646,10 +1711,8 @@ void draw_sftp(aino::Ui& ui, Session& a, const aino::Theme& th, const Rect& area
             std::error_code ec;
             fs::create_directories(*download_dir, ec);
             const std::string dst = (fs::path(*download_dir) / cur->name).string();
-            a.engine.start_download(join_remote(a.sftp_path, cur->name), dst, false);
-            const auto& t = a.engine.transfer();
-            if (!t.error.empty()) { set_notice(a, t.error, true); a.engine.clear_transfer(); }
-            else set_notice(a, "开始下载到 " + dst, false);
+            if (start_transfer(a, false, dst, join_remote(a.sftp_path, cur->name), win))
+                set_notice(a, "开始下载到 " + dst, false);
         }
     }
     if (tool_button(ui, th, "新建目录", Rect(area.x + pad + (bw3 + gap) * 2.0f, fy, bw3, 28.0f), false)) {
@@ -2492,11 +2555,7 @@ void draw_tabs(aino::Ui& ui, App& app, const aino::Theme& th, float h) {
     if (in.pressed[0] && over_plus) app.show_start = true;
 }
 
-// ---- 会话主体 ----
-void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, const Rect& body) {
-    // 连接状态整帧用同一份快照：后台线程随时在改，边读边画会撞上正在被释放的字符串
-    const Session::ConnInfo cs = a.conn_snapshot();
-
+void update_session(Session& a) {
     // 后台收字节 → 解析器
     if (std::string out = a.engine.take_output(); !out.empty()) {
         a.term.feed(out.data(), out.size());
@@ -2504,18 +2563,17 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
     }
     if (std::string rep = a.term.take_reply(); !rep.empty()) a.engine.send(rep);
 
-    // 传输推进（每帧 128KB）
-    if (a.engine.transfer_busy()) {
-        a.engine.xfer_step();
-        ui.set_animating(true);
-    } else {
-        ui.set_animating(cs.connecting);
-    }
     {
-        const auto& t = a.engine.transfer();
-        if (t.finished && !t.name.empty()) {
+        Session::TransferView t;
+        {
+            std::lock_guard<std::mutex> lk(a.xfer_mtx);
+            if (a.xfer_view.finished) {
+                t = a.xfer_view;
+                a.xfer_view.finished = false;
+            }
+        }
+        if (t.finished) {
             set_notice(a, t.error.empty() ? ("完成：" + t.name) : t.error, !t.error.empty());
-            a.engine.clear_transfer();
             refresh_list(a);
         }
     }
@@ -2554,12 +2612,16 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
             }
         }
     }
+}
 
+// ---- 会话主体 ----
+void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, const Rect& body) {
+    const Session::ConnInfo cs = a.conn_snapshot();
     const float W = body.w, H = body.h;
     const float status_h = 26.0f;
     const float side_w = std::min(400.0f, std::max(300.0f, W * 0.32f));
 
-    draw_sftp(ui, a, th, Rect(body.x, body.y, side_w, H - status_h), &app.download_dir);
+    draw_sftp(ui, a, th, Rect(body.x, body.y, side_w, H - status_h), &app.download_dir, app.win);
 
     const Rect r_frame(body.x + side_w, body.y, W - side_w, H - status_h);
 
@@ -2614,7 +2676,7 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
             a.pty_req_cols = tm.cols;
             a.pty_req_rows = tm.rows;
             a.pty_req_at = now;
-            a.engine.resize_pty(tm.cols, tm.rows);
+            a.engine.request_pty_resize(tm.cols, tm.rows);
         }
     }
 
@@ -2706,14 +2768,16 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
                      Rect(sb.x + 14.0f, sb.y, W * 0.62f, status_h),
                      th.muted_foreground, Style().font(11.0f));
     }
-    if (a.engine.transfer_busy()) {
-        const auto& t = a.engine.transfer();
+    const auto t = a.transfer_snapshot();
+    if (t.busy) {
         const float frac = t.total ? float(double(t.done) / double(t.total)) : 0.0f;
         const Rect pb(sb.right() - 200.0f, sb.y + status_h * 0.5f - 3.0f, 120.0f, 6.0f);
         ui.fill_rect(pb, Color::hex(0x27272A), 3.0f);
         ui.fill_rect(Rect(pb.x, pb.y, pb.w * frac, pb.h), kAccent, 3.0f);
         ui.draw_text(t.name + "  " + human_size(t.done), Rect(pb.x - 220.0f, sb.y, 210.0f, status_h),
                      th.muted_foreground, Style().font(11.0f).right());
+        if (tool_button(ui, th, "取消", Rect(sb.right() - 70, sb.y + 2, 58, 22), false))
+            a.xfer_cancel = true;
     }
 
     draw_prompt(ui, a, th);
@@ -2724,7 +2788,9 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
 // =============================================================================
 void frame(aino::Ui& ui, App& app, aino::Window& win, const aino::Theme& th) {
     ui.clear(th.background);
+    ui.set_animating(false);
     app.reap();                  // 后台已经收拾完的会话，这里真正释放
+    for (auto& s : app.tabs) if (s) update_session(*s);
     const float tab_h = 40.0f;
     // 页面先画、弹窗后画；页面这一趟只画不吃输入
     g_block_input = app.modal_open();

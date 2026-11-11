@@ -36,7 +36,7 @@
 | `sidebar_demo.cpp` | 导航与通知偏好 |
 | `zoom_demo.cpp` | 用户操作触发的缩放与舞台裁剪 |
 | `function_viewer.cpp` | 曲线与表达式、可滚动侧栏、默认暂停、采样缓存 |
-| `ssh_client.cpp` | 可选 SSH/SFTP，额外依赖 libssh2，MSVC 使用 mbedTLS 构建 |
+| `ssh_client.cpp` | 可选 SSH/SFTP、后台传输与取消；依赖 libssh2，MSVC 使用 mbedTLS |
 
 CMake 自动扫描顶层 `examples/*.cpp` 并创建 `aino_<文件名>` 目标，SSH 保留 `aino_ssh` 名称。
 构建方法与输出位置见 [01](01-quickstart.md)。画廊卡片数量不等于公开 API 数量，
@@ -167,6 +167,9 @@ python tools/child_window.py --shot
 `shot_pages.py` 保存分类截图，不能代替断言或人工排版核对。
 `tools/probe/example_ui_probe.cpp` 检查函数侧栏、全部绘图模式的采样缓存、无效公式及输入快捷键隔离；`python tools/build_ssh.py ui`
 构建 SSH 界面探针，覆盖 UTF-8、选区、撤销、粘贴与弹窗输入隔离，不连接服务器。
+显式使用 `build/ssh_ui_probe.exe --local-transfer <端口>` 才会连接 `127.0.0.1` 上的
+本地测试服务器（`demo/demo`），检查后台上传 / 下载、取消、错误清理及 PTY 尺寸同步。
+运行方法与独立测试目录设置见 [01](01-quickstart.md)。
 
 系统链接库：Windows `user32/gdi32`；Linux `X11/dl`；macOS `Cocoa/CoreText/CoreGraphics`。
 原始设计资料见 [macos27](macos27/README.md)。
