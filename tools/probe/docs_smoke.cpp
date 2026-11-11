@@ -179,6 +179,7 @@ void docs_05(Ui& ui, Stack& r) {
 // ---- 06：交互 ----
 void docs_06(Ui& ui, AppState& s, Stack& col) {
     ui.button("保存", col.next(24.0f), Style().primary());
+    ui.button("普通操作", col.next(24.0f), Style().standard());
     ui.button("取消", col.next(24.0f), Style().outline());
     ui.button("删除", col.next(24.0f), Style().destructive());
     ui.button("按我看看", col.next(24.0f), Style().primary().scale_on_press(0.97f));

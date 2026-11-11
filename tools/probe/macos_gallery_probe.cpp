@@ -343,18 +343,71 @@ int main() {
         expect(second.x == first.right() + 10, "icon button gap follows its full width");
     }
     {
-        App variants;
         const Rect area{20, 20, 520, 80};
-        f.frame([&] { draw_buttons(f.ui, variants, ButtonVariants, area); });
         Flow row(area);
         const float width = f.ui.text_width("继续", 13) + 30;
         row.next(width);
         Rect secondary = row.next(f.ui.text_width("次要", 13) + 30);
         Rect standard = row.next(f.ui.text_width("标准", 13) + 30);
-        Color secondary_surface = f.pixel(int(secondary.x + 8), int(secondary.cy()));
-        Color standard_surface = f.pixel(int(standard.x + 8), int(standard.cy()));
-        expect(secondary_surface.rgb24() != standard_surface.rgb24(),
-               "standard and secondary buttons render distinct theme surfaces");
+        auto surface = [&](Rect r) { return f.pixel(int(r.x + 8), int(r.cy())); };
+        for (bool dark : {false, true}) {
+            const aino::Theme th = dark ? aino::Theme::dark() : aino::Theme::light();
+            f.ui.set_theme(th);
+            const auto skin = aino::detail::make_skin(th, Style().standard(), Style::Default, th.radius);
+            const auto primary = aino::detail::make_skin(th, Style(), Style::Default, th.radius);
+            expect(skin.base.a == 255 && equal(skin.fg, th.label) && skin.border_w == 1,
+                   "standard is an opaque neutral bordered button");
+            expect(equal(primary.base, th.tint) && equal(primary.fg, th.tint_foreground),
+                   "default button keeps its accent semantics");
+            for (Color backdrop : {th.window_bg, th.card}) {
+                App variants;
+                f.ui.set_focus(nullptr);
+                auto draw = [&] {
+                    f.ui.fill_rect(area, backdrop);
+                    draw_buttons(f.ui, variants, ButtonVariants, area);
+                };
+                for (int i = 0; i < 24; ++i) f.frame(draw);
+                const Color standard_idle = surface(standard), secondary_idle = surface(secondary);
+                expect(std::fabs(standard_idle.luminance() - secondary_idle.luminance()) * 255 >= 16,
+                       "standard and secondary have visible surface contrast on window and card backgrounds");
+                expect(equal(standard_idle, skin.base), "standard surface does not depend on its backdrop");
+                expect(equal(secondary_idle, th.fill2.over(backdrop)),
+                       "secondary retains its translucent theme fill");
+                const Color standard_edge = f.pixel(int(standard.cx()), int(standard.bottom() - 1));
+                const Color secondary_edge = f.pixel(int(secondary.cx()), int(secondary.bottom() - 1));
+                expect(std::fabs(standard_edge.luminance() - standard_idle.luminance()) * 255 >= 4,
+                       "standard has a visible lower edge");
+                expect(equal(secondary_edge, secondary_idle), "secondary retains its flat edge");
+                for (int i = 0; i < 24; ++i) f.frame(draw, standard.x + 8, standard.cy());
+                expect(equal(surface(standard), standard_idle) && variants.hits == 0,
+                       "hover preserves the standard neutral surface without activating it");
+                for (int i = 0; i < 24; ++i) f.frame(draw, standard.x + 8, standard.cy(), true);
+                expect(std::fabs(surface(standard).luminance() - standard_idle.luminance()) * 255 >= 16,
+                       "standard press gives visible feedback");
+                f.frame(draw, standard.x + 8, standard.cy(), false, true);
+                expect(variants.hits == 1 && variants.notices.back().message == "已点击 标准",
+                       "standard click activates exactly its own action");
+                for (int i = 0; i < 24; ++i) f.frame(draw);
+                expect(equal(surface(standard), standard_idle), "standard returns to idle after release");
+                f.click(secondary.x + 8, secondary.cy(), draw);
+                expect(variants.hits == 2 && variants.notices.back().message == "已点击 次要",
+                       "secondary keeps its independent action");
+            }
+            bool clicked = false;
+            auto disabled = [&] {
+                clicked |= f.ui.button("disabled standard", standard, Style().standard().off());
+            };
+            f.click(standard.cx(), standard.cy(), disabled);
+            expect(!clicked, "disabled standard cannot activate");
+            const Style custom = Style().standard().background(th.purple).color(th.tint_foreground)
+                                        .stroke(0, Color::none()).corner(3);
+            const auto overridden = aino::detail::make_skin(th, custom, Style::Default, th.radius);
+            expect(equal(overridden.base, th.purple) && equal(overridden.fg, th.tint_foreground) &&
+                       overridden.border_w == 0 && overridden.radius == 3,
+                   "standard respects explicit style overrides");
+        }
+        f.ui.set_focus(nullptr);
+        f.ui.set_theme(aino::Theme::light());
     }
     app = App{};
     app.date_open = true;

@@ -104,7 +104,7 @@ bool button(const std::string& text, const Rect& box, const Style& st = Style())
 | 字重 | `st.font_weight` → 否则 500 |
 | 光标 | `Arrow`；Link 变体使用 `Hand` |
 
-**生效的属性**：全部 6 个变体 + `bg` `fg` `border_color` `border_width` `radius`
+**生效的属性**：全部 7 个变体 + `bg` `fg` `border_color` `border_width` `radius`
 `font_size` `font_weight` `italic` `align` `valign` `disabled` `press_scale`
 
 ### 按压缩放
@@ -123,6 +123,7 @@ ui.button("按我看看", box, aino::Style().primary().scale_on_press(0.97f));
 
 ```cpp
 if (ui.button("保存", col.next(24.0f), aino::Style().primary())) save();
+if (ui.button("普通操作", col.next(24.0f), aino::Style().standard())) run();
 if (ui.button("取消", col.next(24.0f), aino::Style().outline())) close();
 if (ui.button("删除", col.next(24.0f), aino::Style().destructive())) remove();
 ```

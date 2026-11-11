@@ -198,7 +198,7 @@ const Card kCards[] = {
     {Typography, "分隔与排版", "layout", "typography divider 分隔 排版"},
 };
 const Page kPages[] = {
-    {"基础", "按钮", "buttons", "Button · 5 种语义 / 3 种尺寸 / 图标 / 加载态", 0, 3},
+    {"基础", "按钮", "buttons", "Button · 按钮样式 / 3 种尺寸 / 图标 / 加载态", 0, 3},
     {"基础", "输入框", "inputs", "Text Field · 搜索 / 密码 / 多行", 3, 3},
     {"基础", "开关与选择", "selection", "Selection · 开关 / 复选 / 单选", 6, 3},
     {"基础", "滑块与步进", "sliders", "Value · 连续与离散数值", 9, 2},
@@ -385,7 +385,7 @@ void draw_buttons(Ui &ui, App &a, CardId id, Rect b) {
             if (i == 0)
                 st.primary();
             else if (i == 2)
-                st.background(ui.theme().fill);
+                st.standard();
 
             if (i == 3)
                 st.outline();

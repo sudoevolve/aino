@@ -458,7 +458,7 @@ struct Style {
     bool  disabled = false;
 
     // --- 组件语义变体 ---
-    enum Variant { Default, Secondary, Outline, Ghost, Destructive, Link };
+    enum Variant { Default, Secondary, Outline, Ghost, Destructive, Link, Standard };
     int variant = -1;             // -1 = 由组件决定默认变体
 
     // --- 文本 ---
@@ -523,6 +523,8 @@ struct Style {
 
     // 语义变体
     Style& primary()     { variant = Default;     return *this; }
+    /** @brief 中性实心按钮，带细边缘；Secondary 使用半透明填充。 */
+    Style& standard()    { variant = Standard;    return *this; }
     Style& secondary()   { variant = Secondary;   return *this; }
     Style& outline()     { variant = Outline;     return *this; }
     Style& ghost()       { variant = Ghost;       return *this; }
@@ -4918,7 +4920,7 @@ inline Skin make_skin(const Theme& th, const Style& st, int default_variant, flo
     sk.weight    = st.font_weight > 0 ? st.font_weight : 500;   // 参考资料 kit：推按钮标签是 SF Pro Medium
     sk.fg        = th.label;
 
-    // Default 使用强调色，Secondary 使用半透明填充，Ghost/Link 无填充；按下时增加填充强度。
+    // Default 使用强调色，Standard 为中性实心表面，Secondary 为半透明填充。
     switch (v) {
         case Style::Default:
             sk.base  = th.tint;  sk.fg = th.tint_foreground;
@@ -4931,6 +4933,13 @@ inline Skin make_skin(const Theme& th, const Style& st, int default_variant, flo
             // 不是 10% —— 10% 会让一整排按钮看着比工具栏重一档。
             sk.base = th.fill2;  sk.hover = th.fill2;  sk.press = th.fill_press;
             sk.fg   = th.label;
+            break;
+        case Style::Standard:
+            sk.base = th.is_dark() ? th.fill_hover.over(th.control_bg) : th.control_bg;
+            sk.hover = sk.base;
+            sk.press = th.fill_press.over(sk.base);
+            sk.border = th.separator; sk.border_w = 1.0f;
+            sk.rim = Color(255, 255, 255, 40);
             break;
         case Style::Outline:
             // Outline 保留细描边，以区别于 Secondary 的半透明填充。
