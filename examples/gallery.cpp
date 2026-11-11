@@ -1353,6 +1353,46 @@ void build_ui(Ui &ui, App &a) {
     }
     draw_overlays(ui, a);
 }
+int write_layout_report(Ui &ui, const App &a, const GalleryLayout &layout, float width, std::FILE *f) {
+    int over = 0;
+    std::fprintf(f, "# sections=%d cards=%d content_height=%.1f\n", kPageCount, int(layout.cards.size()),
+                 layout.height);
+    for (size_t i = 0; i < layout.cards.size(); ++i) {
+        const auto &c = layout.cards[i];
+        const Rect body{16, 48, c.rect.w - 32, c.rect.h - 66};
+        Rect used;
+        bool overflow = !std::isfinite(c.rect.x) || !std::isfinite(c.rect.y) ||
+                        !std::isfinite(c.rect.w) || !std::isfinite(c.rect.h) ||
+                        c.rect.x < -1 || c.rect.y < 0 || c.rect.right() > width + 1 ||
+                        c.rect.bottom() > layout.height + 1 || body.w <= 0 || body.h <= 0;
+        if (!overflow) {
+            App measured = a;
+            measured.date_open = measured.color_open = false;
+            ui.begin_measure();
+            draw_body(ui, measured, kCards[c.index].id, body);
+            used = ui.end_measure();
+            // 轴标签可进入内边距，但不能覆盖标题（y=16..38）或越出卡片。
+            overflow = !std::isfinite(used.x) || !std::isfinite(used.y) ||
+                       !std::isfinite(used.w) || !std::isfinite(used.h) ||
+                       used.x < 0 || used.y < 38 || used.right() > c.rect.w ||
+                       used.bottom() > c.rect.h;
+        }
+        for (size_t j = 0; j < i; ++j) {
+            const Rect &other = layout.cards[j].rect;
+            if (c.rect.x < other.right() - .1f && c.rect.right() > other.x + .1f &&
+                c.rect.y < other.bottom() - .1f && c.rect.bottom() > other.y + .1f)
+                overflow = true;
+        }
+        if (overflow) ++over;
+        std::fprintf(f, "%s / %s: x=%.1f y=%.1f w=%.1f h=%.1f\n", kPages[c.section].name,
+                     kCards[c.index].name, c.rect.x, c.rect.y, c.rect.w, c.rect.h);
+        if (overflow)
+            std::fprintf(f, "  OVERFLOW body=%.1fx%.1f used=(%.1f,%.1f)-(%.1f,%.1f)\n",
+                         body.w, body.h, used.x, used.y, used.right(), used.bottom());
+    }
+    std::fprintf(f, "# over=%d total=%d\n", over, int(layout.cards.size()));
+    return over;
+}
 void dump_layout_report(Ui &ui, App &a, float width, bool narrow) {
     const char *path = std::getenv("AINO_LAYOUT_REPORT");
     if (!path || !*path)
@@ -1360,12 +1400,8 @@ void dump_layout_report(Ui &ui, App &a, float width, bool narrow) {
     std::FILE *f = std::fopen(path, "w");
     if (!f)
         return;
-    auto layout = layout_gallery(ui, a, width, narrow);
-    std::fprintf(f, "# sections=%d cards=%d content_height=%.1f\n", kPageCount, int(layout.cards.size()),
-                 layout.height);
-    for (const auto &c : layout.cards)
-        std::fprintf(f, "%s / %s: x=%.1f y=%.1f w=%.1f h=%.1f\n", kPages[c.section].name,
-                     kCards[c.index].name, c.rect.x, c.rect.y, c.rect.w, c.rect.h);
+    const auto layout = layout_gallery(ui, a, width, narrow);
+    write_layout_report(ui, a, layout, width, f);
     std::fclose(f);
 }
 

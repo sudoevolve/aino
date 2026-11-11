@@ -93,6 +93,7 @@ def verify_gallery(extra=()):
 
 
 PROBES = (
+    ('gallery_layout_probe', 'verdict: PASS', '画廊布局报告：跨平台测量 / 越界 / 重叠 / CI 格式'),
     ('pomodoro_probe', '26 passed, 0 failed', '番茄钟：实际时钟 / 暂停续计 / 模式导航 / 时长 / 外观'),
     ('example_ui_probe', '57 passed, 0 failed', '函数示例：侧栏裁剪 / 采样缓存 / 无效公式 / 输入快捷键'),
     ('macos_gallery_probe', 'verdict: PASS', 'macOS 主题联动 / 实际示例交互 / 响应式布局'),

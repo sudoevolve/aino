@@ -60,6 +60,7 @@
 |---|---|
 | `tools/regress.py --only <名称>` | 定向运行组件、布局、编辑、浮层等断言；`--list` 查看名称 |
 | `tools/probe/docs_smoke.cpp` | 编译文档涉及的 API 用法 |
+| `tools/probe/gallery_layout_probe.cpp` | 跨平台测量画廊卡片，检查越界与重叠，并验证 CI 布局报告格式 |
 | `tools/perf_gallery.py` | 实际画廊静置、移动、滚动、拖动与悬停的 CPU 采样 |
 | `tools/perf_bench.py` | 单组件静置、连续绘制与交互耗时对比 |
 | `tools/shot_pages.py` | 更新按分类截图，需人工检查文字和布局 |

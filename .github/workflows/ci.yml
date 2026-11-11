@@ -95,6 +95,7 @@ jobs:
           g++ -std=c++17 -O2 -Wall examples/gallery.cpp -o gallery -lX11 -ldl
           g++ -std=c++17 -O2 -Wall tools/ci_smoke.cpp -o ci_smoke -lX11 -ldl
           g++ -std=c++17 -O2 -Wall tools/ci_pixels.cpp -o ci_pixels -lX11 -ldl
+          g++ -std=c++17 -O2 -Wall tools/probe/gallery_layout_probe.cpp -o ci_layout -lX11 -ldl
 
       - name: 冒烟（xvfb 虚拟屏，跑满 20 帧）
         run: xvfb-run -a ./ci_smoke
@@ -144,16 +145,15 @@ jobs:
           test $rc -eq 0
           grep -q "cjk at " narrow.txt
 
-      # 布局自检：gallery 首帧会把全部 45 页量一遍，写出 `# over=N under=M total=K`。
-      # over 必须为 0 —— 这正是 Windows 上 `tools/regress.py` 卡的那条。
-      # 放在 Linux 上跑的意义：Xft 的行高/字宽和 GDI 不一样，某些手填高度的卡片
-      # 在 Windows 上刚好装下、换到 Xft 就可能溢出一行。
+      # 使用当前字体测量 43 张卡片，并验证越界时检查确实会失败。
       - name: 布局自检（gallery 全页，over 必须为 0）
         run: |
           rm -f layout.txt
-          AINO_LAYOUT_REPORT=layout.txt timeout 20 xvfb-run -a ./gallery || true
+          rc=0
+          timeout 20 xvfb-run -a ./ci_layout layout.txt || rc=$?
           echo "--- layout report ---"
           cat layout.txt 2>/dev/null || { echo "没有产出布局报告"; exit 1; }
+          test "$rc" -eq 0 || exit "$rc"
           grep -q "# over=0 " layout.txt
 
       # 整窗截图：xvfb 里没有交互桌面，人工核对"画成什么样"只能靠这个。
@@ -175,7 +175,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: frame-linux
-          path: ci_frame_*.bmp
+          path: |
+            ci_frame_*.bmp
+            layout.txt
           if-no-files-found: ignore
 
   macos:
