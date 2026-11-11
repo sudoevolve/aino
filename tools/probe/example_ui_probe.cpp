@@ -129,6 +129,52 @@ int main(int argc, char** argv) {
     f.click(tool, 80, 194);
     expect(clicks == 1, "modal blocks underlying tool button");
     g_block_input = false;
+    {
+        App app;
+        for (const char* title : {"one", "two", "three"}) {
+            auto session = std::make_shared<Session>();
+            session->title = title;
+            app.tabs.push_back(session);
+        }
+        app.active = 0;
+        auto tabs = [&] { draw_tabs(f.ui, app, f.ui.theme(), 40); };
+        const float first_w = f.ui.text_width("one", 12.5f, 500) + 70.0f;
+        f.click(tabs, 8 + first_w + 25, 20);
+        expect(app.active == 1 && !app.show_start, "native tabs return from home to selected session");
+        const auto selected = app.tabs[1];
+        g_block_input = true;
+        f.click(tabs, 30, 20);
+        f.click(tabs, 8 + first_w - 15, 20);
+        f.click(tabs, 936, 20);
+        expect(app.active == 1 && app.tabs.size() == 3 && !app.show_start,
+               "modal blocks tab selection, close and new controls");
+        g_block_input = false;
+        f.click(tabs, 8 + first_w - 15, 20);
+        expect(app.tabs.size() == 2 && app.active == 0 && app.tabs[0] == selected,
+               "closing earlier tab preserves the selected session");
+        f.click(tabs, 936, 20);
+        expect(app.show_start && app.tabs.size() == 2, "native new button opens home without closing sessions");
+        f.click(tabs, 30, 20);
+        expect(!app.show_start && app.tabs[app.active] == selected, "selected session remains reachable from home");
+        const float second_w = f.ui.text_width("two", 12.5f, 500) + 70.0f;
+        f.click(tabs, 8 + second_w - 15, 20);
+        expect(app.tabs.size() == 1 && app.active == 0 && !app.show_start,
+               "closing active tab selects remaining session");
+        const float last_w = f.ui.text_width("three", 12.5f, 500) + 70.0f;
+        f.click(tabs, 8 + last_w - 15, 20);
+        expect(app.tabs.empty() && app.active == -1 && app.show_start, "last native tab closes safely to home");
+        for (int i = 0; i < 9; ++i) {
+            auto session = std::make_shared<Session>();
+            session->title = std::string(80, 'x') + std::to_string(i);
+            app.tabs.push_back(session);
+        }
+        app.active = 8;
+        app.show_start = false;
+        f.frame(tabs);
+        f.click(tabs, 936, 20);
+        expect(app.show_start && app.tabs.size() == 9, "overflow tabs leave new button reachable");
+        app.shutdown_all();
+    }
     if (argc > 1 && std::string(argv[1]) == "--local-transfer") {
         Session session;
         std::string error;

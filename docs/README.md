@@ -166,7 +166,7 @@ python tools/child_window.py --shot
 帧耗时和绘制耗时，JSON 默认保存在 `build/perf-gallery.json`。
 `shot_pages.py` 保存分类截图，不能代替断言或人工排版核对。
 `tools/probe/example_ui_probe.cpp` 检查函数侧栏、全部绘图模式的采样缓存、无效公式及输入快捷键隔离；`python tools/build_ssh.py ui`
-构建 SSH 界面探针，覆盖 UTF-8、选区、撤销、粘贴与弹窗输入隔离，不连接服务器。
+构建 SSH 界面探针，覆盖 UTF-8、选区、撤销、粘贴、会话页签与弹窗输入隔离，不连接服务器。
 显式使用 `build/ssh_ui_probe.exe --local-transfer <端口>` 才会连接 `127.0.0.1` 上的
 本地测试服务器（`demo/demo`），检查后台上传 / 下载、取消、错误清理及 PTY 尺寸同步。
 运行方法与独立测试目录设置见 [01](01-quickstart.md)。

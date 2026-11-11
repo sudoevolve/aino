@@ -341,8 +341,33 @@ ui.tabs({"概览", "按钮", "表单"}, &tab, col.next(28));
 ```
 
 普通页签按文字宽度加 36 计算项宽，字重均为 500。选中项使用淡中性圆角底与主标签色，
-未选项使用次要标签色，无下划线。布局不会自动折行，应给足所有标签需要的宽度。
+未选项使用次要标签色，无下划线。普通重载不会自动折行，应给足所有标签需要的宽度；
+绘制与点击都限制在传入的 `box` 内。
 返回选中索引是否变化。
+
+可关闭的会话页签使用同一控件的扩展重载，SSH 示例复用此接口：
+
+```cpp
+int closed = -1;
+aino::TabOptions options;
+options.close_index = &closed;
+options.max_width = 200;
+ui.tabs(labels, &tab, box, options, aino::Style());
+if (closed >= 0) {
+    labels.erase(labels.begin() + closed);
+    if (closed < tab) --tab;
+    tab = labels.empty() ? -1 : std::min(tab, int(labels.size()) - 1);
+}
+```
+
+`close_index` 每次调用先写入 `-1`，点击关闭时返回对应索引，控件不移除应用数据，
+也不会因为关闭未选项而切换选中项。`tabs()` 的布尔返回值仍只表示选择变化。
+状态色向量可短于标签列表，缺少对应颜色或颜色为 `Color::none()` 时不显示标记。
+两个指针只在本次调用期间借用，应用负责其生命周期。
+启用关闭、状态标记或宽度限制后，普通页签溢出时显示左右翻页按钮；
+程序更改选中索引后自动将该项移入视口。
+`max_width = 0` 表示自然宽度，正值限制单项宽度（最少 70）；超长标签文字裁剪显示。
+`Style().off()` 同时禁用选择、关闭与翻页。关闭及翻页功能不用于 `segmented` 胶囊变体。
 
 ## 9. `segmented` —— 分段选择
 

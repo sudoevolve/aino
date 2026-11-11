@@ -1841,6 +1841,7 @@ struct App {
             active = -1;
             show_start = true;
         } else {
+            if (i < active) --active;
             active = std::min(active, int(tabs.size()) - 1);
             if (active < 0) active = 0;
         }
@@ -2509,50 +2510,39 @@ void draw_cfg_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
 
 // ---- 标签栏 ----
 void draw_tabs(aino::Ui& ui, App& app, const aino::Theme& th, float h) {
-    const aino::Input& in = ui.input();
     const float W = ui.width();
     ui.fill_rect(Rect(0, 0, W, h), th.card);
     ui.fill_rect(Rect(0, h - 1.0f, W, 1.0f), th.border);
 
-    float x = 8.0f;
-    // 启动页（home）不是某个会话，所以这时候谁都不算"激活标签"
-    const bool home = app.show_start || app.tabs.empty();
-    for (int i = 0; i < int(app.tabs.size()); ++i) {
-        Session& s = *app.tabs[size_t(i)];
-        const bool act = !home && (i == app.active);
-        const float tw = std::min(200.0f, 30.0f + ui.text_width(s.title, 12.5f));
-        const Rect tab(x, 6.0f, tw, h - 12.0f);
-
-        ui.fill_rect(tab, act ? th.background : Color::hex(0x14161B), 7.0f);
-        if (act) ui.fill_rect(Rect(tab.x + 8.0f, tab.bottom() - 2.0f, tab.w - 16.0f, 2.0f), kAccent, 1.0f);
-        ui.draw_text(s.title, Rect(tab.x + 12.0f, tab.y, tab.w - 34.0f, tab.h),
-                     act ? th.foreground : th.muted_foreground, Style().font(12.5f));
-
-        // 状态点
-        const Color dot = s.conn_busy() ? kWarn : (s.engine.connected() ? kOk : Color::hex(0x52525B));
-        ui.fill_circle(tab.x + 7.0f, tab.y + tab.h * 0.5f, 2.5f, dot);
-
-        // 关闭
-        const Rect r_x(tab.right() - 24.0f, tab.y + tab.h * 0.5f - 9.0f, 18.0f, 18.0f);
-        const bool over_x = !g_block_input && r_x.contains(in.mouse);
-        if (over_x) ui.fill_rect(r_x, Color(255, 255, 255, 18), 4.0f);
-        ui.system_icon(aino::SystemIcon::Close, r_x.inset(4.0f), over_x ? th.foreground : th.muted_foreground);
-        if (in.pressed[0] && over_x) { close_tab(app, i); return; }
-        // 点标签必须同时把 show_start 清掉：标签栏现在常驻启动页，
-        // 只改 active 的话首页还压在上面，点了没反应。
-        if (!g_block_input && in.pressed[0] && tab.contains(in.mouse)) { app.active = i; app.show_start = false; }
-
-        x += tw + 6.0f;
+    std::vector<std::string> labels;
+    std::vector<Color> indicators;
+    labels.reserve(app.tabs.size());
+    indicators.reserve(app.tabs.size());
+    for (const auto& session : app.tabs) {
+        labels.push_back(session->title);
+        indicators.push_back(session->conn_busy() ? kWarn : (session->engine.connected() ? kOk : th.label3));
+    }
+    int selected = app.show_start ? -1 : app.active;
+    int closed = -1;
+    aino::TabOptions options;
+    options.close_index = &closed;
+    options.indicators = &indicators;
+    options.max_width = 200.0f;
+    Style style = Style().font(12.5f);
+    style.disabled = g_block_input;
+    if (ui.tabs(labels, &selected, Rect(8.0f, 6.0f, std::max(0.0f, W - 52.0f), h - 12.0f), options, style)) {
+        app.active = selected;
+        app.show_start = false;
     }
 
-    // 新建标签（回到启动页）
-    const Rect r_plus(x + 4.0f, 8.0f, 24.0f, 24.0f);
-    const bool over_plus = !g_block_input && r_plus.contains(in.mouse);
-    if (home) ui.fill_rect(r_plus, Color(255, 255, 255, 14), 6.0f);
-    else if (over_plus) ui.fill_rect(r_plus, Color(255, 255, 255, 14), 6.0f);
-    ui.system_icon(aino::SystemIcon::Plus, r_plus.inset(6.0f),
-                   (home || over_plus) ? th.primary : th.muted_foreground);
-    if (in.pressed[0] && over_plus) app.show_start = true;
+    const Rect add(W - 36.0f, (h - 24.0f) * 0.5f, 24.0f, 24.0f);
+    Style add_style = Style().ghost();
+    add_style.disabled = g_block_input;
+    if (ui.icon_button("", add, add_style)) app.show_start = true;
+    ui.system_icon(aino::SystemIcon::Plus, add.inset(6.0f),
+                   (app.show_start ? th.primary : th.label2).scaled_alpha(g_block_input ? 0.45f : 1.0f));
+
+    if (closed >= 0) close_tab(app, closed);
 }
 
 void update_session(Session& a) {

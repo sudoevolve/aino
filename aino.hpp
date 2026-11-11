@@ -532,6 +532,16 @@ struct Style {
     Style& link()        { variant = Link;        return *this; }
 };
 
+/** @brief 普通页签的可选关闭、状态标记及宽度限制；指针仅在 tabs 调用期间借用。 */
+struct TabOptions {
+    /** @brief 输出本帧请求关闭的索引，未请求时写入 -1；由调用方移除对应数据。 */
+    int* close_index = nullptr;
+    /** @brief 每项的状态色；缺少对应项或颜色为 none 时不画标记。 */
+    const std::vector<Color>* indicators = nullptr;
+    /** @brief 单项最大宽度，0 表示按文字自然宽度排列。 */
+    float max_width = 0.0f;
+};
+
 // =============================================================================
 //  四、输入状态 —— 每帧刷新，立即模式读取它
 // =============================================================================
@@ -940,6 +950,9 @@ public:
     bool toggle(bool* value, const Rect& box, const Style& st = Style());
     bool slider(float* value, float min_value, float max_value, const Rect& box, const Style& st = Style());
     bool tabs(const std::vector<std::string>& labels, int* index, const Rect& box, const Style& st = Style());
+    /** @brief 带关闭请求和状态标记的普通页签；溢出时提供翻页按钮。 */
+    bool tabs(const std::vector<std::string>& labels, int* index, const Rect& box,
+              const TabOptions& options, const Style& st);
     bool segmented(const std::vector<std::string>& items, int* index, const Rect& box, const Style& st = Style());
     bool select(const std::vector<std::string>& items, int* index, const Rect& box, const Style& st = Style());
 
@@ -6351,7 +6364,13 @@ inline bool Ui::slider(float* value, float min_value, float max_value, const Rec
 
 // Tabs 按文字宽度排列，Segmented 等分并共用凹槽背景；两者均返回选中索引。
 inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const Rect& box, const Style& st) {
-    if (!index || labels.empty()) return false;
+    return tabs(labels, index, box, TabOptions{}, st);
+}
+
+inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const Rect& box,
+                     const TabOptions& options, const Style& st) {
+    if (options.close_index) *options.close_index = -1;
+    if (!index || labels.empty() || box.w <= 0.0f || box.h <= 0.0f) return false;
     const Theme& th = impl->theme;
     uint64_t base_id = impl->widget_id("tabs", box);
     const bool pill = (st.variant == Style::Secondary || st.variant == Style::Outline);
@@ -6359,6 +6378,11 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
     // r6 的圆角矩形：24 高的控件整个是圆的，选中段内缩 2 之后也是胶囊。
     const float rad = st.radius >= 0.0f ? st.radius : (pill ? box.h * 0.5f : 6.0f);
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
+    const bool closable = !pill && options.close_index;
+    auto indicator = [&](size_t i) {
+        return !pill && options.indicators && i < options.indicators->size()
+                   ? (*options.indicators)[i] : Color::none();
+    };
 
     bool changed = false;
     Rect container(box.x, box.y, box.w, box.h);
@@ -6371,10 +6395,49 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
     {
         float x = inner.x;
         for (size_t i = 0; i < labels.size(); ++i) {
-            if (!pill) ws[i] = text_width(labels[i], fs, 500) + 36.0f;
+            if (!pill) {
+                ws[i] = text_width(labels[i], fs, 500) + 36.0f + (closable ? 22.0f : 0.0f)
+                        + (indicator(i).is_none() ? 0.0f : 12.0f);
+                if (options.max_width > 0.0f)
+                    ws[i] = std::min(ws[i], std::max(options.max_width, 70.0f));
+            }
             xs[i] = x;
             x += ws[i];
         }
+    }
+
+    Rect viewport = inner;
+    float offset = 0.0f;
+    const float total_w = xs.back() + ws.back() - inner.x;
+    const bool overflow = !pill && (closable || options.indicators || options.max_width > 0.0f)
+                          && total_w > inner.w;
+    if (overflow) {
+        const float side = std::min(24.0f, std::min(inner.h, inner.w * 0.25f));
+        viewport.w = std::max(0.0f, inner.w - side * 2.0f - 4.0f);
+        const uint64_t offset_id = base_id * 47u + 3u, selection_id = base_id * 47u + 4u;
+        const float max_offset = std::max(0.0f, total_w - viewport.w);
+        offset = std::max(0.0f, std::min(impl->flags[offset_id], max_offset));
+        const float selection = float(*index + 2);
+        if (impl->flags[selection_id] != selection && *index >= 0 && *index < int(labels.size())) {
+            const float start = xs[size_t(*index)] - inner.x;
+            const float end = start + ws[size_t(*index)];
+            offset = std::min(start, std::max(offset, end - viewport.w));
+        }
+        impl->flags[selection_id] = selection;
+        for (int direction : {-1, 1}) {
+            const Rect arrow(inner.right() - side * (direction < 0 ? 2.0f : 1.0f),
+                             inner.cy() - side * 0.5f, side, side);
+            Style button_style = Style().ghost();
+            button_style.disabled = st.disabled || (direction < 0 ? offset <= 0 : offset >= max_offset);
+            if (icon_button("", arrow, button_style))
+                offset = std::max(0.0f, std::min(max_offset, offset + float(direction) * std::max(70.0f, viewport.w * 0.75f)));
+            system_icon(direction < 0 ? SystemIcon::Prev : SystemIcon::Next,
+                        arrow.inset(side * 0.3f), th.label2.scaled_alpha(button_style.disabled ? 0.45f : 1.0f));
+        }
+        impl->flags[offset_id] = offset;
+    } else if (!pill) {
+        impl->flags.erase(base_id * 47u + 3u);
+        impl->flags.erase(base_id * 47u + 4u);
     }
 
     if (pill) {
@@ -6390,10 +6453,15 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
                       th.label3, 0.0f);
     }
 
+    push_clip(viewport);
     for (size_t i = 0; i < labels.size(); ++i) {
-        Rect item(xs[i], inner.y, ws[i], inner.h);
+        Rect item(xs[i] - offset, inner.y, ws[i], inner.h);
+        const float close_side = std::min(18.0f, std::max(0.0f, item.h - 8.0f));
+        const Rect close(item.right() - 6.0f - close_side, item.cy() - close_side * 0.5f, close_side, close_side);
+        Rect hit = item;
+        if (closable) hit.w = std::max(0.0f, close.x - item.x - 2.0f);
         uint64_t id = impl->widget_id("tab", item, base_id + i);
-        detail::Interact in = detail::interact(impl, id, item, !st.disabled);
+        detail::Interact in = detail::interact(impl, id, hit, !st.disabled);
         if (in.hovered) set_cursor(Cursor::Arrow);
         if (in.clicked && *index != int(i)) { *index = int(i); changed = true; }
 
@@ -6432,8 +6500,24 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
         if (pill) c = (*index == int(i)) ? detail::on_color(th.tint) : th.label;
         else      c = (*index == int(i)) ? th.foreground : th.label2;
         if (st.disabled) c.a = uint8_t(float(c.a) * 0.45f);
-        draw_text(labels[i], item, c, ts);
+        Rect text_box = item;
+        const Color dot = indicator(i);
+        if (!dot.is_none()) {
+            fill_circle(item.x + 12.0f, item.cy(), 2.5f, dot.scaled_alpha(st.disabled ? 0.45f : 1.0f));
+            text_box.x += 12.0f;
+            text_box.w -= 12.0f;
+        }
+        if (closable) text_box.w = std::max(0.0f, text_box.w - 22.0f);
+        draw_text(labels[i], text_box, c, ts);
+        if (closable) {
+            Style button_style = Style().ghost();
+            button_style.disabled = st.disabled;
+            if (icon_button("", close, button_style)) *options.close_index = int(i);
+            system_icon(SystemIcon::Close, close.inset(close_side * 0.28f),
+                        th.label2.scaled_alpha(st.disabled ? 0.45f : 1.0f));
+        }
     }
+    pop_clip();
     return changed;
 }
 

@@ -445,6 +445,60 @@ static void test_tabs() {
 
     d.click(sbox.x + sbox.w / 6.0f, sbox.cy(), sdraw);
     check(seg == 0, "胶囊点第一段 → 0", "seg=" + num(seg));
+
+    int closed = 99;
+    std::vector<aino::Color> dots(3, aino::Color::hex(0x34C759));
+    aino::TabOptions options;
+    options.close_index = &closed;
+    options.indicators = &dots;
+    options.max_width = 90.0f;
+    aino::Style style;
+    auto closable = [&] { ui.tabs(items, &idx, tbox, options, style); };
+    d.idle(closable);
+    check(closed == -1, "无关闭请求时输出 -1");
+    d.click(tbox.x + 120, tbox.cy(), closable);
+    check(idx == 1 && closed == -1, "可关闭页签正常切换");
+    d.click(tbox.x + 270 - 15, tbox.cy(), closable);
+    check(closed == 2 && idx == 1, "关闭未选页签不切换选中项");
+    d.idle(closable);
+    check(closed == -1, "关闭请求只返回一次");
+    d.press(tbox.x + 270 - 15, tbox.cy(), closable);
+    d.release(tbox.right() + 10, tbox.cy(), closable);
+    check(closed == -1, "关闭按钮拖出后释放不触发");
+    style.disabled = true;
+    d.click(tbox.x + 30, tbox.cy(), closable);
+    d.click(tbox.x + 270 - 15, tbox.cy(), closable);
+    check(idx == 1 && closed == -1, "禁用时不切换或关闭页签");
+    style.disabled = false;
+    auto clipped = [&] {
+        ui.push_clip(Rect(tbox.x, tbox.y, 80, tbox.h));
+        closable();
+        ui.pop_clip();
+    };
+    d.click(tbox.x + 270 - 15, tbox.cy(), clipped);
+    check(closed == -1 && idx == 1, "裁剪区外的关闭按钮不能点击");
+
+    const Rect narrow(20, 20, 140, 38);
+    auto overflow = [&] { ui.tabs(items, &idx, narrow, options, style); };
+    idx = 2;
+    d.idle(overflow);
+    d.click(93, narrow.cy(), overflow);
+    check(closed == 2, "程序选择末项时自动显示该项和关闭按钮");
+    for (int n = 0; n < 3; ++n) d.click(narrow.right() - 36, narrow.cy(), overflow);
+    d.click(50, narrow.cy(), overflow);
+    check(idx == 0, "溢出页签可向前翻到首项");
+    for (int n = 0; n < 3; ++n) d.click(narrow.right() - 12, narrow.cy(), overflow);
+    d.click(50, narrow.cy(), overflow);
+    check(idx == 2, "溢出页签可向后翻到末项");
+    d.idle(overflow);
+    check(closed == -1, "翻页不会误关闭页签");
+    ui.set_theme(aino::Theme::dark());
+    d.idle(overflow);
+    d.click(93, narrow.cy(), overflow);
+    check(closed == 2 && idx == 2, "深色主题下复用相同关闭交互");
+    auto empty = [&] { ui.tabs({}, &idx, narrow, options, {}); };
+    d.idle(empty);
+    check(closed == -1, "空列表清除关闭请求");
 }
 
 // ---------------------------------------------------------------- 9. 下拉选择

@@ -111,7 +111,7 @@ PROBES = (
     ('scrollbar_probe', '[scrollbar] verdict: PASS', '滚动条拖动/点轨道（不再是纯装饰）'),
     ('ime_comp_probe', '[imecomp] verdict: PASS', 'IME 组字串画进输入框（不是只在组合窗）'),
     ('widget_probe', '通过 79 项，失败 0 项', '0.3.x 新控件行为（Toggle/OTP/Combobox/分页/月历/浮层/分割/菜单栏）'),
-    ('interaction_probe', '通过 81 项，失败 0 项', '存量控件交互（编辑/拖动/弹层/滚动/退化输入）'),
+    ('interaction_probe', '通过 94 项，失败 0 项', '存量控件交互（含页签关闭 / 溢出翻页）'),
     ('measure_probe', '通过 9 项，失败 0 项', '测量模式不落像素 + 嵌套滚动归属'),
     ('click_probe', '通过 11 项，失败 0 项', '点击归属（裁剪外不吃点击 / 一次按下只归一个）'),
     ('cfg_probe', '通过 16 项，失败 0 项', 'WindowConfig（字体名/尺寸约束/居中/可缩放）'),
