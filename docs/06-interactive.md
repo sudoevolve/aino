@@ -25,12 +25,8 @@ t_press = animate_value(id, 目标 0/1, 速率 34)   // 更快
 
 这些插值**只在值变化时请求重绘**，值稳定后就停了 —— 不会一直吃 CPU。
 
-**淡入的是 alpha，不是整条颜色**。透明底控件（ghost / outline）的底色是
-`Color::none()`，`state_fill()` 对它只推进 alpha、RGB 保持目标色。早先这里写成
-`base.mix(hover, t_hover)`，`mix` 连 RGB 一起从黑色插值，中间帧变成"深灰"（244 的
-accent 在 t=0.5 时 blend 出来是 185，比背景 249 和终态 244 都暗）—— 表现就是
-**每次悬停都先闪一下深灰**，而且只有带 hover 淡入的控件有，静态表格没有。
-`hover_fade_probe` 逐帧量中间帧亮度，钉住这条。
+透明底 Ghost 按钮的 `state_fill()` 只推进填充 alpha，保持目标 RGB，避免从透明黑
+插值造成中间帧变暗。Outline 使用中性填充和细描边。`hover_fade_probe` 检查淡入亮度。
 
 ### 0.3 焦点
 
@@ -49,7 +45,7 @@ void  ui.set_focus(void* id);      // 强制移焦
 `Style().off()` 或 `Style().disabled = true`：
 
 - 控件不再响应 hover / 点击（`interact(..., enabled=false)`）
-- 填充色与前景色的 alpha 压到 **45%**
+- 按钮表面与描边 alpha 为原值的 **55%**，标签为 **45%**；其它控件按自身规则降低透明度
 - 返回值恒为 `false`
 
 ### 0.5 返回值
@@ -58,7 +54,8 @@ void  ui.set_focus(void* id);      // 强制移焦
 |---|---|
 | 本帧被点击（按下并在框内松开） | `button` `icon_button` `nav_item` |
 | 值发生了变化 | `checkbox` `toggle` `slider` `radio_group` `stepper` `rating` `textarea` `input` |
-| 选中索引变了 | `tabs` `segmented` `select` |
+| 选中索引变了 | `tabs` `segmented` |
+| 提交了选择（重复选择同一项也返回 true） | `select` |
 
 ### 0.6 一次按下只归一个控件
 
@@ -104,8 +101,8 @@ bool button(const std::string& text, const Rect& box, const Style& st = Style())
 | 对齐 | **强制居中**（除非显式 `.left()` / `.top()`） |
 | 圆角 | `theme.radius`（6） |
 | 字号 | `theme.font_size`（13） |
-| 字重 | `st.font_weight` → 否则 400 |
-| 光标 | `Hand` |
+| 字重 | `st.font_weight` → 否则 500 |
+| 光标 | `Arrow`；Link 变体使用 `Hand` |
 
 **生效的属性**：全部 6 个变体 + `bg` `fg` `border_color` `border_width` `radius`
 `font_size` `font_weight` `italic` `align` `valign` `disabled` `press_scale`
@@ -172,14 +169,14 @@ bool input(std::string* value, const Rect& box, const Style& st = Style());
 
 | 项 | 默认值 |
 |---|---|
-| 返回 | `true` = 文本或光标位置**发生了变化** |
-| 底色 | `st.bg` → 否则 `theme.background` |
-| 描边 | `st.border_color` → 否则 `theme.input`，1px |
-| 圆角 | `theme.radius_sm`（4） |
-| `pad_x` | **12** |
+| 返回 | `true` = 文本发生了变化；仅移动光标或选区不返回 true |
+| 底色 | `st.bg` → 否则浅色 `window_bg`，深色白色 alpha 20 |
+| 描边 | `st.border_color` → 否则 `separator`，1px；顶部内阴影，聚焦时叠外焦点环 |
+| 圆角 | `theme.radius`（6） |
+| `pad_x` | **8** |
 | 字号 | `theme.font_size` |
 | 字重 | 400（固定） |
-| 占位符色 | `muted_foreground` |
+| 占位符色 | `label3`（25%） |
 | 光标 | 悬停或聚焦时 `IBeam` |
 
 **生效的属性**：`bg` `fg` `border_color` `border_width` `radius` `pad_x`
@@ -204,120 +201,34 @@ bool input(std::string* value, const Rect& box, const Style& st = Style());
 
 鼠标：单击定位、**按住拖动选**、**双击选词**、**三击全选**、`Shift+单击` 扩选。
 
-### 输入法：拼音要画在框里
+### 输入法
 
-只处理 `WM_CHAR` 的话，**上屏前**那串拼音归系统那个悬空组合窗管，输入框里一个
-字都看不见 —— 看起来就像"输入法没预填充"。后端现在会取组字串：
+Windows 输入框将组字串绘制在光标处，带下划线；组字期间隐藏占位文字，
+未提交内容不提前写入应用字符串。候选窗位置随光标、DPI 与滚动更新。
 
-| 消息 | 处理 |
-|---|---|
-| `WM_IME_STARTCOMPOSITION` | 清空草稿 |
-| `WM_IME_COMPOSITION`（非 `GCS_RESULTSTR`） | **无条件**去问 `ImmGetCompositionString(GCS_COMPSTR)`，存进 `ui.impl->ime_comp`（UTF-8） |
-| `WM_IME_COMPOSITION` + `GCS_RESULTSTR` | 清空草稿（正文字符随后由 `WM_CHAR` 送到） |
-| `WM_IME_ENDCOMPOSITION` | 清空草稿 |
-| `WM_IME_SETCONTEXT` | 去掉 `ISC_SHOWUICOMPOSITIONWINDOW` |
+`imm32.dll` 运行时加载，无需额外链接。输入框接管内联组字时，后端抑制重复的系统组合窗；
+未接管输入时保留系统反馈。相关断言为 `ime_probe`、`ime_comp_probe`，
+真实输入法定位与闪烁检查为 `ime_real_check`、`ime_align_probe`、`ime_flicker_probe`。
 
-`input` / `textarea` 在聚焦时把 `ime_comp` 画在 caret 处，**主色 + 下划线**，
-caret 顺延到它后面；正文一个字都不动（预编辑不是 value 的一部分，写进去就等于
-"打拼音时正文被污染"）。水平滚动也把草稿宽度算进去了，长拼音不会被框边切掉。
+真实输入法探针会操作键盘与输入法，需要人工运行。定位时使用物理截图或被测进程自身坐标，
+不要混用未开启 DPI 感知的外部进程坐标。X11/macOS 当前没有内联组字串实现，
+应在目标环境验证系统输入法行为。
 
-**组字期间 placeholder 必须让位**：空输入框 + hint 太常见，如果画草稿的条件里带
-`!show_placeholder`，空框里永远看不到拼音。现在 `composing` 只看
-`focused && !ime_comp.empty()`，hint 反过来让位。
+### 剪贴板
 
-**上屏字符只走一条路**：库里绝不自己去插 `GCS_RESULTSTR` —— 两条路都插就是双份。
-
-#### 三个坑（都真机复现过，别踩回去）
-
-1. **不要用 `w & GCS_COMPSTR` 当门槛。** 微软拼音是 TSF 输入法，经 CUAS 转发过来的
-   `WM_IME_COMPOSITION` 里 `w = 0x73`（只有 `GCS_COMPREADSTR/READATTR/COMPATTR/COMPCLAUSE`），
-   **没有** `GCS_COMPSTR (0x08)` 这一位，可字确实在。按那一位判断 → 草稿永远是空 →
-   用户看到的就是"拼音根本没有预先填充输入框"。
-2. **不要信 lParam 里那个 `HIMC`。** 同一条消息里 lParam 是 `0x1b8` 这类句柄，
-   `ImmGetCompositionString` 对它返回 0 字节；换成 `ImmGetContext(hwnd)` 拿到的上下文
-   立刻能读到。所以先 `get_ctx(hwnd)`，拿不到才回退到 lParam。
-3. **系统那个浮动组合窗要压，而且不能只靠 `SW_HIDE`。** 微软拼音会在**本进程**里
-   开一个类名为 `MSCTFIME Composition` 的顶层窗口画组字串 —— 你画一份、它画一份，
-   就是"框里框外各一份"。后端按 `pid + 类名`（`EnumWindows`）压它，候选窗（另一个
-   类 `MSCTFIME UI`）不动。触发点有两条：
-   - `WM_IME_COMPOSITION` / `WM_IME_STARTCOMPOSITION` 处理完之后（**必须在
-     `DefWindowProc` 之后**，系统是在那里面把窗口显示出来的）；
-   - 组字期间的 20 ms **线程计时器**。为什么非要计时器：帧不是一直在跑的 ——
-     光标闪烁有 38% 的相位不请求重绘，循环会阻塞在 `WaitMessage` 里，这时输入法
-     再把窗口亮出来就没人压了（多行 textarea 上实测会漏）。
-     另外线程计时器的 id 是**系统分配**的，`SetTimer(nullptr, 0xA1, …)` 返回的
-     不是 `0xA1`（本机是 0x63CD），`WM_TIMER` 的 `wParam` 也是那个值 —— 存返回值去比，
-     拿常量比则一次都命中不了。
-4. **`SW_HIDE` 会闪。** `SW_HIDE` 只是改状态，输入法每次更新组字都会再 `ShowWindow`
-   一次 —— 我们 20 ms 后才压回去，于是"亮一下、藏起来、再亮一下"。实测（8 ms 一帧的
-   抓图对比）：**空闲**时它是干净的（240 帧零变化），**每个按键**都会在框下露出一次
-   `11x15` 的小白块；连打就是用户报的"一直闪烁"。
-   做法是把它变成**全透明的分层窗**：`WS_EX_LAYERED | WS_EX_TRANSPARENT |
-   WS_EX_NOACTIVATE` + `SetLayeredWindowAttributes(alpha = 0)`。之后窗口**照旧是
-   可见的**（输入法不会再来抢显示，也就没有拉锯），只是画不出任何像素；对不可见的
-   窗口也提前上好，等它下次亮出来时已经透明。`SW_HIDE` 保留当兜底（老主题/输入法
-   重置样式的情况下分层可能没生效）。
-
-5. **候选窗挂在组合窗底下，`ImmSetCandidateWindow` 说了不算。** 这是"候选窗离输入框
-   那么远"的真正原因。我们原本报的是 `(caret_x, 输入框底边)`，测量（`ime_real_check`
-   抓图 + `ime_align_probe` 打三方矩形）显示：组合窗有 22px 高，正好占在框底与候选窗
-   之间，候选窗顶边比框底低 **23px**。而报给 `ImmSetCandidateWindow` 的
-   `(caret, 底边+4)` 被输入法完全忽略。
-   解法：让组合窗整**上移它自己的高度**，把它的**底边**落在框底上 ——
-   `cf.ptCurrentPos.y = bottom - ghost_h`（`ghost_h` 从组合窗 `GetWindowRect` 实时量，
-   存在 `Win32State::ime_ghost_h`）。组合窗已经被涂成全透明，挪上去没有任何视觉副作用，
-   候选窗则跟着贴到框底（实测间距 23px → 约 4px）。候选窗请求位置顺手从 `+4` 收到 `+2`。
-
-什么时候**不**压：没有任何输入框接管 IME 时（`Ui::Impl::ime_owner` 为 false，
-它由 `ime_pos` 回调每帧置位）。焦点在按钮上打拼音时，系统那份是唯一可见的反馈，
-压掉等于把字吞了。
-
-平台诚实度：**Windows 已验证**（`ime_comp_probe` 走真实消息路径，含 CUAS 那条怪消息；
-`ime_real_check` 用 `SendInput` 真打拼音 + 抓屏核对过内联草稿和浮动窗；
-`ime_flicker_probe` 按帧抓图对比，确认打字过程中框下不再露出小白块；
-`ime_align_probe` / `ime_gallery_drive` 在真实 gallery 里量出候选窗与输入框的间距）；
-X11 / macOS 后端没有组字串，`ime_comp` 恒为空，行为回到"只有系统组合窗"。
-
-> 量"候选窗离输入框多远"时**别用坐标推**：gallery 窗口在 150% DPI 下客户区是
-> 1680x1080 物理像素，而 `GetClientRect` / `ClientToScreen` 从**没开 DPI 感知**的工具
-> 进程里调用拿到的是虚拟化坐标，一乘一除就能差出两百像素（这个坑踩了半小时）。
-> 抓一张屏、按已知输入框矩形做锚点换算，或者直接读被查进程自己算出来的值。
-
-> `ime_flicker_probe` / `ime_real_check` **不进 regress**：它们会抢键盘、切中文输入法、
-> 还要人看着屏幕，只能手动跑（`tools/cl_one.py` 编译，命令行见文件头）。
-
-### 剪贴板：谁来绑回调
-
-`Ctrl+C / X / V` 不直接调 Win32，而是走 `Ui::Impl` 上两个 `std::function`：
-
-| 回调 | 签名 | 作用 |
-|---|---|---|
-| `set_clipboard` | `void(const std::string&)` | 把选中的 UTF-8 文本写进系统剪贴板 |
-| `get_clipboard` | `std::string()` | 读回系统剪贴板（UTF-8） |
-
-用 `Window` 时**不用管** —— 构造函数里已经绑好了（Windows 写 `CF_UNICODETEXT`，
-读时先试 `CF_UNICODETEXT`，没有再退到 `CF_TEXT` 并转 UTF-8；剪贴板被别的进程
-占着时重试几次，不会"时灵时不灵"）。只持有 `Ui` 的场合（离屏渲染、单元测试、
-把组件画进自己的窗口）才需要自己绑：
-
-```cpp
-ui.impl->set_clipboard = [](const std::string& s) { my_clipboard = s; };
-ui.impl->get_clipboard = [] { return my_clipboard; };
-```
-
-**没绑也不许崩**（以前就是这里漏了判空：调一个空的 `std::function` 抛
-`std::bad_function_call`，没人接，`std::terminate` —— 按一下 `Ctrl+C` 程序直接
-退出）。降级行为是有意设计的：
+`Window` 自动绑定剪贴板回调。Windows 优先读写 Unicode 文本，读取旧式文本时转为 UTF-8。
+离屏 `Ui` 或自定义窗口需要自行绑定 `impl->set_clipboard/get_clipboard`；
+这些内部回调只在实现定义可见的编译单元中可直接访问。
 
 | 情况 | 行为 |
 |---|---|
-| `set_clipboard` 未绑 | `Ctrl+C` 不动作；`Ctrl+X` **不删内容**（剪了却没地方放 = 丢数据） |
-| `get_clipboard` 未绑 | `Ctrl+V` 不动作 |
-| 无选区按 `Ctrl+C` | 不碰剪贴板（不会把用户刚复制的东西清空） |
-| 剪贴板为空按 `Ctrl+V` | 不删选区（先删后插空 = 白删） |
+| 未绑定写回调 | 复制不动作；剪切不删除文本 |
+| 未绑定读回调 | 粘贴不动作 |
+| 无选区复制 | 保留现有剪贴板 |
+| 剪贴板为空时粘贴 | 保留现有选区文本 |
 
-平台诚实度：**Windows 已验证**；X11 后端只声明剪贴板所有权、读取返回空串；
-macOS 后端是空实现。跨平台生产使用前请自行补全。
+Windows 路径已有探针覆盖；X11 当前只声明剪贴板所有权、读取返回空串，macOS 为占位实现。
+跨平台应用接入前需要补齐，不能把 Windows 的验证结果外推。
 
 ### 撤销 / 重做
 
@@ -334,20 +245,13 @@ macOS 后端是空实现。跨平台生产使用前请自行补全。
 20 万字的文档按 200 步算最多几十 MB。真实场景（输入框里几百字）完全可以忽略；
 要编辑超大文档，请自己维护增量撤销栈（本库不管业务语义）。
 
-### 一个踩过的坑：修饰键必须在"按下那一刻"锁存
+### 快捷键修饰状态
 
-`Input::ctrl()` 读的是**当前**状态。同一批窗口消息里，`Ctrl` 的 `WM_KEYUP` 可能
-排在 `WM_KEYDOWN('Z')` 之后、但在这一帧渲染之前就被处理掉 —— 帧里 `ctrl()` 已经
-是 `false`，`Ctrl+Z` 就收不到了（实测快速按键必现，打字快的人一定遇到）。
+`Input::ctrl()/shift()/alt()` 表示当前按住状态；快捷键应使用
+`ctrl_of(k)/shift_of(k)/alt_of(k)` 读取按键按下时锁存的修饰位。
+同一批事件可能已包含修饰键松开消息，直接读取当前状态会漏掉快速组合键。
 
-所以后端在 `WM_KEYDOWN` 的那一刻把修饰位**定格**到 `key_ctrl[k] / key_shift[k] /
-key_alt[k]`，组合键判定用 `Input::ctrl_of(k)`（= 本帧按下的 k 当时 Ctrl 是否按住，
-自带 `key_pressed[k]` 判定）；`ctrl()`/`shift()` 仍然表示"此刻是否按住"，
-给"按住 Ctrl 连续点选"这类场景用。
-
-> 另外：组合键按下后的 150ms 内会丢弃文本字符。真实 `Ctrl+Z` 送的是
-> `WM_CHAR(0x1A)`，已经被后端过滤；但某些输入法/布局会送可打印字符，
-> 那就变成"撤销一次顺手打了个 Z"。
+Windows 后端在快捷键后短暂抑制字符输入，防止输入法或布局将快捷键字符写入文本。
 
 ### 光标闪烁 = 常驻动画
 
@@ -379,14 +283,14 @@ bool checkbox(bool* value, const std::string& label, const Rect& box, const Styl
 | 项 | 默认值 |
 |---|---|
 | 返回 | `true` = 勾选态变了 |
-| 方框尺寸 | 根据可用高度选择尺寸，方框居中于行内 |
-| 方框底（未选） | `theme.input` |
-| 方框底（选中） | `theme.primary` |
-| 对勾色 | `theme.primary_foreground` |
+| 方框尺寸 | 固定 14×14，垂直居中；默认圆角 3.5 |
+| 方框底（未选） | 浅色 `#F6F6F6` / 深色 `#3C3C3C`，alpha 214，配细描边与内阴影 |
+| 方框底（选中） | `theme.tint` |
+| 对勾色 | `theme.tint_foreground` |
 | 标签字号 | `theme.font_size` |
 | 焦点环 | `theme.ring` |
 
-**生效的属性**：`fg` `font_size` `disabled`
+**生效的属性**：`fg` `font_size` `radius` `disabled`
 
 ```cpp
 ui.checkbox(&remember, "记住这台设备", col.next(22.0f));
@@ -459,15 +363,15 @@ bool select(const std::vector<std::string>& items, int* index, const Rect& box, 
 
 | 项 | 默认值 |
 |---|---|
-| 返回 | `true` = 选中项变了 |
-| 底色 | `theme.fill2`（8% 实心，NSPopUpButton） |
+| 返回 | `true` = 本帧提交了选择，重复选择同一项也返回 true |
+| 底色 | `theme.fill2`（8% 叠加填充，NSPopUpButton） |
 | 描边 | **无**（8% 面自己分层）；`st.border_color` 才画 |
 | 圆角 | `theme.radius`（6） |
 | `pad_x` | **12**（硬编码，= `Popup/Inset - Left` Medium） |
 | 标记 | 右侧**上下双三角**（不是单个向下箭头） |
-| 弹层底 | `theme.popover`，行高 24 |
-| 弹层阴影 | `blur 10` |
-| 选中项底色 | `accent` |
+| 弹层底 | `theme.popover_bg`，行高 `max(box.h, 24)` |
+| 弹层阴影 | 菜单层级的双层投影 |
+| 悬停项底色 | 强调色；选中项显示勾选符号 |
 
 **生效的属性**：`bg` `fg` `border_color` `border_width` `font_size` `disabled`
 
@@ -480,7 +384,7 @@ ui.select(items, &idx, col.next(24.0f));
 - 点主体 → 展开/收起；展开状态存在 `impl->flags[id]` 里
 - **点外部自动收起**（判据：本帧有按下且不在弹层范围内）
 - 选中项后立即收起并写回 `*index`
-- 弹层宽度取 `max(box.w, 最长项宽度 + 34)`，向下展开
+- 弹层宽度与 `box.w` 相同，优先向下展开，底部空间不足时移到触发器上方
 - `*index` 越界时显示为空（不崩）
 
 展开后的悬停过渡结束即停止请求帧；鼠标移动、点击和按键事件驱动高亮与选择。
@@ -498,7 +402,7 @@ bool radio_group(const std::vector<std::string>& items, int* index, const Rect& 
 |---|---|
 | 返回 | `true` = 选中项变了 |
 | 布局 | **纵向等分 `box.h`**，每行一个圆环 + 标签 |
-| 圆环 | **16×16**（kit `Type=Radio Buttons`），和复选框同一套"凹槽"配方（淡底 + 极淡描边 + 内阴影） |
+| 圆环 | `max(16, fs + 3)`，默认 16×16；淡底、细描边与内阴影 |
 | 圆环色（选中） | `theme.primary` 实心 |
 | 中心点 | 直径 **6**（不是按半径比例长到 8），`t*(2-t)` ease-out 弹出 |
 | 标签 | 13 Medium 85%，**选中不换字重**（换字重会让整行宽度跳一下） |
@@ -534,10 +438,10 @@ bool textarea(std::string* value, const Rect& box, const Style& st = Style());
 
 | 项 | 默认值 |
 |---|---|
-| 返回 | `true` = 内容或光标变了 |
-| 底色 | `theme.background` |
+| 返回 | `true` = 文本变了，光标或选区移动不返回 true |
+| 底色 | 浅色 `window_bg`，深色白色 alpha 20；`st.bg` 可覆盖 |
 | 描边 | `theme.input` 1px |
-| 圆角 | `theme.radius_sm`（4） |
+| 圆角 | `theme.radius`（6） |
 | `pad_x` / `pad_y` | 10 / 8 |
 | 行高 | 按字体算（同 `line_height`） |
 | 光标 | 聚焦时闪烁（**常驻动画**） |
@@ -580,7 +484,7 @@ bool rating(int* value, int max_stars, const Rect& box, const Style& st = Style(
 | 空星色 | `theme.muted`；浅色主题下（亮度 > 0.82）改用 `theme.border` |
 | 实星色 | `st.bg` → 否则 `theme.primary` |
 | 上限 | `max_stars` 1..32（超出直接返回 false） |
-| 光标 | `Hand` |
+| 光标 | `Arrow` |
 
 **生效的属性**：`bg`（实星色）`disabled`
 
@@ -594,7 +498,7 @@ ui.rating(&stars, 5, col.next(28.0f));
 - 点**当前已选的最后一颗**→ 清零（`*value = 0`）
 - 悬停时给星星勾一圈细边，提示"可点"
 
-星形使用 `SystemIcon::Star`，通过系统符号绘制。
+星形由多边形光栅化绘制，悬停时增加轮廓；此组件当前未使用系统图标通道。
 
 ---
 
@@ -628,15 +532,13 @@ void composeForm(aino::Ui& ui, AppState& s, const aino::Rect& area) {
 
 ---
 
-## 16. 0.3.0 新增的表单控件
+## 16. 分组按钮与复合表单
 
-这一节的九个组件都是照着 shadcn/ui 补的。它们和前面那些的差别不在机制 ——
-`interact()` / `animate_value()` / 焦点环 / 点击补排帧全都一样，只是语义更专用。
-共用的事实先说在这里，后面不再重复：
+这些组件复用前述交互、动画与焦点机制。共同约定：
 
 - 尺寸全从 `box` 推，**没有一个组件有「默认宽度」**；高度靠调用方给（`field` 例外，它有
   `field_height()`）；
-- 圆角默认 `theme.radius_sm`，字号默认 `theme.font_size`，两者都能用 `Style` 覆盖；
+- 字号默认 `theme.font_size`；圆角按组件使用 `theme.radius_sm`、`theme.radius` 或胶囊规则，可用 `Style` 覆盖；
 - 都吃 `Style().off()`，禁用态降低透明度；
 - 多数组件返回值表示值变化；`button_group` 返回本帧点击，并写入点击索引。
 
@@ -647,22 +549,16 @@ bool bold = true;
 ui.toggle_button("粗体", &bold, {x, y, 88, 32});
 ```
 
-**它不是开关**。开关是 `toggle()`（shadcn 的 Switch）。这个是按下会"陷进去"的按钮
-（shadcn 的 Toggle），典型用途是工具栏上的 B / I / U。
+`toggle_button()` 保持按钮的按下状态，适合工具栏 B / I / U；`toggle()` 用于开关。
 
 | 项 | 行为 |
 |---|---|
 | 点击 | `*value = !*value`，返回 true |
-| 选中底 | `theme.accent`，**按 `t_on` 推 alpha** |
-| 悬停底 | 未选中时才浮出来，强度只有 55% |
-| 前景 | 选中用 `accent_foreground`，否则 `foreground` |
+| 选中底 | `tint`，alpha 为 `56 * t_on`（约 22%） |
+| 悬停底 | 无选中过渡时使用 `fill` 随悬停淡入；静止未选中时使用 `st.bg`，默认透明 |
+| 前景 | `st.fg` → 否则 `foreground`，两态默认字重均为 500 |
 | 内边距 | `st.pad_x`，否则 10px |
 | 动画 | 选中 22 / 悬停 18（`animate_value` 速率） |
-
-> 它的底色是从"完全透明"淡进去的，所以实现里写的是
-> `th.accent.with_alpha(255 * t_on)` 而不是 `Color::none().mix(accent, t)`。
-> 后者会把 RGB 和 alpha 一起从黑拉上来，中间帧比两端都暗 —— 就是 0.4.1 修的那个
-> "hover 闪一下深灰"。自己写同类控件时照抄前一种写法。
 
 ### 16.2 `toggle_group` —— 单选组
 
@@ -671,9 +567,9 @@ int seg = 1;                          // -1 = 一个都不选
 ui.toggle_group({"日", "周", "月"}, &seg, {x, y, 240, 32});
 ```
 
-- 各项**等分 `box.w`**，整组共享一个外框（组内不各画边框），底是 `theme.background`；
-- **再点已选中的项 = 取消选择**（`*index` 回到 -1）。这是全库唯一一处刻意偏离 shadcn
-  的行为 —— shadcn 的 `type="single"` 不允许取消，桌面端这么做更顺手；
+- 各项等分 `box.w`，共用 `theme.track_well()` 凹槽轨道，无外框，默认胶囊圆角；
+- 选中面浅色为 `#E6E6E6`、深色为 `#3A3A3A`；选中标签用 `label`，其余用 `label2`；
+- 再点已选中的项会取消选择（`*index` 回到 -1）；
 - 初始化就写 `-1` 才表示"没选"，写 0 是"选了第一项"。
 
 ### 16.3 `toggle_group_multi` —— 多选组
@@ -698,8 +594,8 @@ if (ui.button_group({"复制", "粘贴", "剪切"}, &hit, {x, y, 260, 32}))
 和 `toggle_group` 长得像，差别是**没有持久选中态**：每个按钮都是一次性动作，
 点了只写 `*clicked_index` 并返回 true。
 
-底是 `theme.secondary`，而悬停高亮用的是 `theme.background` —— 不是 `accent`。原因很实在：
-浅色主题里 `secondary` 和 `accent` 是同一个色，用 `accent` 做悬停会完全看不出来。
+底色为 `theme.track_well()`（可用 `st.bg` 覆盖），无外框；悬停面用 `fill4` 的 70% alpha。
+所有按钮标签使用主前景色。它与单选/多选组共用单元格绘制，但不保留选中状态。
 
 ### 16.5 `input_group` —— 带前后缀的输入框
 
@@ -786,8 +682,8 @@ ui.combobox({"C++", "Rust", "Go"}, &idx, {x, y, 220, 36});
 ### 16.9 `calendar` —— 月历
 
 ```cpp
-int y = 2026, m = 10, d = 22;
-if (ui.calendar(&y, &m, &d, {x, y, 260, 240})) reload(y, m, d);
+int year = 2026, month = 11, day = 11;
+if (ui.calendar(&year, &month, &day, {x, y, 260, 240})) reload(year, month, day);
 ```
 
 - **点日期、点翻月箭头都算"变了"**，返回 true 时三个值已经写好；
@@ -797,3 +693,28 @@ if (ui.calendar(&y, &m, &d, {x, y, 260, 240})) reload(y, m, d);
 - 日期运算全部是**纯整数**（`detail::weekday_of` 走 Sakamoto 求星期，`days_in_month` 自己算），
   **不碰 `<ctime>`**：`mktime` / `localtime` 带本地时区与夏令时，同一份代码在 UTC 的 CI runner
   和东八区的机器上会差一天，而那是最难查的一类「只在我的机器上错」。
+
+## 17. 搜索框与颜色池
+
+### `search_field`
+
+```cpp
+ui.search_field(&query, {24, 24, 240, 24}, aino::Style().hint("搜索"));
+```
+
+复用单行输入的编辑、选区、撤销、密码掩码与 IME 逻辑，默认圆角为半高、水平内边距 26。
+左侧显示系统搜索符号，文本非空时右侧显示清除按钮。返回文本是否变化，点击清除也返回 true。
+禁用状态同时降低符号透明度并禁止输入和清除。
+
+### `color_well`
+
+```cpp
+if (ui.color_well(ui.theme().purple, {24, 64, 48, 24})) {
+    auto theme = ui.theme();
+    theme.set_tint(theme.purple);
+    win.set_theme(theme);
+}
+```
+
+绘制传入颜色与细边，返回本帧是否点击；默认圆角 `theme.radius`，支持 `radius/disabled`。
+它不保存选择，也不打开系统颜色面板。主题色切换由调用方使用 `Theme::set_tint()` 完成。

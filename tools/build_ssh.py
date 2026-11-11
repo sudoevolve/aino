@@ -1,19 +1,7 @@
-"""构建 SSH 客户端和它的端到端探针（MSVC + 静态 libssh2）。
+"""构建 SSH 客户端与探针（MSVC x64、静态 libssh2 + mbedTLS、动态 CRT）。
 
-为什么单独一个脚本：
-  cl_one.py 是为了编单个"只依赖 aino.hpp"的探针写的，它把工作目录切到 exe 所在
-  目录、也不处理多级 include。ssh_client 需要
-    /I <libssh2>/include
-    /I <libssh2 构建目录>     （libssh2_config.h 是 cmake 生成的）
-    /MD                       （libssh2.lib 是用动态 CRT 编的，/MT 会撞 __imp_* 未解析）
-  这几个约束写在命令里容易漏，索性固化成脚本。
-
-libssh2 从哪来：
-  build/third_party/_mk.py 会下载 1.11.1 源码并用 Ninja+MSVC 编成静态库
-  （Windows 走 WinCNG，不依赖 OpenSSL）。跑之前先确认这些文件在：
-    build/third_party/libssh2-1.11.1/include/libssh2.h
-    build/third_party/l2build/src/libssh2.lib
-    build/third_party/l2build/src/libssh2_config.h
+依赖准备见 docs/01-quickstart.md；本脚本不下载第三方源码。
+ASan 构建从当前 MSVC 工具链复制运行库，不使用仓库内预编译 DLL。
 
 用法：
   python tools/build_ssh.py            # 编 app + probe
@@ -33,14 +21,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 from msvc_build import msvc_env  # noqa: E402
 
 L2_SRC = os.path.join(ROOT, "build", "third_party", "libssh2-1.11.1", "include")
-# 加密后端用 mbedTLS（静态）而不是 WinCNG：
-#   WinCNG 版本编出来的 libssh2 里 LIBSSH2_ECDSA / LIBSSH2_ED25519 都是关的，
-#   也就是只有 diffie-hellman-group* 一族 KEX。而 OpenSSH 10.x 已经把
-#   diffie-hellman-group* 全部停用，只留 curve25519 / ecdh —— 结果是零交集，
-#   握手报 "Unable to exchange encryption keys"，表现就是 "VSCode 能连、这里连不上"。
-# 为什么不用 OpenSSL：官方预编译包只有 import lib（要带 libcrypto-3-x64.dll），
-#   单 exe 拷到别的机器就 0xC0000135；静态编译 OpenSSL 又卡在 Perl 模块上。
-#   mbedTLS 自带 curve25519/ECDH/AES/ChaCha，且能直接编成 .lib，天然单文件。
+# libssh2 与 mbedTLS 均静态链接；/MD 仍要求目标系统安装对应的 VC++ 运行库。
 L2_BUILD = os.path.join(ROOT, "build", "third_party", "l2mbed", "src")
 L2_LIB = os.path.join(L2_BUILD, "libssh2.lib")
 MBED_DIR = os.path.join(ROOT, "build", "third_party", "mbedtls-3.6.2")
@@ -56,8 +37,15 @@ def check_deps():
         print("缺依赖产物：")
         for m in missing:
             print("  " + m)
-        print("先跑：python build/third_party/_mk.py")
+        print("依赖准备与构建命令见 docs/01-quickstart.md 的可选 SSH 示例。")
         raise SystemExit(1)
+
+
+def ship_asan_runtime(cl, out):
+    runtime = os.path.join(os.path.dirname(cl), "clang_rt.asan_dynamic-x86_64.dll")
+    if not os.path.isfile(runtime):
+        raise SystemExit("当前 MSVC 工具链缺少 ASan x64 运行库：" + runtime)
+    shutil.copy2(runtime, os.path.join(os.path.dirname(out), os.path.basename(runtime)))
 
 
 def build(src, out, extra_flags=(), asan=False, gui=False):
@@ -68,15 +56,11 @@ def build(src, out, extra_flags=(), asan=False, gui=False):
     cmd = [cl, "/nologo", "/std:c++17", "/utf-8", "/EHsc", "/W3",
            "/DNDEBUG", "/DNOMINMAX", "/MD"]
     if asan:
-        # 堆损坏（0xC0000374）靠肉眼找不到真凶时用这个：ASan 会在**越界写的那一行**
-        # 直接报栈，而不是等后面某次分配才炸。必须配 /Od /Zi，优化会把越界写合并掉。
         cmd += ["/fsanitize=address", "/Od", "/Zi"]
     else:
         cmd += ["/O2"]
     cmd += ["/I" + L2_SRC, "/I" + L2_BUILD, "/I" + MBED_INC, "/Fe:" + out, src]
     cmd += list(extra_flags)
-    # mbedtls_all.lib：curve25519 / ecdh / AES / ChaCha 都在里面，而且全是静态链接，
-    # 所以 exe 拷到任何机器都能单独跑（不再依赖 libcrypto-3-x64.dll）
     cmd += [L2_LIB, MBED_LIB, "user32.lib", "gdi32.lib", "msimg32.lib", "ws2_32.lib", "crypt32.lib",
             "bcrypt.lib",     # mbedTLS 的熵源用 BCryptGenRandom
             "shell32.lib", "ole32.lib"]     # shell32/ole32：SHBrowseForFolder 选下载目录
@@ -97,6 +81,8 @@ def build(src, out, extra_flags=(), asan=False, gui=False):
     warn = [ln for ln in (r.stdout or "").splitlines() if "warning" in ln.lower()]
     for w in warn[:10]:
         print("  " + w.strip())
+    if asan:
+        ship_asan_runtime(cl, out)
     print("[build] OK ->", os.path.relpath(out, ROOT))
 
 

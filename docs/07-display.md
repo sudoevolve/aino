@@ -1,6 +1,6 @@
 # 07 · 展示类组件
 
-9 个只读组件（`accordion` 例外，它有点击但只切换展开态）。
+展示组件，以及可交互的折叠标题、条目与分页控件。
 未交互、未显式启用动画时保持静止；spinner 默认悬停才转，`.animate()` 可显式持续播放。
 
 ```cpp
@@ -163,10 +163,10 @@ ui.breadcrumb({"首页", "组件", "展示补充"}, col.next(20.0f));
 | 项 | 默认值 |
 |---|---|
 | 返回 | 无 |
-| 底色 | `theme.muted` |
-| 描边 | `theme.border` 1px + **底边加厚 2px**（做出键帽下沿） |
+| 底色 | `theme.fill3` |
+| 描边 | 默认无；显式 `st.border_color` 时绘制细边，无加厚下沿 |
 | 圆角 | **4** |
-| 字号 | `theme.font_size - 2`（12） |
+| 字号 | `theme.font_size - 2`（默认 11） |
 | 字重 | 500 |
 | 前景 | `muted_foreground` |
 
@@ -191,10 +191,10 @@ bool accordion(const std::string& title, bool* open, const Rect& box, const Styl
 | 项 | 默认值 |
 |---|---|
 | 返回 | `true` = 本帧切换了展开状态 |
-| 标题行高 | `min(box.h, max(fs + 22, 38))` |
-| 标题左缩 | **12px** |
+| 标题行高 | `min(box.h, max(fs + 8, 24))` |
+| 标题左缩 | **22px**，箭头位于行首 |
 | 箭头 | 系统 ChevronDown / Next，随展开状态变化 |
-| hover 底色 | `foreground` 的 4% alpha |
+| hover 底色 | `theme.fill3` 随悬停淡入 |
 | 圆角 | `theme.radius_sm`（4） |
 | 焦点环 | `theme.ring` |
 
@@ -214,8 +214,8 @@ if (s.advanced_open) {
 }
 ```
 
-所以**高度要自己算**：折叠时给 44，展开时给 `44 + 内容高度`。`Stack` 的
-`next()` 不会因为你少给而"自动长高"—— 它会收窄。
+标题区域和内容区域分别分配高度；上例始终为标题分配 44，再在展开分支中为内容分配空间。
+不要把内容高度也传给标题行。`Stack::next()` 不会自动扩张容器。
 
 ---
 
@@ -256,9 +256,7 @@ ui.table(heads, rows, col.next(160.0f), aino::Style().font(12.0f));
 
 ### 已知限制
 
-- **列宽不能单独设**。等分是刻意简化：要非等宽就得引入「列宽约束」，
-  那需要两趟布局。绕开办法：把窄列的内容留空，或者放弃 `table` 用
-  `Stack` + `label` 手搭。
+- 列宽固定等分，不能单独设置。需要自定义列宽时，用布局器、文本与图元组合绘制。
 - `rows` 每行的列数可以与 `headers` 不同（少的部分不画，多出来的被忽略）。
 - `headers` 为空时按 `rows` 里最长的行数推断列数（此时不画表头行）。
 - **不可滚动**。行多了请套 `begin_scroll`，并把 `content_h` 传成
@@ -352,7 +350,7 @@ void metricRow(aino::Ui& ui, const aino::Rect& area, const std::vector<float>& t
 
 ---
 
-## 11. 0.3.0 新增的展示组件
+## 11. 条目、空状态与分页
 
 ### 11.1 `item` —— 一行条目
 
@@ -365,12 +363,12 @@ if (ui.item("张伟", "zhangwei@example.com", "管理员", {x, y, w, 52}))
 | 项 | 行为 |
 |---|---|
 | 整行 | 可点（`interact` 覆盖整个 `box`），返回 true 表示本帧被点击 |
-| 悬停 | `theme.accent` 铺一层，**alpha 只看淡入值**（最高 150） |
-| 内边距 | `st.pad_x`，否则 12px |
-| 一行 / 两行 | `description` 为空 → 单行（`fs` / 500）；否则标题 `fs` / 500 + 描述 `fs-1` / 400，两行整体在 `box` 里垂直居中，行间 2px |
+| 悬停 | `theme.fill3.scaled_alpha(t_h)` |
+| 内边距 | `st.pad_x`，否则 10px |
+| 一行 / 两行 | `description` 为空 → 单行（`fs` / 500）；否则标题 `fs` / 500 + 描述 11 / 400，两行整体在 `box` 里垂直居中，行间 2px |
 | 尾部文字 | 右对齐、`fs-1`、`muted_foreground`，宽度按实测 + 12 |
 
-它的高度完全由 `box.h` 决定 —— 两行模式需要约 `line_height(fs) + 2 + line_height(fs-1)`，
+它的高度完全由 `box.h` 决定 —— 两行模式需要约 `line_height(fs) + 2 + line_height(11)`，
 给少了会挤。52px 可为两行内容保留较充足的间距。
 
 ### 11.2 `empty_state` —— 空状态
@@ -379,7 +377,7 @@ if (ui.item("张伟", "zhangwei@example.com", "管理员", {x, y, w, 52}))
 ui.empty_state("还没有通知", "有事时会出现在这里", {x, y, w, 160});
 ```
 
-虚线框（`dash_rect`，实线段 7 / 空隙 5 / 1px）+ 标题 + 描述，全部水平居中：
+标题与描述在给定区域中居中排列，不绘制边框或背景：
 
 | 段 | 字号 / 字重 | 颜色 |
 |---|---|---|
@@ -408,3 +406,13 @@ if (ui.pagination(&page, 20, {x, y, 360, 36})) reload(page);
 
 > 槽位数之所以恒定，是因为早期版本按"当前页附近三页"排：翻页时槽位数会从 8 变 6，
 > 整排按钮跟着左右跳，用户点第二下就点偏。固定成 7 个之后，翻页只有内容变、位置不动。
+
+## 12. `image_well` —— 图片占位
+
+```cpp
+ui.image_well({24, 24, 180, 100}, aino::Style().hint("选择图片"));
+```
+
+绘制 `fill3` 底、1px `separator` 细边、系统图片符号及居中说明，默认圆角 `radius_lg=10`，
+说明字号 11。支持 `radius` 与 `placeholder`，默认说明为“拖入图片”。
+它是只读展示，不处理点击、文件拖放或文件选择；这些行为由应用单独接入。

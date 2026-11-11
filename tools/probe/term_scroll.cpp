@@ -35,7 +35,8 @@ int main() {
     std::printf("   history=%d total=%d\n", t.history_size(), t.total_lines());
 
     std::printf("4) 全屏滚动区域 + CSI r / S / T\n");
-    t.feed("\x1b[5;20r\x1b[10S\x1b[3T\x1b[r", 22);
+    constexpr char scroll_region[] = "\x1b[5;20r\x1b[10S\x1b[3T\x1b[r";
+    t.feed(scroll_region, sizeof(scroll_region) - 1);
     std::printf("   ok\n");
 
     std::printf("5) 备用屏进出\n");

@@ -2,7 +2,7 @@
 // 用来判断 aino 现在的字为什么看起来和系统 UI 不一样。
 //
 // 直接走 GDI（不经 aino），这样 QUALITY 标志是唯一的变量。
-// 编译：g++ -std=c++17 -O2 -mwindows .workbuddy/probe/font_compare.cpp -o .workbuddy/probe/font_compare.exe -lgdi32 -luser32
+// 编译：g++ -std=c++17 -O2 -mwindows tools/probe/font_compare.cpp -o build/font_compare.exe -lgdi32 -luser32
 
 #define _WIN32_WINNT 0x0A00
 #ifndef UNICODE

@@ -147,7 +147,7 @@ void docs_04(Ui& ui, Stack& col) {
     ui.heading("概览", col.next(34.0f), Style().left());
     ui.subheading("文本", col.next(26.0f), Style().left());
     ui.muted_text("单头文件", col.next(18.0f), Style().font(11.0f).left());
-    ui.code_text("aino.hpp · 0.1.0", col.next(30.0f), Style().font(13.0f));
+    ui.code_text("aino.hpp · " AINO_VERSION, col.next(30.0f), Style().font(13.0f));
     ui.code_text(std::to_string(42), col.next(30.0f));
 }
 
@@ -187,6 +187,8 @@ void docs_06(Ui& ui, AppState& s, Stack& col) {
     if (ui.nav_item("导航", s.tab == 0, col.next(34.0f))) s.tab = 0;
 
     ui.input(&s.email, col.next(24.0f), Style().hint("you@example.com"));
+    ui.search_field(&s.search, {24, 24, 240, 24}, Style().hint("搜索"));
+    ui.color_well(ui.theme().purple, {24, 64, 48, 24});
     ui.checkbox(&s.remember, "记住这台设备", col.next(22.0f));
     Rect row = col.next(26.0f);
     ui.label("桌面通知", row, Style().left());
@@ -222,6 +224,7 @@ void metricRow(Ui& ui, const Rect& area, const std::vector<float>& trend) {
 }
 
 void docs_07(Ui& ui, AppState& s, Stack& col) {
+    ui.image_well({24, 24, 180, 100}, Style().hint("选择图片"));
     ui.avatar("张伟", {24, 24, 48, 48});
     ui.avatar("李", {24, 24, 48, 48}, Style().stroke(2, Color::hex(0xFFFFFF)));
     ui.spinner({100, 100, 20, 20});

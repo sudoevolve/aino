@@ -1,6 +1,6 @@
 # 构建产物
 build/
-libwinpthread-1.dll
+*.dll
 *.exe
 *.o
 *.obj

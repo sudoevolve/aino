@@ -25,7 +25,8 @@ if (hovered && running) {
 `set_animating(true)` 是窗口级持续动画开关，适用于显式播放与性能测量，
 必须在停止时调用 `set_animating(false)`；测量期间不改变此开关。
 主线程帧外更新使用 `request_next_frame()` 或 `win.request_repaint()`；
-后台数据更新后使用 `win.wake()`，共享状态由应用同步。
+后台数据更新后使用 `win.wake()`，共享状态由应用同步。X11 从后台调用前须在建窗前
+完成 `XInitThreads()`，见 [01](01-quickstart.md#5-窗口与主循环)。
 
 ## 2. 缓动函数
 

@@ -146,13 +146,13 @@ ui.code_block(src, {x, y, 620.0f, h}, aino::Style().font(13.0f));
 | 字号 | `st.font_size`，否则 **12.5** |
 | 行高 | `max(字号 × 1.62, 15)` |
 | 整体高度 | `10 + 行高 × 行数 + 10`（`code_block_height()` 算的就是这个） |
-| 底色 | `st.bg`，否则 `theme.muted.mix(theme.background, 0.3f)` |
-| 描边 | `theme.border`，1px |
-| 圆角 | `st.radius`，否则 `theme.radius` |
+| 底色 | `st.bg`，否则浅色黑 alpha 8、深色黑 alpha 64 |
+| 描边 | 无 |
+| 圆角 | `st.radius`，否则 8 |
 | 行号列宽 | **最大行号实测宽 + 10**（不是固定几像素，行数上万也不会撑破） |
 | 左内边距 | 12px（在行号列之前） |
 | 行号字号 | `字号 - 1`，色 `gutter` |
-| 行号与代码之间 | 一条 1px 竖线，位置取整后 `+0.5`，避免压在两列像素中间发虚 |
+| 行号与代码之间 | 留白分隔，无竖线 |
 
 它走的是**等宽通道**（`TextRenderer::measure_mono` / `draw_mono`），不经过 `draw_text`。
 三个后端都实现了它：Windows 用 Consolas（`CreateFontW` 的 `FIXED_PITCH|FF_MODERN`），
@@ -166,7 +166,7 @@ macOS 用 `Menlo`，Linux 用 fontconfig 的 `monospace`。后端不实现也编
 - **不滚动**：`box.h` 装得下几行就画几行，多出来的直接裁掉（`cap = (box.h - 12) / 行高`）。
 - **不折行**：一行画到 `box.right() - 4` 就断，不会接第二行。长行要先自己切，或者给足宽度。
 
-想看整段就外面套一层 `scroll()`。也正因为这两条，**高度一律用 `code_block_height()` 算** ——
+想看整段就外面套一层 `begin_scroll()` / `end_scroll()`。高度用 `code_block_height()` 算 ——
 它和 `code_block()` 共用同一个行高公式，手填数字迟早对不上。
 
 ### 6.2 着色只做到「分块看得清」
@@ -264,97 +264,31 @@ float h = ui.text_height(long_doc, 700.0f, aino::Style().wrap_text());
 需要**可点击**的文本 → 用 `Style().ghost()` 或 `Style().link()` 的 `button`。
 ---
 
-## 9. 三个平台的字体从哪来
+## 9. 平台字体与编码
 
-字号（`Style::font_size`，默认 `theme.font_size`）在三个后端都当**像素尺寸**用，
-但取字形的路完全不同：
+字号使用逻辑单位，后端按 DPI 缩放到像素尺寸。
 
-| 平台 | 后端 | 字形来源 | 抗锯齿 | 粗体 |
-|---|---|---|---|---|
-| Windows | GDI | Segoe UI（中文经字体链接落到微软雅黑） | 灰度 AA | 真字面；缺字面时 GDI 合成加粗 |
-| macOS | CoreText | 系统 UI 字体（SF） | 有 | 真字面 |
-| Linux | FreeType + fontconfig（都是运行时 `dlopen`） | 主字体 `sans` → DejaVu Sans；缺字时沿 `FcFontSort` 的兜底链找到 Noto Sans CJK | 灰度 AA | fontconfig 按 `weight` 匹配字面 |
+| 平台 | 后端 | 默认字体与兜底 |
+|---|---|---|
+| Windows | GDI | 优先 Segoe UI Variable Text / Segoe UI，中文经系统字体链接兜底 |
+| macOS | CoreText | 系统 UI 字体；等宽通道默认 Menlo |
+| Linux | FreeType + fontconfig，运行时加载 | 按 sans / monospace 匹配，缺字时沿 fontconfig 字体链查找；缺少动态库时回退 XFontSet |
 
-### 字面量编码：一个「·」就能让整片中文变成乱码
+`Theme::font_family` 和 `font_family_mono` 可指定字体族。字重由后端匹配字体字面，
+不同平台的字体、抗锯齿与字形覆盖可能不同。Linux 中文需要已安装的 CJK 字体，
+不能假设所有系统都提供 Noto Sans CJK。
 
-三个平台内部都按 UTF-8 处理字符串（`std::string` 里存的就是 UTF-8 字节）。风险在
-**C++ 窄字面量**：MSVC 不加 `/utf-8` 时按系统 ANSI 代码页编码。
+### 编码与平台限制
 
-单纯一个系统 ANSI 串（用户没加 `/utf-8`、串里全是中文）靠 `to_wide()` 的逐段解码
-救得回来，但**混合编码**要麻烦得多：串里只要有一个「ANSI 里也有单字节表示」的字符，
-它被编成单字节、中文留着 UTF-8 字节 —— 整串既不合法 UTF-8，也不是纯 ANSI。
+源码与 API 字符串统一使用 UTF-8；MSVC 使用 `/utf-8`。头文件的执行字符集 pragma
+不能替代其它编译单元的编译设置，也不能修复已经编码错误的输入。
 
-`"·"`（U+00B7）就是最典型的触发器，它在 1252 和 936 里都是单字节：
+Windows 在转换宽字符时优先解码合法 UTF-8 段，非法字节尝试系统 ANSI 代码页，
+失败时使用替换字符。这是兼容路径，不保证任意混合编码都能还原。
 
-| 字面量 | 编译后 | 旧版（整串回退 ACP） | 现在 |
-|---|---|---|---|
-| `"中文示例"` | 纯 UTF-8 | 严格解码通过 ✓ | 同 ✓ |
-| `"最小示例 · 0.4.7"` | 中文留 UTF-8，「·」变 `0xB7` | 整串按 ACP 重解 → `æœ€å°ç¤ºä¾‹` ✗ | 中文走 UTF-8、`0xB7` 走 ACP 单字节 → 正确 ✓ |
+Linux 文字在客户端后备缓冲内光栅化，再随窗口图像上屏。字体加载与兜底信息可用
+`AINO_X11_TRACE=1` 查看。窗口标题通过 EWMH 的 `_NET_WM_NAME/UTF8_STRING` 发送，
+与库内文本的字形渲染是不同路径。
 
-症状：**中文串里混了一个「·」之类的字符时，整片中文变成西欧字母**；而没混这种字符的
-串（界面里绝大多数文案）仍是合法 UTF-8，显示正常 —— 这就是"只有个别地方坏"的来源。
-
-两道防线：
-
-1. 本头文件开头有 `#pragma execution_character_set("utf-8")`（MSVC），等价于
-   `/utf-8` 的执行字符集那一半。pragma 对**本编译单元余下部分**生效，所以先 include
-   本头文件、后面再写的字面量也被覆盖；单独一个只定义常量的编译单元仍需 `/utf-8`。
-2. `to_wide()` 改成**逐段混合解码**：按 UTF-8 规则逐个码位走，走得通就按 UTF-8 出；
-   走不通的那一（或两）个字节才交给 `CP_ACP`（先试单字节，再试双字节，都不行落
-   U+FFFD）。关键是它**绝不整串回退** —— 合法的中文永远是合法的中文，任何输入都
-   不可能退化成「每个字节一个西欧字母」。
-
-`ci_pixels` 的 S5 场景钉住六条：人工构造的混合串（中文要留住、总长度要接近原义而
-不是每个字节一个字符、那个孤立字节要解成 `·` 或替换符）、编译期字面量
-`"最小 · 示例"`、整串系统 ANSI 仍按 `CP_ACP` 解、4 字节 UTF-8 要出代理对。
-除了正常的 `/utf-8` 编译，还会**不带 `/utf-8` 再编一遍**跑同一套断言 —— 那正是
-用户手编时的状态。
-
-> **曾经写错的一段（0.4.10 / 0.4.11，0.4.12 已删除）**：当时看到「标题栏里的方框
-> 夹着十六进制」就断定是「源码被当成 Latin-1 读」（BOM 被剥 → MSVC 按 ANSI 读 UTF-8
-> 源码 → 一个字节一个字符），为此加了一道 `fix_latin1_mojibake()` 还原 + 三条断言。
-> 那套推论本身不成立：MSVC 不会把 UTF-8 源码当 Latin-1 读。真正的现场是 **Linux**
-> —— X11 的 `WM_NAME` 是 ISO-8859-1 语义，逐字节解码 UTF-8 字节正是这个结果。教训：
-> **先确认平台再动手**，别拿 Windows 的假设解释 Linux 的现象。
-
-Linux 上有五个坑，都写在代码注释里：
-1. **字形在客户端光栅化，不走 X server**。`XftDrawString` / `Xutf8DrawString` 是把字画到
-   **服务端 drawable** 上的，而 aino 每一帧都是先在客户端缓冲里画完、帧末 `XPutImage`
-   整块覆盖 —— 直接画会被盖掉；改成画进 Pixmap 再 `XGetImage` 取回又要每次绘制一次
-   同步往返，一帧几百段文字就是几百次往返，交互直接卡死。所以走 FreeType：字形在进程内
-   光栅化成灰度位图，`blend` 进缓冲，X 一次都不碰。
-2. **中文靠 fontconfig 的逐字符兜底**。默认 `sans` 是 DejaVu Sans，它**没有汉字**；
-   Xft 只认单个字体、不做 fallback，用它画中文就是满屏 `.notdef` 豆腐方块。
-   这里用 `FcFontSort` 拿到排好序的整张字体表，逐字符找第一个覆盖该码位的字体
-   （西文几乎都命中主字体，汉字落到 Noto Sans CJK）。`ci_pixels` 里那条
-   「有墨的行里有没有一行在中间三分之一列有墨」就是钉这件事的 —— 豆腐方块是空心矩形，
-   中间列除了上下两条边什么都没有。
-3. **兜底链不能"取前 N 条"**。`FcFontSort` 的返回表里**同一个家族的每个 style 各占
-   一条**：DejaVu Sans 一家就能吃掉 Book / Bold / Oblique / Condensed 七八条，Noto Sans
-   再占一批。只取前 16 条时，用户机器上扫完 16 条还没有一个覆盖汉字 —— 于是整片中文
-   变成空白（不是豆腐块，是彻底不落墨）。等宽通道字体种类少、CJK 挤进了前 16，所以
-   表现成「代码块里的中文还在、别处全没了」这个奇怪的不对称。
-   现在的做法是**按 charset 探测**（`FcPatternGetCharSet` + `FcCharSetHasChar`）：
-   整张表扫一遍，把第一个覆盖 U+4E2D 的字体插到主字体之后，名次怎么排都不影响。
-   `ci_pixels` 的 S4 场景用 `AINO_X11_CHAIN_CAP=4` 把链砍短，精确复现这个状态。
-4. **基线只按主字体的 metrics**。汉字 ink 本来就在 em 框内（上缘约 0.88em < DejaVu 的
-   0.93em），拿「国」的 ink 去撑 asc 反而会把 19px 的字算成 24px 的 asc，行高 30 > 26px
-   的盒子，`VAlign::Middle` 居中后整行上移 2px、顶部被裁。踩过这个坑：
-   侧边栏那个 `aino` 词标看起来像被切了一刀。
-5. **窗口标题必须走 `_NET_WM_NAME`，不能只 `XStoreName`**（0.4.12）。ICCCM 规定
-   `WM_NAME` 是 **ISO-8859-1** 语义，`XStoreName()` 塞进去的 UTF-8 字节会被
-   GTK/GNOME/KDE **逐字节**当 latin1 解码 —— 标题栏里就成了 `æœ€å°ç¤ºä¾‹`，而落进
-   `U+0080..U+009F` 的字节还会被画成**带十六进制的方框**。现代 WM 读的是 EWMH 的
-   `_NET_WM_NAME`，类型必须是 `UTF8_STRING`：
-
-   ```cpp
-   XChangeProperty(dpy, win, XInternAtom(dpy, "_NET_WM_NAME", False),
-                   XInternAtom(dpy, "UTF8_STRING", False), 8, PropModeReplace,
-                   reinterpret_cast<const unsigned char*>(utf8.data()), int(utf8.size()));
-   ```
-
-   `_NET_WM_ICON_NAME`（Alt+Tab / 任务栏）同理，`WM_NAME` 留作老 WM 的兜底。
-   症状特别好认：**界面里的中文全对，只有窗口标题乱** —— 因为界面走的是我们自己的
-   文字光栅化（FreeType），标题走的是 WM 的字符串解码，两条路完全不相干。
-   `ci_pixels` 的 S6 场景（X11 专有）用 `XGetWindowProperty` 断言属性存在、类型等于
-   `UTF8_STRING`、字节与传入标题一致，`set_title()` 之后也跟着变。
+`tools/ci_pixels.cpp` 包含编码与文字覆盖断言，X11 另检查标题属性。
+当前 mac 风格仍需 Linux/macOS 真机核对，已知限制见 [平台支持](README.md#平台支持)。

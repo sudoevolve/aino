@@ -17,13 +17,13 @@
 | [03-layout.md](03-layout.md) | `Stack` 布局器（`vbox`/`hbox`/`next`/`fill`/`part`）、滚动容器、`split_pane` 可拖动分栏 |
 | [04-text.md](04-text.md) | 文本类：`label` `heading` `subheading` `muted_text` `code_text` `code_block` |
 | [05-containers.md](05-containers.md) | 容器类：`panel` `card` `separator` `badge` `progress` `progress_ring` `skeleton` |
-| [06-interactive.md](06-interactive.md) | 交互类：`button` `icon_button` `nav_item` `input` `checkbox` `toggle` `slider` `tabs` `segmented` `select` `radio_group` `stepper` `textarea` `rating`；§16 另补 `toggle_button` `toggle_group` `toggle_group_multi` `button_group` `input_group` `input_otp` `field` `combobox` `calendar` |
-| [07-display.md](07-display.md) | 展示类：`avatar` `spinner` `alert` `breadcrumb` `kbd` `accordion` `table` `sparkline` `bars`；§11 另补 `item` `empty_state` `pagination` |
+| [06-interactive.md](06-interactive.md) | 按钮、导航、输入、选择、数值、分组与复合表单、搜索框、颜色池 |
+| [07-display.md](07-display.md) | 头像、活动指示、提示、路径、快捷键、折叠标题、表格、趋势图、条目、空状态、分页、图片占位 |
 | [08-overlays.md](08-overlays.md) | 浮层类：`tooltip` `menu` `dialog` `toast`；另含 `sheet` `popover` `hover_card` `alert_dialog` `drawer` `context_menu` `menubar` |
 | [09-primitives.md](09-primitives.md) | 图元与度量：几何、连续圆角、渐变、阴影、背景模糊、系统图标、文字与度量 |
 | [10-performance.md](10-performance.md) | 2026-10-17 历史性能基准（静置 / 连续重绘 / 交互）；§3 开头写明覆盖范围 |
 | [11-motion.md](11-motion.md) | 动画（`tween` / `tween_color` / `fade` / `smooth` / 缓动）与 `Transform`（平移 / 缩放 / 旋转） |
-| [12-shadcn-parity.md](12-shadcn-parity.md) | 与 shadcn/ui 的历史功能对照：哪些一对一、哪些只是名字不同、哪些没有 |
+| [12-component-index.md](12-component-index.md) | 当前公开 API、Gallery 组合示例、兼容接口边界与检查工具 |
 
 ---
 
@@ -60,7 +60,8 @@ bool tabs(...);            // true = 选中项变了
 |---|---|
 | `button` `icon_button` `nav_item` | 本帧被点击（按下并在框内松开） |
 | `input` `checkbox` `toggle` `slider` `radio_group` `stepper` `rating` `textarea` | 值变了 |
-| `tabs` `segmented` `select` | 选中索引变了 |
+| `tabs` `segmented` | 选中索引变了 |
+| `select` | 本帧提交了选择，重复选择同一项也返回 true |
 | `accordion` | 展开态变了 |
 | `menu` | 选中了某一项（同时写入 `*clicked_index`） |
 | `dialog` | 当前是否处于打开态（不是"刚刚关闭"） |
@@ -80,7 +81,8 @@ bool tabs(...);            // true = 选中项变了
 ### 2. `Style` 是可选修饰器，不设即沿用主题
 
 `Style` 里所有颜色默认是 `Color::none()`（全 0，含 alpha=0），
-所有尺寸默认是 `-1.0f`。组件读到一个「未设置」的字段就用主题默认值。
+多数尺寸默认是 `-1.0f`；`press_scale=1.0f`、`line_gap=0.0f` 等有独立默认值。
+组件读到一个「未设置」的字段就用自身或主题默认值，精确规则见 [02](02-style-and-theme.md)。
 
 ```cpp
 ui.button("保存", box);                             // 使用主题默认

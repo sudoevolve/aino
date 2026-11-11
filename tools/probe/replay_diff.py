@@ -7,10 +7,11 @@
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pyte
 
-EXE = r"C:\Users\admin\Documents\GitHub\aino\tools\probe\term_replay.exe"
+EXE = str(Path(__file__).resolve().with_name("term_replay.exe"))
 ROW_RE = re.compile(r"R(\d+) [^ ]+ [^ ]+ \d+ \|(.*)\|$")
 
 

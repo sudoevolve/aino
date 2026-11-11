@@ -180,8 +180,7 @@ int main() {
         Buf a(W, W), b(W, W);
         legacy_ring(a.cv, 60.0f, 60.0f, 42.0f, 11.0f, Color(0, 0, 0, 128));
         detail::raster_arc(b.cv, 60.0f, 60.0f, 42.0f, 11.0f, Color(0, 0, 0, 128), 0.0f, 0.0f, 1.0f);
-        const char* names[2] = { ".workbuddy/probe/arc_legacy.ppm",
-                                 ".workbuddy/probe/arc_new.ppm" };
+        const char* names[2] = { "arc_legacy.ppm", "arc_new.ppm" };
         Buf* bufs[2] = { &a, &b };
         for (int k = 0; k < 2; ++k) {
             std::FILE* f = std::fopen(names[k], "wb");

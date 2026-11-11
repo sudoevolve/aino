@@ -1,6 +1,6 @@
 # 02 · 样式与主题
 
-当前主题采用 macOS 风格，保留 shadcn 命名字段供已有应用使用。
+当前主题采用 macOS 风格，保留旧版主题字段供已有应用使用。
 尺寸和颜色以 `aino.hpp` 的主题工厂为准；资料来源与映射见 [设计资料](macos27/README.md)。
 背景材质使用模糊近似，没有折射与色散。
 
@@ -34,6 +34,7 @@ struct Color { uint8_t r, g, b, a; };
 | `mix(other, t)` | 线性插值，`t=0` 返回自身，`t=1` 返回 `other`（含 alpha） |
 | `lighten(amount)` | 每个通道朝 255 靠拢 `amount` 比例（0..1） |
 | `darken(amount)` | 每个通道乘以 `1-amount` |
+| `over(base)` | 将当前颜色按 alpha 合成到不透明底色，返回不透明结果 |
 | `luminance()` | 感知亮度 0..1 = `(0.2126r + 0.7152g + 0.0722b)/255` |
 | `rgb24()` | 打包成 `0xRRGGBB` |
 | `==` / `!=` | 四通道全等 |
@@ -60,7 +61,7 @@ struct Rect { float x, y, w, h; };
 | `intersects(other)` | 是否相交 |
 | `inset(d)` / `inset(dx, dy)` | 向内收缩（负值等于 `expand`） |
 | `offset(dx, dy)` / `offset(Vec2)` | 平移 |
-| `expand(d)` | 向外扩张（= `inset(-d)`） |
+| `expand(d)` / `outset(d)` | 向外扩张（= `inset(-d)`） |
 | `cut_left(n)` | **切走**左边 n 宽，自身左边界右移、宽度减小，返回切下的那块 |
 | `cut_right(n)` / `cut_top(n)` / `cut_bottom(n)` | 同上，其余三个方向 |
 | `pad(dx, dy)` | 同 `inset`，语义化别名 |
@@ -100,7 +101,7 @@ const aino::Input& in = ui.input();
 | `mouse` | 逻辑坐标（已除 DPI 缩放） |
 | `mouse_prev` / `mouse_delta` | 上一帧位置 / 本帧位移 |
 | `wheel` | 本帧滚轮增量，向上为正 |
-| `down[3]` / `pressed[3]` / `released[3]` | 左中右：按住 / 本帧按下 / 本帧抬起 |
+| `down[3]` / `pressed[3]` / `released[3]` | 下标 0/1/2 分别为左/右/中键；按住 / 本帧按下 / 本帧抬起 |
 | `double_click` / `click_count` | 双击标志 / 连击次数 |
 | `key_down[]` / `key_pressed[]` | 按键状态（索引用 `KEY_*`） |
 | `text_input` | 本帧输入的 UTF-8 文本（已过滤控制字符） |
@@ -111,21 +112,22 @@ const aino::Input& in = ui.input();
 
 ## 2. `Style` 全部字段
 
-所有字段默认值都表示「**没设置，用主题默认**」，这是它作为「可选修饰器」的基础。
+颜色和多数尺寸字段用哨兵值表示未设置；布尔开关、对齐和 `press_scale` 等有独立默认值。
+每个组件只读取它支持的字段。
 
 | 字段 | 类型 | 默认值 | 含义 |
 |---|---|---|---|
-| `bg` | `Color` | `none()` | 填充色；`button` 这类组件会据此重新派生 hover/press 色 |
+| `bg` | `Color` | `none()` | 填充色；按钮的 hover 保持此色，press 按亮度派生 |
 | `fg` | `Color` | `none()` | 前景色（文字/图标） |
 | `border_color` | `Color` | `none()` | 描边色；设了它且 `border_width<=0` 时会自动补成 1px |
 | `border_width` | `float` | `-1.0f` | 描边宽度；`<0` = 用组件默认（多数是 0 或 1） |
 | `radius` | `float` | `-1.0f` | 圆角；`<0` = 用主题对应组件的默认圆角 |
-| `pad_x` | `float` | `-1.0f` | 水平内边距（`input`/`select`/`table`/`nav_item` 等读它） |
+| `pad_x` | `float` | `-1.0f` | 水平内边距（`input`/`table`/`nav_item` 等读取；不统一作用于所有控件） |
 | `pad_y` | `float` | `-1.0f` | 垂直内边距（主要 `textarea` 读） |
 | `font_size` | `float` | `-1.0f` | 字号；`<=0` = 用组件/主题默认 |
 | `font_weight` | `int` | `-1` | 字重 100..900；`<=0` = 默认；`>=600` 走粗体字面 |
 | `italic` | `bool` | `false` | 斜体 |
-| `disabled` | `bool` | `false` | 禁用：控件不响应交互，颜色压到 45% alpha |
+| `disabled` | `bool` | `false` | 禁用交互并降低透明度；按钮表面/描边为 55%、标签为 45%，其它组件见各篇 |
 | `variant` | `int` | `-1` | 语义变体 `0..5`；`-1` = 由组件决定默认 |
 | `align` | `Align` | `Left` | 水平对齐 |
 | `valign` | `VAlign` | `Middle` | 垂直对齐 |
@@ -176,31 +178,34 @@ const aino::Input& in = ui.input();
 ```cpp
 Style().primary()      // 0 Default     强调色填充
 Style().secondary()    // 1 Secondary   浅灰填充
-Style().outline()      // 2 Outline     透明底 + 1px 描边
+Style().outline()      // 2 Outline     中性填充 + 1px 描边
 Style().ghost()        // 3 Ghost       透明底无描边，只有 hover 才出现底色
-Style().destructive()  // 4 Destructive 红底（危险操作）
-Style().link()         // 5 Link        透明底，前景用 primary，无内边距感
+Style().destructive()  // 4 Destructive 中性底、红字（危险操作）
+Style().link()         // 5 Link        透明底，前景用 tint
 ```
 
 变体的取色完全来自 `Theme`，对照表：
 
 | 变体 | 底色 | 前景 | 描边 | hover / press 怎么来 |
 |---|---|---|---|---|
-| `Default` | `primary` | `primary_foreground` | — | 由 `primary` 派生 |
-| `Secondary` | `secondary` | `secondary_foreground` | — | 由 `secondary` 派生 |
-| `Outline` | 透明 | `foreground` | `border` 1px | 底色用 `accent` |
-| `Ghost` | 透明 | `foreground` | — | 底色用 `accent` |
-| `Destructive` | `destructive` | `destructive_foreground` | — | 由 `destructive` 派生 |
-| `Link` | 透明 | `primary` | — | 底色用 `accent` |
+| `Default` | `tint` | `tint_foreground` | 顶部白色高光 | hover = `tint`；press = `tint.darken(0.12)` |
+| `Secondary` | `fill2` | `label` | — | hover = `fill2`；press = `fill_press` |
+| `Outline` | `fill2` | `label` | `separator` 1px | hover = `fill2`；press = `fill_press` |
+| `Ghost` | 透明 | `label` | — | hover = `fill3`；press = `fill2` |
+| `Destructive` | `fill2` | `destructive` | — | hover = `fill2`；press = `fill_press` |
+| `Link` | 透明 | `tint` | — | 始终无填充 |
 
-**hover / press 的派生规则**（`detail::hover_color` / `press_color`）：
+该表对应按钮共用的 `make_skin()`；其它组件可能只支持部分变体。
+Gallery 的“标准”示例显式覆盖背景为 `theme.fill`，“次要”使用 `Secondary` 的 `fill2`。
+
+**自定义 `bg` 的按下色规则**（`detail::press_color`）：
 
 ```
-luminance > 0.5  →  亮底压暗：hover = darken(0.07)，press = darken(0.13)
-luminance <= 0.5 →  暗底提亮：hover = lighten(0.14)，press = lighten(0.24)
+luminance > 0.5  →  press = darken(0.13)
+luminance <= 0.5 →  press = lighten(0.24)
 ```
 
-所以**自定义 `bg` 也自动拥有正确的 hover/press**，不需要手写三套颜色。
+自定义背景令 base 与 hover 都使用 `bg`，不会额外派生悬停色。
 
 ### 2.3 显式覆盖优先
 
@@ -208,7 +213,7 @@ luminance <= 0.5 →  暗底提亮：hover = lighten(0.14)，press = lighten(0.2
 
 ```
 variant 决定 base/fg/border
-  → st.bg 覆盖 base（并重算 hover/press）
+  → st.bg 覆盖 base/hover（并重算 press）
   → st.fg 覆盖 fg
   → st.muted 覆盖 fg 为 muted_foreground
   → st.border_color 覆盖 border（并补 border_w=1）
@@ -217,7 +222,7 @@ variant 决定 base/fg/border
 ```
 
 也就是说 `Style().primary().fill(red)` 得到的是**红底 + primary 的前景色**，
-不是红色变体。要完整的红色语义用 `Style().destructive()`。
+危险操作使用 `Style().destructive()`，它使用中性底和红字。
 
 ---
 
@@ -235,7 +240,7 @@ variant 决定 base/fg/border
 | `fill/fill2/fill3/fill4/fill5` | 黑 / 白，alpha 26/20/13/8/5 | 五级叠加填充 |
 | `fill_hover/fill_press` | 黑 / 白，alpha 38/44 | 状态填充 |
 | `window_bg` | `#FFFFFF` / `#1E1E1E` | 窗口背景 |
-| `control_bg` | `#FFFFFF` / `#282828` | 控件表面 |
+| `control_bg` | `#FFFFFF` / `#1E1E1E` | 控件表面 |
 | `sidebar_bg/title_bg` | `#EAEAEA` / `#1E1E1E` | 侧栏和工具栏 |
 | `popover_bg/tooltip_bg` | `#F6F6F6` / `#282828` | 浮层表面 |
 | `separator` | 黑 / 白 alpha 26 | 分隔线 |
@@ -327,7 +332,8 @@ win.set_theme(t);
 
 | 字段 | 读取它的组件 |
 |---|---|
-| `pad_x` | `input` `textarea`(pad_y) `select` `nav_item` `table` `menu` `dialog` `alert` |
+| `pad_x` | `input` `textarea` `nav_item` `table` `dialog` `alert` `item` `toggle_button` 等；`select`、`menu` 使用内部固定间距 |
+| `pad_y` | `textarea` |
 | `placeholder` | `input` `textarea` `select` |
 | `wrap` | `label` `heading` `subheading` `muted_text` `code_text` `alert` `dialog`（经 `draw_text`） |
 | `line_gap` | 同上 |

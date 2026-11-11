@@ -1,4 +1,4 @@
-﻿// 0.3.0 新补的 shadcn 控件 —— 行为断言
+﻿// 分组按钮、复合表单、分页、日期与浮层的行为断言。
 //
 // 为什么单独写一个探针（而不是把断言塞进 demo）：
 //   demo 是给人看的，改了布局就得改断言；探针只管"这个控件点下去到底改没改值"，
@@ -286,7 +286,7 @@ static void test_input_group() {
     check(v == "128", "能输入（前缀后缀不挡字符）", "v=" + v);
 
     // 前后缀区域不该把点击"吃掉"后什么都不发生 —— 这里断言的是
-    // 整块 box 都能点进输入区（shadcn 的 Input Group 就是这个体验）
+    // 前后缀区域与输入区均可聚焦。
     d.click(box.right() - 8.0f, box.cy(), draw);
     d.type("9", draw);
     check(v == "1289", "点后缀附近仍然在输入框里", "v=" + v);
@@ -798,7 +798,7 @@ static void test_no_overflow() {
 }
 
 int main() {
-    std::printf("== 0.3.0 新控件行为断言 ==\n");
+    std::printf("== 复合组件行为断言 ==\n");
     test_toggle();
     test_toggle_group();
     test_button_group();

@@ -1,8 +1,6 @@
-"""验证"单个 exe 能不能独立跑"。
+"""将 EXE 复制到临时目录，清除工具链 PATH 后检查能否启动。
 
-为什么需要：换成 OpenSSL 后端后，exe 一开始依赖 libcrypto-3-x64.dll，
-用户把 exe 单独拷到别的目录就直接 0xc0000135 打不开。所以每次改依赖都要
-把 exe 复制到一个空目录里真跑一遍 —— 只检查本目录能不能启动会漏掉这个问题。
+仅验证本机可用的运行环境；/MD 程序仍可能使用本机安装的 VC++ 运行库。
 
 用法：
     python tools/probe/test_standalone.py build/Release/aino_ssh.exe
@@ -32,10 +30,10 @@ def main():
     print("复制到空目录:", tmp)
 
     env = {k: v for k, v in os.environ.items() if not k.startswith("AINO_SSH")}
-    # 关键：PATH 必须清成纯系统目录。
-    # 本机 PATH 里有 Git 的 mingw64/bin，那里躺着 libcrypto-3-x64.dll ——
-    # 不清 PATH 的话，缺依赖也能"启动成功"，测试就变成自欺欺人了。
-    env["PATH"] = r"C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem"
+    # 排除开发工具目录中的 DLL，保留系统运行环境。
+    windows = os.environ.get("SystemRoot", r"C:\Windows")
+    env["PATH"] = os.pathsep.join((os.path.join(windows, "System32"), windows,
+                                 os.path.join(windows, "System32", "Wbem")))
     p = subprocess.Popen([lone], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     alive = True
     for _ in range(40):          # 最多等 4 秒

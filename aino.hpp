@@ -14,7 +14,7 @@
 //      GCC: g++ -std=c++17 main.cpp -lX11 -ldl
 //      Clang: clang++ -std=c++17 main.cpp -framework Cocoa -framework CoreText -framework CoreGraphics
 //
-//  源码为 UTF-8。保留 BOM 并为 MSVC 设置 /utf-8；字符编码回退不能替代编译设置。
+//  源码为 UTF-8，MSVC 使用 /utf-8。
 //  静态运行时与平台依赖说明见 docs/01-quickstart.md。
 //
 //  作者：sudoevolve <sudoevolve@gmail.com>
@@ -181,7 +181,7 @@ struct Rect {
     }
     Rect inset(float d) const { return Rect(x + d, y + d, w - 2 * d, h - 2 * d); }
     Rect inset(float dx, float dy) const { return Rect(x + dx, y + dy, w - 2 * dx, h - 2 * dy); }
-    // 外扩（inset 的负数别名）：画焦点环、外层光晕时比写 inset(-d) 少一层心智负担
+    // 向外扩张，等价于 inset(-d)。
     Rect outset(float d) const { return Rect(x - d, y - d, w + 2 * d, h + 2 * d); }
     // 交集。完全不相交时返回宽高都为 0 的矩形（empty() 为真）。
     // 裁剪区的交叠、以及"这个控件还剩多少可见"都靠它。
@@ -192,10 +192,7 @@ struct Rect {
         const float y1 = bottom() < o.bottom() ? bottom() : o.bottom();
         return Rect(x0, y0, x1 > x0 ? x1 - x0 : 0.0f, y1 > y0 ? y1 - y0 : 0.0f);
     }
-    // 在一个盒子内部做**跨轴居中**：自己不动，把一个 h 高 / w 宽的盒子摆到中间。
-    // 布局器切出来的盒子（hbox 的横切片是整行高、vbox 的是整行宽）通常比里面的
-    // 控件大，写 r.y + 17 这种常量一旦行高一改就和邻居错位 —— 一律走这两个。
-    // 文字不需要它们：Style 的 valign/halign 默认就是 Middle/Center，盒子给足即可。
+    // 在当前矩形内居中指定尺寸的子矩形，不修改自身。
     Rect center_y(float h_) const { return Rect(x, y + (h - h_) * 0.5f, w, h_); }
     Rect center_x(float w_) const { return Rect(x + (w - w_) * 0.5f, y, w_, h); }
     Rect center(float w_, float h_) const { return Rect(x + (w - w_) * 0.5f, y + (h - h_) * 0.5f, w_, h_); }
@@ -203,7 +200,7 @@ struct Rect {
     Rect offset(float dx, float dy) const { return Rect(x + dx, y + dy, w, h); }
     Rect offset(const Vec2& d) const { return Rect(x + d.x, y + d.y, w, h); }
     Rect expand(float d) const { return inset(-d); }
-    // 左侧切走 w0 宽的一条，剩下部分返回（用于做水平布局）
+    // 返回切下的条带，并从自身移除对应区域。
     Rect cut_left(float amount) { Rect r(x, y, amount, h); x += amount; w -= amount; return r; }
     Rect cut_right(float amount) { w -= amount; return Rect(x + w, y, amount, h); }
     Rect cut_top(float amount) { Rect r(x, y, w, amount); y += amount; h -= amount; return r; }
@@ -240,15 +237,10 @@ enum Key {
 };
 
 // =============================================================================
-//  二、主题 —— macOS 27 (Golden Gate) 语义色
+//  二、主题 —— macOS 风格语义色
 //
-//  两套字段并存是刻意的：
-//    · 上面一组是 macOS 原生语义色（label / separator / controlAccent…），
-//      用来把"系统色"和"控件表面"分开表达 —— macOS 的文字是 85% 黑而不是纯黑，
-//      分隔线是 10% 黑，这两件事在 shadcn 的 token 里没有对应物。
-//    · 下面一组沿用 shadcn 命名的旧字段（background / card / primary …），
-//      由 macos_light()/dark() 映射过来。组件代码里已经写了 th.primary 的地方
-//      不需要改，就能跟着换成系统强调色。
+//  label/fill/tint 描述文字、表面与强调色；background/card/primary 等字段保留兼容，
+//  由主题工厂映射。修改强调色应调用 set_tint()，同步前景、焦点环与选中行颜色。
 //
 //  设计资料与实现映射见 docs/macos27/README.md。
 // =============================================================================
@@ -465,7 +457,7 @@ struct Style {
     bool  password = false;      // 单行输入以圆点显示，编辑值保持原文
     bool  disabled = false;
 
-    // --- 组件语义变体（对应 shadcn 的 variant prop）---
+    // --- 组件语义变体 ---
     enum Variant { Default, Secondary, Outline, Ghost, Destructive, Link };
     int variant = -1;             // -1 = 由组件决定默认变体
 
@@ -481,19 +473,14 @@ struct Style {
     bool  wrap = false;
     float line_gap = 0.0f;        // 行距附加量（0 = 直接用字体的 line_height）
 
-    // 显式要求"这个组件自己会一直动"。
-    // 目前只有 skeleton 读它。默认 false 是刻意的：aino 的头号承诺是"没有动画就
-    // 空闲 0% CPU"，所以"持续 repaint"必须由调用方点名要求，不能由组件偷偷加。
+    // spinner 可显式持续播放；skeleton 开启后仍仅在悬停时播放。
     bool  animated = false;
 
     // 行底线：列表里相邻的 item 之间画一条 1px 分隔线（macOS 的 source list /
     // 表格行都有，但菜单和单独一张卡片没有）。默认关，由调用方点名要。
     bool  row_sep = false;
 
-    // 玻璃面板的模糊半径（逻辑像素，-1 = 用组件的默认值）。
-    // kit 的 `Liquid Glass/Frost` 是 6（Regular）/ 16（Large），对应到这里就是
-    // 6~16 的模糊半径；再大就开始像毛玻璃贴纸，不再像"玻璃"。
-    // 字段叫 blur_radius 是为了给链式方法 `blur()` 让路（同名不能共存）。
+    // 背景材质的模糊半径（逻辑像素，-1 = 组件默认）；不模拟折射或色散。
     float blur_radius = -1.0f;
 
     // --- 交互 ---
@@ -842,7 +829,7 @@ public:
     void fill_crescent(float cx, float cy, float radius,
                        float cut_cx, float cut_cy, float cut_radius, const Color& c);
     void draw_line(float x0, float y0, float x1, float y1, const Color& c, float width = 1.0f);
-    // 画文本；Style 只读 align/valign/font_size/font_weight/bold
+    // 画文本；Style 支持字号、字重、斜体、对齐、折行与行距。
     void draw_text(const std::string& text, const Rect& box, const Color& c, const Style& st = Style());
     /** @brief 在指定区域居中绘制系统图标；尊重当前裁剪、缩放和颜色。 */
     bool system_icon(SystemIcon icon, const Rect& box, const Color& color);
@@ -882,10 +869,7 @@ public:
     // 渐变 / 阴影（可选，不依赖即可）
     void drop_shadow(const Rect& r, float radius, float blur, const Color& c, float dy = 1.0f);
 
-    // 背景模糊（Liquid Glass 的"高性能替身"）：把**已经画进后备缓冲**的那块矩
-    // 形取出来做一次可分离盒式模糊（3 趟 ≈ 高斯），再按圆角形状写回。
-    // 它不折射、不色散 —— 那两样要么要 GPU，要么要逐像素光追；一个 CPU 光栅化
-    // 的库只做"看得出来的那一半"：背后内容被柔化 + 一层薄材质 + 一圈高光。
+    // 对已绘制的后备缓冲做三趟可分离盒式模糊，按圆角区域写回；不模拟折射或色散。
     // 调用时机：必须先画背景、再调它、最后画面板内容（它只处理调用这一刻的像素）。
     void backdrop_blur(const Rect& r, float radius, float blur);
     // 玻璃面板 = backdrop_blur + 材质 + 高光边 + 外描边 + 投影，一条调用画完。
@@ -935,7 +919,7 @@ public:
     void progress(float value, const Rect& box, const Style& st = Style());   // value 0..1
     /** @brief 环形进度，value 范围 0..1，使用现有主题轨道与强调色。 */
     void progress_ring(float value, const Rect& box, const Style& st = Style());
-    void skeleton(const Rect& box, const Style& st = Style());       // 占位骨架（默认静态，.animate() 才呼吸）
+    void skeleton(const Rect& box, const Style& st = Style());       // 占位骨架，.animate() 后悬停才播放
 
     // 交互类 —— 返回 true 表示本帧发生了"值变化"或"点击"
     bool button(const std::string& text, const Rect& box, const Style& st = Style());
@@ -948,7 +932,7 @@ public:
     bool search_field(std::string* value, const Rect& box, const Style& st = Style());
     // 颜色池（NSColorWell）：48×24 的圆角色块，点击返回 true，由调用方弹选择器。
     bool color_well(const Color& c, const Rect& box, const Style& st = Style());
-    // 图像池（NSImageView 的拖放占位）：虚线圈 + 图片符号 + 一行说明。
+    // 图像池：中性填充、细边、系统图片符号与说明；不处理文件拖放。
     void image_well(const Rect& box, const Style& st = Style());
     bool checkbox(bool* value, const std::string& label, const Rect& box, const Style& st = Style());
     bool toggle(bool* value, const Rect& box, const Style& st = Style());
@@ -980,12 +964,7 @@ public:
     void sparkline(const std::vector<float>& values, const Rect& box, const Style& st = Style());
     void bars(const std::vector<float>& values, const Rect& box, const Style& st = Style());
 
-    // =========================================================================
-    //  对齐 shadcn/ui 的基础控件（0.3.0 / 0.3.1 补）
-    //  命名约定：**能一对一的就用同一个名字**；名字被占用的在这里注明。
-    //  `toggle()` 占的是 shadcn 的 Switch，所以 shadcn 的 Toggle 叫
-    //  `toggle_button()`；`empty` 让给了 Rect::empty()，所以叫 `empty_state()`。
-    // =========================================================================
+    // --- 分组按钮、复合输入、列表与日期 ---
 
     // Toggle / Toggle Group：按下态按钮（不是开关！开关是 toggle()）
     bool toggle_button(const std::string& label, bool* value, const Rect& box, const Style& st = Style());
@@ -994,7 +973,7 @@ public:
     bool toggle_group_multi(const std::vector<std::string>& items, std::uint32_t* mask,
                             const Rect& box, const Style& st = Style());
 
-    // Button Group：相邻按钮连成一片（首尾圆角、中间共边），各自独立触发
+    // Button Group：共用轨道的动作按钮，各自独立触发，无持久选中态
     bool button_group(const std::vector<std::string>& items, int* clicked_index,
                       const Rect& box, const Style& st = Style());
 
@@ -1015,7 +994,7 @@ public:
     // Item：一行条目（标题 + 描述 + 尾部文字），整行可点
     bool item(const std::string& title, const std::string& description, const std::string& trailing,
               const Rect& box, const Style& st = Style());
-    // Empty：空状态（虚线框 + 标题 + 描述）
+    // Empty：居中的空状态标题与描述
     void empty_state(const std::string& title, const std::string& description,
                      const Rect& box, const Style& st = Style());
 
@@ -1058,11 +1037,11 @@ public:
     void hover_card(const Rect& anchor, Vec2 content, const std::function<void(const Rect&)>& draw,
                     const Style& st = Style());
     // Alert Dialog：带确认/取消的模态框。返回 true 表示本帧点了确认。
-    // 传 Style().destructive() 则确认键是红底（危险操作）。
+    // 传 Style().destructive() 则确认键使用中性底和危险色文字。
     bool alert_dialog(const std::string& title, const std::string& body,
                       const std::string& confirm, const std::string& cancel,
                       bool* open, const Rect& box, const Style& st = Style());
-    // Drawer / Sheet：从某一边滑出的面板。side: 0=右 1=左 2=下 3=上
+    // Drawer：位置由 box 指定的模态面板；side 保留兼容，不自动摆放或播放动画。
     bool drawer(const std::string& title, bool* open, int side, const Rect& box,
                 const std::function<void(const Rect&)>& draw, const Style& st = Style());
     // Context Menu：在 area 内右键弹出（不占布局，弹层在鼠标位置）
@@ -1072,7 +1051,7 @@ public:
     bool combobox(const std::vector<std::string>& items, int* index,
                   const Rect& box, const Style& st = Style());
 
-    // Split Pane（shadcn Resizable）：ratio 是第一条分隔线位置（0..1），拖动时更新
+    // 可拖动分栏：ratio 是分隔线位置（0..1），拖动时更新
     bool split_pane(float* ratio, const Rect& box, Rect* first, Rect* second,
                     bool vertical = true, float min_ratio = 0.15f, const Style& st = Style());
 
@@ -1081,7 +1060,7 @@ public:
 
     // 布局辅助（立即模式下的轻量自动布局）
     Rect row(float height);            // 在"当前容器"里切一行
-    // Aspect Ratio（shadcn 的 AspectRatio）：按 ratio = 宽/高 从宽度算出高度。
+    // 按 ratio = 宽/高，从宽度算出高度。
     // 立即模式里没有"容器组件"，所以它就是一个算矩形的小工具：
     //   Rect r = Ui::aspect_rect(cell, 16.0f / 9.0f);  ui.fill_rect(r, bg);
     static Rect aspect_rect(const Rect& box, float ratio);
@@ -1950,7 +1929,6 @@ inline void raster_rrect_stroke(Canvas& cv, const Rect& r, const Color& c, float
     Rect inner = r.inset(w);
     const RRectGeo go = make_rrgeo(r, rad, smooth);
     const RRectGeo gi = make_rrgeo(inner, std::max(0.0f, go.rad - w), smooth);
-    float inner_rad = std::max(0.0f, go.rad - w);
     const bool has_inner = inner.w > 0.0f && inner.h > 0.0f;
     int y0 = (int)std::floor(r.y), y1 = (int)std::ceil(r.bottom());
     if (y1 > cv.h) y1 = cv.h;
@@ -4926,12 +4904,10 @@ struct Skin {
     Color fg     = Color(0, 0, 0);
     Color border = Color::none();
     Color rim    = Color::none();      // 顶部 1px 高光（bezel 的上亮边）
-    Color grad_bottom = Color::none(); // 非 none 时 base→grad_bottom 竖直渐变
     float border_w = 0.0f;
     float radius   = 8.0f;
     float font_size= 14.0f;
     int   weight   = 400;
-    int   size_class = 2;              // 0 mini 1 small 2 medium 3 large 4 xl
 };
 
 inline Skin make_skin(const Theme& th, const Style& st, int default_variant, float default_radius) {
@@ -4967,8 +4943,7 @@ inline Skin make_skin(const Theme& th, const Style& st, int default_variant, flo
             sk.fg   = th.label;
             break;
         case Style::Destructive:
-            // macOS 的破坏性按钮 = 普通（8% 面）按钮 + 红字，不是红底白字的 iOS 主按钮。
-            // 红底会把"删除"变成页面里视觉最重的元素，这在一个原生界面里从不发生。
+            // 危险操作使用中性填充与红色标签。
             sk.base  = th.fill2; sk.fg = th.destructive;
             sk.hover = th.fill2;
             sk.press = th.fill_press;
@@ -4999,11 +4974,7 @@ inline void paint_surface(Ui& ui, const Rect& r, const Skin& sk, float t_hover, 
     if (disabled && bg.a > 0 && bg.a < 255) bg.a = uint8_t(float(bg.a) * dim);
     if (disabled && bg.a == 255) bg = bg.with_alpha(uint8_t(255.0f * 0.55f));
 
-    if (bg.a > 0 && !sk.grad_bottom.is_none()) {
-        Color top = bg, bot = sk.grad_bottom;
-        if (disabled) { bot.a = uint8_t(float(bot.a) * dim); }
-        ui.fill_rect_grad(r, top, bot, rad);
-    } else if (bg.a > 0) {
+    if (bg.a > 0) {
         ui.fill_rect(r, bg, rad);
     }
     // 顶部高光：只在上半圈画 1px 亮边。整圈描边会立刻变成"描边框"的 Web 味。
@@ -6378,7 +6349,6 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
     // 参考资料 Segmented Control 是**胶囊**（Figma 里 r=1000，按钮 r=100），不是
     // r6 的圆角矩形：24 高的控件整个是圆的，选中段内缩 2 之后也是胶囊。
     const float rad = st.radius >= 0.0f ? st.radius : (pill ? box.h * 0.5f : 6.0f);
-    const float inner_rad = std::max(0.0f, rad - 2.0f);
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
 
     bool changed = false;
@@ -6409,11 +6379,6 @@ inline bool Ui::tabs(const std::vector<std::string>& labels, int* index, const R
         for (size_t i = 1; i < labels.size(); ++i)
             fill_rect(Rect(inner.x + equal_w * float(i), inner.y + (inner.h - ph) * 0.5f, 1.0f, ph),
                       th.label3, 0.0f);
-    } else {
-        // macOS 27 的标签栏（Figma `Tabs` / `Utility Panel/Tabs`）：**没有下划线**。
-        // 一整条下划线 + 会滑动的指示器是 shadcn / Material 的语汇；AppKit 的
-        // tab bar 是"选中项浮一层 2~3% 的圆角底 + 文字回到主标签色"，其余 50%。
-        // 选中块画在下面的循环里（每项自己一块 r6 的淡底）。
     }
 
     for (size_t i = 0; i < labels.size(); ++i) {
@@ -6615,7 +6580,6 @@ inline bool Ui::radio_group(const std::vector<std::string>& items, int* index, c
         if (in.clicked && *index != int(i)) { *index = int(i); changed = true; }
 
         const float t     = detail::animate_state(impl, id * 59u + 1u, (*index == int(i)) ? 1.0f : 0.0f, 22.0f);
-        const float t_hov = detail::animate_value(impl, id * 59u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
         const Rect dot_r = Rect::centered(row.x + dot * 0.5f, row.cy(), dot, dot);
         // 和复选框同一套"凹陷"配方：浅底 + 极淡描边 + 两道内阴影，
@@ -6663,7 +6627,7 @@ inline bool Ui::radio_group(const std::vector<std::string>& items, int* index, c
 }
 
 // -----------------------------------------------------------------------------
-//  stepper —— 数值步进器 [−] value [+]
+//  stepper —— 数值与右侧上下增减按钮
 // -----------------------------------------------------------------------------
 inline bool Ui::stepper(float* value, float step, float min_value, float max_value, const Rect& box, const Style& st) {
     if (!value || box.w <= 12.0f) return false;
@@ -7551,7 +7515,7 @@ inline bool Ui::accordion(const std::string& title, bool* open, const Rect& box,
     return changed;
 }
 
-// 表格：表头 + 等宽列 + 斑马纹。列宽一律等分（要非等宽请传 Style::pad_x 自行缩进）。
+// 表格使用等宽列；pad_x 只控制单元格内边距。
 inline void Ui::table(const std::vector<std::string>& headers,
                       const std::vector<std::vector<std::string>>& rows,
                       const Rect& box, const Style& st) {
@@ -7696,8 +7660,7 @@ inline void Ui::tooltip(const Rect& anchor, const std::string& text, const Style
     // 计时器根本没机会开始跑。
     impl->hover_region(anchor);
 
-    // 悬停 0.4 秒才出现。没有这个延时，鼠标划过一排按钮会连环闪 ——
-    // 网页端（shadcn 的 delayDuration）同样是几百毫秒起步。
+    // 悬停 0.4 秒后显示，避免划过相邻控件时连续闪现。
     const uint64_t tid = impl->widget_id("tip", anchor, uint64_t(text.size() * 131u + 7u));
     float& since = impl->flags[tid * 7u + 5u];
     const Input& kin = impl->input;
@@ -8162,28 +8125,6 @@ inline int weekday_of(int y, int m, int d) {
     return w < 0 ? w + 7 : w;
 }
 
-// 画虚线矩形（空状态用）。aino 没有 dash 图元，就按段画直线 ——
-// 不要为了一个虚线去加图元：图元每多一个，光栅化就多一条要证明的路径。
-inline void dash_rect(Ui& ui, const Rect& r, const Color& c,
-                      float dash = 6.0f, float gap = 4.0f, float w = 1.0f) {
-    auto hline = [&](float x0, float x1, float y) {
-        for (float x = x0; x < x1; x += dash + gap) {
-            const float xe = std::min(x + dash, x1);
-            if (xe > x) ui.draw_line(x, y, xe, y, c, w);
-        }
-    };
-    auto vline = [&](float y0, float y1, float x) {
-        for (float y = y0; y < y1; y += dash + gap) {
-            const float ye = std::min(y + dash, y1);
-            if (ye > y) ui.draw_line(x, y, x, ye, c, w);
-        }
-    };
-    hline(r.x, r.right(), r.y + w * 0.5f);
-    hline(r.x, r.right(), r.bottom() - w * 0.5f);
-    vline(r.y, r.bottom(), r.x + w * 0.5f);
-    vline(r.y, r.bottom(), r.right() - w * 0.5f);
-}
-
 // 不区分大小写的子串匹配（combobox 过滤用）。只折叠 ASCII：
 // 中文没有大小写，UTF-8 里的非 ASCII 字节原样比较即可。
 inline bool contains_ci(const std::string& hay, const std::string& needle) {
@@ -8251,10 +8192,7 @@ inline bool group_cell(Ui& ui, Ui::Impl* im, uint64_t id, const Rect& r, const s
 // -----------------------------------------------------------------------------
 //  Toggle —— 按下态按钮
 //
-//  ⚠ 和 toggle() 不是一回事：toggle() 是开关（shadcn 的 Switch），
-//  这个才是 shadcn 的 Toggle（一个能"按进去"并保持的按钮）。
-//  两个都叫 toggle 是历史原因，改名会破坏所有已有代码，所以在这里新增一个
-//  名字更明确的重载。
+//  toggle() 是开关；toggle_button() 保持按钮的按下状态。
 // -----------------------------------------------------------------------------
 inline bool Ui::toggle_button(const std::string& label, bool* value, const Rect& box, const Style& st) {
     if (!value || box.w <= 0.0f) return false;
@@ -8273,9 +8211,6 @@ inline bool Ui::toggle_button(const std::string& label, bool* value, const Rect&
     bool changed = false;
     if (in.clicked) { *value = !*value; changed = true; repaint(); }
 
-    // macOS 的"按下态按钮"不是实心强调色按钮（那是 Prominent 主按钮的待遇），
-    // 而是**强调色淡底 + 加粗标签**：字体面板 / 格式栏的 B、I 就是这个样子。
-    // 实心蓝会让人以为这里有个主操作，视觉重心完全跑偏。
     Color bg = st.bg;
     if (t_on > 0.01f) {
         bg = th.tint;
@@ -8380,8 +8315,6 @@ inline bool Ui::button_group(const std::vector<std::string>& items, int* clicked
     for (int i = 0; i < n; ++i) {
         const Rect r(box.x + iw * float(i), box.y, iw, box.h);
         const uint64_t id = impl->widget_id("bg_item", r, base + uint64_t(i));
-        // 灰底上不能再用 accent（浅色主题里 secondary 和 accent 是同一个色，
-        // hover 会完全看不出来），改用背景色提亮。
         if (detail::group_cell(*this, impl, id, r, items[size_t(i)], false,
                                fs, rad, st, false, i > 0)) {
             if (clicked_index) *clicked_index = i;
@@ -8678,16 +8611,13 @@ inline bool Ui::item(const std::string& title, const std::string& description,
 }
 
 // -----------------------------------------------------------------------------
-//  Empty —— 空状态：虚线框 + 标题 + 描述
+//  Empty —— 居中的空状态标题与描述
 // -----------------------------------------------------------------------------
 inline void Ui::empty_state(const std::string& title, const std::string& description,
                             const Rect& box, const Style& st) {
     if (box.w <= 0.0f || box.h <= 0.0f) return;
     const Theme& th = impl->theme;
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
-
-    // 不画虚线框：虚线占位框是 Web / 表单设计器的语汇。macOS 的空状态就是
-    // 一段居中的灰色说明，连容器都没有。
 
     const float lh1 = line_height(fs + 1.0f);
     const float lh2 = description.empty() ? 0.0f : line_height(fs - 1.0f) + 4.0f;
@@ -8716,9 +8646,7 @@ inline void Ui::empty_state(const std::string& title, const std::string& descrip
 // -----------------------------------------------------------------------------
 //  Pagination —— 页码器
 //
-//  页数多时的取舍和 shadcn 一样：首尾 + 当前页两侧各一页，中间用省略号。
-//  省略号不是按钮（点了没意义），所以只画不 interact —— 少一个假控件，
-//  也少一处"点了没反应"的疑惑。
+//  页数较多时保留首尾、当前页邻域与省略号；省略号不参与交互。
 // -----------------------------------------------------------------------------
 inline bool Ui::pagination(int* page, int total_pages, const Rect& box, const Style& st) {
     if (!page || box.w <= 0.0f) return false;
@@ -9018,7 +8946,6 @@ inline bool Ui::popover(const std::string& label, bool* open, const Rect& box,
 inline void Ui::hover_card(const Rect& anchor, Vec2 content,
                            const std::function<void(const Rect&)>& draw, const Style& st) {
     if (!draw || content.x <= 0.0f || content.y <= 0.0f) return;
-    const Theme& th = impl->theme;
     const Input& kin = impl->input;
     impl->hover_region(anchor);       // 同上：锚点不是 interact 控件
     if (!anchor.contains(kin.mouse.x, kin.mouse.y)) return;
@@ -9172,9 +9099,7 @@ inline bool Ui::drawer(const std::string& title, bool* open, int side, const Rec
     if (kin.key_pressed[KEY_ESC]) dismiss = true;
     if ((kin.pressed[0] || kin.pressed[1]) && !box.contains(kin.mouse.x, kin.mouse.y)) dismiss = true;
 
-    // 不铺整屏黑遮罩：macOS 的 sheet / 检查器面板**不会把窗口压黑**（窗口只是
-    // 失去焦点），整屏 35% 黑幕是 Radix / shadcn 的 Dialog Overlay。层次交给
-    // 圆角 + Primary 投影。
+    // 面板依靠圆角和投影分层，不绘制全窗口遮罩。
     const Color bg = !st.bg.is_none() ? st.bg : th.background;
 
     // 面板：r10 + 二级投影，不描边（描边会把它读成"网页侧边栏"）
@@ -9212,9 +9137,7 @@ inline bool Ui::context_menu(const Rect& area, const std::vector<std::string>& i
     if (items.empty()) return false;
     const Theme& th = impl->theme;
     const uint64_t id = impl->widget_id("ctxmenu", area, uint64_t(items.size()));
-    const uint64_t z_first = impl->seq + 1;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
-    const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
     const float item_h = std::max(fs + 10.0f, 24.0f);   // kit Menu/Height Medium = 24
     const Input& kin = impl->input;
 
@@ -9328,11 +9251,7 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
     const float t_h = detail::animate_value(impl, id * 137u + 1u, (in.hovered || open) ? 1.0f : 0.0f, 18.0f);
 
     // ---- 触发器 ----
-    // 可编辑的 NSComboBox = **输入框的皮**（白底 + 顶部内阴影 + 极淡描边）+
-    // 右侧上下箭头按钮。kit `Combo Box/False` 就是这个配方：纯白底、两道向下
-    // 投影、没有 1px 硬边框 —— 一圈 1~1.4px 的深边框是 shadcn 的 Input。
-    // 暗色下输入框必须比窗口**亮一档**（#282828 vs #1E1E1E）：取 window_bg 的话
-    // 输入框和页面同色，只剩一圈描边，看起来像"没有框"。
+    // 复用主题输入表面、顶部内阴影和细描边，右侧绘制上下箭头。
     fill_rect(box, !st.bg.is_none() ? st.bg
                                    : (th.is_dark() ? th.control_bg : th.window_bg), rad);
     inner_shadow(box, th.is_dark() ? Color(0, 0, 0, 70) : Color(0, 0, 0, focused ? 10 : 18),
@@ -9501,13 +9420,13 @@ inline bool Ui::combobox(const std::vector<std::string>& items, int* index,
 }
 
 // -----------------------------------------------------------------------------
-//  Split Pane（shadcn Resizable）—— 可拖拽的分割
+//  Split Pane —— 可拖拽的分割
 //
 //  拖拽状态放 flags：不能靠 "按下 + 在热区" 判断，因为鼠标一动就离开热区了。
 //  vertical=true 表示分隔条是竖的（左右两块），和参数名的方位一致。
 // -----------------------------------------------------------------------------
 inline bool Ui::split_pane(float* ratio, const Rect& box, Rect* first, Rect* second,
-                           bool vertical, float min_ratio, const Style& st) {
+                           bool vertical, float min_ratio, const Style&) {
     if (!ratio || box.w <= 0.0f || box.h <= 0.0f) return false;
     const Theme& th = impl->theme;
     const uint64_t id = impl->widget_id("split_pane", box, vertical ? 1u : 2u);

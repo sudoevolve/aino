@@ -1,5 +1,4 @@
 // aino 原生组件画廊。目录、搜索、锚点和卡片共用一份清单。
-// 版式对照 WorkBuddy / 2026-11-10-14-10-36 / index.html。
 #if defined(_MSC_VER)
 #pragma execution_character_set("utf-8")
 #endif

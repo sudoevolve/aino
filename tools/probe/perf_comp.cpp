@@ -179,7 +179,7 @@ void draw_one(Ui& ui, Comp c, State& s) {
         ui.muted_text("次要说明 muted_text", Rect(70, 110, 320, 20), Style().left());
         break;
     case C_CODE:
-        ui.code_text("aino.hpp · 0.1.0", Rect(70, 110, 320, 30), Style().font(13.0f));
+        ui.code_text("aino.hpp · " AINO_VERSION, Rect(70, 110, 320, 30), Style().font(13.0f));
         break;
     case C_TEXT_WRAP:
         // 折行是文本里最贵的路径：每一行都要重新断词、重新排版

@@ -51,15 +51,31 @@ SSH 额外依赖 libssh2。MSVC 配置使用 `AINO_SSH_DEPS` 指向的预编译 
 其它工具链通过 `find_path` / `find_library` 查找 libssh2 开发库及 Threads。
 缺少依赖时仅跳过 SSH。可以用 `-DAINO_BUILD_SSH=OFF` 禁用该目标。
 
-本地已有的依赖构建脚本可这样使用（需要该脚本存在）：
+MSVC x64 的依赖准备：将 libssh2 1.11.1 和 mbedTLS 3.6.2 源码分别解压到
+`build/third_party/libssh2-1.11.1` 与 `build/third_party/mbedtls-3.6.2`，
+确认其中分别包含 `include/libssh2.h` 和 `library/*.c`。然后在仓库根目录的
+**x64 Native Tools / Developer PowerShell** 中执行（需 CMake 和 Ninja）：
 
-```sh
-python build/third_party/_mk.py
+```powershell
+python tools/build_mbedtls_static.py
+$deps = (Resolve-Path build/third_party).Path
+cmake -S "$deps/libssh2-1.11.1" -B "$deps/l2mbed" -G Ninja `
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON `
+  -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF -DENABLE_ZLIB_COMPRESSION=OFF `
+  -DCRYPTO_BACKEND=mbedTLS -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
+  -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL `
+  "-DMBEDTLS_INCLUDE_DIR=$deps/mbedtls-3.6.2/include" `
+  "-DMBEDCRYPTO_LIBRARY=$deps/mbedtls-3.6.2/mbedtls_all.lib"
+cmake --build "$deps/l2mbed" --config Release
 cmake -S . -B build
 cmake --build build --config Release --target aino_ssh
 ```
 
-`build/` 是构建目录，不属于核心库分发；仓库不自动下载 SSH 依赖。
+`build/` 是构建目录，不属于核心库分发；仓库不自动下载 SSH 依赖。安装好依赖后，
+`python tools/build_ssh.py app` 也可构建客户端，`term` 构建终端解析探针，`ui` 构建界面探针。
+`--asan` 使用当前 MSVC 工具链的 ASan x64 运行库，并复制到 EXE 旁。
+libssh2 与 mbedTLS 静态链接不等于 CRT 静态链接：SSH 使用 `/MD`，目标系统仍需对应的
+VC++ 运行库；不能仅凭本机启动成功就认定可在未安装运行库的机器上独立运行。
 
 ## 3. 单独编译应用
 
@@ -138,6 +154,8 @@ win.set_anim_fps(30);
 `cfg.font_path`：Windows/macOS 可注册字体文件；X11 按字体家族与 fontconfig 查找。
 `font_family_mono` 用于等宽文本通道。`min_*` / `max_*` 均为逻辑尺寸。
 `win.close()` 请求关闭，后台线程更新后调用 `win.wake()` 唤醒循环；跨线程共享应用状态仍需同步。
+X11 后端从后台线程调用 `wake()` 前，必须在创建任何窗口前调用 `XInitThreads()`；
+否则应由 UI 线程调用。
 多窗口示例的创建与回填目前在 Windows 实测，不能据此认定 Cocoa 支持后台线程建窗。
 
 常规应用使用 `run` 管理帧生命周期；不要在帧回调里阻塞等待或执行网络操作。

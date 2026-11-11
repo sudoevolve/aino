@@ -3,7 +3,7 @@
 //   1. 换成 Segoe UI 之后，**中文**字形有没有变（GDI 字体链接是否落到同一个 CJK 字体）
 //   2. 与雅黑相比，**拉丁**字形差多少（这是"看起来不是系统字体"的来源）
 //
-// 编译：g++ -std=c++17 -O2 .workbuddy/probe/font_ab.cpp -o .workbuddy/probe/font_ab.exe -lgdi32 -luser32
+// 编译：python tools/cl_one.py tools/probe/font_ab.cpp build/font_ab.exe
 
 #define _WIN32_WINNT 0x0A00
 #include <windows.h>
@@ -120,8 +120,8 @@ int main() {
         diff(cfgs[i].name, base_lat, render(cfgs[i].face, cfgs[i].q, latin));
 
     // 落盘供人眼核对
-    save_ppm(".workbuddy/probe/font_a_yahai.ppm", base_cjk);
-    save_ppm(".workbuddy/probe/font_b_segoe.ppm",
+    save_ppm("font_a_yahai.ppm", base_cjk);
+    save_ppm("font_b_segoe.ppm",
              render(L"Segoe UI Variable Text", ANTIALIASED_QUALITY, cjk));
 
     // 宽度差：字体族换了以后排版一定会挪，这是必须知道的

@@ -18,7 +18,7 @@
 Requirements:
 
 - C++17 编译器：MSVC 19.29+、GCC 12+ 或 Clang 14+
-- 没有其它依赖，不需要构建系统、资源文件或额外 DLL
+- 核心 UI 无第三方开发依赖，不要求构建系统或资源文件；系统运行库说明见下文
 
 `main.cpp`：
 
@@ -114,7 +114,7 @@ examples/zoom_demo.cpp 缩放按钮（Transform 的最小用法）
 examples/primitives_demo.cpp 基础图元、裁剪、变换与背景模糊
 examples/function_viewer.cpp 函数可视化与自定义表达式
 examples/ssh_client.cpp 可选 SSH/SFTP 客户端（额外依赖见上文）
-docs/                文档，01 快速开始 … 12 与 shadcn/ui 的对照
+docs/                文档，01 快速开始 … 12 组件与示例索引
 screenshots/         预览截图
 tools/               构建、像素断言与回归脚本
 tools/regress.py     默认核心交互检查，--only 指定探针，--full 完整检查
@@ -142,7 +142,7 @@ CMakeLists.txt       自动为 examples/*.cpp 创建可执行目标，SSH 可选
 - [09 图元与度量](docs/09-primitives.md)
 - [10 逐组件性能实测（历史基准）](docs/10-performance.md)
 - [11 动画与变换](docs/11-motion.md)
-- [12 与 shadcn/ui 的对照](docs/12-shadcn-parity.md)
+- [12 组件与示例索引](docs/12-component-index.md)
 - [文档索引](docs/README.md)
 
 ## License

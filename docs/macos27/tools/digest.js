@@ -5,8 +5,7 @@ const fs = require('fs');
 const zlib = require('zlib');
 const { decodeBinarySchema, compileSchema } = require('kiwi-schema');
 
-// canvas.fig 可能就在当前目录（.workbuddy/figma/），也可能在仓库里
-const figPath = ['./canvas.fig', __dirname + '/canvas.fig', __dirname + '/../../../.workbuddy/figma/canvas.fig']
+const figPath = ['./canvas.fig', __dirname + '/canvas.fig']
   .find(f => fs.existsSync(f));
 if (!figPath) { console.error('找不到 canvas.fig'); process.exit(1); }
 const raw = fs.readFileSync(figPath);
