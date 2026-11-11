@@ -28,7 +28,7 @@ CMake 自动扫描 `examples/*.cpp`，每个文件生成 `aino_<文件名>` 目�
 |---|---|---|
 | `gallery.cpp` | `aino_gallery` | 15 分类、43 张卡片、搜索和素材子窗口 |
 | `sidebar_demo.cpp` | `aino_sidebar_demo` | 侧栏导航与应用状态 |
-| `zoom_demo.cpp` | `aino_zoom_demo` | 用户操作触发的缩放 |
+| `pomodoro.cpp` | `aino_pomodoro` | 番茄钟、侧栏布局、专注与休息计时 |
 | `primitives_demo.cpp` | `aino_primitives_demo` | 图形、阴影、裁剪、变换、系统图标和背景模糊 |
 | `function_viewer.cpp` | `aino_function_viewer` | 函数曲线、自定义表达式、采样缓存 |
 | `ssh_client.cpp` | `aino_ssh` | 可选 SSH/SFTP 客户端 |
@@ -43,6 +43,11 @@ cmake --build build --config Release --target aino_primitives_demo
 Windows 回归构建入口 `python tools/build.py` 默认构建 Release 画廊，并将程序复制至
 `build/aino_gallery.exe`。也支持 `--src examples/primitives_demo.cpp --out aino_primitives_demo.exe`。
 脚本不会关闭正在运行的示例；输出文件被占用时请关闭对应窗口后再构建。
+
+番茄钟默认暂停，支持专注、短休息、长休息，以及开始 / 暂停 / 继续 / 重置。
+暂停后可调整各模式时长；完成后手动开始下一轮，完成次数只统计本次运行的专注。
+计时使用 `steady_clock`，运行时后台每秒调用 `wake()`，暂停后停止定时唤醒；
+窗口遮挡或帧延迟不会累计计时误差。工具栏按钮切换浅深外观，`AINO_DARK=1` 可深色启动。
 
 函数显示器默认暂停，点击“动画”或在公式输入框外按空格开始 / 暂停。
 滚轮缩放、拖动平移、双击或 `R` 复位视图；编辑公式时不会触发绘图快捷键。

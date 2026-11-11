@@ -34,7 +34,7 @@
 | `gallery.cpp` | 15 分类、43 卡片、搜索、主题与强调色、独立素材子窗口 |
 | `primitives_demo.cpp` | 圆角、线宽、透明度；几何、阴影、裁剪、变换、系统图标与模糊 |
 | `sidebar_demo.cpp` | 导航与通知偏好 |
-| `zoom_demo.cpp` | 用户操作触发的缩放与舞台裁剪 |
+| `pomodoro.cpp` | 番茄钟：侧栏与工具栏、专注 / 休息、暂停续计、时长和外观设置 |
 | `function_viewer.cpp` | 曲线与表达式、可滚动侧栏、默认暂停、采样缓存 |
 | `ssh_client.cpp` | 可选 SSH/SFTP、后台传输与取消；依赖 libssh2，MSVC 使用 mbedTLS |
 

@@ -5,6 +5,10 @@
 #define WinMain aino_ssh_entry
 #include "../../examples/ssh_client.cpp"
 #undef WinMain
+#elif defined(AINO_PROBE_POMODORO)
+#define main aino_pomodoro_entry
+#include "../../examples/pomodoro.cpp"
+#undef main
 #else
 #define main aino_function_entry
 #include "../../examples/function_viewer.cpp"
@@ -237,6 +241,82 @@ int main(int argc, char** argv) {
         session.shutdown();
         expect(!session.xfer_running && !session.engine.connected(), "shutdown joins worker before disconnect");
     }
+#elif defined(AINO_PROBE_POMODORO)
+    (void)argc; (void)argv;
+    const auto start = Clock::time_point{};
+    auto after = [&](int seconds) { return start + std::chrono::seconds(seconds); };
+    Pomodoro timer;
+    expect(!timer.running && timer.remaining == 1500, "timer starts paused at 25 minutes");
+    timer.toggle(start);
+    expect(timer.running, "start begins countdown");
+    timer.update(after(100));
+    expect(timer.remaining == 1400, "late frame uses elapsed clock time");
+    timer.toggle(after(100));
+    timer.update(after(1000));
+    expect(!timer.running && timer.remaining == 1400, "pause freezes remaining time");
+    timer.toggle(after(1000));
+    timer.update(after(1001));
+    expect(timer.running && timer.remaining == 1399, "resume preserves remaining time");
+    timer.select(0);
+    expect(timer.running && timer.remaining == 1399, "reselecting active mode preserves timer");
+    timer.select(1);
+    expect(!timer.running && timer.remaining == 300, "short break starts paused at five minutes");
+    timer.select(2);
+    expect(timer.remaining == 900, "long break uses fifteen minutes");
+    timer.minutes[2] = 20;
+    timer.reset();
+    expect(timer.remaining == 1200, "reset uses configured duration");
+    timer.toggle(start);
+    timer.update(after(1201));
+    expect(!timer.running && timer.remaining == 0 && timer.completed == 0,
+           "break completion stops without counting a focus session");
+    timer.select(0);
+    timer.toggle(start);
+    timer.update(after(1501));
+    expect(!timer.running && timer.remaining == 0 && timer.completed == 1,
+           "focus completion stops and counts once");
+    timer.update(after(1600));
+    expect(timer.completed == 1, "completed session cannot be counted twice");
+    timer.toggle(after(1600));
+    expect(timer.running && timer.remaining == 1500, "completed timer can restart");
+    timer.reset();
+    expect(!timer.running && timer.remaining == 1500 && timer.completed == 1,
+           "reset preserves completed sessions");
+
+    bool dark = false;
+    auto now = start;
+    auto draw = [&] { draw_pomodoro(f.ui, timer, dark, now); };
+    f.frame(draw);
+    expect(!f.ui.animating(), "idle timer does not enable continuous animation");
+    f.click(draw, 630, 432);
+    expect(timer.running, "start button begins countdown");
+    f.click(draw, 885, 584);
+    expect(timer.minutes[0] == 25, "duration control is disabled while running");
+    now = after(2);
+    f.click(draw, 630, 432);
+    expect(!timer.running && timer.remaining == 1498, "pause button freezes countdown");
+    f.click(draw, 885, 584);
+    expect(timer.minutes[0] == 26 && timer.remaining == 1560, "stepper updates and resets duration");
+    f.click(draw, 630, 432);
+    f.click(draw, 520, 432);
+    expect(!timer.running && timer.remaining == 1560, "reset button stops running timer");
+    f.click(draw, 80, 147);
+    expect(timer.mode == 1 && timer.remaining == 300, "sidebar selects short break");
+    f.click(draw, 630, 432);
+    now = after(12);
+    f.click(draw, 80, 147);
+    expect(timer.running && timer.remaining == 290, "active sidebar item does not reset countdown");
+    f.click(draw, 80, 178);
+    expect(timer.mode == 2 && !timer.running && timer.remaining == 1200,
+           "switching sidebar mode stops and restores its duration");
+    f.click(draw, 924, 30);
+    expect(dark, "appearance button switches to dark theme");
+    f.ui.set_theme(aino::Theme::dark());
+    f.frame(draw);
+    f.click(draw, 924, 30);
+    expect(!dark, "appearance button returns to light theme");
+    f.click(draw, 630, 432);
+    expect(!f.ui.animating(), "running countdown does not enable continuous animation");
 #else
     (void)argc; (void)argv;
     UiState st;

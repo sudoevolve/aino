@@ -110,7 +110,7 @@ Windows 本地回归覆盖组件状态、滚动布局、编辑、19 项整窗行
 aino.hpp             库本体，单文件（全部实现都在这一个头里）
 examples/gallery.cpp 15 分类、43 示例卡片（固定侧栏与工具栏、连续滚动）
 examples/sidebar_demo.cpp 侧边栏切换（新手第一个 demo）
-examples/zoom_demo.cpp 缩放按钮（Transform 的最小用法）
+examples/pomodoro.cpp 番茄钟（侧栏、工具栏、倒计时与时长设置）
 examples/primitives_demo.cpp 基础图元、裁剪、变换与背景模糊
 examples/function_viewer.cpp 函数可视化、自定义表达式、采样缓存与手动播放
 examples/ssh_client.cpp 可选 SSH/SFTP 客户端、后台传输与取消（额外依赖见上文）
