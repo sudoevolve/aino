@@ -224,6 +224,18 @@ static void native_lifecycle() {
 }
 #elif defined(AINO_PLATFORM_X11)
 static void native_lifecycle() {
+    aino::detail::X11TextRenderer renderer;
+    renderer.init(1, "sans", "monospace"); renderer.measure("A", 14, 400);
+    const auto before_missing = renderer.cache_stats().faces;
+    renderer.measure("\xf4\x8f\xbf\xbf", 14, 400);
+    check(renderer.cache_stats().faces == before_missing, "missing glyph does not open unrelated font files");
+    renderer.release();
+    for (const auto icon : {aino::SystemIcon::Play, aino::SystemIcon::Pause, aino::SystemIcon::PreviousTrack,
+                           aino::SystemIcon::NextTrack, aino::SystemIcon::Shuffle, aino::SystemIcon::RepeatOne,
+                           aino::SystemIcon::RepeatAll, aino::SystemIcon::Timer}) {
+        const auto mask = aino::detail::load_system_icon(icon, 16);
+        check(mask.width > 0 && !mask.alpha.empty(), "media icons come from native Linux icon themes");
+    }
     aino::Window window(320, 200, "aino capture probe");
     check(window.ok(), "create X11 capture probe window");
     if (!window.ok()) return;

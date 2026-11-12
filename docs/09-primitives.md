@@ -98,7 +98,9 @@ void draw_mono_text(const std::string& text, float x, float y_top, const Color& 
 等宽文本以左上角定位，使用独立等宽字体通道。
 
 `system_icon` 只绘制符号，不提供点击交互，尊重裁剪、颜色和变换。
-Windows 使用 Segoe Fluent Icons / MDL2，macOS 使用 SF Symbols，X11 使用 Unicode 回退。
+Windows 使用 Segoe Fluent Icons / MDL2，macOS 使用 SF Symbols；X11 从桌面系统图标主题读取 SVG/PNG，支持主题继承及 Adwaita/hicolor 回退，按传入颜色绘制 alpha mask。
+Linux 使用运行时加载的 GdkPixbuf 和系统 SVG loader，不初始化 GTK；Ubuntu/Debian 安装 `libgdk-pixbuf-2.0-0 librsvg2-common adwaita-icon-theme`。缺少库或对应系统图标时返回 false。路径及按尺寸栅格化的结果会缓存，XSETTINGS 图标主题变化时失效。
+媒体符号使用 `Play`、`Pause`、`PreviousTrack`、`NextTrack`、`Shuffle`、`RepeatOne`、`RepeatAll`、`Timer`。
 可配合空文字按钮构造系统图标按钮，见 [02 §5](02-style-and-theme.md#5-系统图标)。
 
 ## 6. 度量

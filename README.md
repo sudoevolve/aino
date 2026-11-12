@@ -106,6 +106,8 @@ CI 在 Windows/Linux/macOS 上编译、开窗冒烟并运行几何像素断言�
 当前 mac 风格尚未完成 Linux/macOS 真机核对。输入、IME、剪贴板与 Cocoa 多窗口的限制见
 [平台支持](docs/README.md#平台支持)。
 
+X11 字体回退先检查 Fontconfig 字符覆盖集合再打开字体，避免缺字加载无关字体文件；字体顺序、字号和 metrics 保持原有规则。Linux 系统图标读取桌面图标主题，使用系统 GdkPixbuf/SVG loader，不初始化 GTK；运行依赖与返回约定见 [系统图标](docs/09-primitives.md#5-文字与系统图标)。这批资源路径修复尚未在 Ubuntu 实机复测，未运行本轮回归。
+
 ## Project Layout
 
 ```text

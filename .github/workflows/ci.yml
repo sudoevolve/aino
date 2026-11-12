@@ -86,7 +86,7 @@ jobs:
           # xfonts-base 是核心 X 的 XLFD 位图字体（fixed / 6x13 ...），只作为
           # "freetype 加载失败"时的兜底来源 —— 但仍然要装，否则那条兜底路一个字都没有。
           sudo apt-get install -y --no-install-recommends \
-            libx11-dev libfreetype6 libfontconfig1 libfontconfig \
+            libx11-dev libgdk-pixbuf-2.0-0 librsvg2-common adwaita-icon-theme libfreetype6 libfontconfig1 libfontconfig \
             xvfb xfonts-base fonts-dejavu-core fonts-noto-cjk
           # 裸容器里字体缓存可能还没建：不建的话 FcFontMatch 找不到 DejaVu / Noto，
           # 抗锯齿和中文断言都会红。
