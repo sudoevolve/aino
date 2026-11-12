@@ -8,11 +8,8 @@
 //   · ImmGetContext / ImmSetCompositionString 必须由**窗口所属线程**调，且窗口要有
 //     前台焦点，否则 SetCompositionString 返回 FALSE、GCS_COMPSTR 读出来是 0。
 //   · 必须先发 WM_IME_STARTCOMPOSITION 再 SetCompositionString。
-//   · **别用 (w & GCS_COMPSTR) 当门槛**。微软拼音是 TSF 输入法，经 CUAS 转发时
-//     w = 0x73（只有 COMPREADSTR/READATTR/COMPATTR/COMPCLAUSE），就是没有 GCS_COMPSTR
-//     这一位，因此不能只按该标志决定是否查询组字串。
-//   · **别用 lParam 那个 HIMC**：CUAS 塞过来的句柄 ImmGetCompositionString 返回 0，
-//     得自己 ImmGetContext(hwnd)。两条都在 I9 里验。
+//   · wParam 是起始字符，组字标志在 lParam；HIMC 始终通过 ImmGetContext(hwnd) 取得。
+//     I9 仍覆盖 lParam 缺少 GCS_COMPSTR、上下文却已有草稿的兼容路径。
 //   · 空输入框 + hint 很常见，组字时必须让 hint 让位（I4 就是拿 hint 当基线验的：
 //     没让位的话 diff 直接是 0）。
 //   · driver 线程**不要**直接读 ui->ime_comp —— std::string 跨线程读会撞上写入
@@ -93,7 +90,7 @@ static int diff_in(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b,
     return n;
 }
 
-// 假扮一个输入法的浮动组合窗（真名就叫这个类）。后端应该把它压成不可见。
+// 模拟同进程 IME 窗口；后端不得按类名修改其样式、透明度或可见性。
 static HWND make_fake_composition_window() {
     static bool reg = false;
     if (!reg) {
@@ -107,7 +104,7 @@ static HWND make_fake_composition_window() {
         reg = true;
     }
     // WS_EX_NOACTIVATE 很关键：这个窗口一抢到前台，主窗口就丢了输入法上下文，
-    // 组字当场结束（ime_comp 变空），探针就测不到"压制"这件事了。
+    // 组字当场结束（ime_comp 变空），探针就无法检查组字期间的窗口行为。
     return CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"MSCTFIME Composition", L"",
                            WS_POPUP, 600, 600, 120, 24,
                            nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -116,6 +113,7 @@ static HWND make_fake_composition_window() {
 int main() {
     // 必须在建 aino 窗口之前抢注这个类名（见 make_fake_composition_window 的注释）
     HWND fake_comp = make_fake_composition_window();
+    const auto original_style = fake_comp ? GetWindowLongPtrW(fake_comp, GWL_EXSTYLE) : 0;
 
     Window win(int(kLogicalW), int(kLogicalH), "aino-imecomp-probe");
     if (!win.ok()) { std::printf("window failed\n"); return 1; }
@@ -169,7 +167,7 @@ int main() {
 
         // ---- 上屏：草稿消失，库不许自己往正文插字 ----
         if (HIMC himc = g_himc.load()) {
-            PostMessageW(h, WM_IME_COMPOSITION, GCS_RESULTSTR, LPARAM(himc));
+            PostMessageW(h, WM_IME_COMPOSITION, 0, GCS_RESULTSTR);
             Sleep(350);
         }
         check(snapshot().empty(), "I5 GCS_RESULTSTR 后草稿清空");
@@ -186,7 +184,7 @@ int main() {
         Sleep(300);
         check(snapshot().empty(), "I8 WM_IME_ENDCOMPOSITION 后草稿清空");
 
-        // ---- I9：真实输入法的消息形态（w=0x73 没有 GCS_COMPSTR 位、lParam 也没有 HIMC）----
+        // ---- I9：wParam 是字符，lParam 无组字标志时仍查询真实输入法上下文 ----
         g_stage.store(4);
         PostMessageW(h, WM_MOUSEMOVE, 0, MAKELPARAM(int(33 * sc), int(37 * sc)));
         std::string got;
@@ -196,72 +194,27 @@ int main() {
             if (!got.empty()) break;
         }
         check(got == "nihao2",
-              "I9 w=0x73（无 GCS_COMPSTR 位）+ lParam=0 也要能拿到草稿（CUAS 转发就是这个形态）",
+              "I9 wParam=0x73 + lParam=0 时仍从当前上下文读取草稿",
               "\"" + got + "\"");
 
-        // ---- I10 / I11：系统那个浮动组合窗要被压下去 ----
-        // 两段分开验，因为压制有两条路：
-        //   I10 组字消息到达时（win_proc 在 DefWindowProc 之后顺手压）
-        //   I11 组字中途它自己又亮出来、一条消息都没有（只能靠 20 ms 线程计时器）
-        // 量"它被看见了多少" —— 100 次 2 ms 采样。别单点读 IsWindowVisible：
-        // 库里 20 ms 计时器随时把它压回去，撞上那一刻就读成 0（上一版曾因此假红/假绿）。
-        auto vis_samples = [&](int n) {
-            int v = 0;
-            for (int i = 0; i < n; ++i) { if (IsWindowVisible(fake_comp)) ++v; Sleep(2); }
-            return v;
-        };
+        // I10～I12：系统 IME 窗口由系统拥有，不能为了内联草稿隐藏共享候选宿主。
         if (fake_comp) {
-            // 上一段之后真实 IME 可能已经发过 ENDCOMPOSITION，重新进一次组字
-            SetForegroundWindow(h);
-            SetFocus(h);
-            Sleep(150);
-            // 重新点一下输入框：窗口前台一有变动，焦点可能已经被清掉了，
-            // 没焦点就不会调 ime_pos，那么 ime_owner 是 false，后端"该不该藏"就判成不该。
-            PostMessageW(h, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(int(34 * sc), int(37 * sc)));
-            PostMessageW(h, WM_LBUTTONUP, 0, MAKELPARAM(int(34 * sc), int(37 * sc)));
-            Sleep(250);
+            ShowWindow(fake_comp, SW_SHOWNOACTIVATE);
             g_ui_saw_comp.store(false);
             g_stage.store(4);
             PostMessageW(h, WM_MOUSEMOVE, 0, MAKELPARAM(int(34 * sc), int(37 * sc)));
-            for (int i = 0; i < 30 && !g_ui_saw_comp.load(); ++i) Sleep(100);
-            // 故意把它亮出来 100 次采样：只要库在压，它几乎一次都不该被看见。
-            ShowWindow(fake_comp, SW_SHOWNOACTIVATE);
-            Sleep(60);                                  // 让消息路径/计时器先动手
-            const int vis10 = vis_samples(100);
-            check(vis10 <= 5,
-                  "I10 组字期间把 MSCTFIME Composition 浮动窗压成不可见（不然框里框外两份）",
-                  "200ms 内被看见 " + std::to_string(vis10) + "/100 次");
-
-            // I11：再亮一次，且**不发任何消息** —— 这时候只有计时器能压住它
-            ShowWindow(fake_comp, SW_SHOWNOACTIVATE);
-            Sleep(60);
-            const int vis11 = vis_samples(100);
-            check(vis11 <= 5,
-                  "I11 组字中途别人把它亮出来，计时器也能再压下去（不依赖消息/重绘）",
-                  "200ms 内被看见 " + std::to_string(vis11) + "/100 次");
-
-            // I12：光"藏"不够 —— 必须是"分层 + 全透明"。
-            // SW_HIDE 只是改状态，输入法每次更新组字都会再 ShowWindow 一次，
-            // 我们 20 ms 后才压，于是"亮一下、藏起来、再亮一下"。实测每个按键
-            // 都可能在下一次隐藏前短暂显示组合窗。
-            // 分层 alpha=0 之后窗口**照旧可见**（输入法不会再来抢），只是画不出像素。
-            ShowWindow(fake_comp, SW_SHOWNOACTIVATE);
-            bool layered = false, alpha0 = false;
-            for (int i = 0; i < 20; ++i) {
-                const LONG_PTR ex = GetWindowLongPtrW(fake_comp, GWL_EXSTYLE);
-                layered = (ex & WS_EX_LAYERED) != 0;
-                COLORREF key = 0; BYTE a = 255; DWORD flags = 0;
-                alpha0 = GetLayeredWindowAttributes(fake_comp, &key, &a, &flags) != 0
-                         && (flags & LWA_ALPHA) != 0 && a == 0;
-                if (layered && alpha0) break;
-                Sleep(50);
-            }
-            check(layered && alpha0,
-                  "I12 浮动窗被设成「分层 + 全透明」（只 SW_HIDE 会跟输入法拉锯 → 闪烁）",
-                  std::string("layered=") + std::to_string(int(layered))
-                      + " alpha0=" + std::to_string(int(alpha0)));
+            for (int i = 0; i < 30 && (g_stage.load() != 5 || !g_ui_saw_comp.load()); ++i) Sleep(100);
+            check(g_stage.load() == 5 && g_ui_saw_comp.load(), "I10 模拟窗口检查期间保持组字");
+            Sleep(100);
+            check(IsWindowVisible(fake_comp) != FALSE,
+                  "I11 组字与空闲消息处理期间不隐藏 IME 窗口");
+            COLORREF key = 0; BYTE alpha = 255; DWORD flags = 0;
+            const bool transparent = GetLayeredWindowAttributes(fake_comp, &key, &alpha, &flags) != 0 &&
+                                     (flags & LWA_ALPHA) != 0 && alpha == 0;
+            check(GetWindowLongPtrW(fake_comp, GWL_EXSTYLE) == original_style && !transparent,
+                  "I12 IME 窗口样式与透明度保持输入法原始设置");
         } else {
-            std::printf("  [skip] I10/I11 无法创建模拟浮动窗\n");
+            check(false, "I10 创建模拟 IME 窗口");
         }
 
         win.close();
@@ -292,10 +245,9 @@ int main() {
                                              nullptr, 0);
                     g_himc.store(himc);
                     // 走真实消息路径（不直接改 ui->ime_comp，否则测的是自己）。
-                    // st==4 刻意复刻微软拼音那条怪消息：w 只有 COMPREAD*/COMPATTR/COMPCLAUSE，
-                    // 没有 GCS_COMPSTR (0x08)，lParam 里也没有 HIMC。
+                    // st==4 覆盖缺少 GCS_COMPSTR 标志但上下文已有草稿的情况。
                     if (st == 2)
-                        PostMessageW(h, WM_IME_COMPOSITION, GCS_COMPSTR, LPARAM(himc));
+                        PostMessageW(h, WM_IME_COMPOSITION, 0, GCS_COMPSTR);
                     else
                         PostMessageW(h, WM_IME_COMPOSITION, 0x73, 0);
                     g_stage.store(st + 1);

@@ -137,6 +137,8 @@ CMakeLists.txt       自动为 examples/*.cpp 创建可执行目标，SSH 可选
 
 Windows 输入框会同步隐藏系统 caret 和 IMR_QUERYCHARPOSITION 的屏幕位置，供系统候选框定位；WM_IME_COMPOSITION 从 lParam 读取提交标志，不将组字标志误当 HIMC。原生模态消息重入时延后未完成帧的绘制。
 
+后续候选框修复移除了按 `MSCTFIME Composition` 类名隐藏/透明化原生 IME 窗口及其 20 ms 计时器。内联组合串只通过 WM_IME_SETCONTEXT 的 ISC_SHOWUICOMPOSITIONWINDOW 标志处理，候选显示标志保留；组合位置不再依赖隐藏窗口高度。系统窗口的可见性、样式与透明度由输入法拥有，库不干预。既有 ime_comp_probe 同步覆盖该约束并修正模拟消息的 lParam 标志；MSVC 已编译通过，按调用方要求未执行探针，仍需真实 Windows 输入法确认候选框显示。
+
 X11/XWayland 协商 XIMPreeditPosition 并更新物理光标坐标，合并 XNFilterEvents，支持较长 UTF-8 提交和输入框焦点切换；不支持该样式时回退原有 XIMPreeditNothing。不改变应用现有字体或布局，不代表原生 Wayland 输入法协议支持。
 
 这批修改按调用方要求只做必要编译和代码审查，Windows MSVC 的 capture_probe 已编译通过，未执行新的探针或回归；真实候选窗口位置和 Linux 桌面输入法仍需实际环境验证。
