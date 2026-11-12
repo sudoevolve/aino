@@ -141,6 +141,14 @@ sudo apt install libfreetype6 libfontconfig1 fonts-noto-cjk
 
 `AINO_X11_TRACE=1 ./app` 可查看字体加载与兜底信息。
 
+X11（包括 Wayland 会话中的 XWayland）默认从 XSETTINGS 的 `Xft/DPI`、
+`Gdk/WindowScalingFactor` 以及 X resources 的 `Xft.dpi` 读取桌面缩放，设置变化后更新。
+可用 `AINO_SCALE=1.5 ./app` 显式指定倍率；优先级高于 `GDK_SCALE` 和桌面设置，
+有效范围为 0.5–4。桌面 DPI 与整数倍率不会重复相乘，`GDK_DPI_SCALE` 不用于整窗缩放。
+`cfg.high_dpi=false` 时 X11 固定使用 1 倍，忽略上述设置。
+窗口大小、尺寸约束、`set_size()` 和输入坐标统一使用逻辑像素。
+这是 X11/XWayland 后端，尚未实现原生 Wayland 或逐显示器的独立缩放。
+
 ## 4. 最小程序
 
 ```cpp
