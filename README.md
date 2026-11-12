@@ -133,6 +133,14 @@ CMakeLists.txt       自动为 examples/*.cpp 创建可执行目标，SSH 可选
 日常修改运行 `python tools/regress.py --only macos_gallery_probe` 等相关探针，
 已有最新产物可加 `--no-build`；完整检查使用 `--full`，性能单独运行 `python tools/perf_gallery.py`。
 
+## 输入法兼容修复（未发布）
+
+Windows 输入框会同步隐藏系统 caret 和 IMR_QUERYCHARPOSITION 的屏幕位置，供系统候选框定位；WM_IME_COMPOSITION 从 lParam 读取提交标志，不将组字标志误当 HIMC。原生模态消息重入时延后未完成帧的绘制。
+
+X11/XWayland 协商 XIMPreeditPosition 并更新物理光标坐标，合并 XNFilterEvents，支持较长 UTF-8 提交和输入框焦点切换；不支持该样式时回退原有 XIMPreeditNothing。不改变应用现有字体或布局，不代表原生 Wayland 输入法协议支持。
+
+这批修改按调用方要求只做必要编译和代码审查，Windows MSVC 的 capture_probe 已编译通过，未执行新的探针或回归；真实候选窗口位置和 Linux 桌面输入法仍需实际环境验证。
+
 ## Docs
 
 - [01 快速开始](docs/01-quickstart.md)

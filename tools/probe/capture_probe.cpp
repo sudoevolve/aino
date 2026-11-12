@@ -187,6 +187,15 @@ static void native_lifecycle() {
                                         nullptr, instance, &state);
     check(window != nullptr, "create invisible message-only window");
     if (window) {
+        owner.ui.impl->ime_owner = true;
+        aino::detail::win_set_ime_pos(&state, 48, 32, 54);
+        struct Position { DWORD size,index; POINT point; UINT height; RECT document; } position{};
+        position.size = sizeof position;
+        check(SendMessageW(window, WM_IME_REQUEST, 0x0006, reinterpret_cast<LPARAM>(&position)) == TRUE,
+              "IME character-position request is handled");
+        POINT expected{48,32}; ClientToScreen(window,&expected);
+        check(position.point.x == expected.x && position.point.y == expected.y && position.height == 22,
+              "IME candidate anchor uses screen coordinates and caret height");
         for (UINT message : {WM_KILLFOCUS, WM_CAPTURECHANGED, WM_CANCELMODE}) {
             owner.ui.impl->active = 1; owner.need_frame = false;
             for (int i = 0; i < 3; ++i)
