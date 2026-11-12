@@ -13,9 +13,12 @@
 不要用“所有浮层都在帧末绘制”来安排层级。
 
 模态面板与下拉菜单登记矩形和交互层级，阻挡下面组件的点击、悬停、滚轮与键盘焦点。
-关闭帧仍保留输入闸门，防止关闭点击穿透。纯展示的 tooltip/toast/hover_card 不登记模态闸门。
-自定义交互应使用库组件或 `ui.hovered(box)`；直接读 `box.contains(mouse)` 不自动遵守输入隔离。
-检测覆盖范围与层级的断言见 `tools/probe/overlay_probe.cpp`。
+关闭当帧仍保留当前输入闸门，防止关闭点击穿透；menu/select/context_menu/popover 关闭后不再登记下一帧闸门，
+也不再排入已经关闭的弹层绘制。纯展示的 tooltip/toast/hover_card 不登记模态闸门。
+`ui.input()` 读取鼠标事件时遵守当前层级与裁剪；自绘 hover 仍需使用 `ui.hovered(box)` 或
+`ui.pointer_available()`，因为鼠标坐标保留。仅全局快捷键、弹层关闭检测使用 `ui.raw_input()`。
+检测覆盖范围与层级的断言见 `tools/probe/overlay_probe.cpp`；自绘输入与关闭生命周期覆盖在
+跨平台的 `tools/probe/capture_probe.cpp`。
 
 ## 1. `tooltip`
 
@@ -90,8 +93,10 @@ ui.popover("排序", &open, trigger, aino::Vec2(200, 96), [&](const aino::Rect& 
 ```
 
 传入内容区尺寸，库添加外部内边距，并把内容区矩形交给回调。
-返回本帧打开状态。回调在帧末运行，允许放按钮、输入框等交互控件。
-**回调捕获的数据必须存活到当前帧结束**，不要引用已经离开作用域的局部临时值。
+返回调用时的打开状态；外部点击或 Esc 关闭时返回 false，且不执行内容回调。
+回调在帧末运行，允许放按钮、输入框等交互控件；回调关闭面板也不会留下下一帧输入闸门。
+**`open` 指向的状态以及回调捕获的数据必须存活到当前帧结束**，不要引用已经离开作用域的局部临时值。
+若回调执行前状态已关闭，该回调不再运行。
 
 ## 6. `hover_card`
 

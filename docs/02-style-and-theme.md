@@ -96,6 +96,15 @@ enum Key {
 const aino::Input& in = ui.input();
 ```
 
+`input()` 默认屏蔽当前调用层被浮层、裁剪或测量模式遮挡的鼠标按键、滚轮、连击和拖拽状态，
+不会消费原始事件；同一帧内的浮层内容仍能读取它们。鼠标坐标与键盘状态保持不变。
+自绘 hover 使用 `ui.hovered(box)`，或先判断 `ui.pointer_available()`，不要仅靠坐标包含测试。
+自绘拖拽在 `pointer_available()` 为 false 时应取消，不要把被屏蔽的 `down == false` 当成正常松手提交。
+输入引用只用于当前调用层；进入 popover/deferred 回调后重新调用 `input()`。
+
+`ui.raw_input()` 显式返回未过滤的帧输入，仅用于全局快捷键、弹层关闭检测等输入管理逻辑。
+普通按钮、歌词和进度条不应通过它绕过遮挡。
+
 | 字段 | 说明 |
 |---|---|
 | `mouse` | 逻辑坐标（已除 DPI 缩放） |
