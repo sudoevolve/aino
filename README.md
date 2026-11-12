@@ -139,6 +139,8 @@ Windows 输入框会同步隐藏系统 caret 和 IMR_QUERYCHARPOSITION 的屏幕
 
 后续候选框修复移除了按 `MSCTFIME Composition` 类名隐藏/透明化原生 IME 窗口及其 20 ms 计时器。内联组合串只通过 WM_IME_SETCONTEXT 的 ISC_SHOWUICOMPOSITIONWINDOW 标志处理，候选显示标志保留；组合位置不再依赖隐藏窗口高度。系统窗口的可见性、样式与透明度由输入法拥有，库不干预。既有 ime_comp_probe 同步覆盖该约束并修正模拟消息的 lParam 标志；MSVC 已编译通过，按调用方要求未执行探针，仍需真实 Windows 输入法确认候选框显示。
 
+调用方随后反馈候选框已出现，但拼音显示两份。自绘预编辑的 owner 现在消费开始、更新和结束组字消息，只有提交结果继续交给默认过程生成 WM_CHAR；混合提交/预编辑标志分别处理，避免把已自绘内容再次交给系统组合窗。未接管时仍走默认路径，候选通知不变，不隐藏任何原生窗口。capture_probe 补入消息序列检查；capture_probe 与 ime_comp_probe 均仅编译通过，未执行，不将其视作真实输入法 UI 验证。
+
 X11/XWayland 协商 XIMPreeditPosition 并更新物理光标坐标，合并 XNFilterEvents，支持较长 UTF-8 提交和输入框焦点切换；不支持该样式时回退原有 XIMPreeditNothing。不改变应用现有字体或布局，不代表原生 Wayland 输入法协议支持。
 
 这批修改按调用方要求只做必要编译和代码审查，Windows MSVC 的 capture_probe 已编译通过，未执行新的探针或回归；真实候选窗口位置和 Linux 桌面输入法仍需实际环境验证。
