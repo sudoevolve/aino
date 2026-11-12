@@ -3786,6 +3786,8 @@ inline void Ui::end_frame() {
 
     // 清掉"本帧一次性"的输入事件
     Input& in = impl->input;
+    // 原控件可能因刷新、切页或布局变化消失；延迟控件消费完松手后统一释放。
+    if (!in.down[0]) impl->active = 0;
     for (int i = 0; i < 3; ++i) { in.pressed[i] = false; in.released[i] = false; }
     in.wheel = 0.0f;
     in.double_click = false;
@@ -10629,9 +10631,21 @@ inline LRESULT CALLBACK win_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
 
+    case WM_CAPTURECHANGED: case WM_CANCELMODE:
+        // 正常松手也会触发 WM_CAPTURECHANGED，必须保留 released 供本帧控件处理。
+        if (m == WM_CANCELMODE || s->btn_down[0] || s->btn_down[1] || s->btn_down[2]) {
+            for (int i = 0; i < 3; ++i) s->btn_down[i] = s->btn_pressed[i] = s->btn_released[i] = false;
+            s->owner->ui.impl->active = 0;
+            s->owner->need_frame = true;
+            if (m == WM_CANCELMODE && GetCapture() == h) ReleaseCapture();
+        }
+        return 0;
+
     case WM_KILLFOCUS:
-        for (int i = 0; i < 3; ++i) s->btn_down[i] = false;
+        for (int i = 0; i < 3; ++i) s->btn_down[i] = s->btn_pressed[i] = s->btn_released[i] = false;
+        s->owner->ui.impl->active = 0;
         for (int i = 0; i < KEY_COUNT; ++i) s->key_down[i] = false;
+        if (GetCapture() == h) ReleaseCapture();
         s->owner->need_frame = true;
         return 0;
 
@@ -12106,6 +12120,12 @@ inline bool x11_handle(X11State* s, XEvent& e) {
         s->mx = -1e6f; s->my = -1e6f;
         o->need_frame = true;
         break;
+    case FocusOut:
+        for (int i = 0; i < 3; ++i) s->btn_down[i] = s->btn_pressed[i] = s->btn_released[i] = false;
+        for (int i = 0; i < KEY_COUNT; ++i) s->key_down[i] = false;
+        o->ui.impl->active = 0;
+        o->need_frame = true;
+        break;
     default: break;
     }
     return true;
@@ -12187,7 +12207,7 @@ inline void x11_create(Window* self, const WindowConfig& cfg) {
     XSelectInput(s->dpy, s->win,
                  ExposureMask | StructureNotifyMask | PointerMotionMask |
                  ButtonPressMask | ButtonReleaseMask | KeyPressMask | KeyReleaseMask |
-                 EnterWindowMask | LeaveWindowMask);
+                 EnterWindowMask | LeaveWindowMask | FocusChangeMask);
     s->wm_delete = XInternAtom(s->dpy, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(s->dpy, s->win, &s->wm_delete, 1);
     s->gc = XCreateGC(s->dpy, s->win, 0, nullptr);

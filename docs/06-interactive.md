@@ -86,6 +86,21 @@ void  ui.set_focus(void* id);      // 强制移焦
 「值变化」类组件**每次变化都返回 true**，所以拖动 slider 时会连续返回 true ——
 这是设计如此，不是重复触发。要「松手才处理」就自己判断 `!ui.input().down[0]`。
 
+### 0.8 按下状态的释放与取消
+
+`active` 只表示鼠标仍在按住的控件。刷新列表、切页或改变布局可能使原控件消失，
+所以 `Ui::end_frame()` 在普通控件和延迟弹出层都处理完输入后，只要左键已松开，
+就统一释放残留的 `active`。鼠标仍按住时保留它，保证跨帧拖动正常。
+
+Windows 在失焦、捕获被其他窗口拿走或收到 `WM_CANCELMODE` 时取消按下状态，
+同时丢弃未消费的鼠标 press / release，避免取消操作触发点击。
+正常松手引发的 `WM_CAPTURECHANGED` 会保留那次 release，按钮仍能按预期点击。
+X11 订阅焦点事件，在 `FocusOut` 时清理按键和鼠标状态。
+
+`tools/probe/capture_probe.cpp` 覆盖控件消失、有无 release 的取消、正常拖动、
+延迟控件的松手，以及 Windows 原生捕获消息和 X11 焦点事件订阅。
+它已加入默认 `python tools/regress.py` 和三平台 CI；macOS 执行共享状态机回归。
+
 ---
 
 ## 1. `button` —— 按钮
