@@ -642,6 +642,23 @@ struct Input {
 // =============================================================================
 class Ui;
 
+/** @brief 临时选择控件状态的拥有者；析构恢复之前的作用域，不销毁状态。
+ * 只在所属 Ui 存活期间、同一 UI 线程内按嵌套顺序使用。
+ */
+class StateScope {
+public:
+    StateScope(const StateScope&) = delete;
+    StateScope& operator=(const StateScope&) = delete;
+    StateScope(StateScope&& other) noexcept;
+    StateScope& operator=(StateScope&&) = delete;
+    ~StateScope();
+private:
+    friend class Ui;
+    StateScope(Ui* ui, uint64_t previous) : ui_(ui), previous_(previous) {}
+    Ui* ui_ = nullptr;
+    uint64_t previous_ = 0;
+};
+
 // -----------------------------------------------------------------------------
 //  ScrollScope —— 一个滚动视口的句柄（`ui.scroll()` 的返回值）
 //
@@ -655,6 +672,7 @@ class Ui;
 struct ScrollScope {
     Ui*      ui         = nullptr;
     uint64_t id         = 0;
+    uint64_t state_scope_id = 0;   // 偏移属于创建句柄时的拥有者
     Rect     box;
     float    content_h  = 0.0f;
     float    max_offset = 0.0f;
@@ -667,7 +685,7 @@ struct ScrollScope {
     ScrollScope(ScrollScope&& o) noexcept { *this = std::move(o); }
     ScrollScope& operator=(ScrollScope&& o) noexcept {
         if (this == &o) return *this;
-        ui = o.ui; id = o.id; box = o.box; content_h = o.content_h;
+        ui = o.ui; id = o.id; state_scope_id = o.state_scope_id; box = o.box; content_h = o.content_h;
         max_offset = o.max_offset; offset = o.offset; active = o.active;
         o.active = false; o.ui = nullptr;
         return *this;
@@ -779,6 +797,18 @@ public:
     // ---------------- 帧生命周期（由 Window::run 调用，通常不用手动调）-------
     void begin_frame(float width, float height, float dt, float dpi_scale);
     void end_frame();
+
+    /** @brief 为页面、会话或动态控件指定稳定的状态拥有者；隐藏时保留状态。
+     * id 在本 Ui 内唯一，0 表示原有未分组状态；嵌套作用域使用各自独立的 id。
+     * 返回的句柄只恢复当前作用域，永久销毁拥有者时调用 release_state_scope(id)。
+     */
+    [[nodiscard]] StateScope state_scope(uint64_t id);
+    /** @brief 明确销毁指定拥有者的内部状态；不修改应用持有的业务数据。
+     * 仅 UI 线程调用。帧内延迟到所有 deferred 结束后释放，帧外立即释放。
+     * 隐藏、切页、离屏不应调用；0 和测量期间的调用忽略，其他作用域不受影响。
+     * 销毁后不要继续使用该拥有者；若复用 id，须等本帧 end_frame() 完成。
+     */
+    void release_state_scope(uint64_t id);
 
     // ---------------- 环境查询 ----------------
     /** @brief 当前调用层可见的输入；被浮层或裁剪挡住时屏蔽鼠标按键、滚轮和拖拽。
@@ -1389,6 +1419,7 @@ extern char** environ;
 #include <cstdarg>
 #include <algorithm>
 #include <unordered_map>
+#include <deque>
 #include <memory>
 #include <fstream>
 
@@ -3333,6 +3364,77 @@ struct ProfTick {
         ++*cnt;
     }
 };
+// 以 (拥有者, 控件键) 隔离状态。未绘制无法区分隐藏和删除，因此不按帧数淘汰；
+// 只有拥有者明确销毁时释放整组，避免误删离屏输入框的撤销历史或滚动位置。
+template<class T>
+class WidgetStateTable {
+    struct Key {
+        uint64_t scope, id;
+        bool operator==(const Key& other) const { return scope == other.scope && id == other.id; }
+    };
+    struct Hash {
+        size_t operator()(const Key& key) const {
+            return size_t(key.scope ? hash_combine(key.scope, key.id) : key.id);
+        }
+    };
+    std::unordered_map<Key, T, Hash> entries_;
+    std::vector<Key> measured_entries_;
+    uint64_t scope_ = 0;
+    bool measuring_ = false;
+
+public:
+    void set_scope(uint64_t scope) { scope_ = scope; }
+    // 测量中新建的节点仅供这次布局借用，结束即释放，不累积幽灵状态。
+    void set_measuring(bool on) {
+        measuring_ = on;
+        if (!on) {
+            for (const Key& key : measured_entries_) entries_.erase(key);
+            measured_entries_.clear();
+            if (measured_entries_.capacity() > 64) std::vector<Key>().swap(measured_entries_);
+        }
+    }
+    T& operator[](uint64_t id) {
+        const Key key{scope_, id};
+        auto result = entries_.try_emplace(key);
+        if (measuring_ && result.second) measured_entries_.push_back(key);
+        return result.first->second;
+    }
+    T& get_or_insert(uint64_t id, const T& initial) {
+        const Key key{scope_, id};
+        auto result = entries_.try_emplace(key, initial);
+        if (measuring_ && result.second) measured_entries_.push_back(key);
+        return result.first->second;
+    }
+    T* get_if(uint64_t id) {
+        auto it = entries_.find(Key{scope_, id});
+        return it == entries_.end() ? nullptr : &it->second;
+    }
+    const T* peek(uint64_t id) const {
+        auto it = entries_.find(Key{scope_, id});
+        return it == entries_.end() ? nullptr : &it->second;
+    }
+    size_t erase(uint64_t id) { return entries_.erase(Key{scope_, id}); }
+    size_t size() const { return entries_.size(); }
+    bool empty() const { return entries_.empty(); }
+    size_t bucket_count() const { return entries_.bucket_count(); }
+
+    void release_scope(uint64_t scope) {
+        for (auto it = entries_.begin(); it != entries_.end();) {
+            if (it->first.scope == scope) it = entries_.erase(it);
+            else ++it;
+        }
+        // erase 只释放节点。大页面关闭后，还要收缩高水位留下的 bucket 数组；
+        // 留四倍余量与小表底线，避免普通增删反复触发 rehash。
+        if (entries_.bucket_count() > 64 && entries_.size() < entries_.bucket_count() / 4) {
+            // 部分标准库的 rehash 不缩容。转移节点到小表后交换，明确释放旧桶，
+            // 不复制字符串、撤销历史，也不改变存活节点的值或引用。
+            decltype(entries_) compact;
+            compact.reserve(entries_.size());
+            compact.merge(entries_);
+            entries_.swap(compact);
+        }
+    }
+};
 } // namespace detail
 
 struct Ui::Impl {
@@ -3393,11 +3495,14 @@ struct Ui::Impl {
     // 立即模式交互状态（跨帧存活）
     uint64_t hot = 0;             // 本帧鼠标悬停的控件
     uint64_t active = 0;          // 正在被按住的控件
+    uint64_t active_scope_id = 0;
+    uint64_t hot_scope_id = 0;
     // 本帧的按下已经被谁领走了。一帧里可能有多个控件同时包含指针位置
     // （叠放的卡片、滚出视口但还压在页脚下面的列表行），而"按下"这个事件
     // 只属于其中一个 —— 否则一次点击会被画两次、动两个状态。
     bool press_taken = false;
     uint64_t next_hot = 0;
+    uint64_t next_hot_scope_id = 0;
     // 仅在悬停目标变化时请求重绘，避免控件内部指针移动产生无效帧。
     Rect next_hot_rect{};
     Rect hot_rect{};
@@ -3431,10 +3536,12 @@ struct Ui::Impl {
         if (active == 0 && reg.contains(input.mouse.x, input.mouse.y)) {
             next_hot_rect = reg;
             next_region_hit = true;
+            next_hot_scope_id = state_scope_id;
         }
     }
     void* focus = nullptr;        // 当前获得键盘焦点的控件
     uint64_t focus_id = 0;
+    uint64_t focus_scope_id = 0;
     // 焦点是**鼠标点出来**的还是键盘走出来的。macOS 只有键盘焦点画焦点环：
     // 点一下按钮就留一圈蓝（Web 的 :focus-visible 之外的默认行为）很有"网页感"，
     // 而文本类控件点进去本来就有环，所以它们照旧画。
@@ -3456,19 +3563,18 @@ struct Ui::Impl {
         float last = -1e9f;       // 上次压栈时间（合并连续输入用）
         uint64_t kind = 0;
     };
-    std::unordered_map<uint64_t, EditStack> edit_stack;
+    detail::WidgetStateTable<EditStack> edit_stack;
 
     // hover 等状态的插值动画表
-    std::unordered_map<uint64_t, float> anim;
+    detail::WidgetStateTable<float> anim;
     // 常驻动画的**局部相位**（spinner 的转角、skeleton 的呼吸）。和 clock 的区别：
     // 只在"该动"的时候按 dt 累加，停下就冻结 —— 所以鼠标移开再移回来是
     // "接着动"，而不是跳到全局时钟对应的相位。
-    std::unordered_map<uint64_t, float> phase;
+    detail::WidgetStateTable<float> phase;
     // 离散的跨帧状态（如 select 是否展开）
-    std::unordered_map<uint64_t, float> flags;
+    detail::WidgetStateTable<float> flags;
     // 组件私有的字符串状态（目前只有 combobox 的搜索词用）。
-    // 不主动清理：只有真的输入过才涨，量级是"每用过一次的 combobox 一条"。
-    std::unordered_map<uint64_t, std::string> strings;
+    detail::WidgetStateTable<std::string> strings;
 
     // 本帧 interact() 的调用序号。立即模式下"调用顺序 = 绘制顺序 = 层级"，
     // 序号小的先画、在下面，所以它可以直接当 z 序用。每帧归零重数。
@@ -3509,9 +3615,11 @@ struct Ui::Impl {
     bool gate_next = false;
     Rect gate_allow[GATE_SLOTS] = {};
     uint64_t gate_allow_z[GATE_SLOTS] = {};    // 该浮层"第一个属于自己的控件"的序号
+    uint64_t gate_allow_scope[GATE_SLOTS] = {};
     int  gate_allow_n = 0;
     Rect gate_next_allow[GATE_SLOTS] = {};
     uint64_t gate_next_allow_z[GATE_SLOTS] = {};
+    uint64_t gate_next_allow_scope[GATE_SLOTS] = {};
     int  gate_next_allow_n = 0;
 
     // 判定 = 位置 + 层级。两条都要，缺一条就漏：
@@ -3556,6 +3664,7 @@ struct Ui::Impl {
         if (gate_next_allow_n < GATE_SLOTS) {
             gate_next_allow[gate_next_allow_n] = r;
             gate_next_allow_z[gate_next_allow_n] = z;
+            gate_next_allow_scope[gate_next_allow_n] = state_scope_id;
             ++gate_next_allow_n;
         }
         gate_next = true;
@@ -3588,7 +3697,8 @@ struct Ui::Impl {
     // 单字宽度缓存：首次折行时每个码点只问一次 GDI。
     std::unordered_map<uint64_t, float> adv_cache;
 
-    std::vector<std::function<void()>> defer;
+    struct DeferredCall { uint64_t scope; std::function<void()> fn; };
+    std::deque<DeferredCall> defer;
 
     // 布局栈
     std::vector<Rect> group;
@@ -3622,17 +3732,25 @@ struct Ui::Impl {
         return clip_logic_on && !clip_logic_cur.contains(x, y);
     }
     // begin_scroll 的嵌套上下文（支持滚动区套滚动区）
-    struct ScrollCtx { uint64_t id = 0; Rect box; float offset = 0.0f; float max_offset = 0.0f; };
+    struct ScrollCtx {
+        uint64_t id = 0, state_scope_id = 0;
+        Rect box;
+        float offset = 0.0f, max_offset = 0.0f;
+    };
     std::vector<ScrollCtx> scroll_stack;
     // ID 由滚动区内的内容位置生成，屏幕位移不会重置控件状态或串用相邻控件的动画。
     uint64_t widget_id(const char* kind, const Rect& box, uint64_t extra = 0) const {
-        if (scroll_stack.empty()) return detail::make_id(kind, box, extra);
+        if (scroll_stack.empty()) {
+            const uint64_t id = detail::make_id(kind, box, extra);
+            return state_scope_id ? detail::hash_combine(state_scope_id, id) : id;
+        }
         const auto& parent = scroll_stack.back();
         Rect local = box.offset(-parent.box.x, parent.offset - parent.box.y);
         // ID 使用半像素精度；四舍五入避免小数滚动抵消后 120 变成 119.99999 而换 ID。
         local.x = std::round(local.x * 2.f) * .5f;
         local.y = std::round(local.y * 2.f) * .5f;
-        return detail::hash_combine(parent.id, detail::make_id(kind, local, extra));
+        const uint64_t id = detail::hash_combine(parent.id, detail::make_id(kind, local, extra));
+        return state_scope_id ? detail::hash_combine(state_scope_id, id) : id;
     }
     float last_scroll = 0.0f;    // 最近一个滚动区的偏移（end_scroll 之后 scroll_y() 仍可读）
 
@@ -3733,7 +3851,7 @@ struct Ui::Impl {
         bool  init = false;
         Easing e = nullptr;
     };
-    std::unordered_map<uint64_t, Tween> tweens;
+    detail::WidgetStateTable<Tween> tweens;
 
     struct ColorTween {
         Color from{}, to{};
@@ -3741,7 +3859,42 @@ struct Ui::Impl {
         bool  init = false;
         Easing e = nullptr;
     };
-    std::unordered_map<uint64_t, ColorTween> color_tweens;
+    detail::WidgetStateTable<ColorTween> color_tweens;
+
+    uint64_t state_scope_id = 0;
+    std::vector<uint64_t> released_state_scopes;
+    template<class Fn> void each_widget_state(Fn fn) {
+        fn(anim); fn(phase); fn(flags); fn(strings); fn(edit_stack);
+        fn(tweens); fn(color_tweens);
+    }
+    void set_state_scope(uint64_t id) {
+        state_scope_id = id;
+        each_widget_state([&](auto& table) { table.set_scope(id); });
+    }
+    void release_widget_state(uint64_t id) {
+        each_widget_state([&](auto& table) { table.release_scope(id); });
+        if (active_scope_id == id) { active = 0; active_scope_id = 0; }
+        if (focus_scope_id == id) {
+            focus = nullptr; focus_id = 0; focus_scope_id = 0; ime_comp.clear();
+            ime_owner = false;
+        }
+        if (hot_scope_id == id) { hot = 0; hot_scope_id = 0; hot_rect_valid = false; }
+        if (next_hot_scope_id == id) {
+            next_hot = 0; next_hot_scope_id = 0; next_hot_rect = Rect{}; next_region_hit = false;
+        }
+        auto remove_gates = [id](Rect* rects, uint64_t* z, uint64_t* owners, int& count) {
+            int kept = 0;
+            for (int i = 0; i < count; ++i) {
+                if (owners[i] == id) continue;
+                rects[kept] = rects[i]; z[kept] = z[i]; owners[kept] = owners[i]; ++kept;
+            }
+            count = kept;
+        };
+        remove_gates(gate_allow, gate_allow_z, gate_allow_scope, gate_allow_n);
+        remove_gates(gate_next_allow, gate_next_allow_z, gate_next_allow_scope, gate_next_allow_n);
+        gate_on = gate_allow_n > 0;
+        gate_next = gate_next_allow_n > 0;
+    }
 
     float tween_now(const Tween& tw) const {
         Easing e = tw.e ? tw.e : easing::out_cubic;
@@ -3755,6 +3908,22 @@ struct Ui::Impl {
 // -----------------------------------------------------------------------------
 inline Ui::Ui() : impl(new Impl()) {}
 inline Ui::~Ui() { delete impl; impl = nullptr; }
+
+inline StateScope::StateScope(StateScope&& other) noexcept
+    : ui_(other.ui_), previous_(other.previous_) { other.ui_ = nullptr; }
+inline StateScope::~StateScope() { if (ui_) ui_->impl->set_state_scope(previous_); }
+inline StateScope Ui::state_scope(uint64_t id) {
+    const uint64_t previous = impl->state_scope_id;
+    impl->set_state_scope(id);
+    return StateScope(this, previous);
+}
+inline void Ui::release_state_scope(uint64_t id) {
+    if (!id || impl->measure_on) return;
+    if (impl->frame_open) {
+        auto& pending = impl->released_state_scopes;
+        if (std::find(pending.begin(), pending.end(), id) == pending.end()) pending.push_back(id);
+    } else impl->release_widget_state(id);
+}
 
 inline void Ui::begin_frame(float w, float h, float dt, float dpi) {
     impl->frame_open = true;
@@ -3775,13 +3944,16 @@ inline void Ui::begin_frame(float w, float h, float dt, float dpi) {
     for (int i = 0; i < impl->gate_next_allow_n; ++i) {
         impl->gate_allow[i] = impl->gate_next_allow[i];
         impl->gate_allow_z[i] = impl->gate_next_allow_z[i];
+        impl->gate_allow_scope[i] = impl->gate_next_allow_scope[i];
     }
     impl->gate_next = false;
     impl->gate_next_allow_n = 0;
     impl->seq = 0;          // 本帧的 z 序从头数
     impl->defer.clear();
     impl->hot = impl->next_hot;
+    impl->hot_scope_id = impl->next_hot_scope_id;
     impl->next_hot = 0;
+    impl->next_hot_scope_id = 0;
     impl->hot_rect = impl->next_hot_rect;
     impl->hot_rect_valid = (impl->hot != 0 || impl->next_region_hit) && impl->hot_rect.w > 0.0f;
     impl->next_hot_rect = Rect{};
@@ -3810,9 +3982,18 @@ inline void Ui::end_frame() {
     // 闸门才分得清"弹层自己的内容"和"排在弹层后面画的普通控件"。
     impl->seq = Impl::Z_FRAME_END;
     for (size_t i = 0; i < impl->defer.size(); ++i) {
-        if (impl->defer[i]) impl->defer[i]();
+        // deque 追加不搬动已有节点；父回调的捕获须存活到所有嵌套回调结束。
+        auto& call = impl->defer[i];
+        auto state = state_scope(call.scope);
+        if (call.fn) call.fn();
     }
     impl->defer.clear();
+
+    // 只处理显式销毁请求，且等延迟回调及其捕获引用全部结束后再删除节点。
+    for (uint64_t id : impl->released_state_scopes) impl->release_widget_state(id);
+    impl->released_state_scopes.clear();
+    if (impl->released_state_scopes.capacity() > 64)
+        std::vector<uint64_t>().swap(impl->released_state_scopes);
 
     // 清掉"本帧一次性"的输入事件
     Input& in = impl->input;
@@ -3832,7 +4013,7 @@ inline void Ui::end_frame() {
 // 测量模式下浮层不入队：测量跑的是同一份绘制代码，弹层会被登记两遍。
 inline void Ui::deferred(std::function<void()> fn) {
     if (impl->measure_on) return;
-    impl->defer.push_back(std::move(fn));
+    impl->defer.push_back({impl->state_scope_id, std::move(fn)});
 }
 
 inline const Input& Ui::input() const {
@@ -3883,10 +4064,15 @@ inline bool  Ui::animating() const { return impl->animating; }
 inline void  Ui::set_cursor(Cursor c) { if (impl->measure_on) return; impl->cursor = c; }
 inline Cursor Ui::cursor() const { return impl->cursor; }
 inline void* Ui::focused_id() const { return impl->focus; }
-inline void  Ui::set_focus(void* id) { impl->focus = id; if (id) impl->caret_blink = 0.0f; }
+inline void  Ui::set_focus(void* id) {
+    impl->focus = id;
+    impl->focus_scope_id = id ? impl->state_scope_id : 0;
+    if (id) impl->caret_blink = 0.0f;
+}
 
 inline void Ui::begin_measure() {
     impl->measure_on = true;
+    impl->each_widget_state([](auto& table) { table.set_measuring(true); });
     impl->measure_any = false;
     impl->measure_acc = Rect{};
     // 摘掉画布：万一有控件忘了判 measure_on，也不会把真实图形糊到屏幕左上角
@@ -3896,6 +4082,7 @@ inline void Ui::begin_measure() {
 }
 inline Rect Ui::end_measure() {
     impl->measure_on = false;
+    impl->each_widget_state([](auto& table) { table.set_measuring(false); });
     impl->canvas = impl->measure_canvas;
     impl->measure_canvas = nullptr;
     return impl->measure_any ? impl->measure_acc : Rect{};
@@ -3916,8 +4103,10 @@ inline bool Ui::hovered(const Rect& box) {
 namespace detail {
 inline float animate_value(Ui::Impl* im, uint64_t id, float target, float speed = 14.0f) {
     // 测量不能创建动画状态；否则首次显示时会把选中控件从零重新播放。
-    auto found = im->anim.find(id);
-    if (im->measure_on) return found == im->anim.end() ? target : found->second;
+    if (im->measure_on) {
+        const float* found = im->anim.peek(id);
+        return found ? *found : target;
+    }
     float& cur = im->anim[id];
     float d = target - cur;
     if (std::fabs(d) < 0.0015f) {
@@ -3931,7 +4120,7 @@ inline float animate_value(Ui::Impl* im, uint64_t id, float target, float speed 
 
 inline float animate_state(Ui::Impl* im, uint64_t id, float target, float speed = 14.0f) {
     // 首次出现直接显示真实值，仅对已存在控件的状态变化插值。
-    if (!im->measure_on) im->anim.emplace(id, target);
+    if (!im->measure_on) im->anim.get_or_insert(id, target);
     return animate_value(im, id, target, speed);
 }
 
@@ -3967,12 +4156,15 @@ inline Interact interact(Ui::Impl* im, uint64_t id, const Rect& r, bool enabled)
     }
     if (inside) {
         res.hovered = true;
-        if (im->active == 0) { im->next_hot = id; im->next_hot_rect = r; }
+        if (im->active == 0) {
+            im->next_hot = id; im->next_hot_rect = r; im->next_hot_scope_id = im->state_scope_id;
+        }
         // 一帧里可能有多个控件都包含指针（叠放的、或没被裁干净的），但"按下"
         // 只属于一个控件：谁先画谁先认领。少了这道闸，一次点击会被后面的控件
         // 重新认领一遍 —— 按下和松开落在同一帧时尤其明显（两个控件各点一次）。
         if (in.pressed[0] && im->active == 0 && !im->press_taken) {
             im->active = id;
+            im->active_scope_id = im->state_scope_id;
             im->press_taken = true;
             res.pressed = true;
         }
@@ -4298,6 +4490,10 @@ inline void Ui::glass(const Rect& r, float radius, const Style& st) {
 //  动画
 // -----------------------------------------------------------------------------
 inline float Ui::tween(uint64_t id, float target, float duration, Easing e) {
+    if (impl->measure_on) {
+        const auto* tw = impl->tweens.peek(id);
+        return tw && tw->init ? impl->tween_now(*tw) : target;
+    }
     if (!e) e = easing::out_cubic;
     auto& tw = impl->tweens[id];
     if (!tw.init) {
@@ -4305,7 +4501,6 @@ inline float Ui::tween(uint64_t id, float target, float duration, Easing e) {
         tw.t = duration; tw.dur = duration; tw.e = e;
         return target;
     }
-    if (impl->measure_on) return impl->tween_now(tw);    // 测量不推进时间轴
     if (target != tw.to) {
         // 从**当前显示值**重新起跑：目标中途改变不会跳变
         tw.from = impl->tween_now(tw);
@@ -4325,21 +4520,24 @@ inline float Ui::tween(uint64_t id, float target, float duration, Easing e) {
 inline Color Ui::tween_color(uint64_t id, const Color& target, float duration, Easing e) {
     // 一个进度驱动四个通道。拆成 4 个独立 tween 会让各通道进度一致但**起点**
     // 被分别重置，颜色在中途会发灰发脏 —— 单状态才能保证插值路径是直线。
-    if (!e) e = easing::out_cubic;
-    auto& ct = impl->color_tweens[id];
-    if (!ct.init) {
-        ct.init = true; ct.from = target; ct.to = target;
-        ct.t = duration; ct.dur = duration; ct.e = e;
-        return target;
-    }
     // 测量模式：只读当前插值结果，不改状态（同 tween）
     if (impl->measure_on) {
+        const auto* saved = impl->color_tweens.peek(id);
+        if (!saved || !saved->init) return target;
+        const auto& ct = *saved;
         const float k0 = ct.dur > 0.0001f ? clampf(ct.t / ct.dur, 0.0f, 1.0f) : 1.0f;
         const float e0 = (ct.e ? ct.e : easing::out_cubic)(k0);
         return Color(uint8_t(float(ct.from.r) + (float(ct.to.r) - float(ct.from.r)) * e0),
                      uint8_t(float(ct.from.g) + (float(ct.to.g) - float(ct.from.g)) * e0),
                      uint8_t(float(ct.from.b) + (float(ct.to.b) - float(ct.from.b)) * e0),
                      uint8_t(float(ct.from.a) + (float(ct.to.a) - float(ct.from.a)) * e0));
+    }
+    if (!e) e = easing::out_cubic;
+    auto& ct = impl->color_tweens[id];
+    if (!ct.init) {
+        ct.init = true; ct.from = target; ct.to = target;
+        ct.t = duration; ct.dur = duration; ct.e = e;
+        return target;
     }
     if (target.r != ct.to.r || target.g != ct.to.g || target.b != ct.to.b || target.a != ct.to.a) {
         const float k = ct.dur > 0.0001f ? clampf(ct.t / ct.dur, 0.0f, 1.0f) : 1.0f;
@@ -5167,10 +5365,11 @@ inline bool is_focused(Ui::Impl* im, uint64_t id) {
 inline void grab_focus(Ui::Impl* im, uint64_t id) {
     im->focus = reinterpret_cast<void*>(static_cast<uintptr_t>(id));
     im->focus_id = id;
+    im->focus_scope_id = im->state_scope_id;
     im->caret_blink = 0.0f;
     im->focus_by_mouse = im->input.pressed[0] || im->input.pressed[1];
 }
-inline void drop_focus(Ui::Impl* im) { im->focus = nullptr; im->focus_id = 0; }
+inline void drop_focus(Ui::Impl* im) { im->focus = nullptr; im->focus_id = 0; im->focus_scope_id = 0; }
 
 // -----------------------------------------------------------------------------
 //  文本编辑小工具（input 组件用）
@@ -5261,9 +5460,9 @@ inline void edit_snapshot(Ui::Impl* im, uint64_t id, const std::string& before,
 }
 
 inline bool edit_undo(Ui::Impl* im, uint64_t id, std::string* text, int* caret, int* anchor) {
-    auto it = im->edit_stack.find(id);
-    if (it == im->edit_stack.end() || it->second.undo.empty()) return false;
-    auto& st = it->second;
+    auto* saved = im->edit_stack.get_if(id);
+    if (!saved || saved->undo.empty()) return false;
+    auto& st = *saved;
     st.redo.push_back(Ui::Impl::EditSnap{*text, *caret, *anchor});
     const Ui::Impl::EditSnap s = st.undo.back();
     st.undo.pop_back();
@@ -5277,9 +5476,9 @@ inline bool edit_undo(Ui::Impl* im, uint64_t id, std::string* text, int* caret, 
 }
 
 inline bool edit_redo(Ui::Impl* im, uint64_t id, std::string* text, int* caret, int* anchor) {
-    auto it = im->edit_stack.find(id);
-    if (it == im->edit_stack.end() || it->second.redo.empty()) return false;
-    auto& st = it->second;
+    auto* saved = im->edit_stack.get_if(id);
+    if (!saved || saved->redo.empty()) return false;
+    auto& st = *saved;
     st.undo.push_back(Ui::Impl::EditSnap{*text, *caret, *anchor});
     const Ui::Impl::EditSnap s = st.redo.back();
     st.redo.pop_back();
@@ -9689,6 +9888,7 @@ inline bool scrollbar_interact(Ui::Impl* ui, const Rect& box, float max_offset, 
 
     if (kin.pressed[0] && on_track) {
         ui->active = sid;
+        ui->active_scope_id = ui->state_scope_id;
         if (g.thumb.contains(kin.mouse.x, kin.mouse.y)) {
             grab = kin.mouse.y - g.thumb.y;
         } else {
@@ -9715,6 +9915,7 @@ inline ScrollScope Ui::scroll(const Rect& box, float content_h) {
     ScrollScope sc;
     sc.ui         = this;
     sc.id         = impl->widget_id("scroll", box);
+    sc.state_scope_id = impl->state_scope_id;
     sc.box        = box;
     sc.content_h  = content_h;
     sc.max_offset = std::max(0.0f, content_h - box.h);
@@ -9740,6 +9941,7 @@ inline ScrollScope Ui::scroll(const Rect& box, float content_h) {
 
     Ui::Impl::ScrollCtx ctx;
     ctx.id = sc.id;
+    ctx.state_scope_id = sc.state_scope_id;
     ctx.box = box;
     ctx.offset = off;
     ctx.max_offset = sc.max_offset;
@@ -9770,6 +9972,7 @@ inline void ScrollScope::content(float h) {
     content_h  = h;
     max_offset = std::max(0.0f, h - box.h);
     if (!ui || !ui->impl) return;
+    auto state = ui->state_scope(state_scope_id);
     float& off = ui->impl->flags[id];
     off = detail::clampf(off, 0.0f, max_offset);
     offset = off;
@@ -9783,6 +9986,7 @@ inline void ScrollScope::content(float h) {
 
 inline void ScrollScope::to(float v) {
     if (!ui || !ui->impl) return;
+    auto state = ui->state_scope(state_scope_id);
     float& off = ui->impl->flags[id];
     const float nv = detail::clampf(v, 0.0f, max_offset);
     if (nv != off) { off = nv; ui->repaint(); }
@@ -9805,6 +10009,7 @@ inline void Ui::begin_scroll(const Rect& box, float content_h) {
 inline void Ui::end_scroll() {
     if (impl->scroll_stack.empty()) return;
     const Ui::Impl::ScrollCtx ctx = impl->scroll_stack.back();
+    auto state = state_scope(ctx.state_scope_id);
 
     // 滚动条在内容之上（所以放在 end_scroll 里，而不是 begin_scroll）。
     // 先吃交互再画：同一帧里拖动要立刻反映到滑块位置上，晚一帧会明显发黏。
@@ -9844,6 +10049,7 @@ inline float Ui::scroll_y() const {
 inline void Ui::scroll_to(float offset) {
     if (impl->scroll_stack.empty()) return;
     const Ui::Impl::ScrollCtx& ctx = impl->scroll_stack.back();
+    auto state = state_scope(ctx.state_scope_id);
     const float nv = detail::clampf(offset, 0.0f, ctx.max_offset);
     if (nv != ctx.offset) { impl->flags[ctx.id] = nv; repaint(); }
 }
@@ -9901,8 +10107,8 @@ inline void Ui::scroll_bar(const Rect& box, float content_h) {
 }
 
 inline float Ui::scroll_offset(const Rect& box) const {
-    auto it = impl->flags.find(impl->widget_id("scroll", box));
-    return it == impl->flags.end() ? 0.0f : it->second;
+    const float* off = impl->flags.get_if(impl->widget_id("scroll", box));
+    return off ? *off : 0.0f;
 }
 
 inline void Ui::scroll_to_index(const Rect& box, int index, float item_h, int count) {

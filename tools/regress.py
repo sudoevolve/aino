@@ -93,6 +93,7 @@ def verify_gallery(extra=()):
 
 
 PROBES = (
+    ('state_lifetime_probe', 'verdict: PASS', '控件状态生命周期：隐藏保留 / 显式释放 / 作用域隔离 / 延迟回调'),
     ('capture_probe', '[capture] verdict: PASS', '鼠标捕获生命周期：控件消失 / 取消 / 失焦 / 正常拖动'),
     ('gallery_layout_probe', 'verdict: PASS', '画廊布局报告：跨平台测量 / 越界 / 重叠 / CI 格式'),
     ('pomodoro_probe', '26 passed, 0 failed', '番茄钟：实际时钟 / 暂停续计 / 模式导航 / 时长 / 外观'),
@@ -121,7 +122,7 @@ PROBES = (
     ('hover_fade_probe', '通过 14 项，失败 0 项', 'hover 淡入淡出无暗闪（透明底只推 alpha）'),
 )
 
-CORE = {"capture_probe", "macos_gallery_probe", "interaction_probe", "widget_probe", "overlay_probe",
+CORE = {"state_lifetime_probe", "capture_probe", "macos_gallery_probe", "interaction_probe", "widget_probe", "overlay_probe",
         "click_probe", "scrollbar_probe", "hover_fade_probe"}
 
 

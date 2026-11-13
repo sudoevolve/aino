@@ -4,6 +4,7 @@
 #   1. ci_smoke   —— 能编译、能开窗、能跑满 20 帧（冒烟）
 #   2. ci_pixels  —— 44 项像素断言，直接从后备缓冲读像素（画得对不对）
 #   3. ci_capture —— active 生命周期；Windows / X11 额外检查原生取消事件
+#   4. ci_state_lifetime —— 隐藏保留、显式销毁及跨作用域状态隔离（无窗口）
 #
 # 现状：
 #   · Windows —— 唯一经过真桌面验证的后端，这个 job 必须绿；
@@ -37,6 +38,10 @@ jobs:
           cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT tools\ci_smoke.cpp user32.lib gdi32.lib /Fe:ci_smoke.exe
           cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT tools\ci_pixels.cpp user32.lib gdi32.lib /Fe:ci_pixels.exe
           cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT tools\probe\capture_probe.cpp user32.lib gdi32.lib /Fe:ci_capture.exe
+          cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT tools\probe\state_lifetime_probe.cpp user32.lib gdi32.lib /Fe:ci_state_lifetime.exe
+
+      - name: 控件状态生命周期回归
+        run: .\ci_state_lifetime.exe
 
       - name: 鼠标捕获生命周期回归
         run: .\ci_capture.exe
@@ -102,6 +107,10 @@ jobs:
           g++ -std=c++17 -O2 -Wall tools/ci_pixels.cpp -o ci_pixels -lX11 -ldl
           g++ -std=c++17 -O2 -Wall tools/probe/gallery_layout_probe.cpp -o ci_layout -lX11 -ldl
           g++ -std=c++17 -O2 -Wall tools/probe/capture_probe.cpp -o ci_capture -lX11 -ldl
+          g++ -std=c++17 -O2 -Wall tools/probe/state_lifetime_probe.cpp -o ci_state_lifetime -lX11 -ldl
+
+      - name: 控件状态生命周期回归（无窗口）
+        run: ./ci_state_lifetime
 
       - name: 鼠标捕获与 X11 失焦回归
         run: xvfb-run -a ./ci_capture
@@ -205,6 +214,11 @@ jobs:
             -framework Cocoa -framework CoreText -framework CoreGraphics -framework ApplicationServices
           clang++ -std=c++17 -O2 tools/probe/capture_probe.cpp -o ci_capture \
             -framework Cocoa -framework CoreText -framework CoreGraphics -framework ApplicationServices
+          clang++ -std=c++17 -O2 tools/probe/state_lifetime_probe.cpp -o ci_state_lifetime \
+            -framework Cocoa -framework CoreText -framework CoreGraphics -framework ApplicationServices
+
+      - name: 控件状态生命周期回归（无窗口）
+        run: ./ci_state_lifetime
 
       - name: 跨平台 active 生命周期回归
         run: ./ci_capture
