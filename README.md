@@ -108,6 +108,8 @@ CI 在 Windows/Linux/macOS 上编译、开窗冒烟并运行几何像素断言�
 
 X11 字体回退先检查 Fontconfig 字符覆盖集合再打开字体，避免缺字加载无关字体文件；字体顺序、字号和 metrics 保持原有规则。Linux 系统图标读取桌面图标主题，使用系统 GdkPixbuf/SVG loader，不初始化 GTK；运行依赖与返回约定见 [系统图标](docs/09-primitives.md#5-文字与系统图标)。这批资源路径修复尚未在 Ubuntu 实机复测，未运行本轮回归。
 
+Linux 应用可在 `main(int argc, char** argv)` 最前面调用 `if (const int code = aino::system_icon_worker_entry(argc, argv); code >= 0) return code;`，早于窗口、音频及业务初始化。短时子进程复用当前可执行文件，解码原系统图标后退出，最终 alpha 缓存在 `$XDG_CACHE_HOME/aino-system-icons-v1`（默认 `~/.cache/aino-system-icons-v1`，8 MiB）。缓存无效会重建，失败回退原加载；未接入的应用保持原行为，其他平台返回 -1。首次空缓存有额外等待和瞬时进程树峰值。X11 字体覆盖表按文件/index 共享，十秒未使用的 FreeType face 可释放，缺字时重开，保留字形和 metrics。[播放器专项记录](https://github.com/sudoevolve/aino-player/actions/runs/43353147831) 已验证受控场景的像素一致性；真实桌面和任意主题仍需实机验证。
+
 ## Project Layout
 
 ```text
