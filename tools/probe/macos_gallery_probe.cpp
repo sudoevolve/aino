@@ -62,14 +62,14 @@ struct Fixture {
         DeleteDC(dc);
     }
     void frame(const std::function<void()> &draw, float x = -100, float y = -100, bool press = false,
-               bool release = false, float wheel = 0) {
+               bool release = false, float wheel = 0, float scale = 1) {
         ui.impl->input = aino::Input{};
         ui.impl->input.mouse = Vec2(x, y);
         ui.impl->input.down[0] = press;
         ui.impl->input.pressed[0] = press;
         ui.impl->input.released[0] = release;
         ui.impl->input.wheel = wheel;
-        ui.begin_frame(width, height, 1.0f / 60.0f, 1);
+        ui.begin_frame(width, height, 1.0f / 60.0f, scale);
         ui.clear(ui.theme().background);
         draw();
         ui.end_frame();
@@ -419,6 +419,37 @@ int main() {
     expect(app.date_open && app.color_open, "layout measurement preserves real popover state");
     app.date_open = false;
     app.color_open = false;
+    // Measure and rasterize the real Typography card: draw_mono_text alone
+    // does not report bounds, so measurement-only layout tests miss its ink.
+    for (bool dark : {false, true}) {
+        f.ui.set_theme(dark ? aino::Theme::dark() : aino::Theme::light());
+        for (float scale : {1.f, 1.25f, 1.5f}) {
+            for (float width : {268.f, 340.f, 412.f, 600.f}) {
+                App typography;
+                Rect card;
+                const Color backdrop = dark ? f.ui.theme().window_bg : Color::hex(0xF5F5F7);
+                f.frame([&] {
+                    f.ui.clear(backdrop);
+                    card = {40, 40, width + 32, body_height(f.ui, typography, Typography, width) + 66};
+                    for (const auto& entry : kCards)
+                        if (entry.id == Typography) draw_card(f.ui, typography, entry, card);
+                }, -100, -100, false, false, 0, scale);
+                GdiFlush();
+                bool overflow = false, number_visible = false;
+                const int bottom = int(std::ceil(card.bottom() * scale));
+                for (int y = bottom; y < bottom + int(32 * scale); ++y)
+                    for (int x = int((card.x + 16) * scale); x < int((card.right() - 16) * scale); ++x)
+                        overflow |= !equal(f.pixel(x, y), backdrop);
+                const Color surface = dark ? f.ui.theme().card : f.ui.theme().control_bg;
+                for (int y = int((card.y + 48 + 142) * scale); y < bottom - int(10 * scale); ++y)
+                    for (int x = int((card.x + 16) * scale); x < int((card.x + 160) * scale); ++x)
+                        number_visible |= !equal(f.pixel(x, y), surface);
+                expect(!overflow, "Typography ink stays inside its measured card at every tested DPI and width");
+                expect(number_visible, "Typography number remains visible inside its card");
+            }
+        }
+    }
+    f.ui.set_theme(aino::Theme::light());
     for (float width : {268.f, 340.f, 412.f, 600.f}) {
         for (const auto &card : kCards) {
             f.ui.begin_measure();

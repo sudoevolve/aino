@@ -10,10 +10,10 @@ using aino::Style;
 using aino::SystemIcon;
 
 static Rect sample(aino::Ui& ui, const Rect& card, const char* title, const char* caption) {
-    ui.panel(card);
-    ui.label(title, {card.x + 16, card.y + 12, card.w - 32, 20}, Style().semi_bold());
+    ui.label(title, {card.x + 2, card.y + 2, card.w - 4, 20}, Style().font(13).semi_bold());
+    ui.panel({card.x, card.y + 32, card.w, card.h - 32}, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
     ui.muted_text(caption, {card.x + 16, card.bottom() - 30, card.w - 32, 18}, Style().font(11));
-    return {card.x + 16, card.y + 44, card.w - 32, card.h - 88};
+    return {card.x + 16, card.y + 48, card.w - 32, card.h - 96};
 }
 
 int main() {
@@ -28,8 +28,7 @@ int main() {
     float radius = 12, width = 2, opacity = .65f;
 
     win.run([&](aino::Ui& ui) {
-        ui.clear(ui.theme().window_bg);
-        ui.fill_rect({0, 0, ui.width(), 64}, ui.theme().title_bg);
+        ui.clear((ui.theme().window_bg.luminance() < .5f ? ui.theme().window_bg : aino::Color::hex(0xF5F5F7)));
         ui.heading("基础图元", {24, 15, 200, 30});
         const Rect theme_button(ui.width() - 48, 20, 24, 24);
         if (ui.button("", theme_button, Style().ghost())) {
@@ -38,22 +37,33 @@ int main() {
         }
         ui.system_icon(dark ? SystemIcon::Sun : SystemIcon::Moon, theme_button.inset(4), ui.theme().label);
         const auto& th = ui.theme();
-        const float gap = 16, margin = 24;
-        const int columns = ui.width() >= 960 ? 3 : 2;
+        const float gap = 20, margin = 28;
+        const int columns = ui.width() >= 1160 ? 3 : 2;
         const int rows = (8 + columns - 1) / columns;
         const float card_w = (ui.width() - margin * 2 - gap * (columns - 1)) / columns;
         const Rect viewport(0, 64, ui.width(), ui.height() - 64);
-        ui.begin_scroll(viewport, 84 + rows * 188.f + 16);
+        ui.begin_scroll(viewport, 208 + rows * 212.f + 24);
         const float y = viewport.y - ui.scroll_y();
-        char values[100];
-        std::snprintf(values, sizeof(values), "圆角 %.0f    线宽 %.1f    不透明度 %.0f%%", radius, width, opacity * 100);
-        ui.muted_text(values, {margin, y + 12, ui.width() - margin * 2, 20});
-        const float control_w = (ui.width() - margin * 2 - gap * 2) / 3;
-        ui.slider(&radius, 0, 28, {margin, y + 40, control_w, 24});
-        ui.slider(&width, 1, 8, {margin + control_w + gap, y + 40, control_w, 24});
-        ui.slider(&opacity, .1f, 1, {margin + (control_w + gap) * 2, y + 40, control_w, 24});
+        ui.label("绘制参数", {margin + 2, y + 8, ui.width() - margin * 2, 24}, Style().font(13).semi_bold().left());
+        const Rect settings(margin, y + 42, ui.width() - margin * 2, 144);
+        ui.panel(settings, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
+        const char* labels[] = {"圆角", "线宽", "不透明度"};
+        float* parameters[] = {&radius, &width, &opacity};
+        const float low[] = {0, 1, .1f}, high[] = {28, 8, 1};
+        for (int i = 0; i < 3; ++i) {
+            const Rect row(settings.x, settings.y + i * 48.f, settings.w, 48);
+            const float slider_w = std::min(300.f, row.w * .48f);
+            const Rect control(row.right() - 16 - slider_w, row.cy() - 12, slider_w, 24);
+            ui.label(labels[i], {row.x + 16, row.cy() - 12, control.x - row.x - 96, 24}, Style().font(13));
+            ui.slider(parameters[i], low[i], high[i], control);
+            char value[24];
+            if (i == 2) std::snprintf(value, sizeof(value), "%.0f%%", opacity * 100);
+            else std::snprintf(value, sizeof(value), "%.1f", *parameters[i]);
+            ui.draw_text(value, {control.x - 62, control.y, 44, 24}, th.label2, Style().font(12).right());
+            if (i < 2) ui.separator({row.x + 16, row.bottom() - 1, row.w - 32, 1});
+        }
         auto card = [&](int index) {
-            return Rect(margin + (index % columns) * (card_w + gap), y + 84 + (index / columns) * 188, card_w, 172);
+            return Rect(margin + (index % columns) * (card_w + gap), y + 216 + (index / columns) * 212, card_w, 192);
         };
         Rect r = sample(ui, card(0), "矩形与连续圆角", "填充 · 描边 · 可调圆角");
         ui.fill_rect_s({r.x + 12, r.y, r.w * .43f, r.h}, th.tint, radius, th.corner_smoothing);
@@ -92,7 +102,7 @@ int main() {
         ui.draw_mono_text("0123456789", r.x, r.y + 36, th.label2, 13);
         const SystemIcon icons[] = {SystemIcon::Folder, SystemIcon::Settings, SystemIcon::Star, SystemIcon::Info};
         for (int i = 0; i < 4; ++i)
-            ui.system_icon(icons[i], {r.right() - 128 + i * 32.f, r.y + 34, 24, 24}, th.tint);
+            ui.system_icon(icons[i], {r.x + i * 32.f, r.y + 70, 24, 24}, th.tint);
 
         r = sample(ui, card(7), "背景模糊", "背景模糊近似材质");
         ui.push_clip(r);

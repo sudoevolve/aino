@@ -1,17 +1,30 @@
 ﻿# aino
 
-单头文件 C++17 桌面 UI 库 —— 立即模式、零第三方依赖、空闲 0.00% CPU。（这是一个纯vibo coding项目）
+单头文件 C++17 桌面 UI 库，采用立即模式与事件驱动主循环。
 
 核心库只有一个 `aino.hpp`，使用系统绘制和字体接口，无第三方 UI 或图标依赖。采用 macOS 风格，背景材质以模糊近似。
 
 ## Preview
 
-|                                                     |                                               |
-| --------------------------------------------------- | --------------------------------------------- |
-| ![按钮与选择控件](screenshots/gallery-overview.png) | ![强调色预览](screenshots/gallery-button.png) |
-| ![对话框](screenshots/gallery-dialog.png)           | ![深色](screenshots/gallery-dark.png)         |
+以下为 Windows 上的示例实窗截图，界面采用 iOS／macOS 风格。
 
-![基础图元示例](screenshots/primitives.png)
+| 分组设置 | 组件画廊 |
+| --- | --- |
+| ![设置页](screenshots/sidebar-settings.png) | ![按钮与输入控件](screenshots/gallery-overview.png) |
+| ![分组卡片与列表](screenshots/gallery-button.png) | ![深色主题](screenshots/gallery-dark.png) |
+| ![对话框](screenshots/gallery-dialog.png) | ![基础图元](screenshots/primitives.png) |
+
+## 开发规范
+
+界面以 iOS／macOS 设置应用为视觉参考：
+
+- 按功能分组，同组条目放进一张圆角卡片；分组标题置于卡片外。
+- 使用系统字体、清晰的标题与说明层级、主题配色，兼容深浅外观。
+- 卡片默认圆角 12、左右内边距 16、设置项行高 64；标题和说明在左，控件居中贴右，分隔线缩进。
+- 内容区居中并限制宽度，窄窗口调整布局；文字完整显示，卡片底部留足间距，长内容可滚动。
+- 样式直接写在各示例内，保留交互与状态；修改后检查深浅主题、最小窗口及 DPI，并同步更新预览截图。
+
+详细尺寸与参考示例见 [AGENTS.md](AGENTS.md)。
 
 ## Quick Start
 
@@ -92,56 +105,30 @@ cmake --build build --config Release --target aino_primitives_demo
 `ssh_client.cpp` 保留兼容目标名 `aino_ssh`，需额外安装 libssh2（MSVC 使用预编译 libssh2 + mbedTLS）。
 缺依赖仅跳过此目标，`-DAINO_BUILD_SSH=OFF` 可禁用；详见 [构建说明](docs/01-quickstart.md)。
 
-画廊“空状态”卡片中的“新建素材”会打开独立窗口，填写名称与说明后回填主窗口。
-`tools/child_window.py` 验证点击、创建、取消以及两个消息循环的响应。
+`win.run(frame_cb)` 管理主循环，窗口按需重绘；动画与后台数据更新方式见
+[快速开始](docs/01-quickstart.md)。
 
-Windows 每个窗口线程使用独立帧定时器，多窗口实测不等于 Cocoa 支持后台线程建窗。
-
-`win.run(frame_cb)` 就是完整主循环：没事件时阻塞在 `WaitMessage`，帧回调只在需要重绘时被调用 —— 窗口静止时 0 帧 / 0.00% CPU，不是低帧率空转。
-
-Windows 本地回归覆盖组件状态、滚动布局、编辑、19 项整窗行为、空闲 CPU 与多窗口。
-仓库 CI 仅在发布 GitHub Release（含预发布版本）时自动运行，也可在 Actions 页面手动触发。
-普通提交、分支推送、PR 和单独推送 tag 不触发自动 CI。
-CI 在 Windows/Linux/macOS 上编译、开窗冒烟并运行几何像素断言；
-当前 mac 风格尚未完成 Linux/macOS 真机核对。输入、IME、剪贴板与 Cocoa 多窗口的限制见
-[平台支持](docs/README.md#平台支持)。
-
-X11 字体回退先检查 Fontconfig 字符覆盖集合再打开字体，避免缺字加载无关字体文件；字体顺序、字号和 metrics 保持原有规则。Linux 系统图标读取桌面图标主题，使用系统 GdkPixbuf/SVG loader，不初始化 GTK；运行依赖与返回约定见 [系统图标](docs/09-primitives.md#5-文字与系统图标)。这批资源路径修复尚未在 Ubuntu 实机复测，未运行本轮回归。
-
-Linux 应用可在 `main(int argc, char** argv)` 最前面调用 `if (const int code = aino::system_icon_worker_entry(argc, argv); code >= 0) return code;`，早于窗口、音频及业务初始化。短时子进程复用当前可执行文件，解码原系统图标后退出，最终 alpha 缓存在 `$XDG_CACHE_HOME/aino-system-icons-v1`（默认 `~/.cache/aino-system-icons-v1`，8 MiB）。缓存无效会重建，失败回退原加载；未接入的应用保持原行为，其他平台返回 -1。首次空缓存有额外等待和瞬时进程树峰值。X11 字体覆盖表按文件/index 共享，十秒未使用的 FreeType face 可释放，缺字时重开，保留字形和 metrics。[播放器专项记录](https://github.com/sudoevolve/aino-player/actions/runs/43353147831) 已验证受控场景的像素一致性；真实桌面和任意主题仍需实机验证。
+支持 Windows（GDI）、Linux（X11）和 macOS（Cocoa）。Wayland 会话通过 XWayland 运行，
+目前没有原生 Wayland 后端。平台限制见 [平台支持](docs/README.md#平台支持)。
 
 ## Project Layout
 
 ```text
-aino.hpp             库本体，单文件（全部实现都在这一个头里）
-examples/gallery.cpp 15 分类、43 示例卡片（固定侧栏与工具栏、连续滚动）
-examples/sidebar_demo.cpp 侧边栏切换（新手第一个 demo）
-examples/pomodoro.cpp 番茄钟（侧栏、工具栏、倒计时与时长设置）
-examples/primitives_demo.cpp 基础图元、裁剪、变换与背景模糊
-examples/function_viewer.cpp 函数可视化、自定义表达式、采样缓存与手动播放
-examples/ssh_client.cpp 可选 SSH/SFTP 客户端、后台传输与取消（额外依赖见上文）
-docs/                文档，01 快速开始 … 12 组件与示例索引
-screenshots/         预览截图
-tools/               构建、像素断言与回归脚本
-tools/regress.py     默认核心交互检查，--only 指定探针，--full 完整检查
-tools/perf_gallery.py 实际画廊空闲、移动、滚动、拖动与悬停 CPU 采样
-tools/shot_pages.py  按分类截整窗图（改完版式先看一眼，不算回归）
-tools/ci_smoke.cpp   CI 冒烟程序：开窗 + 跑满 20 帧就退（三平台共用）
-tools/ci_pixels.cpp  跨平台像素断言：44 项（含 4 项 X11 专有），直接读后备缓冲（三平台共用）
-tools/probe/         数值/像素探针（回归用，不参与发布）
-CMakeLists.txt       自动为 examples/*.cpp 创建可执行目标，SSH 可选
+aino.hpp                     核心库
+examples/gallery.cpp         组件画廊
+examples/sidebar_demo.cpp    侧栏导航与设置
+examples/pomodoro.cpp        番茄钟
+examples/primitives_demo.cpp 基础图元
+examples/function_viewer.cpp 函数可视化
+examples/ssh_client.cpp      SSH/SFTP 客户端（可选依赖）
+docs/                        使用文档
+screenshots/                 预览截图
+tools/                       构建、测试与性能检查
+CMakeLists.txt               示例构建配置
 ```
 
-日常修改运行 `python tools/regress.py --only macos_gallery_probe` 等相关探针，
-已有最新产物可加 `--no-build`；完整检查使用 `--full`，性能单独运行 `python tools/perf_gallery.py`。
-
-## 输入法兼容修复（未发布）
-
-按调用方明确要求撤回远端实验性 Windows IME 修改，恢复至其确认 gallery 正常的 `11f72ae7bc19e229551445b16306e22994018007`：相关状态、定位、组字消息、组合窗处理和原 IME 探针均按基线原样恢复。后续系统 caret、消息拦截和组合窗策略没有得到实机确认，调用方已反馈失败，因此撤回实验新增的 IME 契约检查；保留鼠标生命周期、Linux 字体/图标修复及独立的原生模态帧重入保护。
-
-X11/XWayland 协商 XIMPreeditPosition 并更新物理光标坐标，合并 XNFilterEvents，支持较长 UTF-8 提交和输入框焦点切换；不支持该样式时回退原有 XIMPreeditNothing。不改变应用现有字体或布局，不代表原生 Wayland 输入法协议支持。
-
-这批恢复按调用方要求只做必要编译和代码审查，不执行探针、回归或 CI。远端回退独立提交并以普通推送保留历史，未发布；调用方确认的是基线 gallery，尚不能视作播放器恢复后的实机验证，新的播放器搜索框修复须等用户确认后再提交推送。
+开发检查使用 `python tools/regress.py`，完整检查加 `--full`；
+工具说明见 [回归与截图](docs/README.md#回归与截图)。
 
 ## Docs
 

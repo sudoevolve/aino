@@ -1,9 +1,9 @@
 // =============================================================================
 //  aino 示例 —— SSH 客户端
 //
-//  启动页是"连接卡片"：每台服务器一张卡，点一下就连；支持多标签同时开多个会话。
+//  启动页按来源分组列出连接；支持多标签同时开多个会话。
 //
-//    · 连接：卡片点选 / 新建连接；密码默认掩码，右侧眼睛可临时看明文
+//    · 连接：列表点选 / 新建连接；密码默认掩码，右侧眼睛可临时看明文
 //    · 配置：本机保存（~/.aino_ssh/profiles.json）；
 //            自动导入 ~/.ssh/config（VSCode Remote-SSH 用的就是它），
 //            以及 VSCode 设置里 remote.SSH.configFile 指定的那份
@@ -33,6 +33,7 @@
 #include <chrono>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cmath>
@@ -1998,136 +1999,116 @@ void open_cfg_editor(App& app);
 
 // 启动页从 top 起算，为常驻标签栏预留高度。
 void draw_start(aino::Ui& ui, App& app, const aino::Theme& th, float top) {
-    const float W = ui.width(), H = ui.height();
-    const float Y = top;                       // 页面内容的上边界
-    const aino::Input& in = ui.input();
+    const float W = ui.width(), H = ui.height(), sidebar = 200;
+    const bool dark = th.window_bg.luminance() < .5f;
+    const Color backdrop = dark ? th.window_bg : Color::hex(0xF5F5F7);
+    const Color surface = dark ? th.card : th.control_bg;
+    ui.fill_rect({0, top, W, H - top}, backdrop);
+    ui.fill_rect({0, top, sidebar, H - top}, th.sidebar_bg);
+    ui.separator({sidebar - 1, top, 1, H - top});
+    ui.fill_rect({20, top + 26, 32, 32}, th.tint.scaled_alpha(.13f), 8);
+    ui.system_icon(aino::SystemIcon::Network, {27, top + 33, 18, 18}, th.tint);
+    ui.label("SSH", {64, top + 24, 116, 24}, Style().font(16).semi_bold());
+    ui.draw_text("服务器与连接", {64, top + 51, 116, 18}, th.label2, Style().font(11));
+    Style nav = Style().font(13).padding(36);
+    if (g_block_input) nav.off();
+    ui.nav_item("所有连接", true, {10, top + 106, 180, 32}, nav);
+    ui.system_icon(aino::SystemIcon::List, {22, top + 114, 16, 16}, th.tint);
 
-    // 背景使用两段纯色填充。
-    ui.fill_rect(Rect(0, Y, W, H - Y), th.background);
-
-    // 头部
-    const float head_h = 96.0f;
-    ui.draw_text("aino · SSH", Rect(40.0f, Y + 26.0f, 400.0f, 34.0f), th.foreground,
-                 Style().font(22.0f).bold());
-    int local_n = 0, imp_n = 0;
-    for (const Profile& p : app.profiles) { if (p.src == 0) ++local_n; else ++imp_n; }
-    // 显示实际导入路径，区别用户配置与系统配置。
-    char sub[520];
-    std::snprintf(sub, sizeof sub, "选一台服务器开始 · 本机 %d 个连接 · 已导入 %d 个（%s）",
-                  local_n, imp_n, display_path(ssh_config_path()).c_str());
-    ui.draw_text(sub, Rect(40.0f, Y + 60.0f, W - 260.0f, 20.0f), th.muted_foreground, Style().font(12.0f));
-
-    // 右上：新建 + 打开配置 + 重新导入
-    const Rect r_new(W - 40.0f - 108.0f, Y + 34.0f, 108.0f, 32.0f);
-    const Rect r_imp(W - 40.0f - 108.0f - 100.0f - 8.0f, Y + 34.0f, 100.0f, 32.0f);
-    const Rect r_cfg(r_imp.x - 128.0f - 8.0f, Y + 34.0f, 128.0f, 32.0f);
-    // 直接打开 ssh config：内置编辑器，保存后当场重新导入
-    if (tool_button(ui, th, "打开 ssh config", r_cfg, false)) {
-        open_cfg_editor(app);
-        return;
-    }
-    if (dlg_button(ui, th, "＋ 新建连接", r_new, Btn::Primary)) {
+    auto new_profile = [&] {
         app.editor_open = true;
         app.editing = -1;
         app.draft = Profile{};
         app.draft.port = 22;
         app.draft_reveal = false;
         app.draft_remember = false;
+    };
+    if (dlg_button(ui, th, "新建连接", {20, top + 160, 160, 30}, Btn::Primary)) {
+        new_profile();
+        return;
     }
-    if (tool_button(ui, th, "重新导入", r_imp, false)) {
-        const std::string keep = app.download_dir;
+    if (tool_button(ui, th, "打开 ssh config", {20, H - 92, 160, 28}, false)) {
+        open_cfg_editor(app);
+        return;
+    }
+    if (tool_button(ui, th, "重新导入连接", {20, H - 54, 160, 28}, false)) {
         app.profiles = load_all_profiles();
-        app.download_dir = keep;
         app.status = "已重新读取 ssh config / VSCode 设置";
     }
 
-    ui.fill_rect(Rect(0, Y + head_h, W, 1.0f), th.border);
+    const Rect view(sidebar, top, W - sidebar, H - top);
+    const float width = std::min(820.f, view.w - 56);
+    const float x = view.cx() - width * .5f;
+    std::array<int, 3> counts{};
+    for (const auto& p : app.profiles) ++counts[std::max(0, std::min(2, p.src))];
+    float total = 150;
+    for (int n : counts) if (n) total += 38 + n * 76.f + 28;
+    total += app.profiles.empty() ? 180.f : 36.f;
+    auto scroll = ui.scroll(view, total);
+    float y = top + 32 - scroll.offset;
+    ui.heading("所有连接", {x, y, width, 36}, Style().font(26).bold());
+    ui.draw_text("选择一台服务器，开始新的会话。", {x, y + 44, width, 22}, th.label2, Style().font(12));
+    y += 106;
 
-    // 卡片网格
-    const float pad = 40.0f, gap = 16.0f;
-    const float card_w = 300.0f, card_h = 96.0f;
-    const int per_row = std::max(1, int((W - pad * 2.0f + gap) / (card_w + gap)));
-    float cx = pad, cy = Y + head_h + 26.0f;
-    int col = 0;
-
-    for (int i = 0; i < int(app.profiles.size()); ++i) {
-        const Profile& p = app.profiles[size_t(i)];
-        const Rect card(cx, cy, card_w, card_h);
-        const bool over = !g_block_input && card.contains(in.mouse);
-        ui.fill_rect(card, over ? Color::hex(0x1B1E25) : th.card, 10.0f);
-        ui.stroke_rect(card, over ? kAccent : th.border, 10.0f, over ? 1.5f : 1.0f);
-
-        ui.draw_text(p.name.empty() ? (p.user + "@" + p.host) : p.name,
-                     Rect(card.x + 16.0f, card.y + 14.0f, card.w - 32.0f, 22.0f),
-                     th.foreground, Style().font(14.0f).bold());
-        char line[256];
-        std::snprintf(line, sizeof line, "%s@%s:%d", p.user.empty() ? "?" : p.user.c_str(),
-                      p.host.c_str(), p.port);
-        ui.draw_text(line, Rect(card.x + 16.0f, card.y + 40.0f, card.w - 32.0f, 18.0f),
-                     th.muted_foreground, Style().font(11.5f));
-        ui.draw_text(src_badge(p.src), Rect(card.x + 16.0f, card.y + 64.0f, 90.0f, 18.0f),
-                     p.src == 0 ? kAccent : Color::hex(0x8B7355), Style().font(10.5f));
-        if (p.remember && !p.pass.empty())
-            ui.draw_text("已保存密码", Rect(card.x + 104.0f, card.y + 64.0f, 100.0f, 18.0f),
-                         Color::hex(0x4B5563), Style().font(10.5f));
-
-        // 本地配置才给编辑/删除（导入的是只读视图）
-        if (p.src == 0) {
-            if (tool_button(ui, th, "编辑", Rect(card.right() - 96.0f, card.bottom() - 32.0f, 42.0f, 22.0f), false)) {
-                app.editor_open = true;
-                app.editing = i;
-                app.draft = p;
-                app.draft_remember = p.remember;
-                app.draft_reveal = false;
-                return;                       // 弹窗打开后停止处理下层交互
-            }
-            if (tool_button(ui, th, "删除", Rect(card.right() - 50.0f, card.bottom() - 32.0f, 42.0f, 22.0f), true)) {
-                app.profiles.erase(app.profiles.begin() + i);
-                save_local_profiles(app.profiles);
+    for (int source = 0; source < 3; ++source) {
+        if (!counts[source]) continue;
+        const std::string title = std::string(src_badge(source)) + " · " + std::to_string(counts[source]);
+        ui.label(title, {x + 2, y, width - 4, 24}, Style().font(13).semi_bold());
+        y += 38;
+        ui.panel({x, y, width, counts[source] * 76.f}, Style().background(surface).corner(12));
+        int row_index = 0;
+        for (int i = 0; i < int(app.profiles.size()); ++i) {
+            const Profile& p = app.profiles[size_t(i)];
+            if (std::max(0, std::min(2, p.src)) != source) continue;
+            const Rect row(x, y + row_index * 76.f, width, 76);
+            const float action_x = row.right() - 234;
+            ui.system_icon(aino::SystemIcon::Network, {row.x + 16, row.cy() - 10, 20, 20}, th.tint);
+            ui.label(p.name.empty() ? p.user + "@" + p.host : p.name,
+                     {row.x + 50, row.y + 14, action_x - row.x - 66, 24}, Style().font(13).semi_bold());
+            const std::string host = (p.user.empty() ? "?" : p.user) + "@" + p.host + ":" + std::to_string(p.port);
+            ui.draw_text(host, {row.x + 50, row.y + 42, action_x - row.x - 66, 18}, th.label2, Style().font(11));
+            if (dlg_button(ui, th, "连接", {action_x, row.cy() - 12, 64, 24}, Btn::Normal)) {
+                if (!p.pass.empty()) open_session(app, p, p.pass);
+                else {
+                    app.ask_open = true;
+                    app.ask_index = i;
+                    app.ask_pass.clear();
+                    app.ask_reveal = false;
+                }
                 return;
             }
-        } else {
-            // 导入来的配置是只读的，那就把源文件交给内置编辑器 —— 想改就改
-            if (tool_button(ui, th, "打开配置", Rect(card.right() - 74.0f, card.bottom() - 32.0f, 62.0f, 22.0f), false)) {
+            if (p.src == 0) {
+                if (tool_button(ui, th, "编辑", {action_x + 76, row.cy() - 12, 60, 24}, false)) {
+                    app.editor_open = true;
+                    app.editing = i;
+                    app.draft = p;
+                    app.draft_remember = p.remember;
+                    app.draft_reveal = false;
+                    return;
+                }
+                if (tool_button(ui, th, "删除", {action_x + 148, row.cy() - 12, 60, 24}, true)) {
+                    app.profiles.erase(app.profiles.begin() + i);
+                    save_local_profiles(app.profiles);
+                    return;
+                }
+            } else if (tool_button(ui, th, "打开配置", {action_x + 76, row.cy() - 12, 132, 24}, false)) {
                 open_cfg_editor(app);
                 return;
             }
+            if (++row_index < counts[source])
+                ui.separator({row.x + 50, row.bottom() - 1, row.w - 66, 1},
+                             Style().background(th.separator.scaled_alpha(.65f)));
         }
-
-        if (in.pressed[0] && over) {
-            if (!p.pass.empty()) {
-                open_session(app, p, p.pass);
-            } else {
-                app.ask_open = true;
-                app.ask_index = i;
-                app.ask_pass.clear();
-                app.ask_reveal = false;
-            }
-        }
-
-        if (++col >= per_row) { col = 0; cx = pad; cy += card_h + gap; }
-        else cx += card_w + gap;
+        y += counts[source] * 76.f + 28;
     }
-
-    // "新建" 虚线卡
-    {
-        const Rect card(cx, cy, card_w, card_h);
-        const bool over = !g_block_input && card.contains(in.mouse);
-        ui.fill_rect(card, over ? Color::hex(0x1B1E25) : Color::hex(0x111318), 10.0f);
-        ui.stroke_rect(card, over ? kAccent : th.border, 10.0f, 1.0f);
-        ui.draw_text("＋", Rect(card.x, card.y + 22.0f, card.w, 26.0f), over ? kAccent : th.muted_foreground,
-                     Style().font(20.0f).center());
-        ui.draw_text("新建连接", Rect(card.x, card.y + 54.0f, card.w, 20.0f),
-                     over ? th.foreground : th.muted_foreground, Style().font(12.0f).center());
-        if (in.pressed[0] && over) {
-            app.editor_open = true;
-            app.editing = -1;
-            app.draft = Profile{};
-            app.draft.port = 22;
-            app.draft_reveal = false;
-            app.draft_remember = false;
-        }
+    if (app.profiles.empty()) {
+        ui.panel({x, y, width, 160}, Style().background(surface).corner(12));
+        ui.system_icon(aino::SystemIcon::Network, {x + width * .5f - 16, y + 22, 32, 32}, th.label2);
+        ui.label("还没有连接", {x + 16, y + 68, width - 32, 24}, Style().font(14).semi_bold().center());
+        if (dlg_button(ui, th, "新建连接", {x + width * .5f - 52, y + 108, 104, 28}, Btn::Primary)) new_profile();
+        y += 180;
     }
+    if (!app.status.empty()) ui.draw_text(app.status, {x + 2, y, width - 4, 24}, th.label2, Style().font(11));
 }
 
 // ---- 连接编辑器（新建 / 编辑）----
@@ -2149,7 +2130,7 @@ void draw_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
     float y = box.y + 62.0f;
     const float half = (x2 - x1 - 12.0f) * 0.5f;
 
-    field(ui, th, "名称（显示在卡片上）", &app.draft.name, Rect(x1, y, x2 - x1, 30.0f));
+    field(ui, th, "名称（显示在连接列表中）", &app.draft.name, Rect(x1, y, x2 - x1, 30.0f));
     y += lh;
     field(ui, th, "主机", &app.draft.host, Rect(x1, y, half, 30.0f));
     {

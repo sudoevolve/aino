@@ -1335,7 +1335,8 @@ void draw_sidebar(aino::Ui& ui, UiState& st, const aino::Theme& th) {
         "指数 exp log log10", "     log2 sqrt cbrt", "取整 floor ceil round",
         "     trunc frac sign", "其它 min max pow mod", "     hypot abs step", "     clamp lerp smoothstep"
     };
-    const Rect list(0.0f, list_y + 6.0f, SIDE, H - list_y - 6.0f - 64.0f);
+    const Rect footer(10, H - 98, SIDE - 20, 76);
+    const Rect list(0.0f, list_y + 6.0f, SIDE, footer.y - 12 - (list_y + 6));
     float content_h = 20.0f;
     if (a.cat == kCustomCat) {
         for (const char* hint : hints) content_h += *hint ? 17.0f : 4.0f;
@@ -1368,7 +1369,8 @@ void draw_sidebar(aino::Ui& ui, UiState& st, const aino::Theme& th) {
     scroll.close();
 
     // 底部：外观开关 + 运行状态
-    const Rect foot(18.0f, H - 56.0f, SIDE - 36.0f, 26.0f);
+    ui.panel(footer, Style().background(th.window_bg.luminance() < .5f ? th.card : th.control_bg).corner(12));
+    const Rect foot(footer.x + 12, footer.y + 12, footer.w - 24, 26);
     ui.draw_text("深色主题", Rect(foot.x, foot.y, 90.0f, 26.0f), th.foreground,
                  Style().font(12.5f).left().middle());
     bool dark = a.dark;
@@ -1377,8 +1379,8 @@ void draw_sidebar(aino::Ui& ui, UiState& st, const aino::Theme& th) {
         if (st.win) st.win->set_theme(dark ? aino::Theme::dark() : aino::Theme::light());
     }
     // 状态行：动画开着是 60fps 连续重绘，关掉就回到"一帧都不画"
-    ui.draw_text(a.anim ? "动画中 60fps · 空格暂停" : "已暂停 · 空闲 0 帧",
-                 Rect(18.0f, H - 26.0f, SIDE - 36.0f, 14.0f), th.muted_foreground,
+    ui.draw_text(a.anim ? "正在播放 · 空格暂停" : "已暂停 · 空格播放",
+                 Rect(foot.x, foot.bottom() + 6, foot.w, 18), th.muted_foreground,
                  Style().font(10.5f).left().middle());
 }
 
@@ -1386,7 +1388,7 @@ void draw_controls(aino::Ui& ui, UiState& st, const Rect& bar, const aino::Theme
                    Kind mode, const Preset& pre) {
     App& a = st.app;
     const bool custom = (a.cat == kCustomCat);
-    ui.panel(bar);
+    ui.panel(bar, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
 
     const Rect inner = bar.inset(16.0f, 14.0f);
     float y = inner.y;
@@ -1444,6 +1446,8 @@ void draw_controls(aino::Ui& ui, UiState& st, const Rect& bar, const aino::Theme
 
     // 开关行
     const Rect row(inner.x, inner.bottom() - 32.0f, inner.w, 32.0f);
+    ui.separator({inner.x, row.y - 6, inner.w, 1},
+                 Style().background(th.separator.scaled_alpha(.65f)));
     aino::Stack hb = ui.hbox(row, 8.0f);
     ui.toggle_button("动画", &a.anim, hb.next(66.0f));
     if (mode == Kind::Curve)
@@ -1464,7 +1468,7 @@ void draw_controls(aino::Ui& ui, UiState& st, const Rect& bar, const aino::Theme
 void draw_plot(aino::Ui& ui, UiState& st, const Rect& card, const aino::Theme& th) {
     App& a = st.app;
     const bool dark = th.background.luminance() < 0.5f;
-    ui.panel(card);
+    ui.panel(card, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
 
     const Rect px = card.inset(12.0f);
     if (px.w < 40.0f || px.h < 40.0f) return;
@@ -1590,7 +1594,7 @@ void draw_plot(aino::Ui& ui, UiState& st, const Rect& card, const aino::Theme& t
     if (ok1 && ok2) draw_crosshair(c);
     if (is_field) draw_colorbar(ui, v, th);
     ui.pop_clip();
-    ui.stroke_rect(px, th.border, 0.0f, 1.0f);
+    ui.stroke_rect(px, th.separator.scaled_alpha(.5f), 0.0f, 1.0f);
 
     // 自定义公式的语法错误提示（参数方程两行分别报，指出是哪一行）
     {
@@ -1766,7 +1770,7 @@ int main() {
             ui.set_animating(false);
         }
 
-        ui.clear(th.background);
+        ui.clear((th.window_bg.luminance() < .5f ? th.window_bg : aino::Color::hex(0xF5F5F7)));
         draw_sidebar(ui, st, th);
 
         const float W = ui.width(), H = ui.height();
@@ -1793,9 +1797,9 @@ int main() {
 
         // ---- 标题区 ----
         const std::string title = custom ? std::string("自定义公式") : pre->name;
-        // Title 1 = 22 Bold，和画廊的内容区标题保持同一级
+        // 标题和公式分行，右侧保留绘图类型说明的位置。
         ui.heading(title, Rect(hdr.x, hdr.y - 4.0f, hdr.w * 0.62f, 30.0f),
-                   Style().font(22.0f).left().middle());
+                   Style().font(26.0f).left().middle());
         const std::string formula = custom
             ? (a.custom_mode == 1 ? ("x = " + a.custom_src + "    y = " + a.custom_src2)
                                   : a.custom_src)
@@ -1804,13 +1808,14 @@ int main() {
                                ? (th.background.luminance() < 0.5f ? Color::hex(0x60A5FA)
                                                                    : Color::hex(0x2563EB))
                                : th.destructive;
-        ui.draw_text(formula, Rect(hdr.x, hdr.y + 30.0f, hdr.w * 0.66f, 20.0f), fcol,
-                     Style().font(13.0f).left().middle());
         const Kind mode = custom ? (a.custom_mode == 0 ? Kind::Curve
                                   : a.custom_mode == 1 ? Kind::Param
                                   : a.custom_mode == 2 ? Kind::Polar
                                   : a.custom_mode == 3 ? Kind::Implicit : Kind::Field)
                                 : pre->kind;
+        const float note_w = ui.text_width(kind_note(mode), 11) + 20;
+        ui.draw_text(formula, Rect(hdr.x, hdr.y + 30, hdr.w - note_w, 20), fcol,
+                     Style().font(13).left().middle());
         ui.muted_text(kind_note(mode), Rect(hdr.x, hdr.y + 30.0f, hdr.w, 20.0f),
                       Style().font(11.0f).right().middle());
         ui.muted_text("拖拽平移 · 滚轮缩放 · 双击复位 · 空格暂停",

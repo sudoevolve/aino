@@ -30,9 +30,9 @@
 #endif
 
 #define AINO_VERSION_MAJOR 0
-#define AINO_VERSION_MINOR 4
-#define AINO_VERSION_PATCH 14
-#define AINO_VERSION "0.4.14"
+#define AINO_VERSION_MINOR 5
+#define AINO_VERSION_PATCH 0
+#define AINO_VERSION "0.5.0"
 
 #include <cstdint>
 #include <cstddef>

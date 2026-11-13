@@ -97,25 +97,30 @@ void draw_pomodoro(aino::Ui& ui, Pomodoro& timer, bool& dark, Clock::time_point 
     const char* modes[] = {"专注", "短休息", "长休息"};
     const float sidebar = 200;
     const float width = ui.width(), height = ui.height();
-    ui.clear(theme.window_bg);
+    ui.clear((theme.window_bg.luminance() < .5f ? theme.window_bg : aino::Color::hex(0xF5F5F7)));
     ui.fill_rect(Rect(0, 0, sidebar, height), theme.sidebar_bg);
     ui.fill_rect(Rect(sidebar - 1, 0, 1, height), theme.separator);
-    ui.label("番茄钟", Rect(20, 19, 160, 24), Style().font(15).semi_bold().left());
+    ui.fill_rect({20, 22, 32, 32}, theme.tint.scaled_alpha(.13f), 8);
+    ui.system_icon(aino::SystemIcon::Timer, {27, 29, 18, 18}, theme.tint);
+    ui.label("番茄钟", {64, 20, 116, 23}, Style().font(16).semi_bold());
+    ui.draw_text("留一点时间给专注", {64, 45, 116, 17}, theme.label2, Style().font(11));
 
     ui.muted_text("计时器", Rect(20, 76, 160, 18), Style().font(11).semi_bold().left());
     auto nav = ui.vbox(Rect(10, 102, sidebar - 20, 92), 3);
     for (int i = 0; i < 3; ++i) {
-        if (ui.nav_item(modes[i], timer.mode == i, nav.next(28))) timer.select(i);
+        const Rect row = nav.next(28);
+        if (ui.nav_item(modes[i], timer.mode == i, row, Style().font(13).padding(36))) timer.select(i);
+        ui.system_icon(i == 0 ? aino::SystemIcon::Loader : aino::SystemIcon::Sun,
+                       {row.x + 12, row.cy() - 8, 16, 16}, timer.mode == i ? theme.tint : theme.label2);
     }
     char completed[48];
     std::snprintf(completed, sizeof(completed), "已完成 %d 次专注", timer.completed);
     ui.muted_text(completed, Rect(20, height - 46, 160, 22), Style().font(12).left());
 
     const Rect toolbar(sidebar, 0, width - sidebar, 60);
-    ui.fill_rect(toolbar, theme.title_bg);
-    ui.separator(Rect(sidebar, toolbar.bottom() - 1, toolbar.w, 1));
+    ui.fill_rect(toolbar, (theme.window_bg.luminance() < .5f ? theme.window_bg : aino::Color::hex(0xF5F5F7)));
     ui.label(modes[timer.mode], Rect(sidebar + 24, 18, 160, 24),
-             Style().font(15).semi_bold().left());
+             Style().font(22).semi_bold().left());
     const Rect appearance(width - 48, 18, 24, 24);
     if (ui.icon_button("", appearance, Style().ghost())) dark = !dark;
     ui.system_icon(dark ? aino::SystemIcon::Sun : aino::SystemIcon::Moon,
@@ -123,18 +128,19 @@ void draw_pomodoro(aino::Ui& ui, Pomodoro& timer, bool& dark, Clock::time_point 
     ui.tooltip(appearance, "切换外观");
 
     const Rect settings(sidebar, height - 84, width - sidebar, 84);
-    ui.separator(Rect(settings.x, settings.y, settings.w, 1));
-    ui.label("时长", Rect(settings.x + 24, settings.y + 22, 72, 24), Style().left());
+    ui.panel({settings.x + 24, settings.y, settings.w - 48, 68}, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
+    ui.label("本轮时长", Rect(settings.x + 40, settings.y + 14, 100, 24), Style().left());
     const Rect stepper(settings.right() - 154, settings.y + 22, 88, 24);
     Style edit;
     if (timer.running) edit.off();
     if (ui.stepper(&timer.minutes[timer.mode], 1, 1, 120, stepper, edit)) timer.reset();
     ui.muted_text("分钟", Rect(stepper.right() + 10, stepper.y, 40, 24), Style().left());
     ui.muted_text(timer.running ? "暂停后可调整时长" : "完成后手动选择下一轮",
-                  Rect(settings.x + 24, settings.y + 48, settings.w - 48, 18),
+                  Rect(settings.x + 40, settings.y + 40, settings.w - 210, 18),
                   Style().font(11).left());
 
     const Rect content(sidebar, toolbar.bottom(), width - sidebar, settings.y - toolbar.bottom());
+    ui.panel({content.x + 24, content.y + 18, content.w - 48, content.h - 36}, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
     const Rect ring = Rect::centered(content.cx(), content.cy() - 28, 220, 220);
     const float buttons_y = ring.bottom() + 28;
     if (ui.button("重置", Rect(content.cx() - 100, buttons_y, 88, 28), Style().standard()))

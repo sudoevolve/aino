@@ -179,6 +179,64 @@ int main(int argc, char** argv) {
         expect(app.show_start && app.tabs.size() == 9, "overflow tabs leave new button reachable");
         app.shutdown_all();
     }
+    {
+        App app;
+        for (int i = 0; i < 12; ++i) {
+            Profile p;
+            p.name = "Development " + std::to_string(i + 1);
+            p.host = "server.example.com";
+            p.user = "demo";
+            p.src = i < 10 ? 0 : 1;
+            app.profiles.push_back(p);
+        }
+        auto home = [&] { draw_start(f.ui, app, f.ui.theme(), 40); };
+        g_block_input = true;
+        f.click(home, 80, 215);
+        expect(!app.editor_open, "home actions respect modal blocking");
+        g_block_input = false;
+        f.click(home, 80, 215);
+        expect(app.editor_open && app.editing == -1, "home new action opens an empty editor");
+        app.editor_open = false;
+        f.click(home, 804, 254);
+        expect(app.editor_open && app.editing == 0 && app.draft.host == "server.example.com",
+               "grouped row edits the correct profile");
+        app.editor_open = false;
+        f.click(home, 730, 254);
+        expect(app.ask_open && app.ask_index == 0, "grouped row connects the correct profile");
+        app.ask_open = false;
+        f.frame(home);
+        aino::Input wheel;
+        wheel.mouse = {500, 400};
+        wheel.wheel = -1000;
+        f.frame(home, wheel);
+        expect(f.ui.scroll_offset({200, 40, 760, 600}) > 0, "long connection groups scroll");
+        expect(app.profiles.size() == 12 && app.profiles.back().src == 1,
+               "grouping and scrolling preserve profiles and sources");
+        if (const char* path = std::getenv("AINO_SSH_UI_SHOT")) {
+            // 离线样本用于人工查看，不读取用户配置或建立连接。
+            app.profiles.resize(4);
+            app.profiles.back().src = 1;
+            f.ui.set_theme(aino::Theme::dark());
+            f.frame(home);
+            GdiFlush();
+            BITMAPFILEHEADER file{};
+            BITMAPINFOHEADER info{};
+            info.biSize = sizeof(info);
+            info.biWidth = f.canvas.w;
+            info.biHeight = -f.canvas.h;
+            info.biPlanes = 1;
+            info.biBitCount = 32;
+            file.bfType = 0x4d42;
+            file.bfOffBits = sizeof(file) + sizeof(info);
+            file.bfSize = file.bfOffBits + f.canvas.stride * f.canvas.h;
+            if (FILE* out = std::fopen(path, "wb")) {
+                std::fwrite(&file, sizeof(file), 1, out);
+                std::fwrite(&info, sizeof(info), 1, out);
+                std::fwrite(f.canvas.px, f.canvas.stride * f.canvas.h, 1, out);
+                std::fclose(out);
+            }
+        }
+    }
     if (argc > 1 && std::string(argv[1]) == "--local-transfer") {
         Session session;
         std::string error;
@@ -321,7 +379,7 @@ int main(int argc, char** argv) {
     (void)argc; (void)argv;
     UiState st;
     auto draw = [&] { draw_sidebar(f.ui, st, f.ui.theme()); };
-    const Rect list(0, 55, 232, 521);
+    const Rect list(0, 55, 232, 475);
     for (int cat = 0; cat < kCustomCat; ++cat) {
         st.app.cat = cat;
         st.app.sel = 0;
@@ -357,7 +415,7 @@ int main(int argc, char** argv) {
     f.click(draw, 100, 65 + 27.f * 39 - offset + 13);
     expect(st.app.sel == 39, "last item in long list is reachable");
     const bool dark = st.app.dark;
-    f.click(draw, 192, 597);
+    f.click(draw, 188, 567);
     expect(st.app.dark != dark, "theme toggle stays outside list clipping");
     st.app.cat = kCustomCat;
     f.frame(draw);

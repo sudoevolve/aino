@@ -25,6 +25,15 @@ using aino::Ui;
 using aino::Vec2;
 
 namespace {
+// 等宽绘制本身不参与测量；示例用同一个文字区域登记布局边界。
+void mono_label(Ui& ui, const char* text, float x, float y, Color color, float size) {
+    if (ui.measuring())
+        ui.draw_text(text, {x, y, ui.mono_width(text, size), ui.line_height(size)},
+                     color, Style().font(size).left().top());
+    else
+        ui.draw_mono_text(text, x, y, color, size);
+}
+
 constexpr float kNavW = 252, kTitleH = 60, kGridGap = 14;
 constexpr int kPageCount = 15;
 enum CardId {
@@ -280,7 +289,7 @@ void notify(Ui &ui, App &a, std::string message, int kind = 0) {
     a.notices.push_back({std::move(message), kind, false});
 }
 void label(Ui &ui, const std::string &text, Rect r, float size = 13, bool muted = false, int weight = 400) {
-    ui.draw_text(text, r, muted ? ui.theme().label3 : ui.theme().label, Style().font(size).weight(weight));
+    ui.draw_text(text, r, muted ? ui.theme().label2 : ui.theme().label, Style().font(size).weight(weight));
 }
 void ring(Ui &ui, float cx, float cy, float radius, float fraction, Color color, float thickness = 3,
           float start = -1.57079633f) {
@@ -981,7 +990,7 @@ void draw_advanced(Ui &ui, App &a, CardId id, Rect b) {
         label(ui, "• 更新组件文档", {b.x, b.y + 78, b.w, 22}, 12);
         label(ui, "• 整理发布记录", {b.x, b.y + 106, b.w, 22}, 12);
         well(ui, {b.x, b.y + 144, b.w, 34});
-        ui.draw_mono_text("ui.button(\"Hello\", rect);", b.x + 10, b.y + 154, ui.theme().tint, 11);
+        mono_label(ui, "ui.button(\"Hello\", rect);", b.x + 10, b.y + 154, ui.theme().tint, 11);
     } else if (id == Empty) {
         glyph(ui, Folder, {b.cx() - 18, b.y + 2, 36, 36}, ui.theme().label3);
         ui.draw_text(a.material_name.empty() ? "暂无素材" : a.material_name,
@@ -999,7 +1008,7 @@ void draw_advanced(Ui &ui, App &a, CardId id, Rect b) {
         label(ui, "分组", {b.x, b.y + 64, b.w - 85, 26}, 12, true);
         ui.badge("Default", {b.right() - 70, b.y + 67, 66, 22}, Style().secondary().font(11).corner(11));
         label(ui, "Tabular nums", {b.x, b.y + 112, b.w, 20}, 11, true);
-        ui.draw_mono_text("1,234.56", b.x, b.y + 142, ui.theme().label, 22);
+        mono_label(ui, "1,234.56", b.x, b.y + 142, ui.theme().label, 22);
     }
 }
 void draw_body(Ui &ui, App &a, CardId id, Rect b) {
@@ -1203,7 +1212,7 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
 }
 void draw_toolbar(Ui &ui, App &a, bool narrow) {
     float left = narrow ? 0 : kNavW, pad = narrow ? 14.f : 26.f;
-    ui.fill_rect({left, 0, ui.width() - left, kTitleH}, ui.theme().title_bg);
+    ui.fill_rect({left, 0, ui.width() - left, kTitleH}, (ui.theme().window_bg.luminance() < .5f ? ui.theme().window_bg : aino::Color::hex(0xF5F5F7)));
     float tx = left + pad;
     if (narrow) {
         if (icon(ui, List, "显示侧边栏", {tx, 14, 32, 32}, Style().ghost())) {
@@ -1211,7 +1220,7 @@ void draw_toolbar(Ui &ui, App &a, bool narrow) {
         }
         tx += 40;
     }
-    label(ui, "控制台总览", {tx, 0, 136, kTitleH}, 17, false, 650);
+    label(ui, "组件", {tx, 0, 136, kTitleH}, 22, false, 700);
     if (!narrow && ui.width() - left > 760)
         label(ui, "43 个原生风格组件 · 零依赖", {tx + 136, 0, 260, kTitleH}, 13, true);
     float sw = narrow ? 128.f : 188.f;
@@ -1220,7 +1229,8 @@ void draw_toolbar(Ui &ui, App &a, bool narrow) {
     }
 }
 void draw_card(Ui &ui, App &a, const Card &card, Rect r) {
-    label(ui, card.name, {r.x + 16, r.y + 16, r.w - 32, 22}, 15, false, 600);
+    label(ui, card.name, {r.x + 2, r.y + 7, r.w - 4, 22}, 13, false, 600);
+    ui.panel({r.x, r.y + 36, r.w, r.h - 36}, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
     draw_body(ui, a, card.id, {r.x + 16, r.y + 48, r.w - 32, r.h - 66});
 }
 void draw_content(Ui &ui, App &a, const GalleryLayout &layout, Rect view, bool narrow) {
@@ -1317,7 +1327,7 @@ void draw_overlays(Ui &ui, App &a) {
 }
 void build_ui(Ui &ui, App &a) {
     ui.set_theme(gallery_theme(a));
-    ui.clear(ui.theme().background);
+    ui.clear((ui.theme().window_bg.luminance() < .5f ? ui.theme().window_bg : aino::Color::hex(0xF5F5F7)));
     // 布局相关状态先结算，再测量；展开操作不会在当前帧挤入下一张卡片。
     if (a.pending_accordion >= 0) {
         a.expanded[a.pending_accordion] = !a.expanded[a.pending_accordion];
