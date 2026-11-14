@@ -41,8 +41,9 @@ constexpr float kSectionGap  = 40;   // 上一组卡片底 → 下一组标题
 constexpr float kHeadingGap  = 6;    // 组标题 → 说明
 constexpr float kHeaderGap   = 24;   // 说明 → 第一张卡片标题
 constexpr float kCardTitleGap = 8;   // 卡片标题 → 卡片底
-constexpr int kPageCount = 16;
-constexpr int kStylePage = kPageCount - 1;   // 风格页固定在末尾
+constexpr int kPageCount = 17;
+constexpr int kStylePage = kPageCount - 2;   // 风格页
+constexpr int kAboutPage = kPageCount - 1;   // 关于页固定在末尾
 enum CardId {
     ButtonVariants,
     ButtonSizes,
@@ -90,6 +91,7 @@ enum CardId {
     TypeScale,
     ColorTokens,
     LayoutMetrics,
+    About,
     CardCount
 };
 struct Notification {
@@ -220,6 +222,7 @@ const Card kCards[] = {
     {TypeScale, "字号阶梯", "type scale", "typography 字号 字重 大小 标题 正文", true},
     {ColorTokens, "颜色令牌", "tokens", "color token 颜色 令牌 语义 色板 hex", true},
     {LayoutMetrics, "平台度量", "macOS / iOS", "layout metrics 间距 边距 行高 圆角 触摸目标 度量", true},
+    {About, "关于", "about", "about 关于 版本 作者 license 许可证 github 致谢", true},
 };
 const Page kPages[] = {
     {"基础", "按钮", "buttons", "Button · 按钮样式 / 3 种尺寸 / 图标 / 加载态", 0, 3},
@@ -238,6 +241,7 @@ const Page kPages[] = {
     {"容器", "导航", "navigation", "Navigation · 工具栏与路径", 36, 3},
     {"容器", "高级列表", "advanced", "Advanced · 大数据 / Markdown / 空状态", 39, 4},
     {"规范", "风格", "style", "Style · 字号阶梯 / 颜色令牌 / macOS 与 iOS 布局度量", 43, 3, 380},
+    {"关于", "关于", "about", "About · 版本、许可证与第三方组件", 46, 1, 380, true},
 };
 static_assert(sizeof(kCards) / sizeof(kCards[0]) == CardCount, "card manifest mismatch");
 static_assert(sizeof(kPages) / sizeof(kPages[0]) == kPageCount, "section manifest mismatch");
@@ -374,7 +378,8 @@ enum Glyph {
     Folder,
     SettingsIcon = int(aino::SystemIcon::Settings),
     NetworkIcon = int(aino::SystemIcon::Network),
-    PeopleIcon = int(aino::SystemIcon::People)
+    PeopleIcon = int(aino::SystemIcon::People),
+    InfoIcon = int(aino::SystemIcon::Info)
 };
 void glyph(Ui &ui, int type, Rect r, Color c) { ui.system_icon(static_cast<aino::SystemIcon>(type), r, c); }
 bool icon(Ui &ui, int type, const char *hint, Rect r, Style style = Style().secondary()) {
@@ -510,21 +515,40 @@ void draw_inputs(Ui &ui, App &a, CardId id, Rect b) {
     }
 }
 void draw_selection(Ui &ui, App &a, CardId id, Rect b) {
+    // 三张卡统一 44 的行节奏 —— macOS 设置里的单行高度，也是 Apple 的触摸下限。
+    // 原来开关 40、复选 40（行高 28）、单选 37 三套节奏，并排的两张卡因此不等高，
+    // 单选组还比上一行矮一截。行间补一条发丝线，读起来才是"一组设置"而不是
+    // 几个散落的控件。
+    const float row_h = 44.f;
     if (id == Switches) {
         bool *values[] = {&a.analytics, &a.cloud, &a.compact};
         const char *labels[] = {"允许分析数据", "iCloud 自动同步", "紧凑尺寸"};
         for (int i = 0; i < 3; ++i) {
-            float y = b.y + i * 40;
-            label(ui, labels[i], {b.x, y, b.w - 70, 30});
-            ui.toggle(values[i],
-                      {b.right() - 54, y + (i == 2 ? 5.f : 3.f), i == 2 ? 44.f : 54.f, i == 2 ? 20.f : 24.f});
+            const float y = b.y + row_h * float(i);
+            if (i) ui.separator({b.x, y - 1, b.w, 1});
+            // 行的整高都交给文字盒：这样文字是精确垂直居中的（不用 +9 这类魔数），
+            // 卡片高度也正好由 3×44 决定 —— 否则开关卡会比复选框卡矮一截。
+            ui.draw_text(labels[i], {b.x, y, b.w - 76, row_h}, ui.theme().label,
+                         Style().font(13).left().middle());
+            // 第三行是"紧凑尺寸"的样例，仍然用小的那个开关（44×20）。
+            const bool compact = i == 2;
+            ui.toggle(values[i], Rect::centered(b.right() - 27, y + row_h * .5f,
+                                                compact ? 44.f : 54.f, compact ? 20.f : 24.f));
         }
     } else if (id == Checkboxes) {
-        ui.checkbox(&a.remember, "记住选项", {b.x, b.y, b.w, 28});
-        ui.checkbox(&a.follow_tint, "跟随强调色", {b.x, b.y + 40, b.w, 28});
-        ui.checkbox(&a.readonly, "禁用只读", {b.x, b.y + 80, b.w, 28}, Style().off());
-    } else
-        ui.radio_group({"原始分辨率", "高效 HEVC", "低带宽"}, &a.radio, {b.x, b.y, b.w, 112});
+        for (int i = 0; i < 3; ++i) {
+            const float y = b.y + row_h * float(i);
+            if (i) ui.separator({b.x, y - 1, b.w, 1});
+            const Rect row(b.x, y, b.w, row_h);
+            if (i == 0) ui.checkbox(&a.remember, "记住选项", row);
+            else if (i == 1) ui.checkbox(&a.follow_tint, "跟随强调色", row);
+            else ui.checkbox(&a.readonly, "禁用只读", row, Style().off());
+        }
+    } else {
+        ui.radio_group({"原始分辨率", "高效 HEVC", "低带宽"}, &a.radio, {b.x, b.y, b.w, row_h * 3});
+        ui.separator({b.x, b.y + row_h - 1, b.w, 1});
+        ui.separator({b.x, b.y + row_h * 2 - 1, b.w, 1});
+    }
 }
 void draw_values(Ui &ui, App &a, CardId id, Rect b) {
     if (id == Sliders) {
@@ -633,7 +657,7 @@ void draw_datetime(Ui &ui, App &a, CardId id, Rect b) {
         char text[32];
         std::snprintf(text, sizeof(text), "%04d-%02d-%02d", a.cy, a.cm, a.cd);
         ui.popover(
-            text, &a.date_open, {b.x, b.y, std::min(190.f, b.w), 24}, {280, 292},
+            text, &a.date_open, {b.x, b.y, std::min(190.f, b.w), 24}, {252, 240},
             [&ui, &a](const Rect &r) {
                 int y = a.cy, m = a.cm;
                 if (ui.calendar(&a.cy, &a.cm, &a.cd, r) && a.cy == y && a.cm == m) {
@@ -1141,7 +1165,84 @@ void draw_style(Ui &ui, App &a, CardId id, Rect b) {
                  {b.x, y + 8, b.w, 18}, sub, Style().font(11).left());
 }
 
+// ---- 关于页 ---------------------------------------------------------------
+// 版式照 macOS 的「关于本机」：居中图标、名称、版本，下面一条分组信息卡，
+// 再下面是两个文字链接和一串许可证说明。整页是**一栏居中**，不走卡片网格 ——
+// 所以它没有分组标题带，也没有外层面板（「项目信息」那张卡是内容的一部分）。
+void draw_about(Ui &ui, App &a, Rect b) {
+    const auto &th = ui.theme();
+    const Color sub = th.label2;
+    // 内容块宽度固定并居中：About 是单栏版面，窗口再宽也不该把信息卡拉满。
+    const float w = std::min(440.f, b.w);
+    const float cx = b.x + b.w * 0.5f;
+    const float x = cx - w * 0.5f;
+
+    // 应用图标：暂用占位（石墨渐变圆角方块 + 白色 A）。
+    // 真图标 / GitHub 头像到位后只换这一段，版面其余部分不用动。
+    const float icon = 88.f;
+    const Rect box = Rect::centered(cx, b.y + icon * 0.5f, icon, icon);
+    ui.fill_rect_grad(box, Color(0x9C, 0x9C, 0xA2), Color(0x2E, 0x2E, 0x33), icon * 0.235f, 1.0f);
+    ui.draw_text("A", box, Color(0xFF, 0xFF, 0xFF, 255),
+                 Style().font(icon * 0.60f).weight(700).center().middle());
+
+    float y = b.y + icon + 18;
+    ui.draw_text("Aino", {x, y, w, 36}, th.label, Style().font(26).weight(700).center());
+    y += 40;
+    ui.draw_text(std::string("版本 ") + AINO_VERSION, {x, y, w, 18}, sub,
+                 Style().font(12).center());
+    y += 22;
+    ui.draw_text("零依赖 · 单头文件 · C++17 原生 UI 库", {x, y, w, 20}, sub,
+                 Style().font(13).center());
+    y += 34;
+
+    // 信息卡：标题在卡外，卡内按行分隔、分隔线左右各缩进 16（与文字对齐）。
+    label(ui, "项目信息", {x + 2, y, w - 4, 20}, 13, true, 600);
+    y += 26;
+    const float row_h = 46.f;
+    const Rect card(x, y, w, row_h * 3);
+    ui.panel(card, Style()
+                       .background(th.window_bg.luminance() < .5f ? th.card : th.control_bg)
+                       .corner(12));
+    struct InfoRow { const char *key; const char *value; };
+    const InfoRow rows[] = {{"作者", "sudoevolve"},
+                            {"开源协议", "Apache-2.0"},
+                            {"GitHub", "sudoevolve/aino"}};
+    for (int i = 0; i < 3; ++i) {
+        const float ry = card.y + row_h * float(i);
+        ui.draw_text(rows[i].key, {card.x + 16, ry + 13, card.w * .5f, 20}, th.label,
+                     Style().font(13).left());
+        ui.draw_text(rows[i].value, {card.x + card.w * .5f, ry + 13, card.w * .5f - 16, 20}, sub,
+                     Style().font(13).right());
+        if (i < 2) ui.separator({card.x + 16, ry + row_h, card.w - 32, 1});
+    }
+    y = card.bottom() + 18;
+
+    // 两个文字链接。Ui 层没有打开浏览器 / 写剪贴板的能力（那是 Window 的事），
+    // 所以点了把地址弹成通知 —— 比点了没反应诚实，也不用为一条链接把 Window
+    // 传进绘制函数。
+    const float link_w = 96.f, link_gap = 24.f;
+    const Rect help(cx - link_gap * .5f - link_w, y, link_w, 30);
+    if (ui.button("反馈问题", help, Style().ghost()))
+        notify(ui, a, "反馈地址：github.com/sudoevolve/aino/issues");
+    if (ui.button("第三方许可", {help.right() + link_gap, y, link_w, 30}, Style().ghost()))
+        notify(ui, a, "许可证见仓库 LICENSE 与 docs/README.md", 1);
+    y += 30 + 20;
+
+    // 许可证清单：居中、11 号三级灰，和 macOS About 面板底部的致谢同一个调子。
+    const char *licenses[] = {"aino · Apache-2.0", "FreeType · FreeType License / GPLv2",
+                              "fontconfig · MIT 风格许可", "libssh2 · BSD-3-Clause",
+                              "mbedTLS · Apache-2.0"};
+    for (const char *line : licenses) {
+        ui.draw_text(line, {x, y, w, 18}, sub, Style().font(11).center());
+        y += 18;
+    }
+}
+
 void draw_body(Ui &ui, App &a, CardId id, Rect b) {
+    if (id == About) {
+        draw_about(ui, a, b);
+        return;
+    }
     if (id <= ButtonLoading)
         draw_buttons(ui, a, id, b);
     else if (id <= InputMultiline)
@@ -1190,7 +1291,7 @@ struct GalleryFrame {
     bool narrow = false;
     Rect title, caption, search, menu, column, viewport;
 };
-const char *kGalleryCaption = "46 个原生风格组件 · 零依赖";
+const char *kGalleryCaption = "47 个原生风格组件 · 零依赖";
 GalleryFrame gallery_frame(Ui &ui) {
     GalleryFrame frame;
     frame.narrow = ui.width() <= 900;
@@ -1286,7 +1387,11 @@ GalleryLayout layout_gallery(Ui &ui, App &a, float width, bool narrow) {
                 row_h = 0;
             }
             float w = span ? 2 * cw + kGridGap : cw;
-            float h = kCardBodyY + body_height(ui, a, kCards[index].id, w - 32) + kCardBottom;
+            // 关于页没有标题带与面板，高度就是内容本身；其余卡片要加上标题带
+            // 和底部内边距，测量宽度也比绘制宽度少 32（card_body 的左右内边距）。
+            const CardId cid = kCards[index].id;
+            float h = cid == About ? body_height(ui, a, cid, w) + 8
+                                   : kCardBodyY + body_height(ui, a, cid, w - 32) + kCardBottom;
             out.cards.push_back({index, section, {float(col) * (cw + kGridGap), y, w, h}});
             row_h = std::max(row_h, h);
             col += slots;
@@ -1325,7 +1430,7 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
     ui.separator({kNavW - 1, 0, 1, ui.height()});
     glyph(ui, Navigation, {22, 27, 22, 22}, ui.theme().tint);
     label(ui, "aino", {58, 21, 142, 23}, 15, false, 600);
-    label(ui, "组件总览 · 46 项", {58, 44, 142, 18}, 11, true);
+    label(ui, "组件总览 · 47 项", {58, 44, 142, 18}, 11, true);
     if (ui.width() <= 900 && icon(ui, Close, "关闭侧边栏", {212, 20, 28, 28}, Style().ghost())) {
         a.nav_open = false;
         ui.request_animation_frame();
@@ -1366,9 +1471,12 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
                     a.nav_open = false;
                 ui.request_animation_frame();
             }
-            glyph(ui, i == kStylePage ? Text : i, {22, y + (kNavStep - 16) / 2, 16, 16}, ui.theme().tint);
+            glyph(ui, i == kStylePage ? Text : (i == kAboutPage ? InfoIcon : i),
+                  {22, y + (kNavStep - 16) / 2, 16, 16}, ui.theme().tint);
             char count[12];
-            std::snprintf(count, sizeof(count), "%02d", layout.counts[i]);
+            // 关于页不是组件列表，右侧那栏给破折号，别写「01」。
+            if (i == kAboutPage) std::snprintf(count, sizeof(count), "—");
+            else std::snprintf(count, sizeof(count), "%02d", layout.counts[i]);
             ui.draw_text(count, {204, y, 22, kNavStep}, fg.scaled_alpha(.65f), Style().font(10.5f).right());
             y += kNavStep;
         }
@@ -1422,6 +1530,11 @@ void draw_toolbar(Ui &ui, App &a, const GalleryFrame &frame) {
     ui.tooltip(frame.search, "搜索所有组件 · Ctrl+F / ⌘F");
 }
 void draw_card(Ui &ui, App &a, const Card &card, Rect r) {
+    // 关于页自带版面（居中一栏），没有分组标题带和外层面板，整块交给它自己画。
+    if (card.id == About) {
+        draw_body(ui, a, card.id, r);
+        return;
+    }
     // 分组标题用次级文字色：macOS 设置里卡片上方的组名是灰的，和行标题拉开层次。
     // 用正文色会和卡片里的标题抢注意力（截图比对时最明显的一处）。
     label(ui, card.name, {r.x + 2, r.y + 2, r.w - 4, 22}, 13, true, 600);
@@ -1477,7 +1590,10 @@ void draw_content(Ui &ui, App &a, const GalleryLayout &layout, const GalleryFram
         const auto &p = kPages[section];
         if (y + section_heading_height(ui, p, column.w) < view.y || y > view.bottom())
             continue;
-        const std::string count = std::to_string(layout.counts[section]) + " 个组件";
+        // 关于页的右上是版本号而不是「1 个组件」—— 那一栏本来就不该有组件计数。
+        const std::string count = section == kAboutPage
+                                      ? std::string("v") + AINO_VERSION
+                                      : std::to_string(layout.counts[section]) + " 个组件";
         const float count_width = ui.text_width(count, 12);
         label(ui, p.name, {column.x + 2, y, column.w - count_width - 16, 28}, 22, false, 600);
         const float description_height = section_heading_height(ui, p, column.w) - 28 - kHeadingGap - kHeaderGap;

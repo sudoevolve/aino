@@ -32,7 +32,9 @@ EXE = find_exe()
 LOGICAL_W = 1180.0
 LOGICAL_H = 760.0
 NAV_W = 252.0        # 侧边栏宽
-TITLE_H = 72.0      # 默认窗口的标题栏高
+# 内容区顶部的逻辑高度，与 gallery_frame() 算出的页头一致（标题 40 + 说明 18 + 间距）。
+# 版式一改这里就得跟，所以下面的按钮断言不再依赖它的具体数值。
+TITLE_H = 94.0
 
 
 def save_png(raw, w, h, path):
@@ -89,6 +91,39 @@ class Report:
         else:
             self.failed += 1
             print("  [FAIL] %s  %s" % (name, detail))
+
+
+def first_block(shot, test, x0, y0, x1, y1, step=2):
+    """在区域内按行序找第一块满足 test 的实心色块，返回其中点（逻辑坐标）。
+
+    主按钮的坐标会随版式移动，写死坐标的断言每次调间距就误报一次。这里改成
+    「内容区里第一个强调色实心块就是主按钮」，然后向右 / 向下走到块的边界取中点。
+    圆角按钮的中列是实心的，所以中点一定落在可点区域里。
+    """
+    ly = y0
+    while ly < y1:
+        lx = x0
+        while lx < x1:
+            if test(shot.at(lx, ly)):
+                rx = lx
+                while rx + step < x1 and test(shot.at(rx + step, ly)):
+                    rx += step
+                mid = lx + (rx - lx) // 2
+                by = ly
+                while by + step < y1 and test(shot.at(mid, by + step)):
+                    by += step
+                return ((lx + rx) // 2, (ly + by) // 2)
+            lx += step
+        ly += step
+    return None
+
+
+def is_tint_blue(c):
+    return c[2] > 200 and c[0] < 60 and 100 < c[1] < 190
+
+
+def is_tint_red(c):
+    return c[0] > 200 and c[1] < 110 and c[2] < 110
 
 
 class Shot:
@@ -250,10 +285,9 @@ def main():
         rep.step("窗口可抓取", baseline.ok)
         rep.step("浅色窗口采用 F5F5F7 底色", close(baseline.at(1160, 180), (245, 245, 247), 1))
         rep.step("保留原有侧栏材质", 210 < baseline.avg(2, 80, 8, 600) < 245)
-        primary = baseline.at(332, 210)
-        rep.step("原有蓝色主按钮正常绘制", primary[2] > 230 and primary[0] < 30,
-                 str(primary))
-        activated = click(350, 210)
+        primary = first_block(baseline, is_tint_blue, 290, TITLE_H + 20, 1150, 700)
+        rep.step("原有蓝色主按钮正常绘制", primary is not None, str(primary))
+        activated = click(primary[0], primary[1]) if primary else baseline
         rep.step("点击按钮显示右上角通知", activated.diff(baseline, 856, TITLE_H + 12, 1156, TITLE_H + 66) > 100)
         # 关闭通知，后续断言不依赖动画结束时刻。
         click(1140, 110)
@@ -281,8 +315,12 @@ def main():
         nav_tint = red.at(19, nav_item_y("输入框"))
         rep.step("强调色更新侧栏选中态", nav_tint[0] > nav_tint[1] + 20, str(nav_tint))
         red_buttons = click(100, nav_item_y("按钮"))
-        c = red_buttons.at(332, 210)
-        rep.step("切换分类后保留所选强调色", c[0] > 230 and c[1] < 100, str(c))
+        # 同一个按钮、换成了红色：位置应当和蓝色那次重合（±30 逻辑像素），
+        # 否则说明「强调色只作用于侧栏、没进控件」。
+        red_block = first_block(red_buttons, is_tint_red, 290, TITLE_H + 20, 1150, 700)
+        same = (red_block is not None and primary is not None and
+                abs(red_block[0] - primary[0]) <= 30 and abs(red_block[1] - primary[1]) <= 30)
+        rep.step("切换分类后保留所选强调色", same, "%s -> %s" % (primary, red_block))
         post_click(hwnd, 1040, 36, scale)
         for char in "password":
             vr.user32.PostMessageW(hwnd, 0x0102, ord(char), 0)
