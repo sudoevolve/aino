@@ -1,6 +1,6 @@
 ﻿# aino
 
-单头文件 C++17 桌面 UI 库，采用立即模式与事件驱动主循环。
+单头文件 C++17 桌面 UI 库，采用立即模式与事件驱动主循环。定位是跨平台极低占用
 
 核心库只有一个 `aino.hpp`，使用系统绘制和字体接口，无第三方 UI 或图标依赖。采用 macOS 风格，背景材质以模糊近似。
 
@@ -8,11 +8,11 @@
 
 以下为 Windows 上的示例实窗截图，界面采用 iOS／macOS 风格。
 
-| 分组设置 | 组件画廊 |
-| --- | --- |
-| ![设置页](screenshots/sidebar-settings.png) | ![按钮与输入控件](screenshots/gallery-overview.png) |
-| ![分组卡片与列表](screenshots/gallery-button.png) | ![深色主题](screenshots/gallery-dark.png) |
-| ![对话框](screenshots/gallery-dialog.png) | ![基础图元](screenshots/primitives.png) |
+| 分组设置                                          | 组件画廊                                            |
+| ------------------------------------------------- | --------------------------------------------------- |
+| ![设置页](screenshots/sidebar-settings.png)       | ![按钮与输入控件](screenshots/gallery-overview.png) |
+| ![分组卡片与列表](screenshots/gallery-button.png) | ![深色主题](screenshots/gallery-dark.png)           |
+| ![对话框](screenshots/gallery-dialog.png)         | ![基础图元](screenshots/primitives.png)             |
 
 ## 开发规范
 

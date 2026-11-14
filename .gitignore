@@ -19,3 +19,4 @@ __pycache__/
 
 # 本机工具链 / 临时脚本
 .workbuddy/
+*.venv
