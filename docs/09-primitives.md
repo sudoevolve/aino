@@ -95,7 +95,7 @@ void draw_mono_text(const std::string& text, float x, float y_top, const Color& 
 
 正文默认字号 13、字重 400，`Style` 控制字号、字重、斜体、对齐、折行和行距。
 `draw_text` 裁剪到当前有效裁剪区与传入盒子的交集。
-等宽文本以左上角定位，使用独立等宽字体通道。
+等宽文本以左上角定位，使用独立等宽字体通道。`draw_text` 与 `draw_mono_text` 都参与 `begin_measure()`：等宽文字的外接矩形按实测字宽 × 行高登记，因此用等宽字自绘的组件不需要额外补偿。
 
 `system_icon` 只绘制符号，不提供点击交互，尊重裁剪、颜色和变换。
 Windows 使用 Segoe Fluent Icons / MDL2，macOS 使用 SF Symbols；X11 从桌面系统图标主题读取 SVG/PNG，支持主题继承及 Adwaita/hicolor 回退，按传入颜色绘制 alpha mask。

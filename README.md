@@ -108,8 +108,10 @@ cmake --build build --config Release --target aino_primitives_demo
 `win.run(frame_cb)` 管理主循环，窗口按需重绘；动画与后台数据更新方式见
 [快速开始](docs/01-quickstart.md)。
 
-支持 Windows（GDI）、Linux（X11）和 macOS（Cocoa）。Wayland 会话通过 XWayland 运行，
-目前没有原生 Wayland 后端。平台限制见 [平台支持](docs/README.md#平台支持)。
+三个后端：Windows（GDI）、Linux（X11）和 macOS（Cocoa）。**Windows 是唯一完成实机验收的后端**；
+Linux/macOS 的绘制、像素断言与窗口路径已接通，但键盘输入、剪贴板与关闭事件仍有缺口，
+接入前请读 [平台能力矩阵](docs/14-platform-status.md)。Wayland 会话通过 XWayland 运行，
+目前没有原生 Wayland 后端。
 
 ## Project Layout
 

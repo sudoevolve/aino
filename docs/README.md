@@ -21,11 +21,12 @@
 | [07-display.md](07-display.md) | 头像、活动指示、提示、路径、快捷键、折叠标题、表格、趋势图、条目、空状态、分页、图片占位 |
 | [08-overlays.md](08-overlays.md) | 浮层类：`tooltip` `menu` `dialog` `toast`；另含 `sheet` `popover` `hover_card` `alert_dialog` `drawer` `context_menu` `menubar` |
 | [09-primitives.md](09-primitives.md) | 图元与度量：几何、连续圆角、渐变、阴影、背景模糊、系统图标、文字与度量 |
-| [10-performance.md](10-performance.md) | 2026-10-17 历史性能基准（静置 / 连续重绘 / 交互）；§3 开头写明覆盖范围 |
+| [10-performance.md](10-performance.md) | 历史性能基准（静置 / 连续重绘 / 交互），末尾附 2026-11-14 的投影与文本复核 |
 | [11-motion.md](11-motion.md) | 动画（`tween` / `tween_color` / `fade` / `smooth` / 缓动）与 `Transform`（平移 / 缩放 / 旋转） |
 | [12-component-index.md](12-component-index.md) | 当前公开 API、Gallery 组合示例、兼容接口边界与检查工具 |
-| [13-project-review.md](13-project-review.md) | 项目分析、问题优先级、分批改进与验证记录 |
+| [13-project-review.md](13-project-review.md) | 项目分析、问题优先级、分批改进与验证记录（截至第 18 批的**历史记录**） |
 | [14-platform-status.md](14-platform-status.md) | 平台能力、实际验证边界与后续原生验收清单 |
+| [15-audit-2026-11-14.md](15-audit-2026-11-14.md) | 全项目工程审查：架构、性能实测、问题分级、重构方案、路线图与创新建议；第 10 节记录本批次落地结果 |
 
 ---
 

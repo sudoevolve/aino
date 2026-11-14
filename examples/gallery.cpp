@@ -25,15 +25,6 @@ using aino::Ui;
 using aino::Vec2;
 
 namespace {
-// 等宽绘制本身不参与测量；示例用同一个文字区域登记布局边界。
-void mono_label(Ui& ui, const char* text, float x, float y, Color color, float size) {
-    if (ui.measuring())
-        ui.draw_text(text, {x, y, ui.mono_width(text, size), ui.line_height(size)},
-                     color, Style().font(size).left().top());
-    else
-        ui.draw_mono_text(text, x, y, color, size);
-}
-
 constexpr float kNavW = 252;
 constexpr float kTitleH = 72;
 constexpr float kGridGap = 16;
@@ -269,7 +260,9 @@ bool system_dark() {
     HMODULE dll = LoadLibraryW(L"advapi32.dll");
     if (!dll)
         return true;
-    auto read = reinterpret_cast<ReadValue>(GetProcAddress(dll, "RegGetValueW"));
+    // 走库里的 dll_proc：它把 FARPROC → 具体签名的转换收敛到一处（-Wextra 下
+    // 直接 reinterpret_cast 会报 cast-function-type）。
+    auto read = aino::detail::dll_proc<ReadValue>(dll, "RegGetValueW");
     DWORD value = 0, bytes = sizeof(value);
     LSTATUS status = read ? read(HKEY_CURRENT_USER,
                                  L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Perso"
@@ -302,7 +295,9 @@ void set_accent(Ui &ui, App &a, int index) {
     a.custom_accent = false;
     ui.set_theme(gallery_theme(a));
 }
-void notify(Ui &ui, App &a, std::string message, int kind = 0) {
+// 弹一条通知。ui 参数不再需要（通知只是往 App 里塞数据），保留位置会诱使
+// 后续调用者以为它有用 —— 直接省略参数名。
+void notify(Ui &, App &a, std::string message, int kind = 0) {
     ++a.hits;
     if (a.notices.size() == 3)
         a.notices.erase(a.notices.begin());
@@ -1000,7 +995,7 @@ void draw_advanced(Ui &ui, App &a, CardId id, Rect b) {
         label(ui, "• 更新组件文档", {b.x, b.y + 78, b.w, 22}, 12);
         label(ui, "• 整理发布记录", {b.x, b.y + 106, b.w, 22}, 12);
         well(ui, {b.x, b.y + 144, b.w, 34});
-        mono_label(ui, "ui.button(\"Hello\", rect);", b.x + 10, b.y + 154, ui.theme().tint, 11);
+        ui.draw_mono_text("ui.button(\"Hello\", rect);", b.x + 10, b.y + 154, ui.theme().tint, 11);
     } else if (id == Empty) {
         glyph(ui, Folder, {b.cx() - 18, b.y + 2, 36, 36}, ui.theme().label3);
         ui.draw_text(a.material_name.empty() ? "暂无素材" : a.material_name,
@@ -1018,7 +1013,7 @@ void draw_advanced(Ui &ui, App &a, CardId id, Rect b) {
         label(ui, "分组", {b.x, b.y + 64, b.w - 85, 26}, 12, true);
         ui.badge("Default", {b.right() - 70, b.y + 67, 66, 22}, Style().secondary().font(11).corner(11));
         label(ui, "Tabular nums", {b.x, b.y + 112, b.w, 20}, 11, true);
-        mono_label(ui, "1,234.56", b.x, b.y + 142, ui.theme().label, 22);
+        ui.draw_mono_text("1,234.56", b.x, b.y + 142, ui.theme().label, 22);
     }
 }
 void draw_body(Ui &ui, App &a, CardId id, Rect b) {

@@ -638,7 +638,7 @@ struct Input {
 //    · 子布局可以嵌套，父子之间继承 gap。
 //
 //  刻意不做：内容自适应高度、自动换行、网格、约束求解。它们要么需要两趟
-//  遍历，要么需要尺寸缓存依赖图，与"单头文件 + 110KB"的目标直接冲突。
+//  遍历，要么需要尺寸缓存依赖图，与"单头文件、最小示例 exe 约 380 KiB"的目标直接冲突。
 //  布局器本身是纯值语义（一个 Rect + 一个方向 + 一个间距），不注册任何
 //  状态，所以嵌套/丢弃/复制都没有代价。
 // =============================================================================
@@ -1514,6 +1514,29 @@ inline int utf8_decode(const char* s, uint32_t* out) {
     }
     *out = 0xFFFD; return 1;
 }
+
+// 带长度的解码：截断的多字节序列（粘贴被切断、网络/文件读了一半）按替换符处理，
+// **不越界读**。返回值（前进多少字节）与上面的版本一致 —— 这样调用方的迭代次数、
+// 码点计数在畸形输入下也不变，只是不再踩到字符串末尾之外。
+inline int utf8_decode_n(const char* s, size_t avail, uint32_t* out) {
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(s);
+    if (avail == 0) { *out = 0; return 0; }
+    if (p[0] < 0x80) { *out = p[0]; return 1; }
+    if ((p[0] & 0xE0) == 0xC0) {
+        *out = avail >= 2 ? (((p[0] & 0x1Fu) << 6) | (p[1] & 0x3Fu)) : 0xFFFD;
+        return 2;
+    }
+    if ((p[0] & 0xF0) == 0xE0) {
+        *out = avail >= 3 ? (((p[0] & 0x0Fu) << 12) | ((p[1] & 0x3Fu) << 6) | (p[2] & 0x3Fu)) : 0xFFFD;
+        return 3;
+    }
+    if ((p[0] & 0xF8) == 0xF0) {
+        *out = avail >= 4 ? (((p[0] & 0x07u) << 18) | ((p[1] & 0x3Fu) << 12)
+                            | ((p[2] & 0x3Fu) << 6) | (p[3] & 0x3Fu)) : 0xFFFD;
+        return 4;
+    }
+    *out = 0xFFFD; return 1;
+}
 inline int utf8_encode(uint32_t cp, char* out) {
     if (cp < 0x80) { out[0] = char(cp); return 1; }
     if (cp < 0x800) { out[0] = char(0xC0 | (cp >> 6)); out[1] = char(0x80 | (cp & 0x3F)); return 2; }
@@ -1530,7 +1553,7 @@ inline std::vector<uint32_t> utf8_codepoints(const std::string& s) {
     size_t i = 0;
     while (i < s.size()) {
         uint32_t cp = 0;
-        int n = utf8_decode(s.c_str() + i, &cp);
+        int n = utf8_decode_n(s.c_str() + i, s.size() - i, &cp);
         cps.push_back(cp);
         i += size_t(n < 1 ? 1 : n);
     }
@@ -1546,11 +1569,29 @@ inline std::string utf8_from_codepoints(const std::vector<uint32_t>& cps, size_t
     }
     return out;
 }
-inline int utf8_count(const std::string& s) { return int(utf8_codepoints(s).size()); }
+// 码点计数：单遍扫描，**不分配**。老实现是 utf8_codepoints(s).size()，每调一次
+// 就要为整串分配一个 uint32 数组 —— 输入框/多行文本框每帧都调它，20 万字的文档
+// 每帧白分配 800 KB。前进步长只由首字节决定，与 utf8_codepoints 的计数完全一致。
+inline int utf8_count(const std::string& s) {
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(s.data());
+    const size_t n = s.size();
+    int count = 0;
+    size_t i = 0;
+    while (i < n) {
+        const unsigned char c = p[i];
+        size_t step = 1;
+        if ((c & 0xE0u) == 0xC0u) step = 2;
+        else if ((c & 0xF0u) == 0xE0u) step = 3;
+        else if ((c & 0xF8u) == 0xF0u) step = 4;
+        i += step;
+        ++count;
+    }
+    return count;
+}
 // 取第 idx 个码点之前的字节偏移
 inline size_t utf8_byte_offset(const std::string& s, int idx) {
     size_t i = 0; int k = 0;
-    while (i < s.size() && k < idx) { uint32_t cp; i += size_t(utf8_decode(s.c_str() + i, &cp)); ++k; }
+    while (i < s.size() && k < idx) { uint32_t cp; i += size_t(utf8_decode_n(s.c_str() + i, s.size() - i, &cp)); ++k; }
     return i;
 }
 
@@ -1759,6 +1800,45 @@ struct Canvas {
         blend_row(y, x0, x1, c, 1.0f);
     }
 
+    // 预乘了覆盖率的掩膜整行合成（图标：8 位；投影：16 位）。
+    //
+    // 存在的理由：图标与投影的覆盖率是**预先算好的常量**，每帧只需要"把掩膜贴上去"。
+    // 走 blend() 的话每个像素都要重判边界与裁剪区 —— 一个 24×24 图标 576 次判断，
+    // 一块弹窗投影几十万次。这里由调用方保证 [x0,x1) 已经裁到画布与裁剪区内，
+    // 循环里只剩混合本身；算式与 blend() 逐项一致，输出逐像素相同。
+    inline void blend_mask_row8(int y, int x0, int x1, const Color& c, const uint8_t* a) {
+        if (x1 <= x0) return;
+        uint8_t* p = px + size_t(y) * size_t(stride) + size_t(x0) * 4u;
+        // 与 blend() 同序计算：sa = (c.a/255) * (alpha/255)，不要先合并常数，
+        // 否则浮点结合顺序变了，个别像素会差 1。
+        const float ca = float(c.a) * (1.0f / 255.0f);
+        for (int i = x1 - x0; i > 0; --i, p += 4, ++a) {
+            const float sa = ca * (float(*a) * (1.0f / 255.0f));
+            if (sa <= 0.0015f) continue;
+            if (sa >= 0.9985f) { p[CH_R] = c.r; p[CH_G] = c.g; p[CH_B] = c.b; p[CH_A] = 255; continue; }
+            const float inv = 1.0f - sa;
+            p[CH_R] = uint8_t(c.r * sa + p[CH_R] * inv + 0.5f);
+            p[CH_G] = uint8_t(c.g * sa + p[CH_G] * inv + 0.5f);
+            p[CH_B] = uint8_t(c.b * sa + p[CH_B] * inv + 0.5f);
+            p[CH_A] = 255;
+        }
+    }
+    inline void blend_mask_row16(int y, int x0, int x1, const Color& c, const uint16_t* a) {
+        if (x1 <= x0) return;
+        uint8_t* p = px + size_t(y) * size_t(stride) + size_t(x0) * 4u;
+        const float ca = float(c.a) * (1.0f / 255.0f);
+        for (int i = x1 - x0; i > 0; --i, p += 4, ++a) {
+            const float sa = ca * (float(*a) * (1.0f / 65535.0f));
+            if (sa <= 0.0015f) continue;
+            if (sa >= 0.9985f) { p[CH_R] = c.r; p[CH_G] = c.g; p[CH_B] = c.b; p[CH_A] = 255; continue; }
+            const float inv = 1.0f - sa;
+            p[CH_R] = uint8_t(c.r * sa + p[CH_R] * inv + 0.5f);
+            p[CH_G] = uint8_t(c.g * sa + p[CH_G] * inv + 0.5f);
+            p[CH_B] = uint8_t(c.b * sa + p[CH_B] * inv + 0.5f);
+            p[CH_A] = 255;
+        }
+    }
+
     void clear(const Color& c) {
         if (w <= 0 || h <= 0 || !px) return;
         // 先铺满第 0 行的 w 个像素，其余行整块拷贝 —— 3 MB 的 memcpy 比
@@ -1920,16 +2000,6 @@ inline Span rr_span(float y, const RRectGeo& g) {
     return s;
 }
 
-// 兼容旧调用点：没有 smoothing 的纯圆弧
-inline Span rrect_span(float y, const Rect& r, float rad) {
-    if (rad <= 0.0f) {
-        Span s{r.x, r.right()};
-        if (y < r.y || y > r.bottom()) { s.xl = 1.0f; s.xr = 0.0f; }
-        return s;
-    }
-    RRectGeo g = make_rrgeo(r, rad, 0.0f);
-    return rr_span(y, g);
-}
 
 // 4 倍垂直子采样 × 水平解析覆盖 —— 半径 8px 的圆角能得到干净的边缘
 static const int AINO_SS = 4;
@@ -1959,7 +2029,7 @@ inline void raster_rrect_paint(Canvas& cv, const Rect& r, const RowPaint& paint,
     if (y1 > cv.h) y1 = cv.h;
     if (y0 < 0) y0 = 0;
     if (y1 <= y0) return;
-    // 半径按短边折半，和 rrect_span 内部一致；先算好才能推出"必定被覆盖"的内区
+    // 半径按短边折半，和 rr_span 内部一致；先算好才能推出"必定被覆盖"的内区
     const RRectGeo geo = make_rrgeo(r, rad, smooth);
 
     for (int py = y0; py < y1; ++py) {
@@ -1974,7 +2044,7 @@ inline void raster_rrect_paint(Canvas& cv, const Rect& r, const RowPaint& paint,
             float sy = float(py) + (float(s) + 0.5f) / float(AINO_SS);
             Span sp = rr_span(sy, geo);
             xls[s] = sp.xl; xrs[s] = sp.xr;
-            // rrect_span 对"行在矩形外"返回空哨兵 (xl=1, xr=0)。哨兵会把
+            // rr_span 对"行在矩形外"返回空哨兵 (xl=1, xr=0)。哨兵会把
             // min/max 带偏，所以必须用「是否真落在矩形内」显式判定。
             if (!(sp.xr > sp.xl)) all_inside = false;
             if (sp.xl < mn) mn = sp.xl;
@@ -2020,7 +2090,7 @@ inline void raster_rrect_paint(Canvas& cv, const Rect& r, const RowPaint& paint,
 // 描边：outer 覆盖 - inner 覆盖
 // 同样有"恒 1 区"快路径：左右两条竖边里，coverage 恒为 1（外框整覆盖、内框不沾边），
 // 一整条 1px 边框按逐像素 4 倍子采样跑会非常贵 —— 大面板的边框就是靠这条吃掉的。
-// 注意 rrect_span 对"行在矩形外"返回空哨兵 (xl=1, xr=0)，直接用 min/max 会被带偏
+// 注意 rr_span 对"行在矩形外"返回空哨兵 (xl=1, xr=0)，直接用 min/max 会被带偏
 // （内框在某行为空时 inr 会变成 0，右竖边下界退化成 0 → 整行被当成边框填满），
 // 所以下面一律按「有效样本」分别求边界。
 inline void raster_rrect_stroke(Canvas& cv, const Rect& r, const Color& c, float rad, float width, float smooth = 0.0f) {
@@ -2524,16 +2594,25 @@ inline void raster_rrect_inner(Canvas& cv, const Rect& r, float rad, float blur,
 }
 
 // 阴影轮廓边界的覆盖率为 50%；blur 对应高斯 σ = blur/2。使用 logistic 查表近似累积分布，避免逐像素 exp。
-inline float shadow_cov(float u) {
-    static float tab[65];
-    static bool init = false;
-    if (!init) {
+//
+// 查表放在函数外的 MAGIC STATIC 里：C++11 起它的初始化是线程安全的。
+// 早先用手工 `init` 标志，两个线程（画廊的素材窗口就走这条路）同时首次调用会竞争。
+struct ShadowCurve {
+    float tab[65];
+    ShadowCurve() {
         for (int i = 0; i < 65; ++i) {
             const float x = -2.0f + 4.0f * float(i) / 64.0f;   // u ∈ [-2, 2]
             tab[i] = 1.0f / (1.0f + std::exp(3.404f * x));
         }
-        init = true;
     }
+};
+inline const ShadowCurve& shadow_curve() {
+    static const ShadowCurve t;
+    return t;
+}
+
+inline float shadow_cov(float u) {
+    const float* tab = shadow_curve().tab;
     const float t = (u * 0.25f + 0.5f) * 64.0f;                // u ∈ [-2,2] → [0,64]
     if (t <= 0.0f) return 1.0f;
     if (t >= 64.0f) return 0.0f;
@@ -2542,21 +2621,61 @@ inline float shadow_cov(float u) {
     return tab[i] + (tab[i + 1] - tab[i]) * f;
 }
 
-// 阴影：对"外扩 blur"的包围盒逐像素求到圆角矩形边界的有符号距离 d，
-// 再按高斯覆盖率曲线取 alpha。距离场一次遍历就够，曲线不随 blur 变味。
-inline void raster_shadow(Canvas& cv, const Rect& r, float rad, float blur, const Color& c, float dy) {
-    if (blur <= 0.5f || c.a == 0) return;
-    const Rect s = r.offset(0.0f, dy);
-    const float inv_blur = 1.0f / blur;
-    // 拖尾截断到 ±1.35·blur（覆盖率 < 0.3%，肉眼不可见）
-    const float ext = blur * 1.35f;
+// -----------------------------------------------------------------------------
+//  投影掩膜缓存
+//
+//  掩膜里每个像素只取决于三件事：矩形在包围盒内的**亚像素相位**、矩形宽高、
+//  圆角与模糊半径。与颜色、与屏幕位置都无关（距离场是平移不变的）。所以一个
+//  弹窗的掩膜从第二帧起可以整块复用 —— 挡住的是逐像素的 sqrt。
+//
+//  为什么值得做：level2 投影（dialog/sheet/drawer 用 blur 90）在 480×300 上
+//  实测 3.92 ms/帧，是整帧最大单项；而它每帧的形状一个像素都没变。
+//
+//  为什么不存 8 位：软阴影的 alpha 跨度只有 0..≈1，8 位量化在渐变段会让整块
+//  阴影出现台阶（马赫带）。16 位把误差压到输出端 1 LSB 以内，实测与直接计算
+//  的逐像素最大差 ≤1。
+//
+//  内存：按 16 位存。480×300 / blur90 的掩膜是 723×543×2 ≈ 785 KiB。
+//  单块超过 kMaskCap 就退回逐像素直算（整窗尺寸的投影属于罕见路径，不值得为它
+//  常驻几 MB）；总量超过 kBudget 按最久未用淘汰。
+// -----------------------------------------------------------------------------
+struct ShadowMask {
+    int w = 0, h = 0;
+    float px = 0, py = 0;           // 矩形在包围盒内的相位（0..1）
+    float rw = 0, rh = 0;           // 矩形宽高
+    float rad = 0, blur = 0;
+    uint64_t stamp = 0;
+    std::vector<uint16_t> a;
 
+    bool same_shape(float px_, float py_, float rw_, float rh_, float rad_, float blur_) const {
+        return px == px_ && py == py_ && rw == rw_ && rh == rh_ && rad == rad_ && blur == blur_;
+    }
+};
+
+struct ShadowCache {
+    static const size_t kSlots   = 4;
+    static const size_t kMaskCap = size_t(2u << 20);    // 单块上限 2 MiB
+    static const size_t kBudget  = size_t(4u << 20);    // 总量上限 4 MiB
+    std::vector<ShadowMask> slots;
+    uint64_t tick = 0;
+};
+
+inline ShadowCache& shadow_cache() {
+    // 每个渲染线程一份：画廊的素材窗口在独立线程里画自己的帧。
+    static thread_local ShadowCache c;
+    return c;
+}
+
+// 直算路径：掩膜太大不进缓存时走这里（原实现，逐像素求距离场）。
+inline void raster_shadow_direct(Canvas& cv, const Rect& s, float rad, float blur, const Color& c) {
+    const float inv_blur = 1.0f / blur;
+    // 拖尾截断到 ±1.35·blur：该处覆盖率为 1%，肉眼不可见。
+    const float ext = blur * 1.35f;
     const int x0 = std::max(0, int(std::floor(s.x - ext)));
     const int x1 = std::min(cv.w, int(std::ceil(s.right() + ext)));
     const int y0 = std::max(0, int(std::floor(s.y - ext)));
     const int y1 = std::min(cv.h, int(std::ceil(s.bottom() + ext)));
     if (x0 >= x1 || y0 >= y1) return;
-
     for (int y = y0; y < y1; ++y) {
         const float pyc = float(y) + 0.5f;
         for (int x = x0; x < x1; ++x) {
@@ -2565,6 +2684,82 @@ inline void raster_shadow(Canvas& cv, const Rect& r, float rad, float blur, cons
             if (cov < 0.004f) continue;
             cv.blend(x, y, c, cov);   // alpha 由 blend 里的 c.a 负责
         }
+    }
+}
+
+// 阴影：对"外扩 blur"的包围盒逐像素求到圆角矩形边界的有符号距离 d，
+// 再按高斯覆盖率曲线取 alpha。距离场一次遍历就够，曲线不随 blur 变味。
+inline void raster_shadow(Canvas& cv, const Rect& r, float rad, float blur, const Color& c, float dy) {
+    if (blur <= 0.5f || c.a == 0) return;
+    const Rect s = r.offset(0.0f, dy);
+    const float ext = blur * 1.35f;
+
+    // 掩膜包围盒：不裁到画布 —— 裁了相位就变了，同一块弹窗在窗口边缘会算出
+    // 另一张掩膜，缓存直接失效。裁剪留到合成那一步做。
+    const int bx0 = int(std::floor(s.x - ext));
+    const int by0 = int(std::floor(s.y - ext));
+    const int bx1 = int(std::ceil(s.right() + ext));
+    const int by1 = int(std::ceil(s.bottom() + ext));
+    const int bw = bx1 - bx0, bh = by1 - by0;
+    if (bw <= 0 || bh <= 0) return;
+    if (bx1 <= 0 || by1 <= 0 || bx0 >= cv.w || by0 >= cv.h) return;   // 完全在画布外
+
+    const float phx = s.x - float(bx0), phy = s.y - float(by0);
+    const size_t bytes = size_t(bw) * size_t(bh) * sizeof(uint16_t);
+    if (bytes > ShadowCache::kMaskCap) { raster_shadow_direct(cv, s, rad, blur, c); return; }
+
+    ShadowCache& cache = shadow_cache();
+    ShadowMask* hit = nullptr;
+    for (ShadowMask& m : cache.slots) {
+        if (m.w == bw && m.h == bh && m.same_shape(phx, phy, s.w, s.h, rad, blur)) { hit = &m; break; }
+    }
+
+    if (!hit) {
+        // 腾位置：先按最久未用淘汰，再插入。插入前就把这块算出来 —— 算的时候
+        // 不持任何锁，也不看画布。
+        size_t used = 0;
+        for (const ShadowMask& m : cache.slots) used += m.a.size() * sizeof(uint16_t);
+        while (!cache.slots.empty() && (cache.slots.size() >= ShadowCache::kSlots
+                                        || used + bytes > ShadowCache::kBudget)) {
+            size_t oldest = 0;
+            for (size_t i = 1; i < cache.slots.size(); ++i)
+                if (cache.slots[i].stamp < cache.slots[oldest].stamp) oldest = i;
+            used -= cache.slots[oldest].a.size() * sizeof(uint16_t);
+            cache.slots.erase(cache.slots.begin() + long(oldest));
+        }
+        cache.slots.emplace_back();
+        ShadowMask& m = cache.slots.back();
+        m.w = bw; m.h = bh;
+        m.px = phx; m.py = phy; m.rw = s.w; m.rh = s.h; m.rad = rad; m.blur = blur;
+        m.a.resize(size_t(bw) * size_t(bh));
+        // 与直算路径逐项相同：像素中心 (bx0+i+0.5, by0+j+0.5) 到圆角矩形的距离。
+        const float inv_blur = 1.0f / blur;
+        for (int j = 0; j < bh; ++j) {
+            const float pyc = float(by0 + j) + 0.5f;
+            uint16_t* row = m.a.data() + size_t(j) * size_t(bw);
+            for (int i = 0; i < bw; ++i) {
+                const float d = rrect_sdf(float(bx0 + i) + 0.5f, pyc, s, rad);
+                const float cov = shadow_cov(d * inv_blur);
+                row[i] = uint16_t(cov * 65535.0f + 0.5f);
+            }
+        }
+        hit = &m;
+    }
+    hit->stamp = ++cache.tick;
+
+    // ---- 合成：只把落在画布与裁剪区内的那一段贴上去 ----
+    const int cx0 = std::max(bx0, 0), cx1 = std::min(bx1, cv.w);
+    const int cy0 = std::max(by0, 0), cy1 = std::min(by1, cv.h);
+    for (int y = cy0; y < cy1; ++y) {
+        if (cv.clipped && (y < cv.clip_y0 || y >= cv.clip_y1)) continue;
+        int x0 = cx0, x1 = cx1;
+        if (cv.clipped) {
+            if (x0 < cv.clip_x0) x0 = cv.clip_x0;
+            if (x1 > cv.clip_x1) x1 = cv.clip_x1;
+        }
+        if (x1 <= x0) continue;
+        const uint16_t* src = hit->a.data() + size_t(y - by0) * size_t(bw) + size_t(x0 - bx0);
+        cv.blend_mask_row16(y, x0, x1, c, src);
     }
 }
 
@@ -3010,7 +3205,12 @@ public:
         SIZE sz{0, 0};
         GetTextExtentPoint32W(metric_dc_, w.c_str(), int(w.size()), &sz);
         SelectObject(metric_dc_, old);
-        if (measure_cache_.size() >= 2048) measure_cache_.clear();
+        // 满了一律清空会让接下来几十段文字全部回落到 GDI 往返（周期性卡顿）。
+        // 丢一半就腾得出空间，热的一半还在。
+        if (measure_cache_.size() >= 2048) {
+            auto it = measure_cache_.begin();
+            for (int i = 0; i < 1024 && it != measure_cache_.end(); ++i) it = measure_cache_.erase(it);
+        }
         measure_cache_.emplace(h, std::make_pair(utf8, float(sz.cx)));
         return float(sz.cx);
     }
@@ -3338,17 +3538,19 @@ Theme Theme::dark() {
 }
 
 namespace icons {
-const char* check         = "\xE2\x9C\x93";              // ✓
-const char* chevron_down  = "\xE2\x8C\x84";              // ⌄
-const char* chevron_right = "\xE2\x80\xBA";              // ›
-const char* close         = "\xE2\x9C\x95";              // ✕
-const char* plus          = "+";
-const char* minus         = "\xE2\x88\x92";              // −
-const char* search        = "\xE2\x8C\x95";              // ⌕
-const char* settings      = "\xE2\x9A\x99";              // ⚙
-const char* sun           = "\xE2\x98\x80";              // ☀
-const char* moon          = "\xE2\x98\xBE";              // ☾
-const char* dot           = "\xE2\x80\xA2";              // •
+// inline：这些是**定义**而不是声明，两个编译单元都定义 AINO_IMPLEMENTATION 时
+// 原来的写法会重定义（链接期 duplicate symbol）。inline 变量要 C++17，本项目正好是。
+inline const char* check         = "\xE2\x9C\x93";              // ✓
+inline const char* chevron_down  = "\xE2\x8C\x84";              // ⌄
+inline const char* chevron_right = "\xE2\x80\xBA";              // ›
+inline const char* close         = "\xE2\x9C\x95";              // ✕
+inline const char* plus          = "+";
+inline const char* minus         = "\xE2\x88\x92";              // −
+inline const char* search        = "\xE2\x8C\x95";              // ⌕
+inline const char* settings      = "\xE2\x9A\x99";              // ⚙
+inline const char* sun           = "\xE2\x98\x80";              // ☀
+inline const char* moon          = "\xE2\x98\xBE";              // ☾
+inline const char* dot           = "\xE2\x80\xA2";              // •
 } // namespace icons
 
 namespace detail {
@@ -3369,7 +3571,10 @@ inline uint64_t prof_now() {
     LARGE_INTEGER c{}; QueryPerformanceCounter(&c);
     return uint64_t(double(c.QuadPart) * 1e6 / double(freq.QuadPart));
 #else
-    return uint64_t(clock() * 1000000 / CLOCKS_PER_SEC);
+    // clock() 是**进程 CPU 时间**，不是墙钟：在 Linux/macOS 上把"这一帧花了
+    // 多久"和"等了多久"混在一起，数字没有可比性。用 steady_clock。
+    using namespace std::chrono;
+    return uint64_t(duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count());
 #endif
 }
 
@@ -3615,6 +3820,15 @@ struct Ui::Impl {
     detail::WidgetStateTable<float> flags;
     // 组件私有的字符串状态（目前只有 combobox 的搜索词用）。
     detail::WidgetStateTable<std::string> strings;
+    // 多行文本框的切行结果。切行是 O(全文)，而光标闪烁期间每帧都要重画 ——
+    // 大文档静止时不该每帧重新切一遍。命中判据是"全文 memcmp 相等"，
+    // 所以程序改内容、长度不变也能立刻发现，不会画出上一版的行。
+    struct TextLines {
+        std::string src;                    // 上一帧的全文，用于校验
+        std::vector<std::string> lines;
+        std::vector<int> cps_n, cp_base;
+    };
+    detail::WidgetStateTable<TextLines> text_lines;
 
     // 本帧 interact() 的调用序号。立即模式下"调用顺序 = 绘制顺序 = 层级"，
     // 序号小的先画、在下面，所以它可以直接当 z 序用。每帧归零重数。
@@ -3910,7 +4124,7 @@ struct Ui::Impl {
     uint64_t state_scope_id = 0;
     std::vector<uint64_t> released_state_scopes;
     template<class Fn> void each_widget_state(Fn fn) {
-        fn(anim); fn(phase); fn(flags); fn(strings); fn(edit_stack);
+        fn(anim); fn(phase); fn(flags); fn(strings); fn(edit_stack); fn(text_lines);
         fn(tweens); fn(color_tweens);
     }
     void set_state_scope(uint64_t id) {
@@ -4016,6 +4230,9 @@ void Ui::begin_frame(float w, float h, float dt, float dpi) {
     impl->pad.resize(1);
     impl->clips.clear();
     impl->clip_logic.clear();
+    // 帧回调抛异常时滚动区不会走 end_scroll()。不清栈的话下一帧会在"上一个
+    // 滚动区里"开始画，整页偏移一个滚动量 —— 症状很难查，代价只有一行。
+    impl->scroll_stack.clear();
     impl->recompute_clip_logic();
     // 一次按下只能归一个控件。见 detail::interact() 里的用法。
     impl->press_taken = false;
@@ -4710,9 +4927,16 @@ float Ui::mono_ascent(float font_size, int weight) const {
 
 void Ui::draw_mono_text(const std::string& text, float x, float y_top, const Color& c,
                                float font_size, int weight) {
-    if (impl->measure_on) return;
-    if (!impl->canvas || !impl->text || text.empty() || c.a == 0) return;
     const float fs = font_size > 0.0f ? font_size : impl->theme.font_size;
+    // 参与布局测量，和 draw_text 一致。等宽文字的外接矩形只由字符串和字号决定，
+    // 量的成本就是一次（已缓存的）字宽查询。早先这里直接 return —— 用等宽字自绘的
+    // 组件在 begin_measure() 里量出来的高度不含它，示例只好自己补一份 mono_label。
+    if (impl->measure_on) {
+        if (text.empty() || c.a == 0) return;
+        impl->measure_add(Rect(x, y_top, mono_width(text, fs, weight), line_height(fs)));
+        return;
+    }
+    if (!impl->canvas || !impl->text || text.empty() || c.a == 0) return;
     const Rect clip = impl->effective_clip;     // w < 0 表示没裁
     impl->text->draw_mono(*impl->canvas, text, impl->px(x), impl->px(y_top), impl->px(fs),
                           weight, c, clip);
@@ -4763,7 +4987,10 @@ inline float glyph_adv(Ui::Impl* im, uint32_t cp, float pfs, int weight) {
         buf[n++] = char(0x80 | (cp & 0x3F));
     }
     const float w = im->text->measure(std::string(buf, size_t(n)), pfs, weight);
-    if (im->adv_cache.size() > 8192) im->adv_cache.clear();   // 不可控输入，别无限长
+    if (im->adv_cache.size() > 8192) {                        // 不可控输入，别无限长
+        auto it = im->adv_cache.begin();                      // 同样只丢一半，保住热字形
+        for (int i = 0; i < 4096 && it != im->adv_cache.end(); ++i) it = im->adv_cache.erase(it);
+    }
     im->adv_cache.emplace(k, w);
     return w;
 }
@@ -6189,7 +6416,10 @@ bool Ui::input(std::string* value, const Rect& box, const Style& st) {
         for (int i = 0; i < count; ++i) masked += "•";
         return masked;
     };
-    const std::string hit_text = display(*value);
+    // 非密码框直接引用调用方的串：这个函数每帧都跑，按值接一份等于每帧复制
+    // 整段文本（长输入 / 大段粘贴时很可观）。密码框才需要一份打码副本。
+    const std::string masked = st.password ? display(*value) : std::string();
+    const std::string& hit_text = st.password ? masked : *value;
     const float avail = std::max(box.w - pad * 2.0f, 1.0f);
 
     if (focused) {
@@ -6990,7 +7220,7 @@ bool Ui::select(const std::vector<std::string>& items, int* index, const Rect& b
 }
 
 // =============================================================================
-//  8.13  表单补充
+//  8.12  表单补充
 // =============================================================================
 
 // -----------------------------------------------------------------------------
@@ -7292,26 +7522,72 @@ bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
         return out;
     };
 
-    std::vector<std::string> lines = split_lines(*value);
+    // ---- 切行 + 每行码点数 + 行首 caret 偏移 ----
+    // 三者都只由全文决定，所以一起缓存：光标闪烁期间每帧都要重画，而大文档
+    // 静止时内容一个字节都没变 —— 切一遍是 O(全文) 加每行一次分配，白付。
+    //
+    // 命中判据是**全文 memcmp**，不是长度或指针相等：程序改文本而长度不变
+    // （替换、撤销到同长度）也能立刻发现，不会画出上一版的行。
+    // 64 KiB 以下不缓存：重建本身只要几十微秒，留一份副本不划算。
+    std::vector<std::string> lines_local;
+    std::vector<int> cps_local, base_local;
+    const std::vector<std::string>* lines_p = &lines_local;
+    const std::vector<int>* cps_p = &cps_local;
+    const std::vector<int>* base_p = &base_local;
+    Impl::TextLines* tc = nullptr;
+    if (value->size() >= size_t(64u << 10)) tc = &impl->text_lines[id];
+    else impl->text_lines.erase(id);    // 缩回小文档后不再留着整篇副本
 
+    // 重建（或重建后写回缓存）。原地赋值：下面所有 lambda 都按引用捕获
+    // lines / cps_n / cp_base，重建后引用仍然有效。
+    auto rebuild_lines = [&]() {
+        std::vector<std::string> nl = split_lines(*value);
+        std::vector<int> nc(nl.size()), nb(nl.size());
+        int acc = 0;
+        for (size_t i = 0; i < nl.size(); ++i) {
+            nc[i] = utf8_count(nl[i]);
+            nb[i] = acc;
+            acc += nc[i] + 1;           // +1 吃掉换行符
+        }
+        if (tc) {
+            tc->src = *value;
+            tc->lines = std::move(nl);
+            tc->cps_n = std::move(nc);
+            tc->cp_base = std::move(nb);
+            // 数据搬进缓存后局部向量是空的，指针必须跟着改过去。
+            lines_p = &tc->lines; cps_p = &tc->cps_n; base_p = &tc->cp_base;
+        } else {
+            lines_local = std::move(nl);
+            cps_local = std::move(nc);
+            base_local = std::move(nb);
+        }
+    };
+
+    const bool lines_cached = tc && tc->src.size() == value->size()
+        && (value->empty() || std::memcmp(tc->src.data(), value->data(), value->size()) == 0);
+    if (lines_cached) { lines_p = &tc->lines; cps_p = &tc->cps_n; base_p = &tc->cp_base; }
+    else              { rebuild_lines(); }
+    const std::vector<std::string>& lines = *lines_p;
+    const std::vector<int>& cps_n = *cps_p;
+    const std::vector<int>& cp_base = *base_p;
     auto to_linecol = [&](int cp) -> std::pair<int, int> {
         int remain = cp < 0 ? 0 : cp;
-        for (size_t i = 0; i < lines.size(); ++i) {
-            const int n = utf8_count(lines[i]);
-            if (remain <= n) return std::make_pair(int(i), remain);
-            remain -= n + 1;           // +1 吃掉换行符
-        }
-        const int last = int(lines.size()) - 1;
-        return std::make_pair(last, utf8_count(lines[size_t(last)]));
+        // cp_base 单调递增，二分定位行号（原来是从第一行线性扫）。
+        const auto it = std::upper_bound(cp_base.begin(), cp_base.end(), remain);
+        size_t i = it == cp_base.begin() ? 0 : size_t(it - cp_base.begin()) - 1;
+        if (i >= lines.size()) i = lines.size() - 1;
+        remain -= cp_base[i];
+        if (remain > cps_n[i]) remain = cps_n[i];    // 越过行尾时夹到行尾
+        return std::make_pair(int(i), remain);
     };
     auto to_caret = [&](int ln, int col) {
-        int cp = 0;
-        for (int i = 0; i < ln && i < int(lines.size()); ++i) cp += utf8_count(lines[i]) + 1;
-        return cp + (col < 0 ? 0 : col);
+        if (ln < 0) return col < 0 ? 0 : col;
+        if (ln >= int(lines.size())) ln = int(lines.size()) - 1;
+        return cp_base[size_t(ln)] + (col < 0 ? 0 : col);
     };
     auto line_x = [&](int ln, int col) {
         if (ln < 0 || ln >= int(lines.size())) return 0.0f;
-        const int n = utf8_count(lines[size_t(ln)]);
+        const int n = cps_n[size_t(ln)];
         if (col > n) col = n;
         const std::vector<uint32_t> cps = utf8_codepoints(lines[size_t(ln)]);
         return text_width(utf8_from_codepoints(cps, 0, size_t(col)), fs, 400);
@@ -7321,7 +7597,7 @@ bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
     const float view_h   = std::max(box.h - pady * 2.0f, 1.0f);
     const float need_h   = lh * float(lines.size());
     const float max_off  = std::max(0.0f, need_h - view_h);
-    int   n_cp     = utf8_count(*value);
+    int   n_cp     = cp_base.back() + cps_n.back();
 
     if (max_off > 0.0f && in.hovered && std::fabs(impl->input.wheel) > 0.001f) {
         tscroll = detail::clampf(tscroll - impl->input.wheel * 40.0f, 0.0f, max_off);
@@ -7506,7 +7782,7 @@ bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
             if (kin.ctrl_of(KEY_END)) impl->caret = n_cp;
             else {
                 const std::pair<int, int> lc = to_linecol(impl->caret);
-                impl->caret = to_caret(lc.first, utf8_count(lines[size_t(lc.first)]));
+                impl->caret = to_caret(lc.first, cps_n[size_t(lc.first)]);
             }
             impl->caret_blink = 0.0f;
         }
@@ -7540,8 +7816,9 @@ bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
         if (changed && !undone && *value != before_text)
             detail::edit_snapshot(impl, id, before_text, caret0, anchor0, edit_kind);
 
-        // 编辑完重新分行，否则下面的绘制还在用旧的 lines
-        if (changed) lines = split_lines(*value);
+        // 编辑完重新分行，否则下面的绘制还在用旧的 lines。
+        // 行首偏移表也要一起重建 —— 光标定位、选区、视口跟随都读它。
+        if (changed) rebuild_lines();
     }
 
     // 光标行保持在视口内（先按光标位置调整，再统一夹到合法区间）
@@ -7582,12 +7859,21 @@ bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
     if (focused && impl->sel_anchor >= 0) {
         const int sf  = std::min(impl->caret, impl->sel_anchor);
         const int stt = std::max(impl->caret, impl->sel_anchor);
-        int base = 0;
-        for (size_t i = 0; i < lines.size(); ++i) {
-            const int n = utf8_count(lines[i]);
+        // 从可见区第一行开始：整篇被选中时，屏幕外的行不需要量宽度（每行要
+        // 两次 utf8_codepoints + 一次字体度量）。前缀表让起点可以直接算出来。
+        size_t i0 = 0;
+        if (lh > 0.01f) {
+            const float first_y = box.y + pady - tscroll;
+            if (first_y < box.y) i0 = size_t(std::max(0.0f, std::floor((box.y - first_y) / lh)));
+            if (i0 >= lines.size()) i0 = lines.size() - 1;
+        }
+        for (size_t i = i0; i < lines.size(); ++i) {
+            const int base = cp_base[i];
+            const int n = cps_n[i];
+            const float y = box.y + pady + lh * float(i) - tscroll;
+            if (y > box.bottom()) break;
             const int a = std::max(sf, base) - base;
             const int b = std::min(stt, base + n) - base;
-            const float y = box.y + pady + lh * float(i) - tscroll;
             if (b > a) {
                 const float x0 = line_x(int(i), a);
                 const float x1 = line_x(int(i), b);
@@ -7596,7 +7882,6 @@ bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
             // 行尾的换行符也被选中时补一小段，不然"选中换行"看不出反馈
             if (stt > base + n && sf <= base + n)
                 fill_rect(Rect(box.x + padx + line_x(int(i), n), y, 6.0f, lh), th.primary.with_alpha(52), 2.0f);
-            base += n + 1;
         }
     }
 
@@ -7608,7 +7893,10 @@ bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
     float comp_w = 0.0f;
     if (composing) { comp_lc = to_linecol(impl->caret); comp_w = text_width(impl->ime_comp, fs, 400); }
 
-    for (size_t i = 0; i < lines.size(); ++i) {
+    size_t draw_from = 0;
+    if (lh > 0.01f && tscroll > 0.0f)
+        draw_from = size_t(std::max(0.0f, std::floor(tscroll / lh)));
+    for (size_t i = draw_from; i < lines.size(); ++i) {
         const float y = box.y + pady + lh * float(i) - tscroll;
         if (y > box.bottom()) break;
         if (y + lh < box.y) continue;
@@ -7716,7 +8004,7 @@ bool Ui::rating(int* value, int max_stars, const Rect& box, const Style& st) {
 }
 
 // =============================================================================
-//  8.14  展示补充
+//  8.13  展示补充
 // =============================================================================
 
 // 头像：圆形底 + 首个码点。传 "张三" 画"张"，传 "AB" 画"A"。
@@ -7986,7 +8274,6 @@ void Ui::table(const std::vector<std::string>& headers,
     for (size_t c = 0; c < cols; ++c) {
         const Rect cr(hr.x + col_w * float(c), hr.y, col_w, hr.h);
         // 列之间不画竖线：macOS 的列表靠留白和行分隔线分列，竖线是 Excel/Web 的语汇
-        (void)c;
         if (c >= headers.size()) continue;
         Style ts;
         ts.font_size = 11.0f;               // Subheadline 11/14
@@ -8010,7 +8297,8 @@ void Ui::table(const std::vector<std::string>& headers,
             ts.font_size = fs;
             ts.font_weight = 400;
             // macOS 表格的数字列一律右对齐（小数点对齐是 Finder 的规矩）。
-            ts.align = detail::looks_numeric(rows[r][c]) ? Align::Right : Align::Left;
+            // 用上面预算好的 num_col：逐格再判一次，等于把每行的字符串又扫一遍。
+            ts.align = num_col[c] ? Align::Right : Align::Left;
             ts.valign = VAlign::Middle;
             Color cc = !st.fg.is_none() ? st.fg : th.foreground;
             if (st.disabled) cc.a = uint8_t(float(cc.a) * 0.45f);
@@ -8085,7 +8373,7 @@ void Ui::bars(const std::vector<float>& values, const Rect& box, const Style& st
 }
 
 // =============================================================================
-//  8.15  浮层类
+//  8.14  浮层类
 // =============================================================================
 
 // 悬停提示。点击态与普通控件一致，但显示条件多一条：指针停留满 0.4 秒。
@@ -8531,7 +8819,7 @@ void Ui::toast(const std::string& text, const Rect& box, const Style& st) {
 }
 
 // =============================================================================
-//  8.16  对齐 macOS 的基础控件（含 kit 里没有对应物的推导）
+//  8.15  对齐 macOS 的基础控件（含 kit 里没有对应物的推导）
 //
 //  本节控件的输入与绘制约定：
 //    1) 交互一律走 detail::interact()，动画一律走 detail::animate_value()；
@@ -10001,7 +10289,7 @@ bool Ui::split_pane(float* ratio, const Rect& box, Rect* first, Rect* second,
 }
 
 // =============================================================================
-//  8.17  滚动
+//  8.16  滚动
 //  实现方式是把"视口"翻译成布局语义：压一个负向偏移的 group + 一个裁剪区，
 //  于是内部的 row()/column() 自动吃到那个偏移，不用逐个组件改坐标。
 //
@@ -10031,20 +10319,18 @@ inline ScrollbarGeom scrollbar_geom(const Rect& box, float offset, float max_off
 
 // macOS 的滚动条是 **overlay**：只在滚动 / 悬停时出现，停手约 0.9 秒后淡出。
 // 常驻的细条是 Windows 与浏览器的习惯 —— 一条永远挂在那里的 3px 竖线，是
-// "这是个网页控件"最直白的提示。activity 记在 flags 里（按 box 区分）。
-inline uint64_t scrollbar_id(Ui::Impl* ui, const char* kind, const Rect& box) {
-    uint64_t owner = ui->widget_id("scroll", box);
-    if (!ui->scroll_stack.empty()) {
-        const auto& current = ui->scroll_stack.back();
-        if (current.box.x == box.x && current.box.y == box.y
-            && current.box.w == box.w && current.box.h == box.h) owner = current.id;
-    }
-    return hash_combine(owner, hash_string(kind));
+// "这是个网页控件"最直白的提示。activity 记在 flags 里（按滚动区 id 区分）。
+//
+// 四个状态槽（偏移 / 激活时刻 / 上次偏移 / 拖动抓点）全部从**滚动区自己的 id**
+// 派生。早先 alpha / prev / grab 走 scrollbar_id()（它会在"栈顶 box 相同"时
+// 悄悄换成滚动区 id），而 end_scroll() 又自己拼一套 hash_combine —— 两套键只是
+// 碰巧相等，改任一处的键名就会漂。
+inline uint64_t scrollbar_slot(uint64_t id, const char* kind) {
+    return hash_combine(id, hash_string(kind));
 }
 
-inline float scrollbar_alpha(Ui::Impl* ui, const Rect& box, bool hot, bool moved) {
-    const uint64_t aid = scrollbar_id(ui, "scrollact", box);
-    float& act = ui->flags[aid];
+inline float scrollbar_alpha(Ui::Impl* ui, uint64_t id, bool hot, bool moved) {
+    float& act = ui->flags[scrollbar_slot(id, "scrollact")];
     if (hot || moved) act = ui->clock;
     if (act <= 0.0f) return 0.0f;                 // 还没滚过：一帧都不画
     const float age = ui->clock - act;
@@ -10056,14 +10342,14 @@ inline float scrollbar_alpha(Ui::Impl* ui, const Rect& box, bool hot, bool moved
 // 滚动条交互：按下滑块 → 拖动；按下轨道 → 滑块中心跳到点击处（Windows 传统行为，
 // 比"翻一页"更好预测，也少一次点击）。拖动时鼠标可以离开视口 —— 后端已经
 // SetCapture，down[0] 仍然成立。返回鼠标是否在热区上（用来加深颜色）。
-inline bool scrollbar_interact(Ui::Impl* ui, const Rect& box, float max_offset, float& offset) {
+inline bool scrollbar_interact(Ui::Impl* ui, uint64_t id, const Rect& box, float max_offset, float& offset) {
     const ScrollbarGeom g = scrollbar_geom(box, offset, max_offset);
     const Input& kin = ui->input;
     const bool on_track = g.track.contains(kin.mouse.x, kin.mouse.y);
     ui->hover_region(g.track);        // 悬停要变亮，时钟靠帧推进
     if (ui->gate_blocked_pointer()) return on_track;   // 浮层打开时不许动下层滚动条
 
-    const uint64_t sid = scrollbar_id(ui, "scrollbar-grab", box);
+    const uint64_t sid = scrollbar_slot(id, "scrollgrab");
     float& grab = ui->flags[sid];       // 按下时鼠标在滑块内的相对位置
     const float travel = std::max(g.travel, 1.0f);
 
@@ -10087,6 +10373,35 @@ inline bool scrollbar_interact(Ui::Impl* ui, const Rect& box, float max_offset, 
     }
     if (kin.released[0] && ui->active == sid) ui->active = 0;
     return on_track;
+}
+
+// 画一次滚动条：夹偏移 → 吃交互 → 判"刚动过" → 淡出。
+// end_scroll() 和 scroll_bar() 走同一份实现（早先两处各写一遍，连 prev 的键都不同）。
+struct ScrollbarDraw {
+    float offset = 0.0f;
+    bool  need_frame = false;   // 淡出中途，需要下一帧继续推进
+};
+
+inline ScrollbarDraw scrollbar_draw(Ui& ui, uint64_t id, const Rect& box, float max_offset) {
+    Ui::Impl* im = ui.impl;
+    ScrollbarDraw out;
+    float& off = im->flags[id];
+    off = clampf(off, 0.0f, max_offset);
+    const bool hot = scrollbar_interact(im, id, box, max_offset, off);
+    off = clampf(off, 0.0f, max_offset);
+    out.offset = off;
+
+    // "刚才滚过没有"：和上一帧的偏移比。滚轮、拖动、程序调用都算。
+    float& prev = im->flags[scrollbar_slot(id, "scrollprev")];
+    const bool moved = std::fabs(off - prev) > 0.01f;
+    prev = off;
+
+    const float a = scrollbar_alpha(im, id, hot, moved);
+    if (a <= 0.01f) return out;
+    const ScrollbarGeom g = scrollbar_geom(box, off, max_offset);
+    ui.fill_rect(g.thumb, ui.theme().scrollbar.scaled_alpha(a), 3.5f);
+    out.need_frame = (a < 0.79f);
+    return out;
 }
 } // namespace detail
 
@@ -10195,21 +10510,10 @@ void Ui::end_scroll() {
     // 滚动条在内容之上（所以放在 end_scroll 里，而不是 begin_scroll）。
     // 先吃交互再画：同一帧里拖动要立刻反映到滑块位置上，晚一帧会明显发黏。
     if (ctx.max_offset > 0.0f) {
-        float& off = impl->flags[ctx.id];
-        off = detail::clampf(off, 0.0f, ctx.max_offset);
-        const bool hot = detail::scrollbar_interact(impl, ctx.box, ctx.max_offset, off);
-        off = detail::clampf(off, 0.0f, ctx.max_offset);
-        // "刚才滚过没有"：和上一帧的偏移比。滚轮、拖动、程序调用都算。
-        float& prev = impl->flags[detail::hash_combine(ctx.id, detail::hash_string("scrollprev"))];
-        const bool moved = std::fabs(off - prev) > 0.01f;
-        prev = off;
-        const float a = detail::scrollbar_alpha(impl, ctx.box, hot, moved);
-        if (a > 0.01f) {
-            const detail::ScrollbarGeom g = detail::scrollbar_geom(ctx.box, off, ctx.max_offset);
-            fill_rect(g.thumb, impl->theme.scrollbar.scaled_alpha(a), 3.5f);
-            if (a < 0.79f) repaint();      // 淡出要帧推进，否则停在半透明上
-        }
-        impl->last_scroll = off;
+        const detail::ScrollbarDraw sb =
+            detail::scrollbar_draw(*this, ctx.id, ctx.box, ctx.max_offset);
+        impl->last_scroll = sb.offset;
+        if (sb.need_frame) repaint();      // 淡出要帧推进，否则停在半透明上
     }
 
     impl->last_scroll = ctx.offset;
@@ -10273,18 +10577,9 @@ float Ui::scroll_visible(const Rect& box, int count, float item_h, int* first, i
 void Ui::scroll_bar(const Rect& box, float content_h) {
     const float max_off = std::max(0.0f, content_h - box.h);
     if (max_off <= 0.0f) return;
-    float& off = impl->flags[impl->widget_id("scroll", box)];
-    off = detail::clampf(off, 0.0f, max_off);
-    const bool hot = detail::scrollbar_interact(impl, box, max_off, off);
-    off = detail::clampf(off, 0.0f, max_off);
-    float& prev = impl->flags[detail::scrollbar_id(impl, "scrollprev", box)];
-    const bool moved = std::fabs(off - prev) > 0.01f;
-    prev = off;
-    const float a = detail::scrollbar_alpha(impl, box, hot, moved);
-    if (a <= 0.01f) return;
-    const detail::ScrollbarGeom g = detail::scrollbar_geom(box, off, max_off);
-    fill_rect(g.thumb, impl->theme.scrollbar.scaled_alpha(a), 3.5f);
-    if (a < 0.79f) repaint();
+    const detail::ScrollbarDraw sb =
+        detail::scrollbar_draw(*this, impl->widget_id("scroll", box), box, max_off);
+    if (sb.need_frame) repaint();
 }
 
 float Ui::scroll_offset(const Rect& box) const {
@@ -10458,8 +10753,20 @@ inline void x11_set_ime_pos(X11State* s, float caret_x, float top, float bottom)
 } // namespace detail
 #endif
 
+// 老的两参构造：集中填一次，避免 WindowConfig{ w, h, title } 这种聚合初始化
+// 在 -Wextra 下报一串 missing-field-initializers（新增字段时还会悄悄漏填）。
+namespace detail {
+inline WindowConfig legacy_window_config(int w, int h, const std::string& title) {
+    WindowConfig cfg;
+    cfg.width = w;
+    cfg.height = h;
+    cfg.title = title;
+    return cfg;
+}
+} // namespace detail
+
 Window::Window(int w, int h, const std::string& title)
-    : Window(WindowConfig{ w, h, title }) {}
+    : Window(detail::legacy_window_config(w, h, title)) {}
 
 Window::Window(const WindowConfig& cfg) : impl(new Impl()) {
     if (!impl->wake_signal.valid()) return;
@@ -10601,9 +10908,22 @@ void Window::close() {
 
 #ifdef AINO_PLATFORM_WINDOWS
 // =============================================================================
-//  8.13  Windows 后端
+//  8.18  Windows 后端
 // =============================================================================
 namespace detail {
+
+// 从 DLL 取函数指针。直接 reinterpret_cast<Fn>(GetProcAddress(...)) 在
+// -Wextra 下会报 -Wcast-function-type（FARPROC 的签名与目标类型不兼容），
+// 而那是动态加载的常规写法。经 void* 中转一次，语义不变、告警消灭。
+// 两条 static_assert 保证平台上的指针尺寸一致，不会在奇怪的 ABI 上悄悄出错。
+template <class Fn>
+inline Fn dll_proc(HMODULE module, const char* name) {
+    static_assert(sizeof(Fn) == sizeof(FARPROC), "function pointer size mismatch");
+    FARPROC raw = GetProcAddress(module, name);
+    Fn fn = nullptr;
+    std::memcpy(&fn, &raw, sizeof(fn));
+    return fn;
+}
 
 // 显式用宽字符版资源 ID —— IDC_* 会随 UNICODE 宏在 A/W 之间切换，
 // 而我们要的是一个不依赖调用方编译开关的库
@@ -10664,8 +10984,7 @@ inline void win_sync_caption_theme(Win32State* state, bool dark) {
     static SetAttribute set_attribute = []() -> SetAttribute {
         // 函数指针在进程存续期间复用，因此系统模块也保留至进程退出。
         HMODULE module = LoadLibraryW(L"dwmapi.dll");
-        return module ? reinterpret_cast<SetAttribute>(GetProcAddress(module, "DwmSetWindowAttribute"))
-                      : nullptr;
+        return module ? dll_proc<SetAttribute>(module, "DwmSetWindowAttribute") : nullptr;
     }();
     if (set_attribute) {
         const BOOL enabled = dark ? TRUE : FALSE;
@@ -10682,7 +11001,7 @@ inline UINT win_dpi_of(HWND hwnd) {
     if (!tried) {
         tried = true;
         HMODULE u = GetModuleHandleW(L"user32.dll");
-        if (u) fn = reinterpret_cast<PFN_GetDpiForWindow>(GetProcAddress(u, "GetDpiForWindow"));
+        if (u) fn = dll_proc<PFN_GetDpiForWindow>(u, "GetDpiForWindow");
     }
     if (fn && hwnd) { UINT d = fn(hwnd); if (d) return d; }
     HDC dc = GetDC(nullptr);
@@ -10698,8 +11017,7 @@ inline void win_enable_dpi_awareness() {
     done = true;
     HMODULE u = GetModuleHandleW(L"user32.dll");
     if (u) {
-        auto fn = reinterpret_cast<PFN_SetProcessDpiAwarenessContext>(
-            GetProcAddress(u, "SetProcessDpiAwarenessContext"));
+        auto fn = dll_proc<PFN_SetProcessDpiAwarenessContext>(u, "SetProcessDpiAwarenessContext");
         if (fn && fn(reinterpret_cast<void*>(static_cast<intptr_t>(-4)))) return;   // PER_MONITOR_AWARE_V2
     }
     SetProcessDPIAware();
@@ -10735,10 +11053,10 @@ inline int win_map_vk(WPARAM vk) {
     }
 }
 
-inline void win_append_utf16(std::string& out, uint32_t unit) {
+// pending_high 挂在窗口状态上，不是函数级 static：后者是**进程级**共享的，
+// 两个窗口交替收字符时，A 窗口留下的半个代理对会被 B 窗口的下一个字符拼走。
+inline void win_append_utf16(std::string& out, uint32_t& pending_high, uint32_t unit) {
     // 处理代理对，否则 emoji / 扩展汉字会被切成两个非法码点
-    static uint32_t pending_high = 0;
-    (void)pending_high;
     if (unit >= 0xD800 && unit <= 0xDBFF) { pending_high = unit; return; }
     uint32_t cp = unit;
     if (unit >= 0xDC00 && unit <= 0xDFFF && pending_high) {
@@ -10866,14 +11184,13 @@ struct ImmApi {
     ImmApi() {
         HMODULE h = LoadLibraryW(L"imm32.dll");
         if (!h) return;
-        get_ctx  = reinterpret_cast<HIMC (WINAPI*)(HWND)>(GetProcAddress(h, "ImmGetContext"));
-        rel_ctx  = reinterpret_cast<BOOL (WINAPI*)(HWND, HIMC)>(GetProcAddress(h, "ImmReleaseContext"));
-        set_comp = reinterpret_cast<BOOL (WINAPI*)(HIMC, const AinoCompositionFormW*)>(
-                       GetProcAddress(h, "ImmSetCompositionWindow"));
-        set_cand = reinterpret_cast<BOOL (WINAPI*)(HIMC, const AinoCandidateFormW*)>(
-                       GetProcAddress(h, "ImmSetCandidateWindow"));
-        get_str  = reinterpret_cast<LONG (WINAPI*)(HIMC, DWORD, void*, DWORD)>(
-                       GetProcAddress(h, "ImmGetCompositionStringW"));
+        get_ctx  = dll_proc<HIMC (WINAPI*)(HWND)>(h, "ImmGetContext");
+        rel_ctx  = dll_proc<BOOL (WINAPI*)(HWND, HIMC)>(h, "ImmReleaseContext");
+        set_comp = dll_proc<BOOL (WINAPI*)(HIMC, const AinoCompositionFormW*)>(
+                       h, "ImmSetCompositionWindow");
+        set_cand = dll_proc<BOOL (WINAPI*)(HIMC, const AinoCandidateFormW*)>(
+                       h, "ImmSetCandidateWindow");
+        get_str  = dll_proc<LONG (WINAPI*)(HIMC, DWORD, void*, DWORD)>(h, "ImmGetCompositionStringW");
         ok = get_ctx && rel_ctx && set_comp && set_cand && get_str;
     }
 };
@@ -11154,7 +11471,7 @@ inline LRESULT CALLBACK win_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
     case WM_CHAR: {
         uint32_t unit = uint32_t(w);
-        if (unit >= 32 || unit == 9) win_append_utf16(s->text_in, unit);
+        if (unit >= 32 || unit == 9) win_append_utf16(s->text_in, s->high_surrogate, unit);
         s->owner->need_frame = true;
         return 0;
     }
@@ -11357,11 +11674,21 @@ inline void w32_destroy(Window* self) {
     Win32State* s = reinterpret_cast<Win32State*>(o->native);
     if (!s) return;
     if (s->mem_dc) {
-        // 先把位图换出再删 DC，避免句柄泄漏
+        // 顺序有讲究：DeleteObject 对"仍被选进 DC 的位图"会失败，而 DC 又要
+        // 在没有位图选着的时候删。所以：
+        //   换入 1×1 替身 → 删被换出的后备位图 → 删 DC（顺带释放替身）→ 删替身。
+        // 旧写法只做了第一步和 DeleteDC，那个替身一直删不掉（每窗口漏一个 GDI 位图）。
         HBITMAP tmp = CreateCompatibleBitmap(s->mem_dc, 1, 1);
-        if (tmp) { SelectObject(s->mem_dc, tmp); DeleteObject(tmp); }
+        if (tmp) {
+            HBITMAP old = reinterpret_cast<HBITMAP>(SelectObject(s->mem_dc, tmp));
+            if (old && old != tmp) {
+                DeleteObject(old);
+                if (s->hbmp == old) s->hbmp = nullptr;   // 已经删过，别再删第二次
+            }
+        }
         DeleteDC(s->mem_dc);
         s->mem_dc = nullptr;
+        if (tmp) DeleteObject(tmp);
     }
     if (s->hbmp) { DeleteObject(s->hbmp); s->hbmp = nullptr; }
     if (s->hwnd && IsWindow(s->hwnd)) DestroyWindow(s->hwnd);
@@ -11706,7 +12033,7 @@ std::string Window::clipboard() const {
 #endif // AINO_PLATFORM_WINDOWS
 
 // =============================================================================
-//  8.14  Linux / X11 后端
+//  8.19  Linux / X11 后端
 //        文字走 FreeType + fontconfig（运行时 dlopen，不要开发包），字形在
 //        **客户端**光栅化成灰度位图，逐像素 blend 进缓冲 —— 零 X 往返。
 //        两者都加载不到时，退回核心 X 的 XLFD 点阵字体（能跑，只是没抗锯齿）。
@@ -12033,7 +12360,7 @@ public:
             size_t i = 0;
             while (i < utf8.size()) {
                 uint32_t cp = 0;
-                const int n = utf8_decode(utf8.c_str() + i, &cp);
+                const int n = utf8_decode_n(utf8.c_str() + i, utf8.size() - i, &cp);
                 i += size_t(n < 1 ? 1 : n);
                 w += float(glyph(*f, cp).adv) * (1.0f / 64.0f);
             }
@@ -12073,7 +12400,7 @@ public:
             size_t i = 0;
             while (i < utf8.size()) {
                 uint32_t cp = 0;
-                const int n = utf8_decode(utf8.c_str() + i, &cp);
+                const int n = utf8_decode_n(utf8.c_str() + i, utf8.size() - i, &cp);
                 i += size_t(n < 1 ? 1 : n);
                 w += float(glyph(*f, cp).adv) * (1.0f / 64.0f);
             }
@@ -12411,7 +12738,7 @@ private:
         size_t i = 0;
         while (i < s.size()) {
             uint32_t cp = 0;
-            const int n = utf8_decode(s.c_str() + i, &cp);
+            const int n = utf8_decode_n(s.c_str() + i, s.size() - i, &cp);
             i += size_t(n < 1 ? 1 : n);
             const Glyph& g = glyph(*f, cp);
             const int gx = (pen >> 6) + g.left;
@@ -13197,7 +13524,7 @@ std::string Window::clipboard() const { return std::string(); }
 #endif // AINO_PLATFORM_X11
 
 // =============================================================================
-//  8.15  macOS 后端
+//  8.20  macOS 后端
 //        纯 C++ 通过 objc runtime 调 AppKit（不写 Objective-C 语法，
 //        这样头文件在普通 .cpp 里也能编译）；绘制用 CoreGraphics，
 //        文字用 CoreText。同样未经真机验证。
@@ -13275,14 +13602,12 @@ private:
         auto it = fonts_.find(key);
         if (it != fonts_.end()) return it->second;
         CFStringRef name = CFStringCreateWithCString(kCFAllocatorDefault, family_.c_str(), kCFStringEncodingUTF8);
-        CGFloat w = CGFloat(weight < 0 ? 400 : weight) / 400.0;
         const CTFontSymbolicTraits traits = (weight >= 600) ? kCTFontBoldTrait : 0;
         CTFontRef base = CTFontCreateWithName(name, CGFloat(float(q) / 2.0f), nullptr);
         CTFontRef f = traits ? CTFontCreateCopyWithSymbolicTraits(base, 0.0, nullptr, traits, traits) : base;
         if (f != base) CFRelease(base);
         if (!f) f = CTFontCreateWithName(CFSTR("Helvetica"), CGFloat(float(q) / 2.0f), nullptr);
         CFRelease(name);
-        (void)w;
         fonts_[key] = f;
         return f;
     }
@@ -13470,7 +13795,6 @@ inline void cocoa_key_down(id self, SEL, id ev) {
             }
         }
     }
-    s->key_down[KEY_BACKSPACE] = false;
     s->owner->need_frame = true;
     (void)ev;
 }
@@ -14143,12 +14467,29 @@ bool Ui::system_icon(SystemIcon icon, const Rect& box, const Color& color) {
     if (mask.alpha.empty()) return false;
     const int left = int(std::floor(physical.cx() - mask.width * .5f));
     const int top = int(std::floor(physical.cy() - mask.height * .5f));
-    push_clip(box);
-    for (int y = 0; y < mask.height; ++y)
-        for (int x = 0; x < mask.width; ++x)
-            impl->canvas->blend(left + x, top + y, color,
-                                mask.alpha[size_t(y) * mask.width + x] / 255.f);
-    pop_clip();
+    // 掩膜本身就在 box 之内（size ≤ min(w,h) 且居中），所以只需要裁到画布和
+    // 当前裁剪区；把裁剪算成一次区间，循环里就不再逐像素判边界。
+    // 早先是 push_clip(box) + 逐像素 blend：一枚 24×24 图标要 576 次边界判断、
+    // 两次裁剪栈重算（实测 2.1 µs），而它每帧的形状和颜色都没变。
+    Canvas& cv = *impl->canvas;
+    int x0 = left, x1 = left + mask.width;
+    int y0 = top,  y1 = top + mask.height;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > cv.w) x1 = cv.w;
+    if (y1 > cv.h) y1 = cv.h;
+    if (cv.clipped) {
+        if (x0 < cv.clip_x0) x0 = cv.clip_x0;
+        if (y0 < cv.clip_y0) y0 = cv.clip_y0;
+        if (x1 > cv.clip_x1) x1 = cv.clip_x1;
+        if (y1 > cv.clip_y1) y1 = cv.clip_y1;
+    }
+    if (x1 <= x0) return true;
+    for (int y = y0; y < y1; ++y) {
+        const uint8_t* row = mask.alpha.data() + size_t(y - top) * size_t(mask.width)
+                           + size_t(x0 - left);
+        cv.blend_mask_row8(y, x0, x1, color, row);
+    }
     return true;
 #else
     return false;
