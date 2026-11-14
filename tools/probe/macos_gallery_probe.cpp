@@ -304,7 +304,7 @@ int main() {
     }
     f.frame([] {});
     f.frame([] {});
-    expect(CardCount == 43 && kPageCount == 15, "reference inventory contains 15 sections and 43 cards");
+    expect(CardCount == 47 && kPageCount == 17, "reference inventory contains 17 sections and 47 cards");
     int total = 0;
     for (const auto &page : kPages) {
         expect(page.first == total, "sections own a continuous, nonduplicated card range");
@@ -317,10 +317,23 @@ int main() {
         for (int i = 0; i < 8; ++i) {
             app.dark = dark;
             app.well = i;
+            app.custom_accent = false;
             auto native = dark ? aino::Theme::dark() : aino::Theme::light();
             native.set_tint(accent_color(i, dark));
-            expect(gallery_theme(app).same_as(native), "gallery preserves the existing native visual theme");
+            // gallery 只允许偏离原生主题三处文字色：GDI 文字不混合 alpha，
+            // label2/label3 的半透明黑画出来就是纯黑，所以换成不透明灰（见 muted_ink 的说明）。
+            // 其余 token 必须逐项与原生主题相等，否则就是主题被悄悄改坏了。
+            const Color want_label2 = dark ? Color(0xA0, 0xA0, 0xA6, 255) : Color(0x6E, 0x6E, 0x73, 255);
+            const Color want_label3 = dark ? Color(0x6E, 0x6E, 0x73, 255) : Color(0x98, 0x98, 0x9D, 255);
+            native.label2 = want_label2;
+            native.label3 = want_label3;
+            native.muted_foreground = want_label2;
             const auto th = gallery_theme(app);
+            expect(th.same_as(native),
+                   "gallery extends the native theme only with opaque secondary text");
+            expect(equal(th.label2, want_label2) && equal(th.label3, want_label3) &&
+                       th.label2.a == 255 && th.label3.a == 255,
+                   "gallery secondary text stays opaque so GDI keeps the hierarchy");
             expect(equal(th.tint, th.primary) && equal(th.table_sel, th.tint) &&
                        th.ring.rgb24() == th.tint.rgb24(),
                    "accent changes synchronize all derived theme tokens");
@@ -623,9 +636,14 @@ int main() {
         navigation.frame(draw);
         navigation.frame(draw, width - 12, 390, false, false, -1000);
         navigation.frame(draw);
-        const Rect last = state.card_rects[Typography];
-        expect(last.bottom() <= state.content_view.bottom() - kCardBottom &&
-                   last.y >= state.content_view.y,
+        // 末卡是「关于」页那张：风格页之后又加了颜色令牌、平台度量、关于。
+        // 滚到底时末卡底边到视口底的距离 = 行距 + 组间距补差 + 内容底部留白。
+        // 关于页这张卡（536）比最小窗口的内容区（386）还高，要求它整张塞进视口
+        // 是物理不可能的；能验收的是"滚到底了、底边带着留白可见、视口被卡片填满"。
+        const float trailing = kGridGap + (kSectionGap - kGridGap) + kContentBottomPad;
+        const Rect last = state.card_rects[About];
+        expect(std::fabs(last.bottom() - (state.content_view.bottom() - trailing)) < 1.f &&
+                   (last.h >= state.content_view.h - .01f || last.y >= state.content_view.y - .01f),
                "last gallery card is reachable with visible bottom padding at minimum height");
     }
     for (int i = 0; i < kPageCount; ++i) {
@@ -792,11 +810,18 @@ int main() {
     Rect date = app.card_rects[Date];
     f.click(date.x + 60, date.y + 60, full);
     expect(app.date_open, "date trigger opens the calendar");
-    float dx = aino::clampf(date.x + 16, 6.f, 1180 - 320.f - 6), dy = date.y + kCardBodyY + 24 + 6;
-    if (dy + 332 > 754)
-        dy = std::max(6.f, date.y + kCardBodyY - 6 - 332);
+    // 落位与 Ui::popover 一致：面板 = 内容 + 20 内边距，放在触发条下方 6，
+    // 下方放不下就翻到上方。日历格子则按 calendar() 自己的头部/星期行高度等分。
+    const float panel_w = kDatePanelW + 40.f, panel_h = kDatePanelH + 40.f;
+    const float pop_x = aino::clampf(date.x + 16, 6.f, 1180 - panel_w - 6.f);
+    float pop_y = date.y + kCardBodyY + 24 + 6;
+    if (pop_y + panel_h > 754) pop_y = std::max(6.f, date.y + kCardBodyY - 6.f - panel_h);
+    const float cal_fs = aino::Theme::light().font_size;
+    const float head_h = std::max(cal_fs + 26.f, 42.f), wk_h = std::max(cal_fs + 12.f, 26.f);
+    const float cw = kDatePanelW / 7.f, ch = (kDatePanelH - head_h - wk_h) / 6.f;
     int target = 12, slot = aino::detail::weekday_of(app.cy, app.cm, 1) + target - 1;
-    f.click(dx + 20 + (slot % 7 + .5f) * 40, dy + 20 + 68 + (slot / 7 + .5f) * (224.f / 6), full);
+    f.click(pop_x + 20 + (slot % 7 + .5f) * cw,
+            pop_y + 20 + head_h + wk_h + (slot / 7 + .5f) * ch, full);
     f.frame(full);
     expect(app.cd == target && !app.date_open, "calendar selection writes the date and closes the popover");
     Rect time = app.card_rects[Time];

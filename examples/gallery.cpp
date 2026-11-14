@@ -35,12 +35,16 @@ constexpr float kFooterH = 112;
 constexpr float kFooterBottom = 22;
 constexpr float kCardBodyY = 46;   // 卡片顶 → 内容：标题带 30 + 内边距 16
 constexpr float kCardBottom = 16;
+// 日历浮层的内容尺寸（不含 popover 自身 20 的内边距）。
+// 探针要用它反推格子坐标，所以做成常量而不是字面量。
+constexpr float kDatePanelW = 252, kDatePanelH = 240;
 // 间距标尺（8pt 网格）。参照 App Store 的分组节奏：组标题贴着说明走，
 // 卡片与下一组之间留最大的那一段，卡片标题与卡片底之间只留一口气。
 constexpr float kSectionGap  = 40;   // 上一组卡片底 → 下一组标题
 constexpr float kHeadingGap  = 6;    // 组标题 → 说明
 constexpr float kHeaderGap   = 24;   // 说明 → 第一张卡片标题
 constexpr float kCardTitleGap = 8;   // 卡片标题 → 卡片底
+constexpr float kContentBottomPad = 40; // 最后一组卡片 → 内容末尾（滚到底留的余量）
 constexpr int kPageCount = 17;
 constexpr int kStylePage = kPageCount - 2;   // 风格页
 constexpr int kAboutPage = kPageCount - 1;   // 关于页固定在末尾
@@ -657,7 +661,7 @@ void draw_datetime(Ui &ui, App &a, CardId id, Rect b) {
         char text[32];
         std::snprintf(text, sizeof(text), "%04d-%02d-%02d", a.cy, a.cm, a.cd);
         ui.popover(
-            text, &a.date_open, {b.x, b.y, std::min(190.f, b.w), 24}, {252, 240},
+            text, &a.date_open, {b.x, b.y, std::min(190.f, b.w), 24}, {kDatePanelW, kDatePanelH},
             [&ui, &a](const Rect &r) {
                 int y = a.cy, m = a.cm;
                 if (ui.calendar(&a.cy, &a.cm, &a.cd, r) && a.cy == y && a.cm == m) {
@@ -1405,7 +1409,7 @@ GalleryLayout layout_gallery(Ui &ui, App &a, float width, bool narrow) {
             y += row_h + kGridGap;
         y += kSectionGap - kGridGap;
     }
-    out.height = y + 40;
+    out.height = y + kContentBottomPad;
     return out;
 }
 float nav_item_y(int page) {
