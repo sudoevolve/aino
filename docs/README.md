@@ -24,6 +24,7 @@
 | [10-performance.md](10-performance.md) | 2026-10-17 历史性能基准（静置 / 连续重绘 / 交互）；§3 开头写明覆盖范围 |
 | [11-motion.md](11-motion.md) | 动画（`tween` / `tween_color` / `fade` / `smooth` / 缓动）与 `Transform`（平移 / 缩放 / 旋转） |
 | [12-component-index.md](12-component-index.md) | 当前公开 API、Gallery 组合示例、兼容接口边界与检查工具 |
+| [13-project-review.md](13-project-review.md) | 项目分析、问题优先级、分批改进与验证记录 |
 
 ---
 
