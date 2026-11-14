@@ -17,7 +17,7 @@
 | [03-layout.md](03-layout.md) | `Stack` 布局器（`vbox`/`hbox`/`next`/`fill`/`part`）、滚动容器、`split_pane` 可拖动分栏 |
 | [04-text.md](04-text.md) | 文本类：`label` `heading` `subheading` `muted_text` `code_text` `code_block` |
 | [05-containers.md](05-containers.md) | 容器类：`panel` `card` `separator` `badge` `progress` `progress_ring` `skeleton` |
-| [06-interactive.md](06-interactive.md) | 按钮、导航、输入、选择、数值、分组与复合表单、搜索框、颜色池 |
+| [06-interactive.md](06-interactive.md) | 按钮、导航、输入、选择、数值、分组与复合表单、搜索框、颜色池与取色器 |
 | [07-display.md](07-display.md) | 头像、活动指示、提示、路径、快捷键、折叠标题、表格、趋势图、条目、空状态、分页、图片占位 |
 | [08-overlays.md](08-overlays.md) | 浮层类：`tooltip` `menu` `dialog` `toast`；另含 `sheet` `popover` `hover_card` `alert_dialog` `drawer` `context_menu` `menubar` |
 | [09-primitives.md](09-primitives.md) | 图元与度量：几何、连续圆角、渐变、阴影、背景模糊、系统图标、文字与度量 |
@@ -35,7 +35,7 @@
 
 | 源文件 | 内容 |
 |---|---|
-| `gallery.cpp` | 15 分类、43 卡片、搜索、主题与强调色、独立素材子窗口 |
+| `gallery.cpp` | 17 分类、47 卡片、搜索、主题与强调色、独立素材子窗口 |
 | `primitives_demo.cpp` | 圆角、线宽、透明度；几何、阴影、裁剪、变换、系统图标与模糊 |
 | `sidebar_demo.cpp` | 导航与通知偏好 |
 | `pomodoro.cpp` | 番茄钟：侧栏与工具栏、专注 / 休息、暂停续计、时长和外观设置 |

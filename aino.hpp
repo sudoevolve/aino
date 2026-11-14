@@ -31,8 +31,8 @@
 
 #define AINO_VERSION_MAJOR 0
 #define AINO_VERSION_MINOR 5
-#define AINO_VERSION_PATCH 0
-#define AINO_VERSION "0.5.0"
+#define AINO_VERSION_PATCH 2
+#define AINO_VERSION "0.5.2"
 
 #include <cstdint>
 #include <cstddef>

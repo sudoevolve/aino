@@ -744,7 +744,7 @@ if (ui.calendar(&year, &month, &day, {x, y, 260, 240})) reload(year, month, day)
   **不碰 `<ctime>`**：`mktime` / `localtime` 带本地时区与夏令时，同一份代码在 UTC 的 CI runner
   和东八区的机器上会差一天，而那是最难查的一类「只在我的机器上错」。
 
-## 17. 搜索框与颜色池
+## 17. 搜索框与颜色
 
 ### `search_field`
 
@@ -768,3 +768,24 @@ if (ui.color_well(ui.theme().purple, {24, 64, 48, 24})) {
 
 绘制传入颜色与细边，返回本帧是否点击；默认圆角 `theme.radius`，支持 `radius/disabled`。
 它不保存选择，也不打开系统颜色面板。主题色切换由调用方使用 `Theme::set_tint()` 完成。
+
+### `color_picker`
+
+```cpp
+aino::Color accent = aino::Color::hex("#0A84FF");
+bool picking = false;
+ui.color_picker(&accent, &picking, {24, 104, 120, 28}, [&](aino::Color c) {
+    auto theme = ui.theme();
+    theme.set_tint(c);
+    win.set_theme(theme);
+});
+```
+
+触发器是一个圆角色块加十六进制文本（默认 `secondary` 变体，可用 `st.variant` 覆盖），
+点击后在锚点下方弹出 **288×282** 的浮层：顶部是颜色预览和当前值（含 alpha 时输出 `#RRGGBBAA`），
+中间三条 0–255 的 RGB 滑杆，底部一行 8 个预设色块，右上角「完成」关闭。
+
+- `value` 与 `open` 都必须是调用方持有的存储，**须存活到本帧结束**；`open` 由组件负责翻转；
+- `*value` 在浮层内即时更新，`on_change` 在**帧末**统一回调一次，同一帧内多次拖动只回调一次；
+- `alpha` 原样保留：组件只改 R/G/B 三个通道，不把颜色强制变不透明；
+- 浮层高度固定 282，窗口不足时内部可滚动；点预设色会立即写入并关闭。

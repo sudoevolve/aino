@@ -11,7 +11,7 @@
 | 容器与状态 | `panel`、`card`、`separator`、`badge`、`progress`、`progress_ring`、`skeleton` | [05 容器](05-containers.md) |
 | 按钮与导航 | `button`、`icon_button`、`nav_item`、`toggle_button`、`button_group` | [06 交互](06-interactive.md) |
 | 文本输入 | `input`、`search_field`、`textarea`、`input_group`、`input_otp`、`field` | [06 交互](06-interactive.md) |
-| 选择与数值 | `checkbox`、`toggle`、`slider`、`tabs`、`segmented`、`select`、`radio_group`、`stepper`、`rating`、`toggle_group`、`toggle_group_multi`、`combobox`、`calendar`、`color_well` | [06 交互](06-interactive.md) |
+| 选择与数值 | `checkbox`、`toggle`、`slider`、`tabs`、`segmented`、`select`、`radio_group`、`stepper`、`rating`、`toggle_group`、`toggle_group_multi`、`combobox`、`calendar`、`color_well`、`color_picker` | [06 交互](06-interactive.md) |
 | 展示与条目 | `avatar`、`spinner`、`alert`、`breadcrumb`、`kbd`、`accordion`、`table`、`sparkline`、`bars`、`item`、`empty_state`、`pagination`、`image_well` | [07 展示](07-display.md) |
 | 浮层 | `tooltip`、`menu`、`dialog`、`sheet`、`toast`、`popover`、`hover_card`、`alert_dialog`、`drawer`、`context_menu`、`menubar` | [08 浮层](08-overlays.md) |
 | 布局 | `vbox`、`hbox`、`begin_scroll`、`end_scroll`、`split_pane`、`aspect_rect` | [03 布局](03-layout.md) |
@@ -24,7 +24,7 @@
 
 ## Gallery 中的组合示例
 
-`examples/gallery.cpp` 包含 15 个分类、43 张卡片。卡片数量与公开 API 数量不同：
+`examples/gallery.cpp` 包含 17 个分类、47 张卡片。卡片数量与公开 API 数量不同：
 同一张卡片可以演示多个 API，一些卡片由基础组件与图元组合而成。
 
 | 示例 | 实现边界 |
