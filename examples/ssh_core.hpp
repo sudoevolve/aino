@@ -64,30 +64,13 @@
 
 #include <libssh2.h>
 #include <libssh2_sftp.h>
+#include "ssh_files.hpp"
 
 namespace sshc {
 
 // =============================================================================
 //  0. 小工具
 // =============================================================================
-inline std::string fmt(const char* f, ...) {
-    char buf[512];
-    va_list ap;
-    va_start(ap, f);
-    std::vsnprintf(buf, sizeof buf, f, ap);
-    va_end(ap);
-    return std::string(buf);
-}
-
-inline std::string home_dir() {
-#if defined(_WIN32)
-    const char* p = std::getenv("USERPROFILE");
-    if (!p) p = std::getenv("HOMEDRIVE");
-#else
-    const char* p = std::getenv("HOME");
-#endif
-    return p ? std::string(p) : std::string(".");
-}
 
 // libssh2 的错误码转人话。认证失败之类的场景直接编译进去，不用翻文档。
 inline std::string err_text(LIBSSH2_SESSION* s, int code) {
@@ -105,64 +88,7 @@ inline std::string err_text(LIBSSH2_SESSION* s, int code) {
     }
 }
 
-// =============================================================================
-//  1. known_hosts —— 首次信任（TOFU）
-//
-//  严格实现 SSH 的"主机密钥变了就拒绝"：这是 SSH 唯一防中间人的一环，
-//  不做的话整套加密就是个摆设。指纹按 sha256 存，一行一个：
-//      host:port sha256:xxxx
-//  改端口连同一台机器会当成新主机（和 OpenSSH 的 [host]:port 规则一致）。
-// =============================================================================
-struct KnownHosts {
-    std::string path;
-
-    KnownHosts() { path = home_dir() + "/.aino_ssh/known_hosts"; }
-
-    static std::string key_of(const std::string& host, int port) {
-        return port == 22 ? host : fmt("[%s]:%d", host.c_str(), port);
-    }
-
-    // 返回：0 = 已记录且一致，1 = 首次见到（已写入），-1 = 不一致（拒绝）
-    int verify(const std::string& host, int port, const std::string& fp, std::string* err) {
-        const std::string key = key_of(host, port);
-        const std::string line_key = key + " ";
-        std::vector<std::string> lines;
-        if (std::FILE* f = std::fopen(path.c_str(), "rb")) {
-            char buf[1024];
-            while (std::fgets(buf, sizeof buf, f)) {
-                std::string s(buf);
-                while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
-                if (s.empty()) continue;
-                if (s.compare(0, line_key.size(), line_key) == 0) {
-                    const std::string got = s.substr(line_key.size());
-                    if (got == fp) return 0;
-                    if (err) {
-                        *err = fmt("主机密钥变了！\n  记录值 %s\n  当前值 %s\n"
-                                   "要么是服务器换了密钥，要么是中间人。确认无误后手动改 %s。",
-                                   got.c_str(), fp.c_str(), path.c_str());
-                    }
-                    return -1;
-                }
-                lines.push_back(s);
-            }
-            std::fclose(f);
-        }
-        lines.push_back(key + " " + fp);
-        // Windows 下 ~/.aino_ssh 不保证存在，先建目录（失败就退化成"仅本次会话信任"）
-#if defined(_WIN32)
-        std::string dir = path.substr(0, path.find_last_of("/\\"));
-        std::string cmd = "mkdir \"" + dir + "\" 2>nul";
-        if (std::system(cmd.c_str()) != 0) { /* 目录已存在 */ }
-#endif
-        if (std::FILE* f = std::fopen(path.c_str(), "wb")) {
-            for (const std::string& s : lines) std::fprintf(f, "%s\n", s.c_str());
-            std::fclose(f);
-        }
-        if (err) *err = fmt("首次连接，已记录 %s 的主机密钥", key.c_str());
-        return 1;
-    }
-};
-
+// 本地 TOFU 主机记录及文件支持见 ssh_files.hpp，可不链接 libssh2 独立验证。
 // =============================================================================
 //  2. Engine —— SSH 会话
 // =============================================================================
@@ -321,7 +247,13 @@ public:
         // 主机密钥（TOFU）
         fail_stage_ = int(FailStage::HostKey);
         const char* hash = libssh2_hostkey_hash(sess, LIBSSH2_HOSTKEY_HASH_SHA256);
-        if (hash) {
+        if (!hash) {
+            libssh2_session_disconnect(sess, "missing host key fingerprint");
+            libssh2_session_free(sess);
+            sshc_closesock(fd);
+            return fail(err, "无法取得主机密钥指纹，拒绝未经验证的连接");
+        }
+        {
             std::string fp = "sha256:";
             static const char* hex = "0123456789abcdef";
             for (int i = 0; i < 32; ++i) {
@@ -340,16 +272,16 @@ public:
             note_ = herr;
         }
 
-        // 认证：先密码，再键盘交互（很多服务器只开这个），最后公钥文件
+        // 指定私钥时 pass 是私钥口令；否则用于密码 / 键盘交互认证。
         fail_stage_ = int(FailStage::Auth);
         int auth = LIBSSH2_ERROR_AUTHENTICATION_FAILED;
-        if (!pass.empty()) {
+        if (!key_path.empty()) {
+            auth = libssh2_userauth_publickey_fromfile_ex(sess, user.c_str(), unsigned(user.size()),
+                nullptr, key_path.c_str(), pass.empty() ? nullptr : pass.c_str());
+        } else if (!pass.empty()) {
             auth = libssh2_userauth_password_ex(sess, user.c_str(), unsigned(user.size()),
                                                 pass.c_str(), unsigned(pass.size()), nullptr);
             if (auth != 0) auth = userauth_keyboard(sess, user, pass);
-        } else if (!key_path.empty()) {
-            auth = libssh2_userauth_publickey_fromfile_ex(sess, user.c_str(), unsigned(user.size()),
-                                                          key_path.c_str(), nullptr, pass.c_str());
         } else {
             // 没有密码也没有密钥：如果服务端允许 "none"（少见），这一步就过了
             auth = libssh2_userauth_authenticated(sess) ? 0 : LIBSSH2_ERROR_AUTHENTICATION_FAILED;

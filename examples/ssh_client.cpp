@@ -2072,7 +2072,7 @@ void draw_start(aino::Ui& ui, App& app, const aino::Theme& th, float top) {
             const std::string host = (p.user.empty() ? "?" : p.user) + "@" + p.host + ":" + std::to_string(p.port);
             ui.draw_text(host, {row.x + 50, row.y + 42, action_x - row.x - 66, 18}, th.label2, Style().font(11));
             if (dlg_button(ui, th, "连接", {action_x, row.cy() - 12, 64, 24}, Btn::Normal)) {
-                if (!p.pass.empty()) open_session(app, p, p.pass);
+                if (!p.pass.empty() || !p.key.empty()) open_session(app, p, p.pass);
                 else {
                     app.ask_open = true;
                     app.ask_index = i;
@@ -2183,7 +2183,7 @@ void draw_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
             save_profile(app, app.draft, app.editing);
             const Profile p = app.draft;
             app.editor_open = false;
-            if (!p.pass.empty()) open_session(app, p, p.pass);
+            if (!p.pass.empty() || !p.key.empty()) open_session(app, p, p.pass);
             else {
                 app.ask_open = true;
                 app.ask_index = -1;
