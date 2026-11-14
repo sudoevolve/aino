@@ -487,6 +487,7 @@ struct Style {
 
     // --- 交互 ---
     float press_scale = 1.0f;     // 按压缩放，1.0 = 不缩放
+    uint64_t identity = 0;        // 非零稳定身份，在本 Ui / state_scope 内唯一，与坐标无关
 
     // -------- 链式修饰 --------
     Style& color(const Color& c) { fg = c; return *this; }
@@ -517,6 +518,7 @@ struct Style {
     Style& off() { disabled = true; return *this; }
     Style& secret(bool on = true) { password = on; return *this; }
     Style& scale_on_press(float s) { press_scale = s; return *this; }
+    Style& id(uint64_t value) { identity = value; return *this; }
     Style& wrap_text(bool v = true) { wrap = v; return *this; }
     Style& line_spacing(float g) { line_gap = g; return *this; }
     Style& animate(bool v = true) { animated = v; return *this; }
@@ -3753,7 +3755,12 @@ struct Ui::Impl {
     };
     std::vector<ScrollCtx> scroll_stack;
     // ID 由滚动区内的内容位置生成，屏幕位移不会重置控件状态或串用相邻控件的动画。
-    uint64_t widget_id(const char* kind, const Rect& box, uint64_t extra = 0) const {
+    uint64_t widget_id(const char* kind, const Rect& box, uint64_t extra = 0,
+                       uint64_t stable = 0) const {
+        if (stable) {
+            const uint64_t id = detail::hash_combine(detail::hash_string(kind), stable);
+            return state_scope_id ? detail::hash_combine(state_scope_id, id) : id;
+        }
         if (scroll_stack.empty()) {
             const uint64_t id = detail::make_id(kind, box, extra);
             return state_scope_id ? detail::hash_combine(state_scope_id, id) : id;
@@ -5950,7 +5957,7 @@ void Ui::skeleton(const Rect& box, const Style& st) {
 //  8.11  交互类组件
 // =============================================================================
 bool Ui::button(const std::string& text, const Rect& box, const Style& st) {
-    uint64_t id = impl->widget_id("button", box, detail::hash_string(text.c_str()));
+    uint64_t id = impl->widget_id("button", box, detail::hash_string(text.c_str()), st.identity);
     Style s = st;
     if (!s.align_set) s.align = Align::Center;
     if (!s.valign_set) s.valign = VAlign::Middle;
@@ -5989,7 +5996,7 @@ bool Ui::button(const std::string& text, const Rect& box, const Style& st) {
 }
 
 bool Ui::icon_button(const std::string& glyph, const Rect& box, const Style& st) {
-    uint64_t id = impl->widget_id("iconbtn", box, detail::hash_string(glyph.c_str()));
+    uint64_t id = impl->widget_id("iconbtn", box, detail::hash_string(glyph.c_str()), st.identity);
     Style s = st;
     if (s.variant < 0) s.variant = Style::Ghost;
     if (!s.align_set) s.align = Align::Center;
@@ -6027,7 +6034,7 @@ bool Ui::icon_button(const std::string& glyph, const Rect& box, const Style& st)
 // -----------------------------------------------------------------------------
 bool Ui::nav_item(const std::string& label, bool active, const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
-    uint64_t id = impl->widget_id("navitem", box, detail::hash_string(label.c_str()));
+    uint64_t id = impl->widget_id("navitem", box, detail::hash_string(label.c_str()), st.identity);
     const bool enabled = !st.disabled;
 
     detail::Interact in = detail::interact(impl, id, box, enabled);
@@ -6075,7 +6082,8 @@ bool Ui::nav_item(const std::string& label, bool active, const Rect& box, const 
 bool Ui::input(std::string* value, const Rect& box, const Style& st) {
     if (!value) return false;
     const Theme& th = impl->theme;
-    uint64_t id = impl->widget_id("input", box);
+    uint64_t id = impl->widget_id("input", box, 0,
+        st.identity ? st.identity : uint64_t(reinterpret_cast<uintptr_t>(value)));
     const bool enabled = !st.disabled;
 
     detail::Interact in = detail::interact(impl, id, box, enabled);
@@ -6440,7 +6448,7 @@ bool Ui::checkbox(bool* value, const std::string& label_text, const Rect& box, c
     if (!value) return false;
     const Theme& th = impl->theme;
     const bool dark = th.window_bg.luminance() < 0.5f;
-    uint64_t id = impl->widget_id("checkbox", box, detail::hash_string(label_text.c_str()));
+    uint64_t id = impl->widget_id("checkbox", box, detail::hash_string(label_text.c_str()), st.identity);
     const bool enabled = !st.disabled;
 
     detail::Interact in = detail::interact(impl, id, box, enabled);
@@ -6517,7 +6525,7 @@ bool Ui::toggle(bool* value, const Rect& box, const Style& st) {
     if (impl->measure_on) { impl->measure_add(box); return false; }
     const Theme& th = impl->theme;
     const bool dark = th.window_bg.luminance() < 0.5f;
-    uint64_t id = impl->widget_id("toggle", box);
+    uint64_t id = impl->widget_id("toggle", box, 0, st.identity);
     const bool enabled = !st.disabled;
 
     detail::Interact in = detail::interact(impl, id, box, enabled);
@@ -6575,7 +6583,7 @@ bool Ui::toggle(bool* value, const Rect& box, const Style& st) {
 bool Ui::slider(float* value, float min_value, float max_value, const Rect& box, const Style& st) {
     if (!value) return false;
     const Theme& th = impl->theme;
-    uint64_t id = impl->widget_id("slider", box);
+    uint64_t id = impl->widget_id("slider", box, 0, st.identity);
     const bool enabled = !st.disabled;
 
     Rect hit(box.x, box.y, box.w, box.h);
@@ -6635,7 +6643,7 @@ bool Ui::tabs(const std::vector<std::string>& labels, int* index, const Rect& bo
     if (options.close_index) *options.close_index = -1;
     if (!index || labels.empty() || box.w <= 0.0f || box.h <= 0.0f) return false;
     const Theme& th = impl->theme;
-    uint64_t base_id = impl->widget_id("tabs", box);
+    uint64_t base_id = impl->widget_id("tabs", box, 0, st.identity);
     const bool pill = (st.variant == Style::Secondary || st.variant == Style::Outline);
     // 参考资料 Segmented Control 是**胶囊**（Figma 里 r=1000，按钮 r=100），不是
     // r6 的圆角矩形：24 高的控件整个是圆的，选中段内缩 2 之后也是胶囊。
@@ -6723,7 +6731,7 @@ bool Ui::tabs(const std::vector<std::string>& labels, int* index, const Rect& bo
         const Rect close(item.right() - 6.0f - close_side, item.cy() - close_side * 0.5f, close_side, close_side);
         Rect hit = item;
         if (closable) hit.w = std::max(0.0f, close.x - item.x - 2.0f);
-        uint64_t id = impl->widget_id("tab", item, base_id + i);
+        uint64_t id = impl->widget_id("tab", item, base_id + i, st.identity ? base_id + i : 0);
         detail::Interact in = detail::interact(impl, id, hit, !st.disabled);
         if (in.hovered) set_cursor(Cursor::Arrow);
         if (in.clicked && *index != int(i)) { *index = int(i); changed = true; }
@@ -6800,7 +6808,7 @@ bool Ui::segmented(const std::vector<std::string>& items, int* index, const Rect
 bool Ui::select(const std::vector<std::string>& items, int* index, const Rect& box, const Style& st) {
     if (!index || items.empty()) return false;
     const Theme& th = impl->theme;
-    uint64_t id = impl->widget_id("select", box);
+    uint64_t id = impl->widget_id("select", box, 0, st.identity);
     // 本组件第一个控件的层级号。弹层下一帧用它判定"谁在下面"。
     const uint64_t z_first = impl->seq + 1;
     // 下拉触发器与普通按钮共用默认圆角。
@@ -6866,7 +6874,7 @@ bool Ui::select(const std::vector<std::string>& items, int* index, const Rect& b
             for (size_t i = 0; i < items.size(); ++i) {
                 rects[i] = Rect(list.x + pad, list.y + pad + item_h * float(i),
                                 list.w - pad * 2.0f, item_h);
-                ids[i] = impl->widget_id("select_item", rects[i]);
+                ids[i] = impl->widget_id("select_item", rects[i], 0, st.identity ? id + i : 0);
                 detail::Interact ii = detail::interact(impl, ids[i], rects[i], true);
                 if (ii.hovered) { set_cursor(Cursor::Arrow); hov[i] = 1; }
                 if (ii.clicked) clicked_index = int(i);
@@ -6920,7 +6928,7 @@ bool Ui::select(const std::vector<std::string>& items, int* index, const Rect& b
 bool Ui::radio_group(const std::vector<std::string>& items, int* index, const Rect& box, const Style& st) {
     if (!index || items.empty() || box.h <= 0.0f) return false;
     const Theme& th = impl->theme;
-    uint64_t base = impl->widget_id("radiogroup", box);
+    uint64_t base = impl->widget_id("radiogroup", box, 0, st.identity);
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float row_h = box.h / float(items.size());
     const float dot = std::max(16.0f, fs + 3.0f);
@@ -6928,7 +6936,7 @@ bool Ui::radio_group(const std::vector<std::string>& items, int* index, const Re
     bool changed = false;
     for (size_t i = 0; i < items.size(); ++i) {
         Rect row(box.x, box.y + row_h * float(i), box.w, row_h);
-        uint64_t id = impl->widget_id("radio", row, base + i);
+        uint64_t id = impl->widget_id("radio", row, base + i, st.identity ? base + i : 0);
         detail::Interact in = detail::interact(impl, id, row, !st.disabled);
         if (in.hovered) set_cursor(Cursor::Arrow);
         if (in.pressed) detail::grab_focus(impl, id);
@@ -6987,7 +6995,7 @@ bool Ui::radio_group(const std::vector<std::string>& items, int* index, const Re
 bool Ui::stepper(float* value, float step, float min_value, float max_value, const Rect& box, const Style& st) {
     if (!value || box.w <= 12.0f) return false;
     const Theme& th = impl->theme;
-    uint64_t base = impl->widget_id("stepper", box);
+    uint64_t base = impl->widget_id("stepper", box, 0, st.identity);
     const float rad = st.radius >= 0.0f ? st.radius : th.radius;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
 
@@ -7091,7 +7099,7 @@ bool Ui::search_field(std::string* value, const Rect& box, const Style& st) {
     detail::Interact ci;
     // 清除键与输入框重叠，必须先认领按下事件，避免被整个输入框的热区吞掉。
     if (has_clear)
-        ci = detail::interact(impl, impl->widget_id("searchclear", box), cr, !st.disabled);
+        ci = detail::interact(impl, impl->widget_id("searchclear", box, 0, st.identity ? st.identity : uint64_t(reinterpret_cast<uintptr_t>(value))), cr, !st.disabled);
     bool changed = input(value, box, s);
 
     // 禁用时放大镜跟着文字一起淡到 45%：只淡文字、图标还是满色的话，看着像
@@ -7131,7 +7139,7 @@ bool Ui::search_field(std::string* value, const Rect& box, const Style& st) {
 // -----------------------------------------------------------------------------
 bool Ui::color_well(const Color& c, const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
-    const uint64_t id = impl->widget_id("colorwell", box);
+    const uint64_t id = impl->widget_id("colorwell", box, 0, st.identity);
     detail::Interact in = detail::interact(impl, id, box, !st.disabled);
     if (in.hovered) set_cursor(Cursor::Arrow);
     const float rad = st.radius >= 0.0f ? st.radius : th.radius;
@@ -7177,7 +7185,8 @@ void Ui::image_well(const Rect& box, const Style& st) {
 bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
     if (!value) return false;
     const Theme& th = impl->theme;
-    uint64_t id = impl->widget_id("textarea", box);
+    uint64_t id = impl->widget_id("textarea", box, 0,
+        st.identity ? st.identity : uint64_t(reinterpret_cast<uintptr_t>(value)));
     const bool enabled = !st.disabled;
     // 和 input() 同一档圆角（6）与同一套皮 —— 多行框不是"另一种控件"，
     // 它是同一个 Text Field 长高了。
@@ -7585,7 +7594,7 @@ bool Ui::rating(int* value, int max_stars, const Rect& box, const Style& st) {
     // 否则"先量高度"那趟会在屏幕左上角画出一排真星星。
     if (impl->measure_on) { impl->measure_add(box); return false; }
     const Theme& th = impl->theme;
-    uint64_t base = impl->widget_id("rating", box);
+    uint64_t base = impl->widget_id("rating", box, 0, st.identity);
     const float gap = 4.0f;
     const float size = std::min((box.w - gap * float(max_stars - 1)) / float(max_stars), box.h);
     if (size <= 3.0f) return false;
@@ -7602,7 +7611,7 @@ bool Ui::rating(int* value, int max_stars, const Rect& box, const Style& st) {
     bool changed = false;
     for (int i = 0; i < max_stars; ++i) {
         const Rect sr(box.x + float(i) * (size + gap), top, size, size);
-        uint64_t id = impl->widget_id("star", sr, base + uint64_t(i));
+        uint64_t id = impl->widget_id("star", sr, base + uint64_t(i), st.identity ? base + uint64_t(i) : 0);
         detail::Interact in = detail::interact(impl, id, sr, !st.disabled);
         if (in.hovered) set_cursor(Cursor::Arrow);
         if (in.pressed) detail::grab_focus(impl, id);
@@ -7835,7 +7844,7 @@ void Ui::kbd(const std::string& text, const Rect& box, const Style& st) {
 bool Ui::accordion(const std::string& title, bool* open, const Rect& box, const Style& st) {
     if (!open || box.w <= 0.0f) return false;
     const Theme& th = impl->theme;
-    uint64_t id = impl->widget_id("accordion", box, detail::hash_string(title.c_str()));
+    uint64_t id = impl->widget_id("accordion", box, detail::hash_string(title.c_str()), st.identity);
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
     // 折叠行是列表行：24 高（= Global/Height Medium），不是 Web 手风琴的 38
     const float head_h = std::min(box.h, std::max(fs + 8.0f, 24.0f));
@@ -8062,7 +8071,7 @@ void Ui::tooltip(const Rect& anchor, const std::string& text, const Style& st) {
 bool Ui::menu(const std::string& label, const std::vector<std::string>& items,
                      int* clicked_index, const Rect& box, const Style& st) {
     const Theme& th = impl->theme;
-    uint64_t id = impl->widget_id("menu", box);
+    uint64_t id = impl->widget_id("menu", box, 0, st.identity);
     // 同 select：触发器在 claim 之前就 interact 过了，层级号要取入口处。
     const uint64_t z_first = impl->seq + 1;
     const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
@@ -8118,7 +8127,7 @@ bool Ui::menu(const std::string& label, const std::vector<std::string>& items,
         for (size_t i = 0; i < items.size(); ++i) {
             const Rect r(list.x + 4.0f, list.y + 4.0f + item_h * float(i), list.w - 8.0f, item_h);
             rects.push_back(r);
-            ids.push_back(impl->widget_id("menu_item", r, id + i));
+            ids.push_back(impl->widget_id("menu_item", r, id + i, st.identity ? id + i : 0));
             hov.push_back(0);
         }
         {
@@ -8173,7 +8182,7 @@ MenuPick Ui::menubar(const std::vector<std::string>& labels,
                             const Rect& box, const Style& st) {
     MenuPick pick;
     const Theme& th = impl->theme;
-    const uint64_t bar_id = impl->widget_id("menubar", box);
+    const uint64_t bar_id = impl->widget_id("menubar", box, 0, st.identity);
     // 顶级项在 claim 之前就 interact 过了，层级号必须在**入口处**取。
     const uint64_t z_first = impl->seq + 1;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
@@ -8204,7 +8213,7 @@ MenuPick Ui::menubar(const std::vector<std::string>& labels,
     // --- 1) 顶级项交互 ---
     std::vector<uint8_t> hov(labels.size(), 0);
     for (size_t i = 0; i < labels.size(); ++i) {
-        const uint64_t tid = impl->widget_id("menubar_item", trg[i], bar_id + i);
+        const uint64_t tid = impl->widget_id("menubar_item", trg[i], bar_id + i, st.identity ? bar_id + i : 0);
         detail::Interact in = detail::interact(impl, tid, trg[i], enabled);
         if (in.hovered) { set_cursor(Cursor::Arrow); hov[i] = 1; }
         if (in.clicked) {
@@ -8269,7 +8278,7 @@ MenuPick Ui::menubar(const std::vector<std::string>& labels,
         for (size_t i = 0; i < src.size(); ++i) {
             const Rect r(list.x + 4.0f, list.y + 4.0f + item_h * float(i), list.w - 8.0f, item_h);
             rects.push_back(r);
-            ids.push_back(impl->widget_id("menubar_li", r, bar_id + i));
+            ids.push_back(impl->widget_id("menubar_li", r, bar_id + i, st.identity ? bar_id + i : 0));
             lhov.push_back(0);
         }
         int chosen = -1;
@@ -8554,7 +8563,7 @@ inline bool group_cell(Ui& ui, Ui::Impl* im, uint64_t id, const Rect& r, const s
 bool Ui::toggle_button(const std::string& label, bool* value, const Rect& box, const Style& st) {
     if (!value || box.w <= 0.0f) return false;
     const Theme& th = impl->theme;
-    const uint64_t id = impl->widget_id("toggle_btn", box, detail::hash_string(label.c_str()));
+    const uint64_t id = impl->widget_id("toggle_btn", box, detail::hash_string(label.c_str()), st.identity);
     const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
 
@@ -8602,7 +8611,7 @@ bool Ui::toggle_group(const std::vector<std::string>& items, int* index,
     // 胶囊轨道：这三个组控件在 AppKit 里就是 NSSegmentedControl，半径 = h/2
     const float rad = st.radius >= 0.0f ? st.radius : box.h * 0.5f;
     const float iw  = box.w / float(n);
-    const uint64_t base = impl->widget_id("toggle_group", box);
+    const uint64_t base = impl->widget_id("toggle_group", box, 0, st.identity);
 
     // 分段控件使用半透明黑色凹槽背景，无外框。
     fill_rect(box, !st.bg.is_none() ? st.bg : th.track_well(), rad);
@@ -8610,7 +8619,7 @@ bool Ui::toggle_group(const std::vector<std::string>& items, int* index,
     bool changed = false;
     for (int i = 0; i < n; ++i) {
         const Rect r(box.x + iw * float(i), box.y, iw, box.h);
-        const uint64_t id = impl->widget_id("tg_item", r, base + uint64_t(i));
+        const uint64_t id = impl->widget_id("tg_item", r, base + uint64_t(i), st.identity ? base + uint64_t(i) : 0);
         const bool on = (*index == i);
         // 分隔线只在两侧都没选中时画：参考资料 kit 的 Separator 会被 Selected 段整块盖住
         const bool div = i > 0 && !on && !(*index == i - 1);
@@ -8633,14 +8642,14 @@ bool Ui::toggle_group_multi(const std::vector<std::string>& items, std::uint32_t
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float rad = st.radius >= 0.0f ? st.radius : box.h * 0.5f;
     const float iw  = box.w / float(n);
-    const uint64_t base = impl->widget_id("toggle_group_m", box);
+    const uint64_t base = impl->widget_id("toggle_group_m", box, 0, st.identity);
 
     fill_rect(box, !st.bg.is_none() ? st.bg : th.track_well(), rad);
 
     bool changed = false;
     for (int i = 0; i < n; ++i) {
         const Rect r(box.x + iw * float(i), box.y, iw, box.h);
-        const uint64_t id = impl->widget_id("tgm_item", r, base + uint64_t(i));
+        const uint64_t id = impl->widget_id("tgm_item", r, base + uint64_t(i), st.identity ? base + uint64_t(i) : 0);
         const bool on = ((*mask >> i) & 1u) != 0u;
         const bool prev_on = i > 0 && (((*mask >> (i - 1)) & 1u) != 0u);
         if (detail::group_cell(*this, impl, id, r, items[size_t(i)], on,
@@ -8663,7 +8672,7 @@ bool Ui::button_group(const std::vector<std::string>& items, int* clicked_index,
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float rad = st.radius >= 0.0f ? st.radius : box.h * 0.5f;
     const float iw  = box.w / float(n);
-    const uint64_t base = impl->widget_id("button_group", box);
+    const uint64_t base = impl->widget_id("button_group", box, 0, st.identity);
 
     // 按钮组与分段控件共用凹槽背景，无外框。
     fill_rect_s(box, !st.bg.is_none() ? st.bg : th.track_well(), rad, 0.35f);
@@ -8671,7 +8680,7 @@ bool Ui::button_group(const std::vector<std::string>& items, int* clicked_index,
     bool clicked = false;
     for (int i = 0; i < n; ++i) {
         const Rect r(box.x + iw * float(i), box.y, iw, box.h);
-        const uint64_t id = impl->widget_id("bg_item", r, base + uint64_t(i));
+        const uint64_t id = impl->widget_id("bg_item", r, base + uint64_t(i), st.identity ? base + uint64_t(i) : 0);
         if (detail::group_cell(*this, impl, id, r, items[size_t(i)], false,
                                fs, rad, st, false, i > 0)) {
             if (clicked_index) *clicked_index = i;
@@ -8730,6 +8739,7 @@ bool Ui::input_group(std::string* value, const std::string& prefix, const std::s
     is.pad_x = 4.0f;
     is.font_size = fs;
     is.disabled = st.disabled;
+    is.identity = st.identity;
 
     const Input& kin = impl->input;
     const bool outside_press = kin.pressed[0]
@@ -8743,12 +8753,14 @@ bool Ui::input_group(std::string* value, const std::string& prefix, const std::s
     // 必须等 input() 跑完再抢焦点 —— 它内部遇到"按下了但不在自己框内"会主动
     // 丢掉焦点，先抢会被它丢回去。晚一帧生效，肉眼无感。
     if (outside_press) {
-        detail::grab_focus(impl, impl->widget_id("input", inner));
+        detail::grab_focus(impl, impl->widget_id("input", inner, 0,
+            st.identity ? st.identity : uint64_t(reinterpret_cast<uintptr_t>(value))));
         repaint();
     }
 
     // 组合输入框负责外层焦点边框，必须在内部 input 绘制后补画，避免被其背景覆盖。
-    if (detail::is_focused(impl, impl->widget_id("input", inner))) {
+    if (detail::is_focused(impl, impl->widget_id("input", inner, 0,
+            st.identity ? st.identity : uint64_t(reinterpret_cast<uintptr_t>(value))))) {
         stroke_rect(box, th.ring, rad, 1.4f);
         detail::paint_focus_ring(*this, box, rad, th.ring, true);
     }
@@ -8765,7 +8777,7 @@ bool Ui::input_otp(std::string* value, int length, const Rect& box, const Style&
     if (!value || length <= 0 || box.w <= 0.0f) return false;
     if (length > 12) length = 12;
     const Theme& th = impl->theme;
-    const uint64_t id = impl->widget_id("otp", box);
+    const uint64_t id = impl->widget_id("otp", box, 0, st.identity);
     // 验证码各格使用 24px 高、r5、13pt 的文本框尺寸。
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float rad = st.radius >= 0.0f ? st.radius : 5.0f;
@@ -8903,7 +8915,7 @@ bool Ui::item(const std::string& title, const std::string& description,
                      const std::string& trailing, const Rect& box, const Style& st) {
     if (box.w <= 0.0f || box.h <= 0.0f) return false;
     const Theme& th = impl->theme;
-    const uint64_t id = impl->widget_id("item", box, detail::hash_string(title.c_str()));
+    const uint64_t id = impl->widget_id("item", box, detail::hash_string(title.c_str()), st.identity);
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float rad = st.radius >= 0.0f ? st.radius : 5.0f;
 
@@ -9012,7 +9024,7 @@ bool Ui::pagination(int* page, int total_pages, const Rect& box, const Style& st
     int cur = detail::clampi(*page, 0, total - 1);
     const float rad = st.radius >= 0.0f ? st.radius : th.radius_sm;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
-    const uint64_t base = impl->widget_id("pagination", box);
+    const uint64_t base = impl->widget_id("pagination", box, 0, st.identity);
 
     // 槽位编码：-1=上一页 -2=省略号 -3=下一页，>=0 是页码（0 基）。
     //
@@ -9058,7 +9070,7 @@ bool Ui::pagination(int* page, int total_pages, const Rect& box, const Style& st
             continue;
         }
 
-        const uint64_t id = impl->widget_id("pg", r, base + uint64_t(i));
+        const uint64_t id = impl->widget_id("pg", r, base + uint64_t(i), st.identity ? base + uint64_t(i) : 0);
         detail::Interact in = detail::interact(impl, id, r, !st.disabled);
         if (in.hovered) set_cursor(Cursor::Arrow);
         if (in.pressed) detail::grab_focus(impl, id);
@@ -9123,7 +9135,7 @@ bool Ui::calendar(int* year, int* month, int* day, const Rect& box, const Style&
     const float grid_h = std::max(box.bottom() - wkh.bottom(), 1.0f);
     const float cw = box.w / 7.0f;
     const float ch = grid_h / 6.0f;
-    const uint64_t base = impl->widget_id("calendar", box);
+    const uint64_t base = impl->widget_id("calendar", box, 0, st.identity);
 
     bool changed = false;
 
@@ -9132,7 +9144,7 @@ bool Ui::calendar(int* year, int* month, int* day, const Rect& box, const Style&
     const Rect next_r(head.right() - head_h * 0.7f - 2.0f, prev_r.y, prev_r.w, prev_r.h);
     for (int k = 0; k < 2; ++k) {
         const Rect& r = (k == 0) ? prev_r : next_r;
-        const uint64_t id = impl->widget_id("cal_nav", r, base + uint64_t(k));
+        const uint64_t id = impl->widget_id("cal_nav", r, base + uint64_t(k), st.identity ? base + uint64_t(k) : 0);
         detail::Interact in = detail::interact(impl, id, r, true);
         if (in.hovered) set_cursor(Cursor::Arrow);
         const float t_h = detail::animate_value(impl, id * 109u + 1u, in.hovered ? 1.0f : 0.0f, 20.0f);
@@ -9178,7 +9190,7 @@ bool Ui::calendar(int* year, int* month, int* day, const Rect& box, const Style&
             if (d > dim_now) break;
             const Rect r(box.x + cw * float(col), wkh.bottom() + ch * float(row), cw, ch);
             const Rect inner = r.inset(3.0f, 2.0f);
-            const uint64_t id = impl->widget_id("cal_day", r, base + uint64_t(d));
+            const uint64_t id = impl->widget_id("cal_day", r, base + uint64_t(d), st.identity ? base + uint64_t(d) : 0);
             detail::Interact in = detail::interact(impl, id, inner, true);
             if (in.hovered) set_cursor(Cursor::Arrow);
             const bool is_sel = (d == sel);
@@ -9225,7 +9237,7 @@ bool Ui::popover(const std::string& label, bool* open, const Rect& box,
                         const Style& st) {
     if (!open || box.w <= 0.0f) return false;
     const Theme& th = impl->theme;
-    const uint64_t id = impl->widget_id("popover", box);
+    const uint64_t id = impl->widget_id("popover", box, 0, st.identity);
     // 层级号取入口处的 seq：触发器和面板都从它往后数。
     const uint64_t z_first = impl->seq + 1;
     // Popover 触发器使用按钮圆角，面板圆角为 12px。
@@ -9367,8 +9379,8 @@ bool Ui::alert_dialog(const std::string& title, const std::string& body,
     const Rect cancel_r(box.x + pad, box.bottom() - pad_v - btn_h, inner_w, btn_h);
     const Rect ok_r(box.x + pad, cancel_r.y - 16.0f - btn_h, inner_w, btn_h);
 
-    const uint64_t ok_id = impl->widget_id("alert_ok", box);
-    const uint64_t no_id = impl->widget_id("alert_no", box, 1u);
+    const uint64_t ok_id = impl->widget_id("alert_ok", box, 0, st.identity);
+    const uint64_t no_id = impl->widget_id("alert_no", box, 1u, st.identity);
     detail::Interact ok_in = detail::interact(impl, ok_id, ok_r, true);
     detail::Interact no_in = detail::interact(impl, no_id, cancel_r, true);
     if (ok_in.hovered || no_in.hovered) set_cursor(Cursor::Arrow);
@@ -9497,7 +9509,7 @@ bool Ui::context_menu(const Rect& area, const std::vector<std::string>& items,
                              int* clicked_index, const Style& st) {
     if (items.empty()) return false;
     const Theme& th = impl->theme;
-    const uint64_t id = impl->widget_id("ctxmenu", area, uint64_t(items.size()));
+    const uint64_t id = impl->widget_id("ctxmenu", area, uint64_t(items.size()), st.identity);
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
     const float item_h = std::max(fs + 10.0f, 24.0f);   // kit Menu/Height Medium = 24
     const Input& kin = impl->input;
@@ -9533,7 +9545,7 @@ bool Ui::context_menu(const Rect& area, const std::vector<std::string>& items,
     for (size_t i = 0; i < items.size(); ++i) {
         const Rect r(list.x + 4.0f, list.y + 4.0f + item_h * float(i), list.w - 8.0f, item_h);
         rects.push_back(r);
-        ids.push_back(impl->widget_id("ctx_item", r, id + uint64_t(i)));
+        ids.push_back(impl->widget_id("ctx_item", r, id + uint64_t(i), st.identity ? id + uint64_t(i) : 0));
         hov.push_back(0);
     }
 
@@ -9584,7 +9596,7 @@ bool Ui::combobox(const std::vector<std::string>& items, int* index,
                          const Rect& box, const Style& st) {
     if (!index || items.empty() || box.w <= 0.0f) return false;
     const Theme& th = impl->theme;
-    const uint64_t id = impl->widget_id("combobox", box);
+    const uint64_t id = impl->widget_id("combobox", box, 0, st.identity);
     const uint64_t z_first = impl->seq + 1;
     const float rad = st.radius >= 0.0f ? st.radius : th.radius;
     const float fs  = st.font_size > 0.0f ? st.font_size : th.font_size;
@@ -9697,7 +9709,7 @@ bool Ui::combobox(const std::vector<std::string>& items, int* index,
     Impl::SeqFrameEnd guard(impl);
     for (int r = 0; r < rows; ++r) {
         const Rect rr(list.x + 4.0f, sr.bottom() + 4.0f + item_h * float(r), list.w - 8.0f, item_h);
-        const uint64_t iid = impl->widget_id("cb_item", rr, id + uint64_t(vis[size_t(r)]));
+        const uint64_t iid = impl->widget_id("cb_item", rr, id + uint64_t(vis[size_t(r)]), st.identity ? id + uint64_t(vis[size_t(r)]) : 0);
         detail::Interact ii = detail::interact(impl, iid, rr, true);
         if (ii.hovered) { set_cursor(Cursor::Arrow); hi = r; }
         if (ii.clicked) chosen_now = vis[size_t(r)];
@@ -9788,10 +9800,10 @@ bool Ui::combobox(const std::vector<std::string>& items, int* index,
 //  vertical=true 表示分隔条是竖的（左右两块），和参数名的方位一致。
 // -----------------------------------------------------------------------------
 bool Ui::split_pane(float* ratio, const Rect& box, Rect* first, Rect* second,
-                           bool vertical, float min_ratio, const Style&) {
+                           bool vertical, float min_ratio, const Style& st) {
     if (!ratio || box.w <= 0.0f || box.h <= 0.0f) return false;
     const Theme& th = impl->theme;
-    const uint64_t id = impl->widget_id("split_pane", box, vertical ? 1u : 2u);
+    const uint64_t id = impl->widget_id("split_pane", box, vertical ? 1u : 2u, st.identity);
     const float bar = 7.0f;                    // 热区宽度（视觉只有 1px）
     float r = detail::clampf(*ratio, min_ratio, 1.0f - min_ratio);
 

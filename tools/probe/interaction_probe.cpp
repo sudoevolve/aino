@@ -840,6 +840,59 @@ static void test_degenerate() {
     check(ok2, "空指针参数被忽略而不是崩溃");
 }
 
+static void test_stable_identity() {
+    std::printf("[20] stable editor identities\n");
+    Surface sf(640, 480);
+    Harness h(&sf);
+    Driver d{h.ui, 640.0f, 480.0f};
+    auto& ui = h.ui;
+    for (bool multiline : {false, true}) {
+        std::string a = "session-A", b = "session-B";
+        std::string* current = &a;
+        aino::Rect box(20, 20, 250, multiline ? 100 : 36);
+        uint64_t explicit_id = 0, scope_id = 100;
+        auto draw = [&] {
+            auto owner = ui.state_scope(scope_id);
+            if (multiline) ui.textarea(current, box, aino::Style().id(explicit_id));
+            else ui.input(current, box, aino::Style().id(explicit_id));
+        };
+        d.click(100, 35, draw);
+        d.type("X", draw);
+        check(a != "session-A", "focused editor accepts text");
+        const auto original_focus = ui.focused_id();
+        box.x += 40;
+        d.idle(draw);
+        check(ui.focused_id() == original_focus, "moving editor preserves focus");
+        d.key_ctrl('Z', draw);
+        check(a == "session-A", "moving editor preserves undo history");
+        d.type("Y", draw);
+        current = &b;
+        d.key_ctrl('Z', draw);
+        check(b == "session-B", "different model at same position cannot consume another history");
+        d.click(box.x + 70, 35, draw);
+        d.key_ctrl('Z', draw);
+        check(b == "session-B", "newly focused model has independent history");
+        explicit_id = 77;
+        d.click(box.x + 70, 35, draw);
+        d.type("Z", draw);
+        a = b;
+        current = &a;
+        d.key_ctrl('Z', draw);
+        check(a == "session-B", "explicit ID preserves undo across model relocation");
+        scope_id = 101;
+        d.click(box.x + 70, 35, draw);
+        d.key_ctrl('Z', draw);
+        check(a == "session-B", "same explicit ID in another owner has independent history");
+        ui.release_state_scope(100);
+        ui.release_state_scope(101);
+    }
+    std::string amount;
+    auto group = [&] { ui.input_group(&amount, "$", "USD", {20, 20, 250, 36}, aino::Style().id(88)); };
+    d.click(25, 35, group);
+    d.type("42", group);
+    check(amount == "42", "input group prefix focuses the editor with its explicit ID");
+}
+
 int main() {
     std::printf("== 存量控件交互断言 ==\n");
     test_button();
@@ -861,6 +914,7 @@ int main() {
     test_scroll();
     test_gate_and_clip();
     test_degenerate();
+    test_stable_identity();
     std::printf("=== 通过 %d 项，失败 %d 项 ===\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

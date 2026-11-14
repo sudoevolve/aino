@@ -422,7 +422,8 @@ static void test_keyboard() {
     };
 
     d.click(inp.cx(), inp.cy(), draw);           // 先聚焦
-    check(aino::detail::is_focused(ui.impl, aino::detail::make_id("input", inp)),
+    const uint64_t editor_id = ui.impl->widget_id("input", inp, 0, uint64_t(reinterpret_cast<uintptr_t>(&text)));
+    check(aino::detail::is_focused(ui.impl, editor_id),
           "点击后取得焦点");
 
     auto type = [&](const char* s) {
@@ -440,7 +441,7 @@ static void test_keyboard() {
     const std::string before = text;
     type("b");
     check(text == before, "浮层盖住后打字被忽略", before + " -> " + text);
-    check(!aino::detail::is_focused(ui.impl, aino::detail::make_id("input", inp)),
+    check(!aino::detail::is_focused(ui.impl, editor_id),
           "浮层盖住后焦点被交回");
 }
 

@@ -750,6 +750,7 @@ enum class Prompt { None, Mkdir, Rename };
 
 // 一个会话 = 一条 SSH 连接 + 一个终端 + 一块文件面板
 struct Session {
+    uint64_t ui_scope = 0;       // 本窗口内稳定且不复用，关闭时释放内部 UI 状态
     // ---- pty 尺寸同步 ----
     // 用来节流：远端拒收 window-change 时不要每帧都发一个请求。
     int  pty_req_cols = -1, pty_req_rows = -1;
@@ -1823,6 +1824,7 @@ struct App {
 
     std::string download_dir;
     aino::Window* win = nullptr;
+    uint64_t next_session_scope = 1;
 
     // 有任何弹窗时，底下的启动页不能再接收点击 —— 否则在编辑器里点一下
     // 文字区，会顺带把盖在下面的连接卡片也"点开"，弹出个密码框
@@ -1834,6 +1836,7 @@ struct App {
         std::shared_ptr<Session> s = std::move(tabs[size_t(i)]);
         tabs.erase(tabs.begin() + i);
         if (s) {
+            if (win) win->ui().release_state_scope(s->ui_scope);
             std::shared_ptr<Session> keep = s;      // 让对象活到后台线程跑完
             std::thread([keep] { keep->shutdown(); }).detach();
             dying.push_back(std::move(s));
@@ -1899,6 +1902,7 @@ void save_profile(App& app, const Profile& p, int index) {
 // 打开一个会话（补齐密码后再连）
 void open_session(App& app, const Profile& p, const std::string& pass) {
     auto s = std::make_shared<Session>();
+    s->ui_scope = app.next_session_scope++;
     s->host = p.host;
     s->port = p.port > 0 ? p.port : 22;
     s->user = p.user;
@@ -2587,6 +2591,7 @@ void update_session(Session& a) {
 
 // ---- 会话主体 ----
 void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, const Rect& body) {
+    auto owner = ui.state_scope(a.ui_scope);
     const Session::ConnInfo cs = a.conn_snapshot();
     const float W = body.w, H = body.h;
     const float status_h = 26.0f;

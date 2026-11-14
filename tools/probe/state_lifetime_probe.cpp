@@ -108,7 +108,9 @@ static void editor_and_scroll_state() {
     {
         auto page = ui.state_scope(701);
         frame(ui);
-        const uint64_t ids[] = {ui.impl->widget_id("input", input), ui.impl->widget_id("textarea", area)};
+        const uint64_t ids[] = {
+            ui.impl->widget_id("input", input, 0, uint64_t(reinterpret_cast<uintptr_t>(&single))),
+            ui.impl->widget_id("textarea", area, 0, uint64_t(reinterpret_cast<uintptr_t>(&multi)))};
         for (uint64_t id : ids) {
             aino::detail::edit_snapshot(ui.impl, id, "before", 3, -1, aino::detail::EDIT_OTHER);
             int caret = 5, anchor = -1;
