@@ -1,0 +1,79 @@
+name: Regression
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    name: ${{ matrix.os }} / CMake + CTest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: X11, fonts, SSH headers and virtual display
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev libgdk-pixbuf-2.0-0 librsvg2-common adwaita-icon-theme \
+            libfreetype6 libfontconfig1 libfontconfig libssh2-1-dev \
+            xvfb xfonts-base fonts-dejavu-core fonts-noto-cjk
+          fc-cache -f
+
+      - name: Configure
+        run: cmake -S . -B build/ci -DCMAKE_BUILD_TYPE=Release -DAINO_BUILD_TESTS=ON
+
+      - name: Build examples and probes
+        run: cmake --build build/ci --config Release --parallel 2
+
+      - name: CTest
+        if: runner.os != 'Linux'
+        run: ctest --test-dir build/ci -C Release --output-on-failure --parallel 2
+
+      - name: CTest on Xvfb
+        if: runner.os == 'Linux'
+        run: xvfb-run -a ctest --test-dir build/ci -C Release --output-on-failure --parallel 2
+
+      - name: MSVC execution charset without utf-8 option
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cl /nologo /std:c++17 /EHsc /O2 /MT tools/ci_pixels.cpp user32.lib gdi32.lib /Fe:build/ci/ci_pixels_noutf8.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./build/ci/ci_pixels_noutf8.exe
+          exit $LASTEXITCODE
+
+      - name: X11 CJK fallback with a short font chain
+        if: runner.os == 'Linux'
+        env:
+          AINO_X11_TRACE: "1"
+          AINO_X11_CHAIN_CAP: "4"
+        run: |
+          xvfb-run -a build/ci/aino_test_pixels > build/ci/narrow.txt 2>&1
+          cat build/ci/narrow.txt
+          grep -q "cjk at " build/ci/narrow.txt
+
+      - name: Preserve reports and native frames
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-${{ runner.os }}
+          path: |
+            build/ci/Testing/Temporary/
+            build/ci/test-output/
+            build/ci/narrow.txt
+          if-no-files-found: ignore

@@ -39,6 +39,7 @@ int main() {
         window.render([&](aino::Ui&) { manual_frames += 100; }); // 不允许帧内重入。
     });
     if (manual_frames != 2 || window.impl->frame_cb_ptr) return 5;
+    window.request_repaint(); // 手动绘制已消费首帧；测试主循环前显式请求新帧。
     std::atomic<int> frames{0};
     std::atomic<bool> failed{false};
     std::thread producer([&] {

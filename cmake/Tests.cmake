@@ -1,0 +1,48 @@
+# 保留探针自己的 main 和返回值，不依赖输出中固定的断言总数。
+function(aino_add_test name)
+    cmake_parse_arguments(TEST "NATIVE" "" "" ${ARGN})
+    add_executable(aino_test_${name} ${TEST_UNPARSED_ARGUMENTS})
+    aino_configure_target(aino_test_${name})
+    if(WIN32)
+        target_link_libraries(aino_test_${name} PRIVATE msimg32 imm32)
+    endif()
+    add_test(NAME ${name} COMMAND aino_test_${name})
+    set(_output "${CMAKE_CURRENT_BINARY_DIR}/test-output/${name}")
+    file(MAKE_DIRECTORY "${_output}")
+    set_tests_properties(${name} PROPERTIES WORKING_DIRECTORY "${_output}" TIMEOUT 45)
+    if(TEST_NATIVE)
+        set_tests_properties(${name} PROPERTIES LABELS native RUN_SERIAL TRUE)
+    else()
+        set_tests_properties(${name} PROPERTIES LABELS headless)
+    endif()
+endfunction()
+
+aino_add_test(link_contract tools/probe/link_contract_impl.cpp tools/probe/link_contract_probe.cpp)
+foreach(_probe state_lifetime wake ssh_files)
+    aino_add_test(${_probe} tools/probe/${_probe}_probe.cpp)
+endforeach()
+aino_add_test(layout tools/probe/layoutprobe.cpp)
+aino_add_test(raster_equiv tools/probe/raster_equiv.cpp)
+aino_add_test(arc tools/probe/arc_probe.cpp)
+aino_add_test(docs_smoke tools/probe/docs_smoke.cpp)
+aino_add_test(smoke NATIVE tools/ci_smoke.cpp)
+aino_add_test(pixels NATIVE tools/ci_pixels.cpp)
+aino_add_test(capture NATIVE tools/probe/capture_probe.cpp)
+aino_add_test(window_wake NATIVE tools/probe/window_wake_probe.cpp)
+aino_add_test(gallery_layout NATIVE tools/probe/gallery_layout_probe.cpp)
+set_tests_properties(pixels PROPERTIES ENVIRONMENT "AINO_PIX_BMP=1")
+
+# 这些离屏夹具明确使用 GDI；文件名包含 macos 不代表原生 macOS 覆盖。
+if(WIN32)
+    foreach(_probe interaction widget overlay example_ui pomodoro macos_gallery newcomp
+                   shadow_text measure click scrollbar gate_order bigfeat hover_fade)
+        aino_add_test(${_probe} tools/probe/${_probe}_probe.cpp)
+    endforeach()
+    aino_add_test(edit NATIVE tools/probe/edit_probe.cpp)
+endif()
+
+add_test(NAME gallery_bench COMMAND ${CMAKE_COMMAND}
+    "-DEXE=$<TARGET_FILE:aino_gallery>" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GalleryBench.cmake")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-output/gallery_bench")
+set_tests_properties(gallery_bench PROPERTIES LABELS native RUN_SERIAL TRUE TIMEOUT 45
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-output/gallery_bench")

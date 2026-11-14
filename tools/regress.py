@@ -93,6 +93,9 @@ def verify_gallery(extra=()):
 
 
 PROBES = (
+    ('wake_probe', 'verdict: PASS', '后台通知：合并通知 / 并发交付'),
+    ('window_wake_probe', 'verdict: PASS', '真实窗口：后台唤醒 / 关闭 / 光标定时 / 日志生命周期'),
+    ('ssh_files_probe', '0 failed', 'SSH 本地文件：主机记录 / 句柄 / 失败路径'),
     ('state_lifetime_probe', 'verdict: PASS', '控件状态生命周期：隐藏保留 / 显式释放 / 作用域隔离 / 延迟回调'),
     ('capture_probe', '[capture] verdict: PASS', '鼠标捕获生命周期：控件消失 / 取消 / 失焦 / 正常拖动'),
     ('gallery_layout_probe', 'verdict: PASS', '画廊布局报告：跨平台测量 / 越界 / 重叠 / CI 格式'),
@@ -115,14 +118,14 @@ PROBES = (
     ('scrollbar_probe', '[scrollbar] verdict: PASS', '滚动条拖动/点轨道（不再是纯装饰）'),
     ('ime_comp_probe', '[imecomp] verdict: PASS', 'IME 组字串画进输入框（不是只在组合窗）'),
     ('widget_probe', '通过 79 项，失败 0 项', '0.3.x 新控件行为（Toggle/OTP/Combobox/分页/月历/浮层/分割/菜单栏）'),
-    ('interaction_probe', '通过 94 项，失败 0 项', '存量控件交互（含页签关闭 / 溢出翻页）'),
+    ('interaction_probe', '失败 0 项', '存量控件交互（含稳定身份 / 撤销隔离 / 光标调度）'),
     ('measure_probe', '通过 9 项，失败 0 项', '测量模式不落像素 + 嵌套滚动归属'),
     ('click_probe', '通过 11 项，失败 0 项', '点击归属（裁剪外不吃点击 / 一次按下只归一个）'),
     ('cfg_probe', '通过 16 项，失败 0 项', 'WindowConfig（字体名/尺寸约束/居中/可缩放）'),
     ('hover_fade_probe', '通过 14 项，失败 0 项', 'hover 淡入淡出无暗闪（透明底只推 alpha）'),
 )
 
-CORE = {"state_lifetime_probe", "capture_probe", "macos_gallery_probe", "interaction_probe", "widget_probe", "overlay_probe",
+CORE = {"state_lifetime_probe", "wake_probe", "window_wake_probe", "ssh_files_probe", "capture_probe", "macos_gallery_probe", "interaction_probe", "widget_probe", "overlay_probe",
         "click_probe", "scrollbar_probe", "hover_fade_probe"}
 
 

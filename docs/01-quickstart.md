@@ -65,6 +65,24 @@ SSH 额外依赖 libssh2。MSVC 配置使用 `AINO_SSH_DEPS` 指向的预编译 
 未加密私钥允许空口令。主机密钥记录位于 `~/.aino_ssh/known_hosts`，首次连接采用 TOFU；
 记录不匹配、无法读取或无法持久化新记录都会拒绝连接。该格式为本示例专用，不能直接替换 OpenSSH 的文件。
 
+### 构建和运行回归
+
+```sh
+cmake -S . -B build/test -DCMAKE_BUILD_TYPE=Release -DAINO_BUILD_TESTS=ON -DAINO_BUILD_SSH=OFF
+cmake --build build/test --config Release --parallel 2
+ctest --test-dir build/test -C Release --output-on-failure --parallel 2
+```
+
+测试默认不构建。`headless` 标签是不创建原生窗口的数值/离屏/文件测试，`native` 标签需要桌面；
+可用 `ctest --test-dir build/test -C Release -L headless` 单独运行前者。
+Linux 的完整测试使用 `xvfb-run -a ctest --test-dir build/test --output-on-failure`。
+原生窗口测试串行运行，并设有超时；每个测试的输出独立写入构建目录的 `test-output/`。
+Windows GDI 夹具只在 Windows 编译，名称中出现 `macos` 不表示已验证 Cocoa 后端。
+多编译单元链接契约、线程唤醒、编辑器交互、光栅等价性和画廊基准均纳入 CTest。
+
+`.github/workflows/regression.yml` 在 push / PR 上运行三个平台的构建和 CTest；
+原有发布工作流仍保留专用字体和截图检查。CI 配置存在不等于本地已经跑过其它平台。
+
 客户端的连接、文件操作和传输都在后台执行。切换标签或返回启动页后，传输继续，
 各标签的终端输出仍会解析；连接等待不再驱动持续动画。
 会话标签栏复用 `ui.tabs()`，支持状态标记、逐项关闭及溢出翻页；新建按钮返回连接首页。

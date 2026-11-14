@@ -3,6 +3,9 @@
 核心库和普通示例不依赖 Python。优先使用仓库根目录的 CMake 构建；
 工具脚本按用途运行，避免将所有历史排障程序视为同一种测试。
 
+核心回归的统一入口为 `-DAINO_BUILD_TESTS=ON` 和 CTest，用法见 `docs/01-quickstart.md`。
+多编译单元链接探针需由 CMake 同时编译实现与调用者，不能作为单文件用 `cl_one.py` 构建。
+
 | 类别 | 入口 | 说明 |
 | --- | --- | --- |
 | 构建 | `build.py`、`cl_one.py`、`msvc_build.py`、`toolchain.py` | Windows 辅助入口；需自行安装编译器；`AINO_GXX` 可显式指定 g++ |

@@ -35,10 +35,15 @@ jobs:
       - name: 编译 gallery、冒烟程序与像素断言
         run: |
           cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT examples\gallery.cpp user32.lib gdi32.lib /Fe:gallery.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT tools\ci_smoke.cpp user32.lib gdi32.lib /Fe:ci_smoke.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT tools\ci_pixels.cpp user32.lib gdi32.lib /Fe:ci_pixels.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT tools\probe\capture_probe.cpp user32.lib gdi32.lib /Fe:ci_capture.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT tools\probe\state_lifetime_probe.cpp user32.lib gdi32.lib /Fe:ci_state_lifetime.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: 控件状态生命周期回归
         run: .\ci_state_lifetime.exe
@@ -64,6 +69,7 @@ jobs:
       - name: 不带 /utf-8 编译（模拟用户手编）
         run: |
           cl /nologo /std:c++17 /EHsc /O2 /MT tools\ci_pixels.cpp user32.lib gdi32.lib /Fe:ci_pixels_noutf8.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\ci_pixels_noutf8.exe
 
       - name: 失败时保留抓到的帧
