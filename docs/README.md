@@ -1,6 +1,6 @@
 ﻿# aino 文档
 
-> 单头文件跨平台 C++ GUI 库 —— 立即模式、零第三方依赖、事件驱动、空闲 0% CPU。
+> 单头文件跨平台 C++ GUI 库 —— 立即模式、核心零第三方依赖、事件驱动、按需绘制。
 
 本目录是 aino 的完整使用文档。**组件逐项说明在 `04`~`08` 各篇**，
 布局与滚动（含虚拟列表）在 `03`，大块文本的缓存策略在 `04`，编辑器撤销/选区在 `06`，
@@ -25,6 +25,7 @@
 | [11-motion.md](11-motion.md) | 动画（`tween` / `tween_color` / `fade` / `smooth` / 缓动）与 `Transform`（平移 / 缩放 / 旋转） |
 | [12-component-index.md](12-component-index.md) | 当前公开 API、Gallery 组合示例、兼容接口边界与检查工具 |
 | [13-project-review.md](13-project-review.md) | 项目分析、问题优先级、分批改进与验证记录 |
+| [14-platform-status.md](14-platform-status.md) | 平台能力、实际验证边界与后续原生验收清单 |
 
 ---
 
@@ -130,6 +131,7 @@ Windows 回归检查空闲帧、CPU、交互动画和多窗口响应。历史逐
 Windows 额外通过 `tools/verify_gallery.py` 检查 19 项整窗行为；字形与实际系统效果仍需人工查看。
 Linux/macOS 的输入、IME、剪贴板与多窗口不能由这些像素断言证明。
 macOS 当前事件循环仍有轮询；Windows 的阻塞空闲结果不能直接外推到其它平台。
+各后端已实现、待验证和未完成的能力详见 [平台能力矩阵](14-platform-status.md)。
 
 ### 已知后端限制
 

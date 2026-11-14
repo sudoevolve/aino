@@ -31,6 +31,18 @@ int main() {
 #endif
     aino::Window window(320, 200, "aino window wake probe");
     if (!window.ok()) return 1;
+#if defined(_WIN32)
+    {
+        aino::Window sibling(320, 200, "aino sibling close probe");
+        if (!sibling.ok()) return 7;
+        auto* native = static_cast<aino::detail::Win32State*>(sibling.impl->native);
+        SendMessageW(native->hwnd, WM_CLOSE, 0, 0);
+        if (!sibling.should_close() || !window.poll() || window.should_close()) {
+            std::puts("[window-wake] closing a sibling stopped the surviving window");
+            return 7;
+        }
+    }
+#endif
     int manual_frames = 0;
     window.render([&](aino::Ui& ui) { ui.clear(ui.theme().background); ++manual_frames; });
     window.render([&](aino::Ui& ui) {
@@ -85,6 +97,15 @@ int main() {
     closer.join();
     std::printf("[caret-timer] %d frames in 2.4 seconds\n", caret_frames);
     if (caret_frames < 5 || caret_frames > 30) return 4;
+#if defined(_WIN32)
+    aino::Window quit_window(320, 200, "aino explicit quit probe");
+    if (!quit_window.ok()) return 8;
+    PostQuitMessage(0);
+    if (quit_window.poll() || !quit_window.should_close()) {
+        std::puts("[window-wake] explicit WM_QUIT was ignored");
+        return 8;
+    }
+#endif
     std::puts("[window-wake] idle update and background close; verdict: PASS");
     return 0;
 }

@@ -11132,8 +11132,8 @@ inline LRESULT CALLBACK win_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
 
     case WM_CLOSE:
+        // WM_QUIT 属于整个线程；关闭本窗口不能结束同线程的其它窗口。
         s->owner->running = false;
-        PostQuitMessage(0);
         return 0;
 
     case WM_DESTROY:

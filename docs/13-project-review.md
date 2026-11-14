@@ -143,4 +143,18 @@ X11 的 `wake()` 还直接操作同一 Xlib 连接，公开跨线程承诺与内
 | 8 | T01：CMake 测试入口与日常 CI 门禁 | 已完成，远端 CI 待运行 | 可选 CTest、headless/native 标签及隔离输出；本地 Release 构建与 29/29 项测试通过；新增三平台 push/PR 门禁，保留发布专项检查并修复 PowerShell 编译失败传播；远端结果不在本地验证范围 |
 | 9a | P02：缓存与编辑历史预算 | 已完成 | O(1) LRU 淘汰；超大布局仅临时返回；撤销/重做合计字节及步数预算；新增小预算跨平台探针，连同大文本/交互/生命周期 4 项测试通过 |
 | 9b | S03：配置与大文件边界 | 持久化及长度查询已完成，服务端待验证 | 原子替换、失败保留旧文件/草稿、64 位长度；Windows 文件探针和 37 项 SSH 离线界面断言通过；WSL Ubuntu 文件探针 417 项通过（含符号链接与 3 GiB 稀疏文件）；libssh2 WinCNG 静态构建后完整 SSH 示例链接通过。系统凭据存储、真实大文件传输及私钥登录仍待专项集成 |
-| 10 | F02：平台能力与原生平台验证 | 待处理 | |
+| 10 | F02：平台能力与原生平台验证 | Windows 关闭隔离已修复，其余按平台续批 | 新增同线程 sibling 原生关闭回归，先复现误退再修复；保留宿主显式 WM_QUIT 语义。实现/验证/缺口及后续验收见 [14](14-platform-status.md)；X11/Cocoa 交互、无障碍和 SSH 服务端测试不冒充完成 |
+
+## 最新全量验证
+
+2026-11-14，第 10 批：Windows / MinGW Release，启用 `AINO_BUILD_TESTS` 和 `AINO_BUILD_SSH`，
+成功构建 6 个示例及全部测试目标，CTest **31/31 通过**（24 项 headless、7 项 native）。
+本次在修改公共头文件后重新构建了相关目标；SSH 使用本地构建的 libssh2 1.11.1 / WinCNG 静态库。
+
+```sh
+cmake --build build/audit-review --parallel 3
+ctest --test-dir build/audit-review --output-on-failure --parallel 2
+```
+
+WSL 文件探针的通过范围见批次 9b。三平台远端 CI、X11 原生交互、macOS 真机和真实 SSH/SFTP
+服务端集成不在此次全量结果内，后续验收清单见 [14](14-platform-status.md)。
