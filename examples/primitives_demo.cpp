@@ -10,10 +10,23 @@ using aino::Style;
 using aino::SystemIcon;
 
 static Rect sample(aino::Ui& ui, const Rect& card, const char* title, const char* caption) {
-    ui.label(title, {card.x + 2, card.y + 2, card.w - 4, 20}, Style().font(13).semi_bold());
+    // 组名用次级文字色（macOS 设置的分组标题是灰的），caption 再淡一档。
+    ui.label(title, {card.x + 2, card.y + 2, card.w - 4, 20}, Style().font(13).semi_bold().color(ui.theme().label2));
     ui.panel({card.x, card.y + 32, card.w, card.h - 32}, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
     ui.muted_text(caption, {card.x + 16, card.bottom() - 30, card.w - 32, 18}, Style().font(11));
     return {card.x + 16, card.y + 48, card.w - 32, card.h - 96};
+}
+
+// Windows 的 GDI 文字路径只用颜色的 RGB，alpha 会被丢掉 —— 而 theme.label2 /
+// label3 是 50% / 25% 黑，直绘出来就是纯黑，次级文字和正文一样重（macOS / X11
+// 后端是逐像素混合的，那边一直正常）。这里把它们换成不透明灰：浅色板上与
+// 混合结果等价，而且各平台的层次一致。
+static aino::Theme app_theme(bool dark) {
+    aino::Theme t = dark ? aino::Theme::dark() : aino::Theme::light();
+    t.label2 = dark ? aino::Color(0xA0, 0xA0, 0xA6, 255) : aino::Color(0x6E, 0x6E, 0x73, 255);
+    t.label3 = dark ? aino::Color(0x6E, 0x6E, 0x73, 255) : aino::Color(0x98, 0x98, 0x9D, 255);
+    t.muted_foreground = t.label2;
+    return t;
 }
 
 int main() {
@@ -24,16 +37,16 @@ int main() {
     aino::Window win(cfg);
     if (!win.ok()) return 1;
     bool dark = std::getenv("AINO_DARK") != nullptr;
-    win.set_theme(dark ? aino::Theme::dark() : aino::Theme::light());
+    win.set_theme(app_theme(dark));
     float radius = 12, width = 2, opacity = .65f;
 
     win.run([&](aino::Ui& ui) {
         ui.clear((ui.theme().window_bg.luminance() < .5f ? ui.theme().window_bg : aino::Color::hex(0xF5F5F7)));
-        ui.heading("基础图元", {24, 15, 200, 30});
-        const Rect theme_button(ui.width() - 48, 20, 24, 24);
+        ui.heading("基础图元", {28, 15, 200, 30});
+        const Rect theme_button(ui.width() - 52, 20, 24, 24);
         if (ui.button("", theme_button, Style().ghost())) {
             dark = !dark;
-            win.set_theme(dark ? aino::Theme::dark() : aino::Theme::light());
+            win.set_theme(app_theme(dark));
         }
         ui.system_icon(dark ? SystemIcon::Sun : SystemIcon::Moon, theme_button.inset(4), ui.theme().label);
         const auto& th = ui.theme();
@@ -52,14 +65,16 @@ int main() {
         const float low[] = {0, 1, .1f}, high[] = {28, 8, 1};
         for (int i = 0; i < 3; ++i) {
             const Rect row(settings.x, settings.y + i * 48.f, settings.w, 48);
-            const float slider_w = std::min(300.f, row.w * .48f);
-            const Rect control(row.right() - 16 - slider_w, row.cy() - 12, slider_w, 24);
-            ui.label(labels[i], {row.x + 16, row.cy() - 12, control.x - row.x - 96, 24}, Style().font(13));
+            // 数值贴行右端、滑块占满中间：原来是「标签 … 数值 [滑块]」，滑块左侧
+            // 空出 300px 而数值和滑块挨着，读起来像两组不相干的东西。
+            const Rect value_box(row.right() - 60, row.cy() - 12, 44, 24);
+            const Rect control(row.x + 108, row.cy() - 12, value_box.x - 16 - (row.x + 108), 24);
+            ui.label(labels[i], {row.x + 16, row.cy() - 12, 88, 24}, Style().font(13));
             ui.slider(parameters[i], low[i], high[i], control);
             char value[24];
             if (i == 2) std::snprintf(value, sizeof(value), "%.0f%%", opacity * 100);
             else std::snprintf(value, sizeof(value), "%.1f", *parameters[i]);
-            ui.draw_text(value, {control.x - 62, control.y, 44, 24}, th.label2, Style().font(12).right());
+            ui.draw_text(value, value_box, th.label2, Style().font(12).right());
             if (i < 2) ui.separator({row.x + 16, row.bottom() - 1, row.w - 32, 1});
         }
         auto card = [&](int index) {

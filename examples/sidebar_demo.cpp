@@ -63,7 +63,7 @@ static void draw_sidebar_app(aino::Ui& ui, SidebarApp& app) {
     ui.draw_text(descriptions[app.page], {col.x, y + 42, col.w, 22}, th.label2, Style().font(12).left());
 
     if (app.page == 0) {
-        ui.label("应用状态", {col.x + 2, y + 102, col.w - 4, 24}, Style().font(13).semi_bold().left());
+        ui.label("应用状态", {col.x + 2, y + 102, col.w - 4, 24}, Style().font(13).semi_bold().left().color(th.label2));
         const Rect group(col.x, y + 136, col.w, 128);
         ui.panel(group, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
         const Rect first(group.x, group.y, group.w, 64);
@@ -77,13 +77,13 @@ static void draw_sidebar_app(aino::Ui& ui, SidebarApp& app) {
         ui.draw_text("你的偏好会在切换页面后保留。", {col.x + 2, group.bottom() + 14, col.w - 4, 22},
                      th.label2, Style().font(11));
     } else if (app.page == 1) {
-        ui.label("外观", {col.x + 2, y + 102, col.w - 4, 24}, Style().font(13).semi_bold().left());
+        ui.label("外观", {col.x + 2, y + 102, col.w - 4, 24}, Style().font(13).semi_bold().left().color(th.label2));
         const Rect appearance(col.x, y + 136, col.w, 64);
         ui.panel(appearance, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
         const Rect control = settings_row(ui, appearance, "应用外观", std::min(176.f, col.w * .44f));
         ui.segmented({"浅色", "深色"}, &app.appearance, control, Style().font(12));
 
-        ui.label("通知", {col.x + 2, y + 230, col.w - 4, 24}, Style().font(13).semi_bold().left());
+        ui.label("通知", {col.x + 2, y + 230, col.w - 4, 24}, Style().font(13).semi_bold().left().color(th.label2));
         const Rect notifications(col.x, y + 264, col.w, 192);
         ui.panel(notifications, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
         const char* labels[] = {"允许通知", "播放提示音", "显示消息预览"};
@@ -97,7 +97,7 @@ static void draw_sidebar_app(aino::Ui& ui, SidebarApp& app) {
         ui.draw_text("关闭通知后，声音与预览偏好仍会保留。", {col.x + 2, notifications.bottom() + 14, col.w - 4, 22},
                      th.label2, Style().font(11));
     } else {
-        ui.label("关于应用", {col.x + 2, y + 102, col.w - 4, 24}, Style().font(13).semi_bold().left());
+        ui.label("关于应用", {col.x + 2, y + 102, col.w - 4, 24}, Style().font(13).semi_bold().left().color(th.label2));
         const Rect group(col.x, y + 136, col.w, 144);
         ui.panel(group, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
         sidebar_brand(ui, "aino", "单头文件 C++17 桌面 UI 库", {group.x + 20, group.y + 20, group.w - 40, 44}, aino::SystemIcon::Navigation);
@@ -105,6 +105,18 @@ static void draw_sidebar_app(aino::Ui& ui, SidebarApp& app) {
         ui.label("版本 " AINO_VERSION, {group.x + 20, group.y + 103, 120, 22}, Style().font(12));
         ui.draw_text("Apache-2.0", {group.right() - 148, group.y + 103, 128, 22}, th.label2, Style().font(12).right());
     }
+}
+
+// Windows 的 GDI 文字路径只用颜色的 RGB，alpha 会被丢掉 —— 而 theme.label2 /
+// label3 是 50% / 25% 黑，直绘出来就是纯黑，次级文字和正文一样重（macOS / X11
+// 后端是逐像素混合的，那边一直正常）。这里把它们换成不透明灰：浅色板上与
+// 混合结果等价，而且各平台的层次一致。
+static aino::Theme app_theme(bool dark) {
+    aino::Theme t = dark ? aino::Theme::dark() : aino::Theme::light();
+    t.label2 = dark ? aino::Color(0xA0, 0xA0, 0xA6, 255) : aino::Color(0x6E, 0x6E, 0x73, 255);
+    t.label3 = dark ? aino::Color(0x6E, 0x6E, 0x73, 255) : aino::Color(0x98, 0x98, 0x9D, 255);
+    t.muted_foreground = t.label2;
+    return t;
 }
 
 int main() {
@@ -117,11 +129,11 @@ int main() {
 
     SidebarApp app;
     if (const char* value = std::getenv("AINO_DARK")) app.appearance = std::strcmp(value, "0") != 0 ? 1 : 0;
-    win.set_theme(app.appearance ? aino::Theme::dark() : aino::Theme::light());
+    win.set_theme(app_theme(app.appearance));
 
     win.run([&](aino::Ui& ui) {
         draw_sidebar_app(ui, app);
-        win.set_theme(app.appearance ? aino::Theme::dark() : aino::Theme::light());
+        win.set_theme(app_theme(app.appearance));
     });
 
     return 0;

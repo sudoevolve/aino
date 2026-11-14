@@ -127,21 +127,28 @@ void draw_pomodoro(aino::Ui& ui, Pomodoro& timer, bool& dark, Clock::time_point 
                    appearance.inset(4), theme.label);
     ui.tooltip(appearance, "切换外观");
 
-    const Rect settings(sidebar, height - 84, width - sidebar, 84);
-    ui.panel({settings.x + 24, settings.y, settings.w - 48, 68}, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
-    ui.label("本轮时长", Rect(settings.x + 40, settings.y + 14, 100, 24), Style().left());
-    const Rect stepper(settings.right() - 154, settings.y + 22, 88, 24);
+    // 底部卡片：72 高而不是 68 —— 第二行文字下方要留 14 的逻辑内边距（AGENTS.md 的硬指标），
+    // 68 时只有 10，字号一放大就贴到圆角上。
+    const Rect settings(sidebar, height - 88, width - sidebar, 88);
+    ui.panel({settings.x + 24, settings.y, settings.w - 48, 72}, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
+    ui.label("本轮时长", Rect(settings.x + 40, settings.y + 16, 100, 24), Style().left());
+    const Rect stepper(settings.right() - 154, settings.y + 24, 88, 24);
     Style edit;
     if (timer.running) edit.off();
     if (ui.stepper(&timer.minutes[timer.mode], 1, 1, 120, stepper, edit)) timer.reset();
     ui.muted_text("分钟", Rect(stepper.right() + 10, stepper.y, 40, 24), Style().left());
     ui.muted_text(timer.running ? "暂停后可调整时长" : "完成后手动选择下一轮",
-                  Rect(settings.x + 40, settings.y + 40, settings.w - 210, 18),
+                  Rect(settings.x + 40, settings.y + 42, settings.w - 210, 18),
                   Style().font(11).left());
 
     const Rect content(sidebar, toolbar.bottom(), width - sidebar, settings.y - toolbar.bottom());
-    ui.panel({content.x + 24, content.y + 18, content.w - 48, content.h - 36}, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
-    const Rect ring = Rect::centered(content.cx(), content.cy() - 28, 220, 220);
+    const float card_w = content.w - 48, card_h = content.h - 36;
+    ui.panel({content.x + 24, content.y + 18, card_w, card_h}, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
+    // 圆环吃满卡片：原来固定 220，在 760×560 的卡片里四周空出两百多像素，
+    // 看着像卡片没画完。取宽高的比例并夹在 [220, 340]，小窗口下也不会挤到按钮。
+    const float ring_size = std::max(220.0f, std::min(card_w * .46f, card_h * .52f));
+    const float group_h = ring_size + 56.0f;          // 环 + 间距 + 按钮行
+    const Rect ring = Rect::centered(content.cx(), content.cy() - group_h * .5f + ring_size * .5f, ring_size, ring_size);
     const float buttons_y = ring.bottom() + 28;
     if (ui.button("重置", Rect(content.cx() - 100, buttons_y, 88, 28), Style().standard()))
         timer.reset();
@@ -149,15 +156,30 @@ void draw_pomodoro(aino::Ui& ui, Pomodoro& timer, bool& dark, Clock::time_point 
                         : timer.remaining < timer.duration() ? "继续" : "开始";
     if (ui.button(action, Rect(content.cx(), buttons_y, 100, 28))) timer.toggle(now);
 
-    ui.progress_ring(float(timer.remaining / timer.duration()), ring, Style().stroke(4, theme.track));
+    // 环粗随半径走：291 的环用 4px 像根发丝，Apple 的计时器环大约是半径的 3%。
+    ui.progress_ring(float(timer.remaining / timer.duration()), ring,
+                     Style().stroke(std::max(4.0f, ring_size * .022f), theme.track));
     const int seconds = int(std::ceil(timer.remaining));
     char time[16];
     std::snprintf(time, sizeof(time), "%02d:%02d", seconds / 60, seconds % 60);
-    ui.draw_mono_text(time, ring.cx() - ui.mono_width(time, 48) * 0.5f,
-                      ring.cy() - 36, theme.label, 48);
+    const float digit = std::min(64.0f, std::max(44.0f, ring_size * .21f));
+    ui.draw_mono_text(time, ring.cx() - ui.mono_width(time, digit) * 0.5f,
+                      ring.cy() - digit * .75f, theme.label, digit);
     const char* status = timer.running ? "计时中" : timer.remaining == 0 ? "本轮已完成"
                         : timer.remaining < timer.duration() ? "已暂停" : "准备开始";
-    ui.muted_text(status, Rect(ring.x, ring.cy() + 28, ring.w, 20), Style().center());
+    ui.muted_text(status, Rect(ring.x, ring.cy() + digit * .62f, ring.w, 20), Style().center());
+}
+
+// Windows 的 GDI 文字路径只用颜色的 RGB，alpha 会被丢掉 —— 而 theme.label2 /
+// label3 是 50% / 25% 黑，直绘出来就是纯黑，次级文字和正文一样重（macOS / X11
+// 后端是逐像素混合的，那边一直正常）。这里把它们换成不透明灰：浅色板上与
+// 混合结果等价，而且各平台的层次一致。
+static aino::Theme app_theme(bool dark) {
+    aino::Theme t = dark ? aino::Theme::dark() : aino::Theme::light();
+    t.label2 = dark ? aino::Color(0xA0, 0xA0, 0xA6, 255) : aino::Color(0x6E, 0x6E, 0x73, 255);
+    t.label3 = dark ? aino::Color(0x6E, 0x6E, 0x73, 255) : aino::Color(0x98, 0x98, 0x9D, 255);
+    t.muted_foreground = t.label2;
+    return t;
 }
 
 int main() {
@@ -176,12 +198,12 @@ int main() {
 
     const char* env = std::getenv("AINO_DARK");
     bool dark = env && std::strcmp(env, "1") == 0;
-    win.set_theme(dark ? aino::Theme::dark() : aino::Theme::light());
+    win.set_theme(app_theme(dark));
     Pomodoro timer;
     SecondTicker ticker(win);
     win.run([&](aino::Ui& ui) {
         draw_pomodoro(ui, timer, dark, Clock::now());
-        win.set_theme(dark ? aino::Theme::dark() : aino::Theme::light());
+        win.set_theme(app_theme(dark));
         ticker.set_running(timer.running);
     });
     return 0;

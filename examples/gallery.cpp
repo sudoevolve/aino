@@ -26,16 +26,23 @@ using aino::Vec2;
 
 namespace {
 constexpr float kNavW = 252;
-constexpr float kTitleH = 72;
+constexpr float kTitleH = 92;
 constexpr float kGridGap = 16;
 constexpr float kContentMaxW = 820;
 constexpr float kNavTop = 80;
 constexpr float kNavStep = 36;
 constexpr float kFooterH = 112;
 constexpr float kFooterBottom = 22;
-constexpr float kCardBodyY = 52;
+constexpr float kCardBodyY = 46;   // 卡片顶 → 内容：标题带 30 + 内边距 16
 constexpr float kCardBottom = 16;
-constexpr int kPageCount = 15;
+// 间距标尺（8pt 网格）。参照 App Store 的分组节奏：组标题贴着说明走，
+// 卡片与下一组之间留最大的那一段，卡片标题与卡片底之间只留一口气。
+constexpr float kSectionGap  = 40;   // 上一组卡片底 → 下一组标题
+constexpr float kHeadingGap  = 6;    // 组标题 → 说明
+constexpr float kHeaderGap   = 24;   // 说明 → 第一张卡片标题
+constexpr float kCardTitleGap = 8;   // 卡片标题 → 卡片底
+constexpr int kPageCount = 16;
+constexpr int kStylePage = kPageCount - 1;   // 风格页固定在末尾
 enum CardId {
     ButtonVariants,
     ButtonSizes,
@@ -80,6 +87,9 @@ enum CardId {
     Markdown,
     Empty,
     Typography,
+    TypeScale,
+    ColorTokens,
+    LayoutMetrics,
     CardCount
 };
 struct Notification {
@@ -207,6 +217,9 @@ const Card kCards[] = {
     {Markdown, "Markdown 排版示例", "md", "markdown 标题 粗体 列表 代码"},
     {Empty, "空状态", "empty", "empty 无素材 新建"},
     {Typography, "分隔与排版", "layout", "typography divider 分隔 排版"},
+    {TypeScale, "字号阶梯", "type scale", "typography 字号 字重 大小 标题 正文", true},
+    {ColorTokens, "颜色令牌", "tokens", "color token 颜色 令牌 语义 色板 hex", true},
+    {LayoutMetrics, "平台度量", "macOS / iOS", "layout metrics 间距 边距 行高 圆角 触摸目标 度量", true},
 };
 const Page kPages[] = {
     {"基础", "按钮", "buttons", "Button · 按钮样式 / 3 种尺寸 / 图标 / 加载态", 0, 3},
@@ -224,6 +237,7 @@ const Page kPages[] = {
     {"容器", "卡片与列表", "cards", "Containers · 内容与设置", 32, 4},
     {"容器", "导航", "navigation", "Navigation · 工具栏与路径", 36, 3},
     {"容器", "高级列表", "advanced", "Advanced · 大数据 / Markdown / 空状态", 39, 4},
+    {"规范", "风格", "style", "Style · 字号阶梯 / 颜色令牌 / macOS 与 iOS 布局度量", 43, 3, 380},
 };
 static_assert(sizeof(kCards) / sizeof(kCards[0]) == CardCount, "card manifest mismatch");
 static_assert(sizeof(kPages) / sizeof(kPages[0]) == kPageCount, "section manifest mismatch");
@@ -250,6 +264,11 @@ std::string color_hex(Color color) {
 }
 aino::Theme gallery_theme(const App &a) {
     auto th = a.dark ? aino::Theme::dark() : aino::Theme::light();
+    // 见 muted_ink 的说明：label2/label3 带 alpha，Windows 的 GDI 文字会把它
+    // 画成纯黑。换成不透明灰，层次在各平台一致。
+    th.label2 = a.dark ? aino::Color(0xA0, 0xA0, 0xA6, 255) : aino::Color(0x6E, 0x6E, 0x73, 255);
+    th.label3 = a.dark ? aino::Color(0x6E, 0x6E, 0x73, 255) : aino::Color(0x98, 0x98, 0x9D, 255);
+    th.muted_foreground = th.label2;
     th.set_tint(current_accent(a));
     return th;
 }
@@ -303,6 +322,10 @@ void notify(Ui &, App &a, std::string message, int kind = 0) {
         a.notices.erase(a.notices.begin());
     a.notices.push_back({std::move(message), kind, false});
 }
+// 次级文字用**不透明**灰，而不是 theme.label2。
+// 原因：label2 是 rgba(0,0,0,128)，而 Windows 的 GDI 文字路径只用 RGB、把 alpha
+// 丢掉 —— 直接用它画出来是纯黑，层次就没了（macOS / X11 后端是混合的，所以那边
+// 一直是正常的）。这里取 Apple 官网上正文/次级的实际色值，两个平台一致。
 void label(Ui &ui, const std::string &text, Rect r, float size = 13, bool muted = false, int weight = 400) {
     ui.draw_text(text, r, muted ? ui.theme().label2 : ui.theme().label, Style().font(size).weight(weight));
 }
@@ -1016,6 +1039,108 @@ void draw_advanced(Ui &ui, App &a, CardId id, Rect b) {
         ui.draw_mono_text("1,234.56", b.x, b.y + 142, ui.theme().label, 22);
     }
 }
+// ---- 风格规范页 -----------------------------------------------------------
+// 展示三件事：字号阶梯、颜色令牌、两个平台的布局度量。
+// 度量数字取自官方文档与系统应用：
+//   macOS —— 8pt 网格；窗口内容边距 20；标题↔控件 8；分组之间 20；
+//            正文 13pt、二级标题 22pt、大标题 26pt；控件高 22（regular）；
+//            列表行 28；卡片圆角 8；侧栏 220–260（AppKit 默认 250）。
+//   iOS   —— 正文 17pt、大标题 34pt bold；列表行与触摸目标最小 44；
+//            页面边距 16；分组卡片圆角 10；分组之间 24；分组标题 13pt 大写字重。
+void draw_style(Ui &ui, App &a, CardId id, Rect b) {
+    (void)a;
+    const auto &th = ui.theme();
+    const Color ink = th.label;
+    const Color sub = th.label2;
+
+    if (id == TypeScale) {
+        struct Row { const char *sample; float size; int weight; const char *meta; };
+        const Row rows[] = {
+            {"大标题", 26, 700, "26 / 700 · 页面标题"},
+            {"二级标题", 22, 600, "22 / 600 · 分组标题"},
+            {"强调正文", 17, 600, "17 / 600 · iOS 正文档"},
+            {"正文用 13pt，是 macOS 的默认档", 13, 400, "13 / 400 · macOS 正文"},
+            {"说明文字", 12, 400, "12 / 400 · 辅助说明"},
+            {"注释与脚注", 11, 400, "11 / 400 · 最小可读档"},
+        };
+        float y = b.y;
+        for (int i = 0; i < 6; ++i) {
+            const Row &r = rows[i];
+            // 行高跟着字号走：26 号字本身就有 34 的行盒，固定 34 的节奏会让
+            // 大标题和二级标题黏在一起。
+            const float row_h = std::max(36.f, r.size + 20.f);
+            ui.draw_text(r.sample, {b.x, y, b.w - 176, row_h}, ink,
+                         Style().font(r.size).weight(r.weight).left());
+            ui.draw_text(r.meta, {b.right() - 176, y + row_h - 22, 176, 20}, sub,
+                         Style().font(11).right());
+            if (i < 5) ui.separator({b.x, y + row_h - 1, b.w, 1});
+            y += row_h;
+        }
+        ui.draw_text("macOS 的同名字号比 iOS 小 25–50%：iOS 正文 17pt，macOS 正文 13pt。",
+                     {b.x, y + 6, b.w, 20}, sub, Style().font(11).left());
+        return;
+    }
+
+    if (id == ColorTokens) {
+        struct Tok { const char *name; Color c; };
+        const Tok toks[] = {
+            {"label", th.label}, {"label2", th.label2}, {"label3", th.label3},
+            {"fill", th.fill}, {"tint", th.tint}, {"green", th.green},
+            {"orange", th.orange}, {"red", th.red},
+        };
+        // 色块是画在卡片上的，hex 也按同一底色合成后再显示 —— 否则
+        // label（85% 黑）和 separator（10% 黑）都会印成 #000000，和肉眼看到的方块对不上。
+        const Color card_bg = th.window_bg.luminance() < .5f ? th.card : th.control_bg;
+        const float cell = b.w / 8.f;
+        for (int i = 0; i < 8; ++i) {
+            const float x = b.x + cell * float(i);
+            const Rect chip(x, b.y, 30, 30);
+            ui.fill_rect(chip, toks[i].c, 7);
+            // 白色 / 极浅的令牌在白卡片上会看不见，补一圈发丝边。
+            if (toks[i].c.a < 250 || toks[i].c.luminance() > .93f)
+                ui.stroke_rect(chip, th.separator, 7, 1);
+            ui.draw_text(toks[i].name, {x, b.y + 36, cell - 8, 16}, ink, Style().font(11).left());
+            ui.draw_text(color_hex(toks[i].c.over(card_bg)), {x, b.y + 52, cell - 8, 14}, sub,
+                         Style().font(10).left());
+        }
+        ui.draw_text("令牌随深浅主题切换；画布里存的是 sRGB，深浅两套都从同一份表里取。",
+                     {b.x, b.y + 74, b.w, 18}, sub, Style().font(11).left());
+        return;
+    }
+
+    // LayoutMetrics
+    struct Metric { const char *name; const char *mac; const char *ios; const char *note; };
+    const Metric rows[] = {
+        {"内容边距", "20", "16", "窗口或页面的左右留白"},
+        {"分组间距", "20", "24", "上一组卡片到下一组标题"},
+        {"列表行高", "28", "44", "单行内容 / 触摸最小高度"},
+        {"控件高度", "22", "44", "按钮、输入框的常规档"},
+        {"卡片圆角", "8", "10", "分组卡片、列表面板"},
+        {"正文字号", "13", "17", "SF Pro Text"},
+        {"侧栏宽度", "250", "—", "AppKit 默认；iOS 用整个屏幕"},
+        {"可点区域", "—", "44", "HIG 要求的最小触摸目标"},
+    };
+    const float c1 = 0.f, c2 = 0.30f, c3 = 0.52f, c4 = 0.68f;
+    ui.draw_text("项目", {b.x + b.w * c1, b.y, b.w * (c2 - c1), 18}, sub, Style().font(11).left());
+    ui.draw_text("macOS", {b.x + b.w * c2, b.y, b.w * (c3 - c2), 18}, sub, Style().font(11).left());
+    ui.draw_text("iOS", {b.x + b.w * c3, b.y, b.w * (c4 - c3), 18}, sub, Style().font(11).left());
+    ui.draw_text("说明", {b.x + b.w * c4, b.y, b.w * (1.f - c4), 18}, sub, Style().font(11).left());
+    float y = b.y + 24;
+    for (int i = 0; i < 8; ++i) {
+        ui.draw_text(rows[i].name, {b.x + b.w * c1, y, b.w * (c2 - c1), 20}, ink, Style().font(12).left());
+        ui.draw_text(rows[i].mac, {b.x + b.w * c2, y, b.w * (c3 - c2), 20}, ink,
+                     Style().font(12).weight(600).left());
+        ui.draw_text(rows[i].ios, {b.x + b.w * c3, y, b.w * (c4 - c3), 20}, ink,
+                     Style().font(12).weight(600).left());
+        ui.draw_text(rows[i].note, {b.x + b.w * c4, y, b.w * (1.f - c4), 20}, sub,
+                     Style().font(11).left());
+        if (i < 7) ui.separator({b.x, y + 25, b.w, 1});
+        y += 26;
+    }
+    ui.draw_text("粗略换算：1pt = 1 逻辑像素。触屏按 44 走，指针按 22–28 走，是两套度量最大的分界。",
+                 {b.x, y + 8, b.w, 18}, sub, Style().font(11).left());
+}
+
 void draw_body(Ui &ui, App &a, CardId id, Rect b) {
     if (id <= ButtonLoading)
         draw_buttons(ui, a, id, b);
@@ -1045,6 +1170,8 @@ void draw_body(Ui &ui, App &a, CardId id, Rect b) {
         draw_cards(ui, a, id, b);
     else if (id <= Sidebar)
         draw_navigation(ui, a, id, b);
+    else if (id >= TypeScale)
+        draw_style(ui, a, id, b);
     else
         draw_advanced(ui, a, id, b);
 }
@@ -1063,7 +1190,7 @@ struct GalleryFrame {
     bool narrow = false;
     Rect title, caption, search, menu, column, viewport;
 };
-const char *kGalleryCaption = "43 个原生风格组件 · 零依赖";
+const char *kGalleryCaption = "46 个原生风格组件 · 零依赖";
 GalleryFrame gallery_frame(Ui &ui) {
     GalleryFrame frame;
     frame.narrow = ui.width() <= 900;
@@ -1075,26 +1202,22 @@ GalleryFrame gallery_frame(Ui &ui) {
     const float menu_width = frame.narrow ? 40.f : 0.f;
     const float title_width = ui.text_width("组件", 26, 700);
     const float search_width = std::min(220.f, std::max(128.f, width * .28f));
-    frame.menu = {x - 4, 20, 32, 32};
+    frame.menu = {x - 4, 18, 32, 32};
     frame.title = {x + menu_width, 16, title_width, 40};
-    frame.search = {x + width - search_width, 20, search_width, 32};
-    const float caption_x = frame.title.right() + 12;
-    const float caption_width = ui.text_width(kGalleryCaption, 13);
-    float height = kTitleH;
-    if (caption_x + caption_width + 24 <= frame.search.x) {
-        frame.caption = {caption_x, 20, caption_width, 32};
-    } else {
-        const float h = ui.text_height(kGalleryCaption, width, Style().font(13).wrap_text());
-        frame.caption = {x, 58, width, std::max(18.f, h)};
-        height = frame.caption.bottom() + 16;
-    }
+    frame.search = {x + width - search_width, 18, search_width, 32};
+    // 说明固定在标题下方一行：原来「标题 + 并排说明」会让 26 号标题和 13 号说明
+    // 挤在同一条基线上，读起来像两个不相干的元素并排站着。App Store 的大标题
+    // 永远是标题一行、说明另起一行。
+    const float caption_h = ui.text_height(kGalleryCaption, width, Style().font(13).wrap_text());
+    frame.caption = {x, frame.title.bottom() + 4, width, std::max(18.f, caption_h)};
+    const float height = frame.caption.bottom() + 16;
     frame.column = {x, height, width, std::max(1.f, ui.height() - height)};
     frame.viewport = {rail, height, available, frame.column.h};
     return frame;
 }
 float section_heading_height(Ui &ui, const Page &page, float width) {
-    return 28 + 4 + std::max(18.f, ui.text_height(page.desc, std::max(1.f, width - 4),
-                                              Style().font(12).wrap_text())) + 16;
+    return 28 + kHeadingGap + std::max(18.f, ui.text_height(page.desc, std::max(1.f, width - 4),
+                                              Style().font(12).wrap_text())) + kHeaderGap;
 }
 Rect card_body(Rect card) {
     return {card.x + 16, card.y + kCardBodyY, card.w - 32, card.h - kCardBodyY - kCardBottom};
@@ -1175,7 +1298,7 @@ GalleryLayout layout_gallery(Ui &ui, App &a, float width, bool narrow) {
         }
         if (col)
             y += row_h + kGridGap;
-        y += 32 - kGridGap;
+        y += kSectionGap - kGridGap;
     }
     out.height = y + 40;
     return out;
@@ -1202,7 +1325,7 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
     ui.separator({kNavW - 1, 0, 1, ui.height()});
     glyph(ui, Navigation, {22, 27, 22, 22}, ui.theme().tint);
     label(ui, "aino", {58, 21, 142, 23}, 15, false, 600);
-    label(ui, "组件总览 · 43 项", {58, 44, 142, 18}, 11, true);
+    label(ui, "组件总览 · 46 项", {58, 44, 142, 18}, 11, true);
     if (ui.width() <= 900 && icon(ui, Close, "关闭侧边栏", {212, 20, 28, 28}, Style().ghost())) {
         a.nav_open = false;
         ui.request_animation_frame();
@@ -1243,7 +1366,7 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
                     a.nav_open = false;
                 ui.request_animation_frame();
             }
-            glyph(ui, i, {22, y + (kNavStep - 16) / 2, 16, 16}, ui.theme().tint);
+            glyph(ui, i == kStylePage ? Text : i, {22, y + (kNavStep - 16) / 2, 16, 16}, ui.theme().tint);
             char count[12];
             std::snprintf(count, sizeof(count), "%02d", layout.counts[i]);
             ui.draw_text(count, {204, y, 22, kNavStep}, fg.scaled_alpha(.65f), Style().font(10.5f).right());
@@ -1299,8 +1422,10 @@ void draw_toolbar(Ui &ui, App &a, const GalleryFrame &frame) {
     ui.tooltip(frame.search, "搜索所有组件 · Ctrl+F / ⌘F");
 }
 void draw_card(Ui &ui, App &a, const Card &card, Rect r) {
-    label(ui, card.name, {r.x + 2, r.y + 7, r.w - 4, 22}, 13, false, 600);
-    ui.panel({r.x, r.y + 36, r.w, r.h - 36}, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
+    // 分组标题用次级文字色：macOS 设置里卡片上方的组名是灰的，和行标题拉开层次。
+    // 用正文色会和卡片里的标题抢注意力（截图比对时最明显的一处）。
+    label(ui, card.name, {r.x + 2, r.y + 2, r.w - 4, 22}, 13, true, 600);
+    ui.panel({r.x, r.y + 22 + kCardTitleGap, r.w, r.h - 22 - kCardTitleGap}, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
     draw_body(ui, a, card.id, card_body(r));
 }
 void draw_content(Ui &ui, App &a, const GalleryLayout &layout, const GalleryFrame &frame) {
@@ -1353,13 +1478,13 @@ void draw_content(Ui &ui, App &a, const GalleryLayout &layout, const GalleryFram
         if (y + section_heading_height(ui, p, column.w) < view.y || y > view.bottom())
             continue;
         const std::string count = std::to_string(layout.counts[section]) + " 个组件";
-        const float count_width = ui.text_width(count, 11);
-        label(ui, p.name, {column.x + 2, y, column.w - count_width - 16, 28}, 20, false, 600);
-        const float description_height = section_heading_height(ui, p, column.w) - 48;
-        ui.draw_text(p.desc, {column.x + 2, y + 32, column.w - 4, description_height}, ui.theme().label2,
-                     Style().font(12).wrap_text().top());
-        ui.draw_text(count, {column.right() - count_width - 2, y + 2, count_width, 24}, ui.theme().label3,
-                     Style().font(11).right());
+        const float count_width = ui.text_width(count, 12);
+        label(ui, p.name, {column.x + 2, y, column.w - count_width - 16, 28}, 22, false, 600);
+        const float description_height = section_heading_height(ui, p, column.w) - 28 - kHeadingGap - kHeaderGap;
+        ui.draw_text(p.desc, {column.x + 2, y + 28 + kHeadingGap, column.w - 4, description_height},
+                     ui.theme().label2, Style().font(12).wrap_text().top());
+        ui.draw_text(count, {column.right() - count_width - 2, y + 4, count_width, 24}, ui.theme().label2,
+                     Style().font(12).right());
     }
     for (const auto &placed : layout.cards) {
         Rect r = placed.rect;
