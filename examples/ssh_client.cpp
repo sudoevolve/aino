@@ -42,6 +42,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -537,17 +538,6 @@ std::string vscode_config_file() {
     return std::string();
 }
 
-std::string read_text_file(const std::string& path) {
-    std::string txt;
-    std::FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return txt;
-    char buf[4096];
-    size_t n;
-    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) txt.append(buf, n);
-    std::fclose(f);
-    return txt;
-}
-
 // username 留空时按 OpenSSH 的习惯用当前系统账号，否则 libssh2 根本没法认证
 std::string current_user() {
 #if defined(_WIN32)
@@ -571,38 +561,62 @@ std::string display_path(std::string p) {
     return p;
 }
 
-// 用系统默认程序打开一个文件。ssh config 是纯文本，交给用户自己的编辑器最省事，
-// 也免得在 SSH 客户端里再造一个半吊子文本编辑器（改完点"重新导入"就生效）。
-void open_external(const std::string& path) {
+// 直接交给系统编辑器；没有文件关联时，Windows 使用系统记事本。
+bool open_external(const std::string& path, std::string* error = nullptr) {
 #if defined(_WIN32)
-    const int n = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), int(path.size()), nullptr, 0);
-    std::wstring w(size_t(n), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, path.c_str(), int(path.size()), w.empty() ? nullptr : &w[0], n);
-    auto r = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
-    if (r <= 32) { char cmd[600]; std::snprintf(cmd, sizeof cmd, "notepad \"%s\"", path.c_str()); std::system(cmd); }
-#elif defined(__APPLE__)
-    const std::string cmd = "open \"" + path + "\" >/dev/null 2>&1 &";
-    std::system(cmd.c_str());
+    const std::wstring wide = std::filesystem::u8path(path).wstring();
+    INT_PTR result = reinterpret_cast<INT_PTR>(
+        ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+    if (result <= 32) {
+        wchar_t system_dir[MAX_PATH]{};
+        const UINT length = GetSystemDirectoryW(system_dir, MAX_PATH);
+        if (length && length < MAX_PATH) {
+            const std::wstring editor = std::wstring(system_dir) + L"\\notepad.exe";
+            const std::wstring argument = L"\"" + wide + L"\"";
+            result = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", editor.c_str(),
+                argument.c_str(), nullptr, SW_SHOWNORMAL));
+        }
+    }
+    if (result > 32) return true;
+    if (error) *error = "系统编辑器启动失败（" + std::to_string(result) + "）";
+    return false;
 #else
-    const std::string cmd = "xdg-open \"" + path + "\" >/dev/null 2>&1 &";
-    std::system(cmd.c_str());
+    // 对 shell 参数逐个转义，文件名中的空格、引号和 $ 不作为命令解释。
+    std::string quoted = "'";
+    for (char c : path) quoted += c == '\'' ? "'\\''" : std::string(1, c);
+    quoted += "'";
+#if defined(__APPLE__)
+    const std::string command = "open -t " + quoted;
+#else
+    const std::string command = "xdg-open " + quoted;
+#endif
+    if (std::system((command + " >/dev/null 2>&1 &").c_str()) == 0) return true;
+    if (error) *error = "无法请求系统编辑器，请检查文件关联";
+    return false;
 #endif
 }
 
-// 文件不存在时先建一份带注释的空壳，否则"打开"点下去是个死路
-void ensure_ssh_config() {
-    const std::string p = ssh_config_path();
+// 仅在配置文件不存在时建立注释模板；原文件字节保持不变。
+bool ensure_ssh_config(const std::string& path = ssh_config_path(), std::string* error = nullptr) {
+    const auto file = std::filesystem::u8path(path);
     std::error_code ec;
-    if (std::filesystem::exists(p, ec) || ec) return;
-    sshc::atomic_write_file(p, "# ~/.ssh/config —— aino SSH 与 VSCode Remote-SSH 共用这份\n"
-                   "#\n"
-                   "# Host 别名\n"
-                   "#   HostName 1.2.3.4\n"
-                   "#   User root\n"
-                   "#   Port 22\n"
-                   "#   IdentityFile ~/.ssh/id_ed25519\n"
-                   "#\n"
-                   "# 存好以后回到 aino 点「重新导入」，别名就会变成一张连接卡片。\n", nullptr);
+    if (std::filesystem::exists(file, ec)) {
+        if (std::filesystem::is_regular_file(file, ec) && !ec) return true;
+        if (error) *error = "SSH 配置路径不是普通文件：" + display_path(path);
+        return false;
+    }
+    if (ec) {
+        if (error) *error = "无法访问 SSH 配置：" + ec.message();
+        return false;
+    }
+    return sshc::atomic_write_file(path,
+        "# SSH client configuration\n"
+        "# Host my-server\n"
+        "#   HostName 192.168.1.10\n"
+        "#   User user\n"
+        "#   Port 22\n"
+        "#   IdentityFile ~/.ssh/id_ed25519\n"
+        "# Save, then reload connections in aino SSH.\n", error);
 }
 
 std::vector<Profile> load_all_profiles() {
@@ -1799,21 +1813,13 @@ struct App {
     std::string ask_pass;
     bool ask_reveal = false;
 
-    // 内置的 ssh config 编辑器
-    bool        cfg_open = false;
-    std::string cfg_text;
-    int         cfg_caret = 0;
-    int         cfg_scroll = 0;
-    bool        cfg_dirty = false;
-    std::string cfg_msg;
-
     std::string download_dir;
     aino::Window* win = nullptr;
     uint64_t next_session_scope = 1;
 
     // 有任何弹窗时，底下的启动页不能再接收点击 —— 否则在编辑器里点一下
     // 文字区，会顺带把盖在下面的连接卡片也"点开"，弹出个密码框
-    bool modal_open() const { return editor_open || ask_open || cfg_open; }
+    bool modal_open() const { return editor_open || ask_open; }
 
     // 把第 i 个会话摘下来丢给后台收拾。UI 立刻就能继续画，不等任何网络超时。
     void retire(int i) {
@@ -1921,6 +1927,25 @@ int find_profile_index(const App& app, const Session& s) {
     return -1;
 }
 
+std::string profile_config_path(const Profile& profile) {
+    if (profile.src == 2) {
+        const std::string configured = vscode_config_file();
+        if (!configured.empty() && !is_machine_wide_path(configured)) return configured;
+    }
+    return ssh_config_path();
+}
+
+bool open_config_file(App& app, const std::string& path = ssh_config_path(),
+                      const std::function<bool(const std::string&, std::string*)>& opener = open_external) {
+    std::string error;
+    if (!ensure_ssh_config(path, &error) || !opener(path, &error)) {
+        app.status = error.empty() ? "无法打开 SSH 配置文件" : error;
+        return false;
+    }
+    app.status = "已请求系统编辑器打开配置；保存后点击「重新导入连接」。";
+    return true;
+}
+
 // 覆盖在终端区中央的失败说明卡（不是一行小字 —— 那样等于没提示）
 void draw_fail_panel(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, const Rect& area) {
     const Session::ConnInfo cs = a.conn_snapshot();
@@ -1976,8 +2001,7 @@ void draw_fail_panel(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, 
             app.draft_remember = app.profiles[size_t(idx)].remember;
             app.draft_reveal = false;
         } else {
-            app.status = "这条连接是从 ssh config 导入的：用启动页的「打开 ssh config」改源文件";
-            app.retire(app.active);
+            open_config_file(app, idx >= 0 ? profile_config_path(app.profiles[size_t(idx)]) : ssh_config_path());
         }
     }
 }
@@ -1985,9 +2009,6 @@ void draw_fail_panel(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, 
 
 // ---- 会话视图 ----
 void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, const Rect& body);
-
-// 内置 ssh config 编辑器（定义在后面，启动页要先用到）
-void open_cfg_editor(App& app);
 
 // 启动页从 top 起算，为常驻标签栏预留高度。
 void draw_start(aino::Ui& ui, App& app, const aino::Theme& th, float top) {
@@ -2020,7 +2041,7 @@ void draw_start(aino::Ui& ui, App& app, const aino::Theme& th, float top) {
         return;
     }
     if (tool_button(ui, th, "打开 ssh config", {20, H - 92, 160, 28}, false)) {
-        open_cfg_editor(app);
+        open_config_file(app);
         return;
     }
     if (tool_button(ui, th, "重新导入连接", {20, H - 54, 160, 28}, false)) {
@@ -2085,7 +2106,7 @@ void draw_start(aino::Ui& ui, App& app, const aino::Theme& th, float top) {
                     return;
                 }
             } else if (tool_button(ui, th, "打开配置", {action_x + 76, row.cy() - 12, 132, 24}, false)) {
-                open_cfg_editor(app);
+                open_config_file(app, profile_config_path(p));
                 return;
             }
             if (++row_index < counts[source])
@@ -2218,264 +2239,6 @@ void draw_ask_password(aino::Ui& ui, App& app, const aino::Theme& th) {
         else p = app.draft;
         app.ask_open = false;
         open_session(app, p, app.ask_pass);
-    }
-}
-
-// 内置 SSH 配置编辑器，保存后可重新导入连接。
-int prev_u8(const std::string& s, int i) {
-    if (i <= 0) return 0;
-    --i;
-    while (i > 0 && (static_cast<unsigned char>(s[size_t(i)]) & 0xC0) == 0x80) --i;
-    return i;
-}
-int next_u8(const std::string& s, int i) {
-    const int n = int(s.size());
-    if (i >= n) return n;
-    ++i;
-    while (i < n && (static_cast<unsigned char>(s[size_t(i)]) & 0xC0) == 0x80) ++i;
-    return i;
-}
-
-// 统一成 LF：Windows 上 ~/.ssh/config 常常是 CRLF，混着 \r 会让光标定位、
-// 行尾判定、其它工具（含 VSCode Remote-SSH 与 ssh 本体）都出现奇怪的偏差。
-std::string normalize_newlines(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (size_t i = 0; i < s.size(); ++i) {
-        if (s[i] == '\r') {
-            if (i + 1 < s.size() && s[i + 1] == '\n') continue;   // \r\n → \n
-            out.push_back('\n');                                 // 裸 \r → \n
-        } else {
-            out.push_back(s[i]);
-        }
-    }
-    return out;
-}
-
-void open_cfg_editor(App& app) {
-    ensure_ssh_config();
-    app.cfg_text = normalize_newlines(read_text_file(ssh_config_path()));
-    app.cfg_caret = 0;
-    app.cfg_scroll = 0;
-    app.cfg_dirty = false;
-    app.cfg_msg.clear();
-    app.cfg_open = true;
-    app.editor_open = false;
-    app.ask_open = false;                  // 一次只留一个弹窗，免得键盘输入被两边抢
-}
-
-bool save_cfg_editor(App& app) {
-    if (!sshc::atomic_write_file(ssh_config_path(), app.cfg_text, &app.cfg_msg)) return false;
-    app.cfg_dirty = false;
-    return true;
-}
-
-void draw_cfg_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
-    g_block_input = false;
-    const float W = ui.width(), H = ui.height();
-    const aino::Input& in = ui.input();
-
-    ui.fill_rect(Rect(0, 0, W, H), Color(0, 0, 0, 150));
-    const Rect box(W * 0.06f, H * 0.06f, W * 0.88f, H * 0.88f);
-    ui.fill_rect(box, th.popover, 12.0f);
-    ui.stroke_rect(box, th.border, 12.0f, 1.0f);
-
-    const float fs = 12.5f;
-    const float adv = std::max(4.0f, ui.mono_advance(fs));
-    const float asc = ui.mono_ascent(fs);
-    const float lh = std::ceil(asc + fs * 0.34f);
-
-    ui.draw_text("ssh config", Rect(box.x + 20.0f, box.y + 14.0f, 300.0f, 24.0f), th.foreground,
-                 Style().font(15.0f).bold());
-    ui.draw_text(display_path(ssh_config_path()), Rect(box.x + 20.0f, box.y + 38.0f, box.w - 300.0f, 18.0f),
-                 th.muted_foreground, Style().font(11.0f));
-    if (app.cfg_dirty)
-        ui.draw_text("未保存", Rect(box.right() - 90.0f, box.y + 18.0f, 70.0f, 18.0f), kWarn,
-                     Style().font(11.0f).right());
-
-    // 文本区
-    const Rect r_ta(box.x + 20.0f, box.y + 64.0f, box.w - 40.0f, box.h - 64.0f - 58.0f);
-    ui.fill_rect(r_ta, th.input, 8.0f);
-    ui.stroke_rect(r_ta, r_ta.contains(in.mouse) ? kAccent : th.border, 8.0f, 1.0f);
-
-    const float pad = 10.0f;
-    const float gutter = adv * 4.0f + 6.0f;
-    const Rect r_tx(r_ta.x + gutter, r_ta.y + pad, r_ta.w - gutter - pad, r_ta.h - pad * 2.0f);
-    const int vis_rows = std::max(1, int(r_tx.h / lh));
-
-    // 切成行（行首偏移表，config 文件都很小，每帧重算没负担）
-    std::vector<int> starts;
-    starts.push_back(0);
-    for (int i = 0; i < int(app.cfg_text.size()); ++i)
-        if (app.cfg_text[size_t(i)] == '\n') starts.push_back(i + 1);
-    const int n_lines = int(starts.size());
-
-    auto line_end = [&](int ln) {                        // 不含 '\n'
-        return (ln + 1 < n_lines) ? starts[size_t(ln + 1)] - 1 : int(app.cfg_text.size());
-    };
-    auto line_of = [&](int caret) {
-        int ln = 0;
-        for (int i = 0; i < n_lines; ++i)
-            if (starts[size_t(i)] <= caret) ln = i;
-            else break;
-        return ln;
-    };
-
-    // 点击定位光标。点在最后一行下面的空白处也要落到末行末尾（编辑器的常规手感），
-    // 所以 ln 要夹到 n_lines-1 —— 只夹 vis_rows 会算出越界行号，然后静悄悄什么都不做。
-    if (in.pressed[0] && r_tx.contains(in.mouse)) {
-        int ln = std::max(0, std::min(vis_rows - 1, int((in.mouse.y - r_tx.y) / lh))) + app.cfg_scroll;
-        ln = std::max(0, std::min(ln, n_lines - 1));
-        const int col = std::max(0, int((in.mouse.x - r_tx.x) / adv));
-        const int s0 = starts[size_t(ln)];
-        int c = s0;
-        for (int k = 0; k < col && c < line_end(ln); ++k) c = next_u8(app.cfg_text, c);
-        app.cfg_caret = c;
-    }
-
-    const bool focus = true;   // 弹窗里唯一可编辑区域，直接吃键盘
-
-    if (focus) {
-        // 输入：只收可见字符（\r\n 由回车单独处理，避免粘贴时多插换行）
-        if (!in.text_input.empty()) {
-            std::string add;
-            for (char c : in.text_input) {
-                const unsigned char u = static_cast<unsigned char>(c);
-                if (u >= 0x20 && u != 0x7F) add.push_back(c);
-            }
-            if (!add.empty()) {
-                app.cfg_text.insert(size_t(app.cfg_caret), add);
-                app.cfg_caret += int(add.size());
-                app.cfg_dirty = true;
-            }
-        }
-        if (in.key_pressed[aino::KEY_ENTER]) {
-            app.cfg_text.insert(size_t(app.cfg_caret), "\n");
-            ++app.cfg_caret;
-            app.cfg_dirty = true;
-        }
-        if (in.key_pressed[aino::KEY_TAB]) {
-            app.cfg_text.insert(size_t(app.cfg_caret), "    ");
-            app.cfg_caret += 4;
-            app.cfg_dirty = true;
-        }
-        if (in.key_pressed[aino::KEY_BACKSPACE] && app.cfg_caret > 0) {
-            const int p0 = prev_u8(app.cfg_text, app.cfg_caret);
-            app.cfg_text.erase(size_t(p0), size_t(app.cfg_caret - p0));
-            app.cfg_caret = p0;
-            app.cfg_dirty = true;
-        }
-        if (in.key_pressed[aino::KEY_DELETE] && app.cfg_caret < int(app.cfg_text.size())) {
-            const int n1 = next_u8(app.cfg_text, app.cfg_caret);
-            app.cfg_text.erase(size_t(app.cfg_caret), size_t(n1 - app.cfg_caret));
-            app.cfg_dirty = true;
-        }
-        if (in.key_pressed[aino::KEY_LEFT]) app.cfg_caret = prev_u8(app.cfg_text, app.cfg_caret);
-        if (in.key_pressed[aino::KEY_RIGHT]) app.cfg_caret = next_u8(app.cfg_text, app.cfg_caret);
-        if (in.key_pressed[aino::KEY_UP]) {
-            const int ln = line_of(app.cfg_caret);
-            if (ln > 0) {
-                const int col = app.cfg_caret - starts[size_t(ln)];
-                const int s0 = starts[size_t(ln - 1)];
-                int c = s0;
-                for (int k = 0; k < col && c < line_end(ln - 1); ++k) c = next_u8(app.cfg_text, c);
-                app.cfg_caret = c;
-            }
-        }
-        if (in.key_pressed[aino::KEY_DOWN]) {
-            const int ln = line_of(app.cfg_caret);
-            if (ln + 1 < n_lines) {
-                const int col = app.cfg_caret - starts[size_t(ln)];
-                const int s0 = starts[size_t(ln + 1)];
-                int c = s0;
-                for (int k = 0; k < col && c < line_end(ln + 1); ++k) c = next_u8(app.cfg_text, c);
-                app.cfg_caret = c;
-            }
-        }
-        if (in.ctrl_of('V')) {
-            std::string p = app.clip.get();
-            std::string clean;
-            for (size_t i = 0; i < p.size(); ++i) {
-                if (p[i] == '\r') { if (i + 1 < p.size() && p[i + 1] == '\n') continue; clean.push_back('\n'); }
-                else clean.push_back(p[i]);
-            }
-            if (!clean.empty()) {
-                app.cfg_text.insert(size_t(app.cfg_caret), clean);
-                app.cfg_caret += int(clean.size());
-                app.cfg_dirty = true;
-            }
-        }
-    }
-
-    // 光标滚动到可见范围
-    {
-        const int ln = line_of(app.cfg_caret);
-        if (ln < app.cfg_scroll) app.cfg_scroll = ln;
-        if (ln >= app.cfg_scroll + vis_rows) app.cfg_scroll = ln - vis_rows + 1;
-    }
-    if (in.wheel != 0.0f && r_ta.contains(in.mouse)) {
-        app.cfg_scroll -= int(in.wheel * 2.0f);
-    }
-    app.cfg_scroll = std::max(0, std::min(app.cfg_scroll, std::max(0, n_lines - vis_rows)));
-
-    // 画
-    ui.push_clip(r_tx);
-    for (int r = 0; r < vis_rows; ++r) {
-        const int ln = app.cfg_scroll + r;
-        if (ln >= n_lines) break;
-        const float y = r_tx.y + float(r) * lh;
-        char num[16];
-        std::snprintf(num, sizeof num, "%3d", ln + 1);
-        ui.draw_mono_text(num, r_tx.x - gutter + 4.0f, y, Color::hex(0x3F4450), fs - 1.0f);
-        const std::string line = app.cfg_text.substr(size_t(starts[size_t(ln)]),
-                                                     size_t(line_end(ln) - starts[size_t(ln)]));
-        const Color col = (line.size() && line[0] == '#') ? Color::hex(0x6B7280) : th.foreground;
-        ui.draw_mono_text(line, r_tx.x, y, col, fs);
-    }
-    ui.pop_clip();
-
-    // 光标
-    {
-        const int ln = line_of(app.cfg_caret);
-        if (ln >= app.cfg_scroll && ln < app.cfg_scroll + vis_rows) {
-            const std::string head = app.cfg_text.substr(size_t(starts[size_t(ln)]),
-                                                         size_t(app.cfg_caret - starts[size_t(ln)]));
-            const float y = r_tx.y + float(ln - app.cfg_scroll) * lh;
-            const float x = r_tx.x + ui.mono_width(head, fs);
-            ui.fill_rect(Rect(x, y, 1.5f, lh - 2.0f), kAccent);
-        }
-    }
-
-    // 底部按钮
-    const float by = box.bottom() - 44.0f;
-    const Rect r_save(box.right() - 20.0f - 150.0f, by, 150.0f, 32.0f);
-    const Rect r_ext(r_save.x - 8.0f - 132.0f, by, 132.0f, 32.0f);
-    const Rect r_close(box.x + 20.0f, by, 80.0f, 32.0f);
-
-    if (!app.cfg_msg.empty())
-        ui.draw_text(app.cfg_msg, Rect(box.x + 110.0f, by + 7.0f, r_ext.x - box.x - 130.0f, 18.0f),
-                     app.cfg_msg.find("失败") == std::string::npos ? kOk : kBad, Style().font(11.0f));
-
-    if (dlg_button(ui, th, "保存并重新导入", r_save, Btn::Primary) || (in.ctrl_of('S') && focus)) {
-        if (save_cfg_editor(app)) {
-            const std::string keep = app.download_dir;
-            app.profiles = load_all_profiles();
-            app.download_dir = keep;
-            app.cfg_msg = "已保存，连接已重新导入";
-        }
-    }
-    if (tool_button(ui, th, "用系统编辑器", r_ext, false)) {
-        if (app.cfg_dirty && !save_cfg_editor(app)) return;
-        open_external(ssh_config_path());
-        app.cfg_msg = "已交给系统默认程序";
-    }
-    if (dlg_button(ui, th, "关闭", r_close, Btn::Normal) ||
-        (in.key_pressed[aino::KEY_ESC] && !in.ctrl_of('C'))) {
-        if (app.cfg_dirty && !save_cfg_editor(app)) return;
-        app.cfg_open = false;
-        const std::string keep = app.download_dir;
-        app.profiles = load_all_profiles();
-        app.download_dir = keep;
     }
 }
 
@@ -2778,7 +2541,6 @@ void frame(aino::Ui& ui, App& app, aino::Window& win, const aino::Theme& th) {
 
     if (app.editor_open) draw_editor(ui, app, th);
     if (app.ask_open) draw_ask_password(ui, app, th);
-    if (app.cfg_open) draw_cfg_editor(ui, app, th);
 
     // 启动页也落一份快照：GUI 排版没法用眼睛断言，"导入了哪些连接"就靠它核对
     if (app.tabs.empty() || app.show_start) {
@@ -2792,9 +2554,6 @@ void frame(aino::Ui& ui, App& app, aino::Window& win, const aino::Theme& th) {
                 std::fprintf(f, "ssh_config=%s machine_wide=%d user=%s\n",
                              ssh_config_path().c_str(), int(is_machine_wide_path(ssh_config_path())),
                              current_user().c_str());
-                std::fprintf(f, "cfg=%d len=%zu caret=%d dirty=%d msg=%s\n",
-                             int(app.cfg_open), app.cfg_text.size(), app.cfg_caret,
-                             int(app.cfg_dirty), app.cfg_msg.c_str());
                 for (const Profile& p : app.profiles)
                     std::fprintf(f, "  prof name=%s host=%s port=%d user=%s src=%d remember=%d haspass=%d\n",
                                  p.name.c_str(), p.host.c_str(), p.port, p.user.c_str(),

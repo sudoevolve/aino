@@ -16,6 +16,12 @@
 #endif
 
 namespace {
+#ifdef AINO_PROBE_SSH
+std::string read_text_file(const std::string& path) {
+    std::ifstream input(std::filesystem::u8path(path), std::ios::binary);
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+#endif
 int passed = 0, failed = 0;
 void expect(bool ok, const char* name) {
     if (ok) ++passed;
@@ -144,16 +150,24 @@ int main(int argc, char** argv) {
         expect(save_download_dir(temporary_home.root.string()) && load_download_dir() == temporary_home.root.string(),
                "download preference atomically round trips");
         std::string error;
+        expect(ensure_ssh_config(ssh_config_path(), &error), "missing ssh config gets a template");
         expect(sshc::atomic_write_file(ssh_config_path(), "# original\n", &error), "prepare ssh config");
-        app.cfg_text = "# edited\n";
-        app.cfg_dirty = true;
-        const HANDLE config_held = CreateFileW(std::filesystem::path(ssh_config_path()).c_str(), GENERIC_READ,
-            FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-        expect(config_held != INVALID_HANDLE_VALUE, "block ssh config replacement");
-        expect(!save_cfg_editor(app) && app.cfg_dirty && !app.cfg_msg.empty(), "failed config save retains dirty draft");
-        if (config_held != INVALID_HANDLE_VALUE) CloseHandle(config_held);
-        expect(save_cfg_editor(app) && !app.cfg_dirty && read_text_file(ssh_config_path()) == app.cfg_text,
-               "config retry persists and clears dirty state");
+        expect(ensure_ssh_config(ssh_config_path(), &error) && read_text_file(ssh_config_path()) == "# original\n",
+               "opening existing config preserves exact file contents");
+        app.editor_open = false;
+        std::string opened;
+        const auto opener = [&](const std::string& target, std::string*) { opened = target; return true; };
+        expect(open_config_file(app, ssh_config_path(), opener) && opened == ssh_config_path() && !app.modal_open(),
+               "config opens the actual file externally without an embedded editor");
+        expect(read_text_file(ssh_config_path()) == "# original\n", "external opening does not rewrite config");
+        expect(!open_config_file(app, ssh_config_path(), [](const std::string&, std::string* why) {
+            *why = "editor launch failed"; return false;
+        }) && app.status == "editor launch failed", "external editor failure is visible");
+        const auto directory = temporary_home.root / "not-a-file";
+        std::filesystem::create_directory(directory);
+        opened.clear();
+        expect(!open_config_file(app, directory.u8string(), opener) && opened.empty(),
+               "invalid config path does not launch an editor");
         g_block_input = false;
     }
     std::string password;
