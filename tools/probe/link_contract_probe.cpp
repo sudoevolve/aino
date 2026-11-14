@@ -30,7 +30,8 @@ int main() {
     auto title = &aino::Window::set_title;
     auto wake = &aino::Window::wake;
     auto worker = &aino::system_icon_worker_entry;
-    if (!title || !wake || !worker || !aino::icons::check) return 3;
+    auto color_picker = &aino::Ui::color_picker;
+    if (!title || !wake || !worker || !color_picker || !aino::icons::check) return 3;
     std::puts("[link-contract] verdict: PASS");
     return 0;
 }

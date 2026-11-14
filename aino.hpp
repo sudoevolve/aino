@@ -990,6 +990,10 @@ public:
     bool search_field(std::string* value, const Rect& box, const Style& st = Style());
     // 颜色池（NSColorWell）：48×24 的圆角色块，点击返回 true，由调用方弹选择器。
     bool color_well(const Color& c, const Rect& box, const Style& st = Style());
+    // 颜色选择器：触发器 + RGB 三滑杆浮层，保留输入颜色的 alpha。
+    // 浮层在帧末更新 *value 并调用 on_change；value/open 须存活至本帧结束。
+    void color_picker(Color* value, bool* open, const Rect& box,
+                      const std::function<void(Color)>& on_change = {}, const Style& st = Style());
     // 图像池：中性填充、细边、系统图片符号与说明；不处理文件拖放。
     void image_well(const Rect& box, const Style& st = Style());
     bool checkbox(bool* value, const std::string& label, const Rect& box, const Style& st = Style());
@@ -9381,6 +9385,88 @@ bool Ui::popover(const std::string& label, bool* open, const Rect& box,
     });
 
     return true;
+}
+
+void Ui::color_picker(Color* value, bool* open, const Rect& box,
+                      const std::function<void(Color)>& on_change, const Style& st) {
+    if (!value || !open || box.empty()) return;
+    const uint64_t id = impl->widget_id("colorpicker", box,
+        uint64_t(reinterpret_cast<uintptr_t>(value)), st.identity);
+    Style trigger_style = st;
+    if (trigger_style.variant < 0) trigger_style.secondary();
+    const Vec2 content(std::min(288.0f, std::max(1.0f, width() - 52.0f)),
+                       std::min(282.0f, std::max(1.0f, height() - 52.0f)));
+    popover("", open, box, content, [this, value, open, on_change, st, id](const Rect& area) {
+        auto scope = state_scope(id);
+        auto sc = scroll(area, 282.0f);
+        const Rect r(area.x, area.y - sc.offset, area.w, 282.0f);
+        const Theme& th = theme();
+        Style controls;
+        controls.disabled = st.disabled;
+        draw_text("颜色", Rect(r.x, r.y, r.w - 72, 26), th.label,
+                  Style().font(16).semi_bold());
+        if (button("完成", Rect(r.right() - 56, r.y, 56, 26),
+                   Style(controls).primary().font(12).corner(13)))
+            *open = false;
+
+        bool changed = false;
+        const char* names[] = {"R", "G", "B"};
+        const Color fills[] = {th.red, th.green, th.blue};
+        for (int i = 0; i < 3; ++i) {
+            const float y = r.y + 112 + i * 36.0f;
+            draw_text(names[i], Rect(r.x, y, 20, 32), th.label, Style().font(12).semi_bold());
+            float channel = float(i == 0 ? value->r : i == 1 ? value->g : value->b);
+            if (slider(&channel, 0, 255, Rect(r.x + 24, y, r.w - 68, 32),
+                       Style(controls).background(fills[i]).id(uint64_t(i + 1)))) {
+                const auto next = uint8_t(std::lround(channel));
+                uint8_t& target = i == 0 ? value->r : i == 1 ? value->g : value->b;
+                changed |= target != next;
+                target = next;
+            }
+            draw_text(std::to_string(int(std::lround(channel))), Rect(r.right() - 36, y, 36, 32),
+                      th.label2, Style().font(12).right());
+        }
+
+        draw_text("预设颜色", Rect(r.x, r.y + 228, r.w, 18), th.label2, Style().font(11));
+        const Color colors[] = {th.blue, th.indigo, th.purple, th.pink, th.red, th.orange, th.green, th.teal};
+        const char* color_names[] = {"Blue", "Indigo", "Purple", "Pink", "Red", "Orange", "Green", "Teal"};
+        for (int i = 0; i < 8; ++i) {
+            const Rect cell(r.x + 3 + i * (r.w - 30) / 7, r.y + 254, 24, 24);
+            if (color_well(colors[i], cell, Style(controls).corner(12))) {
+                *value = colors[i];
+                *open = false;
+                changed = true;
+            }
+            if (value->rgb24() == colors[i].rgb24() && value->a == colors[i].a)
+                stroke_rect(cell.outset(3), colors[i], 15, 1.5f);
+            tooltip(cell, color_names[i]);
+        }
+
+        const Rect preview(r.x, r.y + 40, r.w, 56);
+        fill_rect(preview, *value, 8);
+        char hex[10];
+        if (value->a == 255)
+            std::snprintf(hex, sizeof(hex), "#%02X%02X%02X", value->r, value->g, value->b);
+        else
+            std::snprintf(hex, sizeof(hex), "#%02X%02X%02X%02X", value->r, value->g, value->b, value->a);
+        const Color foreground = value->over(th.popover_bg).luminance() > .55f
+                                     ? Color(0, 0, 0, 217) : Color::white();
+        draw_text(hex, preview.inset(14, 0), foreground, Style().font(18).semi_bold().right());
+        if (changed) {
+            if (on_change) on_change(*value);
+            request_animation_frame();
+        }
+    }, trigger_style);
+    fill_circle(box.x + 15, box.cy(), 6, st.disabled ? value->scaled_alpha(.45f) : *value);
+    char hex[10];
+    if (value->a == 255)
+        std::snprintf(hex, sizeof(hex), "#%02X%02X%02X", value->r, value->g, value->b);
+    else
+        std::snprintf(hex, sizeof(hex), "#%02X%02X%02X%02X", value->r, value->g, value->b, value->a);
+    const Color foreground = st.fg.is_none() ? theme().label : st.fg;
+    draw_text(hex, Rect(box.x + 30, box.y, std::max(0.0f, box.w - 60), box.h),
+              st.disabled ? foreground.scaled_alpha(.45f) : foreground,
+              Style().font(st.font_size > 0 ? st.font_size : theme().font_size));
 }
 
 // Hover Card —— 悬停弹卡片。和 tooltip 一样不 claim 输入：

@@ -561,13 +561,111 @@ int main() {
     f.click(palette.x + 60, palette.y + 60, full);
     expect(app.color_open, "color trigger opens a real popover");
     // Popover placement is window-clamped; calculate the same anchor geometry.
-    float px = aino::clampf(palette.x + 16, 6.f, 1180 - 272.f - 6), py = palette.y + 48 + 24 + 6;
-    if (py + 144 > 754)
-        py = std::max(6.f, palette.y + 48 - 6 - 144);
-    f.click(px + 20 + 56 * 2 + 13, py + 20 + 34 + 13, full);
+    float px = aino::clampf(palette.x + 16, 6.f, 1180 - 328.f - 6), py = palette.y + 48 + 24 + 6;
+    if (py + 322 > 754)
+        py = std::max(6.f, palette.y + 48 - 6 - 322);
+    Color custom = current_accent(app);
+    const int channels[] = {64, 255, 0};
+    for (int i = 0; i < 3; ++i) {
+        f.click(px + 20 + 34 + 200.f * channels[i] / 255, py + 20 + 128 + i * 36.f, full);
+        if (i == 0)
+            custom.r = uint8_t(channels[i]);
+        else if (i == 1)
+            custom.g = uint8_t(channels[i]);
+        else
+            custom.b = uint8_t(channels[i]);
+        f.frame(full);
+        expect(app.custom_accent && equal(current_accent(app), custom) && custom.a == 255,
+               "RGB slider edits only its channel and reaches the full 0-255 range");
+        expect(app.color_open && equal(f.ui.theme().tint, custom) &&
+                   equal(f.ui.theme().primary, custom) && equal(f.ui.theme().table_sel, custom),
+               "RGB edits update the live global theme without closing the palette");
+    }
+    const int appearance = app.appearance;
+    set_appearance(f.ui, app, app.dark ? 1 : 0);
     f.frame(full);
-    expect(app.well == 2 && !app.color_open,
+    expect(equal(f.ui.theme().tint, custom), "custom RGB accent survives appearance changes");
+    set_appearance(f.ui, app, appearance);
+    f.frame(full);
+    f.click(px + 20 + 288 - 28, py + 20 + 13, full);
+    expect(!app.color_open && equal(current_accent(app), custom), "Done closes the palette and keeps its color");
+    f.click(palette.x + 60, palette.y + 60, full);
+    f.key(aino::KEY_ESC, full);
+    expect(!app.color_open && equal(current_accent(app), custom), "Escape dismisses the RGB palette");
+    f.click(palette.x + 60, palette.y + 60, full);
+    f.click(px + 20 + 3 + 2 * (288.f - 30) / 7 + 12, py + 20 + 254 + 12, full);
+    f.frame(full);
+    expect(app.well == 2 && !app.custom_accent && !app.color_open,
            "choosing a palette cell changes the accent and closes the popover");
+    {
+        Fixture picker;
+        for (bool dark : {false, true}) {
+            for (float scale : {1.f, 1.5f, 2.f}) {
+                for (float width : {268.f, 288.f}) {
+                    Color color(64, 128, 192);
+                    bool open = true;
+                    picker.width = width + 52;
+                    picker.height = 440;
+                    picker.ui.set_theme(dark ? aino::Theme::dark() : aino::Theme::light());
+                    const Rect content{26, 70, width, 282};
+                    const Rect panel = content.outset(20);
+                    const Color background = picker.ui.theme().background;
+                    picker.frame([&] {
+                        picker.ui.color_picker(&color, &open, {40, 20, 184, 24});
+                    }, -100, -100, false, false, 0, scale);
+                    GdiFlush();
+                    bool overflow = false;
+                    for (int y = int((panel.y - 4) * scale); y < int((panel.bottom() + 8) * scale); ++y) {
+                        for (int x = int((panel.x - 8) * scale); x < int((panel.right() + 8) * scale); ++x) {
+                            if (x < panel.x * scale || x >= panel.right() * scale ||
+                                y < panel.y * scale || y >= panel.bottom() * scale) {
+                                const Color ink = picker.pixel(x, y);
+                                // The intentional soft popover shadow is below this contrast.
+                                overflow |= std::abs(int(ink.r) - int(background.r)) > 120 ||
+                                            std::abs(int(ink.g) - int(background.g)) > 120 ||
+                                            std::abs(int(ink.b) - int(background.b)) > 120;
+                            }
+                        }
+                    }
+                    expect(!overflow, "RGB palette ink stays inside its panel "
+                                      "at every tested theme, DPI and width");
+                    expect(equal(picker.pixel(int((content.x + 12) * scale),
+                                              int((content.y + 60) * scale)), color),
+                           "palette preview rasterizes the selected RGB color");
+                }
+            }
+        }
+    }
+    {
+        Fixture component;
+        Color color(20, 40, 60, 96);
+        bool open = true, disabled = false;
+        int changes = 0;
+        auto draw = [&] {
+            component.ui.color_picker(&color, &open, {40, 20, 184, 24},
+                                      [&](Color next) {
+                                          ++changes;
+                                          expect(equal(next, color), "picker callback receives the bound color");
+                                      },
+                                      disabled ? Style().off() : Style());
+        };
+        component.frame(draw);
+        component.click(294, 198, draw);
+        expect(equal(color, Color(255, 40, 60, 96)) && changes == 1 && open,
+               "standalone color_picker edits RGB, preserves alpha and reports one change");
+        expect(equal(component.ui.theme().tint, aino::Theme::light().tint),
+               "standalone color_picker leaves application theme decisions to its caller");
+        disabled = true;
+        component.click(94, 198, draw);
+        component.click(320, 83, draw);
+        expect(equal(color, Color(255, 40, 60, 96)) && changes == 1 && open,
+               "disabled color_picker cannot change its color or activate Done");
+        component.frame([&] {
+            component.ui.color_picker(nullptr, &open, {40, 20, 184, 24});
+            component.ui.color_picker(&color, nullptr, {40, 20, 184, 24});
+        });
+        expect(changes == 1 && open, "null color_picker bindings are ignored");
+    }
     app.pending_anchor = 6;
     f.frame(full);
     f.frame(full);

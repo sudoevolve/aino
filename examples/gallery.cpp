@@ -114,6 +114,8 @@ struct BodyMeasurements {
 struct App {
     bool dark = std::getenv("AINO_DARK") && std::strcmp(std::getenv("AINO_DARK"), "0") != 0;
     int appearance = dark ? 0 : 1, well = 0, page = 0, pending_anchor = 0, nav_page = -1;
+    bool custom_accent = false;
+    Color custom_color = Color::hex(0x007AFF);
     bool nav_open = false;
     float nav_w = kNavW, nav_offset = 0;
     std::string query, previous_query;
@@ -181,7 +183,7 @@ const Card kCards[] = {
     {Tooltips, "悬浮提示", "tooltip", "tooltip 上传 下载 编辑 删除"},
     {Date, "日期选择", "calendar", "date calendar 日期 日历"},
     {Time, "时间选择", "scroll wheel", "time 时间 小时 分钟 滚轮"},
-    {Palette, "调色板", "popover", "color palette 颜色 调色板 主题"},
+    {Palette, "调色板", "RGB", "color palette rgb rgba 颜色 调色板 主题"},
     {Accents, "系统强调色", "8 swatches", "color accent 强调色 主题"},
     {Toasts, "通知", "toast", "toast 成功 信息 错误 通知"},
     {Dialogs, "对话框", "modal", "dialog modal 标准 危险 删除"},
@@ -238,9 +240,17 @@ Color accent_color(int index, bool dark = false) {
     const Color colors[] = {th.blue, th.indigo, th.purple, th.pink, th.red, th.orange, th.green, th.teal};
     return colors[std::max(0, std::min(7, index))];
 }
+Color current_accent(const App &a) {
+    return a.custom_accent ? a.custom_color : accent_color(a.well, a.dark);
+}
+std::string color_hex(Color color) {
+    char text[8];
+    std::snprintf(text, sizeof(text), "#%02X%02X%02X", color.r, color.g, color.b);
+    return text;
+}
 aino::Theme gallery_theme(const App &a) {
     auto th = a.dark ? aino::Theme::dark() : aino::Theme::light();
-    th.set_tint(accent_color(a.well, a.dark));
+    th.set_tint(current_accent(a));
     return th;
 }
 bool system_dark() {
@@ -280,6 +290,7 @@ void set_appearance(Ui &ui, App &a, int mode) {
 }
 void set_accent(Ui &ui, App &a, int index) {
     a.well = std::max(0, std::min(7, index));
+    a.custom_accent = false;
     ui.set_theme(gallery_theme(a));
 }
 void notify(Ui &ui, App &a, std::string message, int kind = 0) {
@@ -380,7 +391,7 @@ void swatches(Ui &ui, App &a, Rect area, float size = 24, float gap = 10) {
         Color c = accent_color(i);
         if (ui.color_well(c, r, Style().corner(size / 2)))
             set_accent(ui, a, i);
-        if (a.well == i)
+        if (!a.custom_accent && a.well == i)
             ui.stroke_rect(r.outset(3), c, size / 2 + 3, 1.5f);
         ui.tooltip(r, kAccentNames[i]);
     }
@@ -615,34 +626,23 @@ void draw_datetime(Ui &ui, App &a, CardId id, Rect b) {
 }
 void draw_colors(Ui &ui, App &a, CardId id, Rect b) {
     if (id == Palette) {
-        Color c = accent_color(a.well, a.dark);
-        char text[24];
-        std::snprintf(text, sizeof(text), "     #%02X%02X%02X", c.r, c.g, c.b);
-        Rect trigger{b.x, b.y, std::min(184.f, b.w), 24};
-        ui.popover(
-            text, &a.color_open, trigger, {232, 104},
-            [&ui, &a](const Rect &r) {
-                label(ui, "选择全局强调色", {r.x, r.y, r.w, 20}, 12, true);
-                for (int i = 0; i < 8; ++i) {
-                    Rect cell{r.x + (i % 4) * 56.f, r.y + 34 + (i / 4) * 38.f, 26, 26};
-                    if (ui.color_well(accent_color(i), cell, Style().corner(13))) {
-                        set_accent(ui, a, i);
-                        a.color_open = false;
-                    }
-                    if (a.well == i)
-                        ui.stroke_rect(cell.outset(3), accent_color(i), 16, 1.5f);
-                    ui.tooltip(cell, kAccentNames[i]);
-                }
-            },
-            Style().secondary());
-        ui.fill_circle(trigger.x + 15, trigger.cy(), 6, c);
-        label(ui, "选择后，整个画廊的强调色同步更新", {b.x, b.y + 48, b.w, 24}, 11, true);
+        a.custom_color = current_accent(a);
+        ui.color_picker(&a.custom_color, &a.color_open, {b.x, b.y, std::min(184.f, b.w), 24},
+                        [&ui, &a](Color color) {
+                            a.custom_accent = true;
+                            for (int i = 0; i < 8; ++i)
+                                if (color.rgb24() == accent_color(i, a.dark).rgb24())
+                                    set_accent(ui, a, i);
+                            ui.set_theme(gallery_theme(a));
+                        });
+        label(ui, "拖动 RGB 滑杆，实时调整全局强调色", {b.x, b.y + 48, b.w, 24}, 11, true);
     } else {
         swatches(ui, a, {b.x + 4, b.y + 4, b.w - 8, 80});
         Flow flow({b.x + 4, b.y + 4, b.w - 8, 80});
         for (int i = 0; i < 8; ++i)
             flow.next(24, 24);
-        label(ui, std::string("当前：") + kAccentNames[a.well], {b.x, flow.bottom() + 16, b.w, 20}, 12, true);
+        const std::string name = a.custom_accent ? "自定义 " + color_hex(a.custom_color) : kAccentNames[a.well];
+        label(ui, "当前：" + name, {b.x, flow.bottom() + 16, b.w, 20}, 12, true);
     }
 }
 void draw_feedback(Ui &ui, App &a, CardId id, Rect b) {
