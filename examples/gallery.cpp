@@ -1563,6 +1563,14 @@ int main() {
     if (const char *n = std::getenv("AINO_NAV"))
         app.nav_open = std::atoi(n) != 0;
     app.nav_w = app.nav_open ? kNavW : 0.0f;
+    auto draw_gallery = [&](Ui &ui) {
+        collect_material(app);
+        build_ui(ui, app);
+        if (app.open_material) {
+            app.open_material = false;
+            open_material_window(app.material_editor, ui.theme());
+        }
+    };
     // AINO_BENCH=N 连续绘制 N 帧，将绘制耗时写入 AINO_FRAME_LOG。
     if (const char *bn = std::getenv("AINO_BENCH")) {
         const int n = std::max(1, std::atoi(bn));
@@ -1572,14 +1580,17 @@ int main() {
                 out = std::fopen(fl, "w");
         std::vector<double> us;
         us.reserve(size_t(n));
+        int draws = 0;
         // 前 3 帧丢掉：首帧要建字形缓存、量布局，不代表稳态
         for (int i = 0; i < n + 3; ++i) {
+            if (!win.poll()) { if (out) std::fclose(out); return 2; }
             const auto t0 = std::chrono::steady_clock::now();
-            win.render();
+            win.render([&](Ui &ui) { draw_gallery(ui); ++draws; });
             const auto t1 = std::chrono::steady_clock::now();
             if (i >= 3)
                 us.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
         }
+        if (draws != n + 3) { if (out) std::fclose(out); return 3; }
         std::sort(us.begin(), us.end());
         auto pct = [&](double p) { return us[size_t(p * double(us.size() - 1))] / 1000.0; };
         double sum = 0.0;
@@ -1587,9 +1598,9 @@ int main() {
             sum += v;
         const double mean = sum / double(us.size()) / 1000.0;
         std::fprintf(out ? out : stderr,
-                     "bench %s  n=%d\n  均 %.2f ms (%.0f fps)  p50 %.2f  p95 %.2f  "
+                     "bench %s  n=%d  draws=%d\n  均 %.2f ms (%.0f fps)  p50 %.2f  p95 %.2f  "
                      "最差 %.2f\n",
-                     app_name_from_env(), int(us.size()), mean, 1000.0 / mean, pct(0.50), pct(0.95),
+                     app_name_from_env(), int(us.size()), draws, mean, 1000.0 / mean, pct(0.50), pct(0.95),
                      us.back() / 1000.0);
         if (out) {
             std::fflush(out);
@@ -1600,7 +1611,7 @@ int main() {
     // AINO_BENCH_RUN=N 在主循环中记录 N 帧的开始时间，包含帧率节流。
     int bench_run = 0;
     if (const char *br = std::getenv("AINO_BENCH_RUN"))
-        bench_run = std::max(1, std::atoi(br));
+        bench_run = std::max(2, std::atoi(br));
     std::vector<double> stamp;
     bool dumped = false;
     int frames = 0;
@@ -1623,12 +1634,7 @@ int main() {
             dump_canvas_bmp(win, shot);
             shot_pending = false;
         }
-        collect_material(app);
-        build_ui(ui, app);
-        if (app.open_material) {
-            app.open_material = false;
-            open_material_window(app.material_editor, ui.theme());
-        }
+        draw_gallery(ui);
         if (child_at >= 0 && !child_fired && frames + 1 >= child_at) {
             child_fired = true;
             open_material_window(app.material_editor, ui.theme());

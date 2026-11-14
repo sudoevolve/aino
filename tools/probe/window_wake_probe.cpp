@@ -9,6 +9,14 @@
 int main() {
     aino::Window window(320, 200, "aino window wake probe");
     if (!window.ok()) return 1;
+    int manual_frames = 0;
+    window.render([&](aino::Ui& ui) { ui.clear(ui.theme().background); ++manual_frames; });
+    window.render([&](aino::Ui& ui) {
+        ++manual_frames;
+        ui.input(nullptr, {0, 0, 100, 30});
+        window.render([&](aino::Ui&) { manual_frames += 100; }); // 不允许帧内重入。
+    });
+    if (manual_frames != 2 || window.impl->frame_cb_ptr) return 5;
     std::atomic<int> frames{0};
     std::atomic<bool> failed{false};
     std::thread producer([&] {

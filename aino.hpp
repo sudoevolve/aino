@@ -1314,6 +1314,7 @@ public:
     // 单步：给需要自己控制循环的人用
     bool poll();                       // 处理一批消息，返回是否仍存活
     void render();
+    void render(const std::function<void(Ui&)>& frame); // 同步绘制一帧，含 begin/end/present
 
     // 剪贴板（input 组件的复制粘贴用）
     void set_clipboard(const std::string& text);
@@ -10407,6 +10408,17 @@ Window::~Window() {
 }
 
 bool  Window::ok() const { return impl && impl->native != nullptr; }
+void Window::render(const std::function<void(Ui&)>& frame) {
+    if (!ok() || impl->ui.impl->frame_open) return;
+    // 回调只借用到本次同步绘制结束；异常退出也恢复原主循环回调。
+    struct Restore {
+        std::function<void()>& target;
+        std::function<void()> previous;
+        ~Restore() { target = std::move(previous); }
+    } restore{impl->frame_cb_ptr, std::move(impl->frame_cb_ptr)};
+    impl->frame_cb_ptr = [&] { frame(impl->ui); };
+    render();
+}
 Ui&   Window::ui() { return impl->ui; }
 void  Window::set_theme(const Theme& t) {
     // 与"渲染实际在用的那份主题"比较（不是 Window 自己的副本，否则用户直接改
