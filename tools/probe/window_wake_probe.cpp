@@ -31,6 +31,26 @@ int main() {
     window.run([&](aino::Ui& ui) { ui.clear(ui.theme().background); ++frames; });
     producer.join();
     if (failed || frames < 21) return 2;
+    int caret_frames = 0;
+    std::string text = "caret";
+    aino::Window caret_window(320, 200, "aino caret timer probe");
+    if (!caret_window.ok()) return 3;
+    std::thread closer([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2400));
+        caret_window.close();
+    });
+    caret_window.run([&](aino::Ui& ui) {
+        if (!caret_frames) {
+            auto id = ui.impl->widget_id("input", {20, 20, 220, 36}, 0,
+                uint64_t(reinterpret_cast<uintptr_t>(&text)));
+            aino::detail::grab_focus(ui.impl, id);
+        }
+        ui.input(&text, {20, 20, 220, 36});
+        ++caret_frames;
+    });
+    closer.join();
+    std::printf("[caret-timer] %d frames in 2.4 seconds\n", caret_frames);
+    if (caret_frames < 5 || caret_frames > 30) return 4;
     std::puts("[window-wake] idle update and background close; verdict: PASS");
     return 0;
 }

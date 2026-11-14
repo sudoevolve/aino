@@ -1428,6 +1428,7 @@ extern char** environ;
 #include <cstdlib>
 #include <cstdarg>
 #include <algorithm>
+#include <chrono>
 #include <unordered_map>
 #include <deque>
 #include <memory>
@@ -3568,6 +3569,22 @@ struct Ui::Impl {
     int   caret = 0;              // 光标位置（码点索引）
     int   sel_anchor = -1;        // 选区锚点
     float caret_blink = 0.0f;
+    bool timed_repaint = false;
+    std::chrono::steady_clock::time_point repaint_at;
+
+    void schedule_caret() {
+        if (measure_on) return;
+        const float phase = std::fmod(caret_blink, 1.06f);
+        const int delay = std::max(1, int(std::ceil(((phase < 0.62f ? 0.62f : 1.06f) - phase) * 1000.0f)));
+        const auto at = std::chrono::steady_clock::now() + std::chrono::milliseconds(delay);
+        if (!timed_repaint || at < repaint_at) repaint_at = at;
+        timed_repaint = true;
+    }
+    int repaint_timeout_ms() const {
+        if (!timed_repaint) return -1;
+        const auto remaining = repaint_at - std::chrono::steady_clock::now();
+        return std::max(0, int(std::chrono::ceil<std::chrono::milliseconds>(remaining).count()));
+    }
 
     // 组合键后短暂抑制字符输入，避免输入法将快捷键同时提交为文本。
     float text_veto = 0.0f;
@@ -3948,6 +3965,7 @@ void Ui::release_state_scope(uint64_t id) {
 
 void Ui::begin_frame(float w, float h, float dt, float dpi) {
     impl->frame_open = true;
+    impl->timed_repaint = false;
     impl->width = w;
     impl->height = h;
     impl->dt = (dt > 0.0f && dt < 1.0f) ? dt : (1.0f / 60.0f);
@@ -6425,8 +6443,8 @@ bool Ui::input(std::string* value, const Rect& box, const Style& st) {
     if (focused && std::fmod(impl->caret_blink, 1.06f) < 0.62f) {
         float ch = fs * 1.15f;
         fill_rect(Rect(caret_x, box.cy() - ch * 0.5f, 1.4f, ch), th.foreground, 0.7f);
-        repaint();   // 光标要闪，持续要帧
     }
+    if (focused) impl->schedule_caret();
     // 输入法：把拼音串钉在输入框下沿、候选框再往下一点。
     // 不做这一步，系统会把它们放在客户区左上角，和输入框完全对不上。
     if (focused && impl->ime_pos) {
@@ -7567,8 +7585,8 @@ bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
         if (std::fmod(impl->caret_blink, 1.06f) < 0.62f) {
             if (cy + lh > box.y && cy < box.bottom())
                 fill_rect(Rect(cx, cy + lh * 0.06f, 1.4f, lh * 0.88f), th.foreground, 0.7f);
-            repaint();                 // 光标要闪，持续要帧
         }
+        impl->schedule_caret();
         if (impl->ime_pos) {
             // 光标滚出可视区时把 IME 钉在最近的那一行，别让它飞到框外
             const float iy = detail::clampf(cy, box.y, std::max(box.y, box.bottom() - lh));
@@ -11371,7 +11389,10 @@ void Window::render() {
     // 变成两帧之和。表现是子窗口的 spinner / 光标闪烁顿得没有规律。
     uint64_t now = detail::win_ticks_ms();
     float dt = o->last_frame_ms ? float(now - o->last_frame_ms) / 1000.0f : (1.0f / 60.0f);
-    if (dt > 0.25f) dt = 0.25f;
+    if (dt > 0.25f) {
+        o->ui.impl->caret_blink += dt - 0.25f; // 闪烁按真实时间推进，动画仍限制大步长。
+        dt = 0.25f;
+    }
     o->last_frame_ms = now;
 
     const bool prof = o->frame_log;
@@ -11434,7 +11455,7 @@ void Window::run(const std::function<void(Ui&)>& frame) {
         if (!poll()) break;
 
         const bool anim = o->ui.animating();
-        if (o->need_frame || anim) {
+        if (o->need_frame || anim || o->ui.impl->repaint_timeout_ms() == 0) {
             o->self_repaint = false;                 // 本轮"自请求"标记清零
             const uint64_t t0 = detail::win_ticks_us();
             render();
@@ -11452,7 +11473,7 @@ void Window::run(const std::function<void(Ui&)>& frame) {
             if (el_us < budget_us) detail::win_timer().wait_us(budget_us - el_us);
         } else {
             // 没有待办 → 阻塞在内核里等消息。这就是空闲 0% CPU 的来源。
-            o->wake_signal.wait();
+            o->wake_signal.wait(o->ui.impl->repaint_timeout_ms());
         }
     }
     o->frame_cb_ptr = nullptr;
@@ -12964,13 +12985,12 @@ void Window::render() {
     detail::X11State* s = reinterpret_cast<detail::X11State*>(o->native);
     if (!s || !s->img) return;
 
-    static uint64_t last = 0;
     timespec ts{};
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t now = uint64_t(ts.tv_sec) * 1000u + uint64_t(ts.tv_nsec / 1000000);
-    float dt = last ? float(now - last) / 1000.0f : (1.0f / 60.0f);
-    if (dt > 0.25f) dt = 0.25f;
-    last = now;
+    float dt = o->last_frame_ms ? float(now - o->last_frame_ms) / 1000.0f : (1.0f / 60.0f);
+    if (dt > 0.25f) { o->ui.impl->caret_blink += dt - 0.25f; dt = 0.25f; }
+    o->last_frame_ms = now;
 
     detail::x11_feed_input(s);
     o->need_frame = false;   // 同 Windows：帧前清，帧内 repaint() 可再次置位
@@ -12993,7 +13013,7 @@ void Window::run(const std::function<void(Ui&)>& frame) {
     while (o->running) {
         if (!poll()) break;
         const bool anim = o->ui.animating();
-        if (o->need_frame || anim) {
+        if (o->need_frame || anim || o->ui.impl->repaint_timeout_ms() == 0) {
             o->self_repaint = false;
             const uint64_t t0 = detail::x11_ticks_ms();
             render();
@@ -13002,7 +13022,7 @@ void Window::run(const std::function<void(Ui&)>& frame) {
             const uint64_t el = detail::x11_ticks_ms() - t0;
             if (el < o->anim_budget_ms) usleep(useconds_t((o->anim_budget_ms - el) * 1000));
         } else {
-            o->wake_signal.wait(-1, ConnectionNumber(s->dpy));
+            o->wake_signal.wait(o->ui.impl->repaint_timeout_ms(), ConnectionNumber(s->dpy));
         }
     }
     o->frame_cb_ptr = nullptr;
@@ -13447,13 +13467,12 @@ void Window::render() {
     Window::Impl* o = impl;
     detail::CocoaState* s = reinterpret_cast<detail::CocoaState*>(o->native);
     if (!s || !s->ctx) return;
-    static uint64_t last = 0;
     timespec ts{};
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t now = uint64_t(ts.tv_sec) * 1000u + uint64_t(ts.tv_nsec / 1000000);
-    float dt = last ? float(now - last) / 1000.0f : (1.0f / 60.0f);
-    if (dt > 0.25f) dt = 0.25f;
-    last = now;
+    float dt = o->last_frame_ms ? float(now - o->last_frame_ms) / 1000.0f : (1.0f / 60.0f);
+    if (dt > 0.25f) { o->ui.impl->caret_blink += dt - 0.25f; dt = 0.25f; }
+    o->last_frame_ms = now;
 
     detail::cocoa_feed_input(s);
     o->need_frame = false;   // 同 Windows：帧前清
@@ -13473,7 +13492,7 @@ void Window::run(const std::function<void(Ui&)>& frame) {
     while (o->running) {
         if (!poll()) break;
         const bool anim = o->ui.animating();
-        if (o->need_frame || anim) {
+        if (o->need_frame || anim || o->ui.impl->repaint_timeout_ms() == 0) {
             o->self_repaint = false;
             timespec t0{}; clock_gettime(CLOCK_MONOTONIC, &t0);
             const uint64_t s0 = uint64_t(t0.tv_sec) * 1000000u + uint64_t(t0.tv_nsec / 1000);

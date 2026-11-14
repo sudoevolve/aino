@@ -893,6 +893,34 @@ static void test_stable_identity() {
     check(amount == "42", "input group prefix focuses the editor with its explicit ID");
 }
 
+static void test_caret_schedule() {
+    Surface sf(640, 480);
+    Harness h(&sf);
+    Driver d{h.ui, 640, 480};
+    auto& ui = h.ui;
+    std::string text = "caret";
+    for (bool multiline : {false, true}) {
+        auto draw = [&] {
+            if (multiline) ui.textarea(&text, {20, 20, 220, 100});
+            else ui.input(&text, {20, 20, 220, 36});
+        };
+        d.click(70, 35, draw);
+        for (float phase : {0.1f, 0.7f, 1.2f, 1.8f, 2.3f}) {
+            bool immediate = false;
+            ui.impl->request_repaint = [&] { immediate = true; };
+            ui.impl->caret_blink = phase;
+            d.idle(draw);
+            check(ui.impl->repaint_timeout_ms() > 0 && ui.impl->repaint_timeout_ms() <= 620,
+                  "visible and hidden caret phases both schedule their next edge");
+            check(!immediate, "stable editor does not continuously repaint for caret blinking");
+            ui.impl->request_repaint = nullptr;
+        }
+        ui.set_focus(nullptr);
+        d.idle(draw);
+        check(ui.impl->repaint_timeout_ms() == -1, "unfocused editor cancels caret timer");
+    }
+}
+
 int main() {
     std::printf("== 存量控件交互断言 ==\n");
     test_button();
@@ -915,6 +943,7 @@ int main() {
     test_gate_and_clip();
     test_degenerate();
     test_stable_identity();
+    test_caret_schedule();
     std::printf("=== 通过 %d 项，失败 %d 项 ===\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
