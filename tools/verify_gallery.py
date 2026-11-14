@@ -16,19 +16,23 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 import verify_render as vr                      # noqa: E402
 
-# 生成器不同 exe 落点不同：Ninja/Makefiles 放 build/，VS 多配置放 build/Release。
-# 写死 build/ 会让整段断言在没有 VS 的环境里报"找不到 exe"，看着像失败其实是路径。
-EXE = os.path.join(ROOT, "build", "aino_gallery.exe")
-for _sub in ("", "Release", "Debug"):
-    _cand = os.path.join(ROOT, "build", _sub, "aino_gallery.exe")
-    if os.path.isfile(_cand):
-        EXE = _cand
-        break
+def find_exe():
+    """优先使用显式路径，否则选择最近构建的常见落点。"""
+    override = os.environ.get("AINO_GALLERY_EXE")
+    if override:
+        return os.path.abspath(override)
+    candidates = [os.path.join(ROOT, "build", sub, "aino_gallery.exe")
+                  for sub in ("", "Release", "Debug", "ssh-static")]
+    existing = [path for path in candidates if os.path.isfile(path)]
+    return max(existing, key=os.path.getmtime) if existing else candidates[0]
+
+
+EXE = find_exe()
 
 LOGICAL_W = 1180.0
 LOGICAL_H = 760.0
 NAV_W = 252.0        # 侧边栏宽
-TITLE_H = 60.0      # 标题栏高
+TITLE_H = 72.0      # 默认窗口的标题栏高
 
 
 def save_png(raw, w, h, path):
@@ -164,12 +168,12 @@ def send_key(hwnd, vk):
     vr.user32.PostMessageW(hwnd, 0x0101, vk, 0)     # WM_KEYUP
 
 
-def launch(extra_env=None):
+def launch(extra_env=None, exe=None):
     """起一个 gallery，返回 (proc, hwnd)。"""
     env = dict(os.environ)
     if extra_env:
         env.update(extra_env)
-    p = subprocess.Popen([EXE], env=env)
+    p = subprocess.Popen([exe or EXE], env=env)
     hwnd = None
     for _ in range(80):
         hwnd = vr.find_window_by_pid(p.pid)
@@ -186,8 +190,9 @@ def stop(p):
         p.kill()
 
 
-# 导航位置与 gallery 的组头、分组间距和 33px 条目步长一致。
-NAV_TOP = 76.0
+# 导航位置与 gallery 的组头、分组间距和条目步长一致。
+NAV_TOP = 80.0
+NAV_STEP = 36.0
 
 def nav_item_y(name):
     with open(os.path.join(ROOT, "examples", "gallery.cpp"), encoding="utf-8") as source:
@@ -202,8 +207,8 @@ def nav_item_y(name):
             y += 24.0
             previous_group = group
         if page == name:
-            return y + 16.0
-        y += 33.0
+            return y + NAV_STEP / 2
+        y += NAV_STEP
     raise ValueError("gallery section not found: " + name)
 
 BUTTON_Y = nav_item_y("按钮")
@@ -222,9 +227,12 @@ def native_caption_dark(hwnd):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots", action="store_true")
+    ap.add_argument("--exe", default=EXE, help="要验证的 aino_gallery.exe 路径")
     args = ap.parse_args()
+    if not os.path.isfile(args.exe):
+        ap.error("找不到 gallery 程序，请先构建或传入 --exe")
     rep = Report()
-    proc, hwnd = launch({"AINO_DARK": "0"})
+    proc, hwnd = launch({"AINO_DARK": "0", "AINO_START_PAGE": "0", "AINO_OPEN": ""}, args.exe)
     if not hwnd:
         stop(proc)
         print("[FAIL] gallery window did not start")
@@ -240,19 +248,19 @@ def main():
             return shot()
         baseline = shot()
         rep.step("窗口可抓取", baseline.ok)
-        rep.step("保留原有浅色窗口底色", baseline.avg(1157, 80, 1170, 700) > 245)
+        rep.step("浅色窗口采用 F5F5F7 底色", close(baseline.at(1160, 180), (245, 245, 247), 1))
         rep.step("保留原有侧栏材质", 210 < baseline.avg(2, 80, 8, 600) < 245)
-        primary = baseline.at(304, 170)
+        primary = baseline.at(332, 210)
         rep.step("原有蓝色主按钮正常绘制", primary[2] > 230 and primary[0] < 30,
                  str(primary))
-        activated = click(322, 172)
-        rep.step("点击按钮显示右上角通知", activated.diff(baseline, 856, 74, 1156, 128) > 100)
+        activated = click(350, 210)
+        rep.step("点击按钮显示右上角通知", activated.diff(baseline, 856, TITLE_H + 12, 1156, TITLE_H + 66) > 100)
         # 关闭通知，后续断言不依赖动画结束时刻。
-        click(1140, 100)
+        click(1140, 110)
         inputs = click(100, nav_item_y("输入框"))
         rep.step("侧栏入口滚动到输入框分类", inputs.diff(baseline, 278, 68, 1140, 690) > 1000)
-        rep.step("分类跳转保留固定顶部工具栏", inputs.diff(baseline, 270, 8, 950, 48) < 15)
-        dark = click(54, 684)
+        rep.step("分类跳转保留固定顶部工具栏", inputs.diff(baseline, 270, 8, 880, 48) < 15)
+        dark = click(96, 648)
         light_luma = inputs.avg(270, 70, 1150, 700)
         dark_luma = dark.avg(270, 70, 1150, 700)
         rep.step("底部外观控件切换原生深色主题", light_luma - dark_luma > 130,
@@ -263,33 +271,29 @@ def main():
         native_dark = native_caption_dark(hwnd)
         if native_dark is not None:
             rep.step("系统标题栏同步深色模式", native_dark)
-        light = click(125, 684)
+        light = click(146, 648)
         rep.step("浅色主题可恢复", light.avg(270, 70, 1150, 700) > 220)
         rep.step("顶部工具栏随浅色模式恢复", light.avg(580, 8, 650, 48) > 220)
         native_light = native_caption_dark(hwnd)
         if native_light is not None:
             rep.step("系统标题栏同步浅色模式", not native_light)
-        red = click(138, 724)
+        red = click(138, 708)
         nav_tint = red.at(19, nav_item_y("输入框"))
         rep.step("强调色更新侧栏选中态", nav_tint[0] > nav_tint[1] + 20, str(nav_tint))
         red_buttons = click(100, nav_item_y("按钮"))
-        c = red_buttons.at(304, 170)
+        c = red_buttons.at(332, 210)
         rep.step("切换分类后保留所选强调色", c[0] > 230 and c[1] < 100, str(c))
-        post_click(hwnd, 1040, 30, scale)
+        post_click(hwnd, 1040, 36, scale)
         for char in "password":
             vr.user32.PostMessageW(hwnd, 0x0102, ord(char), 0)
             time.sleep(.025)
         filtered = shot()
         rep.step("顶部搜索实际筛选组件内容", filtered.diff(red_buttons, 278, 80, 1140, 690) > 500)
-        restored = click(1142, 30)
+        restored = click(1110, 36)
         rep.step("搜索清除按钮恢复目录", restored.diff(filtered, 278, 80, 1140, 690) > 500)
-        if args.shots:
-            for name, frame in (("gallery-overview.png", baseline), ("gallery-button.png", red_buttons),
-                                ("gallery-dark.png", dark)):
-                save_png(frame.raw, frame.w, frame.h, os.path.join(ROOT, "screenshots", name))
     finally:
         stop(proc)
-    proc, hwnd = launch({"AINO_START_PAGE": "feedback", "AINO_OPEN": "dialog", "AINO_DARK": "0"})
+    proc, hwnd = launch({"AINO_START_PAGE": "feedback", "AINO_OPEN": "dialog", "AINO_DARK": "0"}, args.exe)
     if not hwnd:
         stop(proc)
         print("[FAIL] dialog fixture did not start")
@@ -308,6 +312,19 @@ def main():
             save_png(opened.raw, opened.w, opened.h, os.path.join(ROOT, "screenshots", "gallery-dialog.png"))
     finally:
         stop(proc)
+    if args.shots and not rep.failed:
+        for name, page, dark in (("gallery-overview.png", "0", "0"),
+                                 ("gallery-button.png", "cards", "0"),
+                                 ("gallery-dark.png", "advanced", "1")):
+            proc, hwnd = launch({"AINO_START_PAGE": page, "AINO_DARK": dark, "AINO_OPEN": ""}, args.exe)
+            try:
+                rep.step("预览窗口启动：" + name, bool(hwnd))
+                if hwnd:
+                    time.sleep(1.8)
+                    frame = Shot(hwnd, client_scale(hwnd))
+                    save_png(frame.raw, frame.w, frame.h, os.path.join(ROOT, "screenshots", name))
+            finally:
+                stop(proc)
     print("\n===== 共 %d 项，失败 %d 项 =====" % (len(rep.results), rep.failed))
     return 1 if rep.failed else 0
 

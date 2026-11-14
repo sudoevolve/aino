@@ -337,6 +337,51 @@ int main() {
     }
     expect(original.same_as(original), "unchanged theme remains idle");
     {
+        Fixture chrome;
+        for (bool dark : {false, true}) {
+            chrome.ui.set_theme(dark ? aino::Theme::dark() : aino::Theme::light());
+            const Color background = dark ? chrome.ui.theme().window_bg : Color::hex(0xF5F5F7);
+            for (float scale : {1.f, 1.5f, 2.f}) {
+                for (float width : {320.f, 640.f, 780.f, 900.f, 901.f, 1180.f, 1600.f}) {
+                    chrome.width = width;
+                    App state;
+                    GalleryFrame frame;
+                    chrome.frame([&] {
+                        chrome.ui.clear(background);
+                        frame = gallery_frame(chrome.ui);
+                        draw_toolbar(chrome.ui, state, frame);
+                    }, -100, -100, false, false, 0, scale);
+                    expect(frame.column.w <= kContentMaxW &&
+                               approximately(frame.column.cx(), frame.viewport.cx()),
+                           "gallery content stays centered and bounded at every responsive width");
+                    expect(frame.title.right() + 12 <= frame.search.x && frame.search.h >= 32 &&
+                               frame.search.right() <= frame.column.right() + .01f,
+                           "toolbar reserves space for the title and a usable search target");
+                    if (approximately(frame.caption.y, 20))
+                        expect(approximately(frame.caption.x - frame.title.right(), 12) &&
+                                   frame.caption.right() + 24 <= frame.search.x + .01f,
+                               "inline toolbar description follows the measured title with a 12px gap");
+                    else
+                        expect(frame.caption.y >= frame.title.bottom() &&
+                                   frame.caption.bottom() + 16 <= frame.viewport.y + .01f,
+                               "toolbar description moves onto its own row without being hidden");
+                    if (frame.caption.right() * scale + 2 >= chrome.canvas.w)
+                        continue;
+                    GdiFlush();
+                    bool caption_visible = false;
+                    for (int y = int(frame.caption.y * scale); y < int(frame.caption.bottom() * scale); ++y)
+                        for (int x = int(frame.caption.x * scale); x < int(frame.caption.right() * scale); ++x) {
+                            const Color ink = chrome.pixel(x, y);
+                            caption_visible |= std::abs(int(ink.r) - int(background.r)) > 24 ||
+                                               std::abs(int(ink.g) - int(background.g)) > 24 ||
+                                               std::abs(int(ink.b) - int(background.b)) > 24;
+                        }
+                    expect(caption_visible, "toolbar description has visible ink at its measured position");
+                }
+            }
+        }
+    }
+    {
         Flow row({20, 20, 300, 200});
         Rect first = row.next(24, 24), second = row.next(24, 24);
         expect(first.w == first.h && second.w == second.h, "icon buttons have square bounds");
@@ -430,7 +475,8 @@ int main() {
                 const Color backdrop = dark ? f.ui.theme().window_bg : Color::hex(0xF5F5F7);
                 f.frame([&] {
                     f.ui.clear(backdrop);
-                    card = {40, 40, width + 32, body_height(f.ui, typography, Typography, width) + 66};
+                    card = {40, 40, width + 32,
+                            kCardBodyY + body_height(f.ui, typography, Typography, width) + kCardBottom};
                     for (const auto& entry : kCards)
                         if (entry.id == Typography) draw_card(f.ui, typography, entry, card);
                 }, -100, -100, false, false, 0, scale);
@@ -441,7 +487,7 @@ int main() {
                     for (int x = int((card.x + 16) * scale); x < int((card.right() - 16) * scale); ++x)
                         overflow |= !equal(f.pixel(x, y), backdrop);
                 const Color surface = dark ? f.ui.theme().card : f.ui.theme().control_bg;
-                for (int y = int((card.y + 48 + 142) * scale); y < bottom - int(10 * scale); ++y)
+                for (int y = int((card.y + kCardBodyY + 142) * scale); y < bottom - int(10 * scale); ++y)
                     for (int x = int((card.x + 16) * scale); x < int((card.x + 160) * scale); ++x)
                         number_visible |= !equal(f.pixel(x, y), surface);
                 expect(!overflow, "Typography ink stays inside its measured card at every tested DPI and width");
@@ -508,6 +554,80 @@ int main() {
     expect(filtered.cards.empty(), "empty search has no stale component cards");
     app = App{};
     auto full = [&] { build_ui(f.ui, app); };
+    {
+        Fixture keyboard;
+        App state;
+        auto draw = [&] { build_ui(keyboard.ui, state); };
+        keyboard.frame(draw);
+        keyboard.key('F', draw, true);
+        expect(keyboard.ui.focused_id() != nullptr, "Ctrl+F gives the gallery search keyboard focus");
+        // Input deliberately vetoes text briefly after modifier shortcuts.
+        for (int i = 0; i < 12; ++i) keyboard.frame(draw);
+        keyboard.type("password", draw);
+        expect(state.query == "password" && state.visible_cards == 1,
+               "Ctrl+F focuses the gallery search and typing filters immediately");
+        keyboard.key(aino::KEY_ESC, draw);
+        expect(state.query.empty() && state.visible_cards > 1,
+               "Escape clears the focused gallery search and restores the catalog");
+        state.query = "no-such-component";
+        keyboard.frame(draw);
+        const GalleryFrame frame = gallery_frame(keyboard.ui);
+        const float empty_y = frame.viewport.y + std::max(40.f, frame.viewport.h * .3f);
+        keyboard.click(frame.column.cx(), empty_y + 97, draw);
+        keyboard.frame(draw);
+        expect(state.query.empty() && state.visible_cards > 0,
+               "empty search recovery button restores the actual catalog");
+        keyboard.ui.set_focus(nullptr);
+        state.nav_open = true;
+        keyboard.key('F', draw, true);
+        expect(keyboard.ui.focused_id() != nullptr,
+               "desktop search shortcut still works after resizing an open drawer to a fixed sidebar");
+        state.nav_open = false;
+        keyboard.ui.set_focus(nullptr);
+        state.dlg = true;
+        keyboard.frame(draw);
+        keyboard.key('F', draw, true);
+        for (int i = 0; i < 12; ++i) keyboard.frame(draw);
+        keyboard.type("blocked", draw);
+        expect(state.query.empty() && state.dlg,
+               "search shortcut does not steal keyboard input from an open dialog");
+    }
+    for (float width : {640.f, 1180.f}) {
+        Fixture navigation;
+        App state;
+        navigation.width = width;
+        state.pending_anchor = kPageCount - 1;
+        state.nav_open = width <= 900;
+        auto draw = [&] { build_ui(navigation.ui, state); };
+        navigation.frame(draw);
+        navigation.frame(draw);
+        navigation.height = 480;
+        navigation.frame(draw);
+        navigation.frame(draw);
+        const float row_y = nav_item_y(kPageCount - 1) - state.nav_offset;
+        const float list_bottom = navigation.height - kFooterBottom - kFooterH - 16;
+        expect(row_y - kNavStep / 2 >= kNavTop - .01f &&
+                   row_y + kNavStep / 2 <= list_bottom + .01f,
+               "selected final navigation item stays visible above the footer after resizing");
+        navigation.click(96, navigation.height - 112, draw);
+        expect(state.dark && state.appearance == 0,
+               "fixed footer appearance control remains usable at minimum height");
+        navigation.click(138, navigation.height - 52, draw);
+        expect(state.well == 4 && !state.custom_accent,
+               "fixed footer accent targets remain usable at minimum height");
+        if (state.nav_open) {
+            navigation.click(226, 34, draw);
+            navigation.frame(draw);
+            expect(!state.nav_open, "explicit close control dismisses the narrow sidebar");
+        }
+        navigation.frame(draw);
+        navigation.frame(draw, width - 12, 390, false, false, -1000);
+        navigation.frame(draw);
+        const Rect last = state.card_rects[Typography];
+        expect(last.bottom() <= state.content_view.bottom() - kCardBottom &&
+                   last.y >= state.content_view.y,
+               "last gallery card is reachable with visible bottom padding at minimum height");
+    }
     for (int i = 0; i < kPageCount; ++i) {
         app.pending_anchor = i;
         f.frame(full);
@@ -531,7 +651,7 @@ int main() {
     f.frame(full);
     f.frame(full);
     Rect accents = app.card_rects[Accents];
-    f.click(accents.x + 16 + 4 + 34 * 4 + 12, accents.y + 48 + 4 + 12, full);
+    f.click(accents.x + 16 + 4 + 34 * 4 + 12, accents.y + kCardBodyY + 4 + 12, full);
     expect(app.well == 4 && equal(f.ui.theme().tint, accent_color(4, app.dark)),
            "system swatch updates the live global accent");
     app.pending_anchor = 0;
@@ -561,9 +681,9 @@ int main() {
     f.click(palette.x + 60, palette.y + 60, full);
     expect(app.color_open, "color trigger opens a real popover");
     // Popover placement is window-clamped; calculate the same anchor geometry.
-    float px = aino::clampf(palette.x + 16, 6.f, 1180 - 328.f - 6), py = palette.y + 48 + 24 + 6;
+    float px = aino::clampf(palette.x + 16, 6.f, 1180 - 328.f - 6), py = palette.y + kCardBodyY + 24 + 6;
     if (py + 322 > 754)
-        py = std::max(6.f, palette.y + 48 - 6 - 322);
+        py = std::max(6.f, palette.y + kCardBodyY - 6 - 322);
     Color custom = current_accent(app);
     const int channels[] = {64, 255, 0};
     for (int i = 0; i < 3; ++i) {
@@ -672,9 +792,9 @@ int main() {
     Rect date = app.card_rects[Date];
     f.click(date.x + 60, date.y + 60, full);
     expect(app.date_open, "date trigger opens the calendar");
-    float dx = aino::clampf(date.x + 16, 6.f, 1180 - 320.f - 6), dy = date.y + 48 + 24 + 6;
+    float dx = aino::clampf(date.x + 16, 6.f, 1180 - 320.f - 6), dy = date.y + kCardBodyY + 24 + 6;
     if (dy + 332 > 754)
-        dy = std::max(6.f, date.y + 48 - 6 - 332);
+        dy = std::max(6.f, date.y + kCardBodyY - 6 - 332);
     int target = 12, slot = aino::detail::weekday_of(app.cy, app.cm, 1) + target - 1;
     f.click(dx + 20 + (slot % 7 + .5f) * 40, dy + 20 + 68 + (slot / 7 + .5f) * (224.f / 6), full);
     f.frame(full);
@@ -893,7 +1013,7 @@ int main() {
     auto empty_card = [&] { build_ui(f.ui, material); };
     f.frame(empty_card);
     const Rect empty = material.card_rects[Empty];
-    f.click(empty.cx(), empty.y + 48 + 146, empty_card);
+    f.click(empty.cx(), empty.y + kCardBodyY + 146, empty_card);
     expect(material.open_material && material.material_name.empty() && material.notices.empty(),
            "create material requests a window without claiming creation");
     material.material_editor->created_name = "测试素材";

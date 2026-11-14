@@ -34,7 +34,16 @@ void mono_label(Ui& ui, const char* text, float x, float y, Color color, float s
         ui.draw_mono_text(text, x, y, color, size);
 }
 
-constexpr float kNavW = 252, kTitleH = 60, kGridGap = 14;
+constexpr float kNavW = 252;
+constexpr float kTitleH = 72;
+constexpr float kGridGap = 16;
+constexpr float kContentMaxW = 820;
+constexpr float kNavTop = 80;
+constexpr float kNavStep = 36;
+constexpr float kFooterH = 112;
+constexpr float kFooterBottom = 22;
+constexpr float kCardBodyY = 52;
+constexpr float kCardBottom = 16;
 constexpr int kPageCount = 15;
 enum CardId {
     ButtonVariants,
@@ -117,7 +126,7 @@ struct App {
     bool custom_accent = false;
     Color custom_color = Color::hex(0x007AFF);
     bool nav_open = false;
-    float nav_w = kNavW, nav_offset = 0;
+    float nav_w = kNavW, nav_offset = 0, nav_view_height = 0;
     std::string query, previous_query;
     int hits = 0;
     std::string project = "", email = "", search, password = "aino-demo", invalid_email = "hello@";
@@ -219,7 +228,7 @@ const Page kPages[] = {
     {"浮层", "颜色", "color", "Color · 全局强调色联动", 19, 2},
     {"浮层", "反馈", "feedback", "Feedback · 通知 / 对话框 / 状态", 21, 4},
     {"数据", "表格", "table", "Table · 点击表头排序", 25, 1, 300, true},
-    {"数据", "图表", "charts", "Charts · 柱状 / 折线 / 环形 / 指标", 26, 4, 420},
+    {"数据", "图表", "charts", "Charts · 柱状 / 折线 / 环形 / 指标", 26, 4, 380},
     {"数据", "进度", "progress", "Progress · 线性与环形", 30, 2},
     {"容器", "卡片与列表", "cards", "Containers · 内容与设置", 32, 4},
     {"容器", "导航", "navigation", "Navigation · 工具栏与路径", 36, 3},
@@ -506,7 +515,8 @@ void draw_values(Ui &ui, App &a, CardId id, Rect b) {
         for (int i = 0; i < 2; ++i) {
             float y = b.y + i * 64;
             label(ui, names[i], {b.x, y, b.w - 55, 20}, 12, true);
-            label(ui, std::to_string(int(*values[i])) + "%", {b.right() - 48, y, 48, 20}, 12);
+            ui.draw_text(std::to_string(int(*values[i])) + "%", {b.right() - 48, y, 48, 20},
+                         ui.theme().label2, Style().font(12).right());
             ui.slider(values[i], 0, 100, {b.x + 4, y + 28, b.w - 8, 24});
         }
     } else {
@@ -862,14 +872,14 @@ void draw_cards(Ui &ui, App &a, CardId id, Rect b) {
         const char *titles[] = {"通用", "网络", "隐私"};
         const char *subs[] = {"语言、外观和默认行为", "连接状态与代理", "保护数据与活动记录"};
         for (int i = 0; i < 3; ++i) {
-            float y = b.y + i * 58;
+            float y = b.y + i * 64;
             glyph(ui,
                   i == 0   ? SettingsIcon
                   : i == 1 ? NetworkIcon
                            : Eye,
                   {b.x, y + 10, 22, 22}, ui.theme().tint);
             label(ui, titles[i], {b.x + 34, y, b.w - 100, 23}, 13);
-            label(ui, subs[i], {b.x + 34, y + 25, b.w - 100, 20}, 10, true);
+            label(ui, subs[i], {b.x + 34, y + 25, b.w - 100, 20}, 11, true);
             if (i < 2) {
                 if (icon(ui, Next, i == 0 ? "通用设置" : "网络设置", {b.right() - 28, y + 10, 28, 28},
                          Style().ghost()))
@@ -877,7 +887,7 @@ void draw_cards(Ui &ui, App &a, CardId id, Rect b) {
             } else
                 ui.toggle(&a.privacy, {b.right() - 54, y + 10, 54, 24});
             if (i < 2)
-                ui.separator({b.x, y + 53, b.w, 1});
+                ui.separator({b.x, y + 59, b.w, 1});
         }
     } else if (id == Accordions) {
         const char *titles[] = {"如何切换强调色？", "是否依赖第三方库？", "支持哪些平台？"};
@@ -1054,6 +1064,46 @@ struct GalleryLayout {
     std::array<int, kPageCount> counts{};
     float height = 0;
 };
+struct GalleryFrame {
+    bool narrow = false;
+    Rect title, caption, search, menu, column, viewport;
+};
+const char *kGalleryCaption = "43 个原生风格组件 · 零依赖";
+GalleryFrame gallery_frame(Ui &ui) {
+    GalleryFrame frame;
+    frame.narrow = ui.width() <= 900;
+    const float rail = frame.narrow ? 0 : kNavW;
+    const float available = ui.width() - rail;
+    const float inset = available < 500 ? 16.f : 28.f;
+    const float width = std::min(kContentMaxW, std::max(1.f, available - 2 * inset));
+    const float x = rail + (available - width) * .5f;
+    const float menu_width = frame.narrow ? 40.f : 0.f;
+    const float title_width = ui.text_width("组件", 26, 700);
+    const float search_width = std::min(220.f, std::max(128.f, width * .28f));
+    frame.menu = {x - 4, 20, 32, 32};
+    frame.title = {x + menu_width, 16, title_width, 40};
+    frame.search = {x + width - search_width, 20, search_width, 32};
+    const float caption_x = frame.title.right() + 12;
+    const float caption_width = ui.text_width(kGalleryCaption, 13);
+    float height = kTitleH;
+    if (caption_x + caption_width + 24 <= frame.search.x) {
+        frame.caption = {caption_x, 20, caption_width, 32};
+    } else {
+        const float h = ui.text_height(kGalleryCaption, width, Style().font(13).wrap_text());
+        frame.caption = {x, 58, width, std::max(18.f, h)};
+        height = frame.caption.bottom() + 16;
+    }
+    frame.column = {x, height, width, std::max(1.f, ui.height() - height)};
+    frame.viewport = {rail, height, available, frame.column.h};
+    return frame;
+}
+float section_heading_height(Ui &ui, const Page &page, float width) {
+    return 28 + 4 + std::max(18.f, ui.text_height(page.desc, std::max(1.f, width - 4),
+                                              Style().font(12).wrap_text())) + 16;
+}
+Rect card_body(Rect card) {
+    return {card.x + 16, card.y + kCardBodyY, card.w - 32, card.h - kCardBodyY - kCardBottom};
+}
 bool card_matches(const App &a, int section, int index) {
     std::string q = lower_ascii(a.query);
     if (q.empty())
@@ -1093,7 +1143,7 @@ GalleryLayout layout_gallery(Ui &ui, App &a, float width, bool narrow) {
     }
     GalleryLayout out;
     out.section_y.fill(-1);
-    float y = narrow ? 18.f : 26.f;
+    float y = 20;
     for (int section = 0; section < kPageCount; ++section) {
         const auto &page = kPages[section];
         std::vector<int> hits;
@@ -1104,7 +1154,7 @@ GalleryLayout layout_gallery(Ui &ui, App &a, float width, bool narrow) {
         if (hits.empty())
             continue;
         out.section_y[section] = y;
-        y += narrow ? 62 : 44;
+        y += section_heading_height(ui, page, width);
         int columns =
             page.full || narrow ? 1 : std::max(1, int((width + kGridGap) / (page.min_column + kGridGap)));
         float cw = (width - kGridGap * (columns - 1)) / columns, row_h = 0;
@@ -1118,7 +1168,7 @@ GalleryLayout layout_gallery(Ui &ui, App &a, float width, bool narrow) {
                 row_h = 0;
             }
             float w = span ? 2 * cw + kGridGap : cw;
-            float h = 16 + 18 + 14 + body_height(ui, a, kCards[index].id, w - 32) + 18;
+            float h = kCardBodyY + body_height(ui, a, kCards[index].id, w - 32) + kCardBottom;
             out.cards.push_back({index, section, {float(col) * (cw + kGridGap), y, w, h}});
             row_h = std::max(row_h, h);
             col += slots;
@@ -1130,13 +1180,13 @@ GalleryLayout layout_gallery(Ui &ui, App &a, float width, bool narrow) {
         }
         if (col)
             y += row_h + kGridGap;
-        y += 34 - kGridGap;
+        y += 32 - kGridGap;
     }
-    out.height = y + (narrow ? 90 : 120);
+    out.height = y + 40;
     return out;
 }
 float nav_item_y(int page) {
-    float y = 76;
+    float y = kNavTop;
     const char *group = "";
     for (int i = 0; i <= page; ++i) {
         if (std::strcmp(group, kPages[i].group) != 0) {
@@ -1146,8 +1196,8 @@ float nav_item_y(int page) {
             group = kPages[i].group;
         }
         if (i == page)
-            return y + 16;
-        y += 33;
+            return y + kNavStep / 2;
+        y += kNavStep;
     }
     return y;
 }
@@ -1156,22 +1206,29 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
     ui.fill_rect(nav, ui.theme().sidebar_bg);
     ui.separator({kNavW - 1, 0, 1, ui.height()});
     glyph(ui, Navigation, {22, 27, 22, 22}, ui.theme().tint);
-    label(ui, "aino", {58, 21, 174, 23}, 15, false, 600);
-    label(ui, "组件总览 · 43 项", {58, 44, 174, 18}, 11, true);
-    float bottom = ui.height() - 108;
+    label(ui, "aino", {58, 21, 142, 23}, 15, false, 600);
+    label(ui, "组件总览 · 43 项", {58, 44, 142, 18}, 11, true);
+    if (ui.width() <= 900 && icon(ui, Close, "关闭侧边栏", {212, 20, 28, 28}, Style().ghost())) {
+        a.nav_open = false;
+        ui.request_animation_frame();
+    }
+    const Rect footer{14, ui.height() - kFooterBottom - kFooterH, kNavW - 28, kFooterH};
+    const Rect list{12, kNavTop, kNavW - 24, std::max(40.f, footer.y - 16 - kNavTop)};
     {
-        auto sc = ui.scroll({12, 76, 228, std::max(40.f, bottom - 76)}, 633);
-        if (a.nav_page != a.page) {
-            const float top = nav_item_y(a.page) - 16;
-            if (top - sc.offset < 76)
-                sc.to(top - 76);
-            else if (top + 32 - sc.offset > bottom)
-                sc.to(top + 32 - bottom);
+        const float height = nav_item_y(kPageCount - 1) + kNavStep / 2 - kNavTop;
+        auto sc = ui.scroll(list, height);
+        if (a.nav_page != a.page || a.nav_view_height != list.h) {
+            const float top = nav_item_y(a.page) - kNavStep / 2;
+            if (top - sc.offset < list.y)
+                sc.to(top - list.y);
+            else if (top + kNavStep - sc.offset > list.bottom())
+                sc.to(top + kNavStep - list.bottom());
             a.nav_page = a.page;
+            a.nav_view_height = list.h;
         }
         a.nav_offset = sc.offset;
         const char *group = "";
-        float y = 76 - sc.offset;
+        float y = kNavTop - sc.offset;
         for (int i = 0; i < kPageCount; ++i) {
             if (std::strcmp(group, kPages[i].group) != 0) {
                 if (i)
@@ -1180,7 +1237,7 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
                 y += 24;
                 group = kPages[i].group;
             }
-            Rect row{12, y, 228, 32};
+            Rect row{12, y, 228, kNavStep};
             const bool active = a.page == i;
             const Color fg = ui.theme().label;
             if (ui.nav_item(kPages[i].name, active, row, Style().font(13).padding(34))) {
@@ -1189,52 +1246,71 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
                 a.page = i;
                 if (ui.width() <= 900)
                     a.nav_open = false;
+                ui.request_animation_frame();
             }
-            glyph(ui, i, {22, y + 8, 15, 15}, ui.theme().tint);
+            glyph(ui, i, {22, y + (kNavStep - 16) / 2, 16, 16}, ui.theme().tint);
             char count[12];
             std::snprintf(count, sizeof(count), "%02d", layout.counts[i]);
-            ui.draw_text(count, {204, y, 22, 32}, fg.scaled_alpha(.65f), Style().font(10.5f).right());
-            y += 33;
+            ui.draw_text(count, {204, y, 22, kNavStep}, fg.scaled_alpha(.65f), Style().font(10.5f).right());
+            y += kNavStep;
         }
     }
-    ui.separator({18, bottom + 4, 216, 1});
-    Rect modes{18, bottom + 15, 216, 32};
+    ui.panel(footer, Style().background(a.dark ? ui.theme().card : ui.theme().control_bg).corner(12));
+    label(ui, "外观", {footer.x + 16, footer.y + 8, 34, 28}, 11, true);
+    Rect modes{70, footer.y + 8, 152, 28};
     well(ui, modes);
     for (int i = 0; i < 3; ++i) {
-        Rect r{modes.x + 3 + i * 71.f, modes.y + 3, 68, 26};
+        Rect r{modes.x + 2 + i * 50.f, modes.y + 2, 48, 24};
         if (a.appearance == i)
             ui.fill_rect(r, ui.theme().fill_hover, 6);
         const char *hint = i == 0 ? "深色" : i == 1 ? "浅色" : "跟随系统";
         if (icon(ui, Moon + i, hint, r, Style().ghost()))
             set_appearance(ui, a, i);
     }
-    swatches(ui, a, {22, bottom + 63, 208, 22}, 17, 10);
+    label(ui, "强调色", {footer.x + 16, footer.y + 44, footer.w - 32, 20}, 11, true);
+    for (int i = 0; i < 8; ++i) {
+        const Rect cell{footer.x + 16 + i * 24.f, footer.y + 70, 24, 24};
+        const Color color = accent_color(i, a.dark);
+        if (ui.button("", cell, Style().ghost().corner(12)))
+            set_accent(ui, a, i);
+        ui.fill_circle(cell.cx(), cell.cy(), 8, color);
+        if (!a.custom_accent && a.well == i)
+            ui.stroke_rect(Rect::centered(cell.cx(), cell.cy(), 21, 21), color, 10.5f, 1.5f);
+        ui.tooltip(cell, kAccentNames[i]);
+    }
 }
-void draw_toolbar(Ui &ui, App &a, bool narrow) {
-    float left = narrow ? 0 : kNavW, pad = narrow ? 14.f : 26.f;
-    ui.fill_rect({left, 0, ui.width() - left, kTitleH}, (ui.theme().window_bg.luminance() < .5f ? ui.theme().window_bg : aino::Color::hex(0xF5F5F7)));
-    float tx = left + pad;
-    if (narrow) {
-        if (icon(ui, List, "显示侧边栏", {tx, 14, 32, 32}, Style().ghost())) {
+void draw_toolbar(Ui &ui, App &a, const GalleryFrame &frame) {
+    if (frame.narrow) {
+        if (icon(ui, List, "显示侧边栏", frame.menu, Style().ghost())) {
             a.nav_open = !a.nav_open;
         }
-        tx += 40;
     }
-    label(ui, "组件", {tx, 0, 136, kTitleH}, 22, false, 700);
-    if (!narrow && ui.width() - left > 760)
-        label(ui, "43 个原生风格组件 · 零依赖", {tx + 136, 0, 260, kTitleH}, 13, true);
-    float sw = narrow ? 128.f : 188.f;
-    if (ui.search_field(&a.query, {ui.width() - pad - sw, 18, sw, 24}, Style().hint("搜索组件…").font(12))) {
+    label(ui, "组件", frame.title, 26, false, 700);
+    ui.draw_text(kGalleryCaption, frame.caption, ui.theme().label2, Style().font(13).wrap_text());
+    const auto search_id = ui.impl->widget_id("input", frame.search, 0,
+        uint64_t(reinterpret_cast<uintptr_t>(&a.query)));
+    const auto search_focus = reinterpret_cast<void *>(uintptr_t(search_id));
+    const bool overlay_open = (frame.narrow && a.nav_open) || a.date_open || a.color_open || a.dlg || a.confirm;
+    if (!overlay_open && (ui.input().ctrl_of('F') ||
+                          (ui.input().key_pressed['F'] && ui.input().super())))
+        ui.set_focus(search_focus);
+    if (!overlay_open && ui.focused_id() == search_focus && ui.input().key_pressed[aino::KEY_ESC]) {
+        a.query.clear();
         a.pending_anchor = -1;
     }
+    if (ui.search_field(&a.query, frame.search, Style().hint("搜索组件…").font(12))) {
+        a.pending_anchor = -1;
+    }
+    ui.tooltip(frame.search, "搜索所有组件 · Ctrl+F / ⌘F");
 }
 void draw_card(Ui &ui, App &a, const Card &card, Rect r) {
     label(ui, card.name, {r.x + 2, r.y + 7, r.w - 4, 22}, 13, false, 600);
     ui.panel({r.x, r.y + 36, r.w, r.h - 36}, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
-    draw_body(ui, a, card.id, {r.x + 16, r.y + 48, r.w - 32, r.h - 66});
+    draw_body(ui, a, card.id, card_body(r));
 }
-void draw_content(Ui &ui, App &a, const GalleryLayout &layout, Rect view, bool narrow) {
-    float pad = narrow ? 14.f : 26.f;
+void draw_content(Ui &ui, App &a, const GalleryLayout &layout, const GalleryFrame &frame) {
+    const Rect view = frame.viewport;
+    const Rect column = frame.column;
     auto sc = ui.scroll(view, layout.height);
     if (a.query != a.previous_query) {
         sc.to(0);
@@ -1262,34 +1338,37 @@ void draw_content(Ui &ui, App &a, const GalleryLayout &layout, Rect view, bool n
     if (active >= 0)
         a.page = active;
     if (layout.cards.empty()) {
-        ui.draw_text("没有匹配的组件", {view.x + pad, view.y + 90, view.w - pad * 2, 32}, ui.theme().label,
+        const float y = view.y + std::max(40.f, view.h * .3f);
+        ui.draw_text("没有匹配的组件", {column.x, y, column.w, 32}, ui.theme().label,
                      Style().font(18).center());
-        ui.draw_text("试试 button、颜色、日历或其他名称", {view.x + pad, view.y + 134, view.w - pad * 2, 26},
+        ui.draw_text("试试 button、颜色、日历或其他名称", {column.x, y + 40, column.w, 26},
                      ui.theme().label3, Style().font(12).center());
+        if (ui.button("清除搜索", {column.cx() - 48, y + 82, 96, 30}, Style().secondary())) {
+            a.query.clear();
+            a.pending_anchor = -1;
+            ui.request_animation_frame();
+        }
         return;
     }
     for (int section = 0; section < kPageCount; ++section) {
         if (layout.section_y[section] < 0)
             continue;
         float y = view.y + layout.section_y[section] - sc.offset;
-        if (y + 60 < view.y || y > view.bottom())
-            continue;
         const auto &p = kPages[section];
-        float tx = view.x + pad + 4;
-        label(ui, p.name, {tx, y, 240, 28}, 20, false, 680);
-        if (narrow)
-            label(ui, p.desc, {tx, y + 30, view.w - pad * 2 - 50, 22}, 11, true);
-        else {
-            float w = ui.text_width(p.name, 20, 680);
-            label(ui, p.desc, {tx + w + 10, y + 4, std::max(0.f, view.w - pad * 2 - w - 85), 24}, 12.5f,
-                  true);
-        }
-        ui.draw_text(std::to_string(layout.counts[section]) + " 组件",
-                     {view.right() - pad - 64, y + 4, 60, 24}, ui.theme().label3, Style().font(11).right());
+        if (y + section_heading_height(ui, p, column.w) < view.y || y > view.bottom())
+            continue;
+        const std::string count = std::to_string(layout.counts[section]) + " 个组件";
+        const float count_width = ui.text_width(count, 11);
+        label(ui, p.name, {column.x + 2, y, column.w - count_width - 16, 28}, 20, false, 600);
+        const float description_height = section_heading_height(ui, p, column.w) - 48;
+        ui.draw_text(p.desc, {column.x + 2, y + 32, column.w - 4, description_height}, ui.theme().label2,
+                     Style().font(12).wrap_text().top());
+        ui.draw_text(count, {column.right() - count_width - 2, y + 2, count_width, 24}, ui.theme().label3,
+                     Style().font(11).right());
     }
     for (const auto &placed : layout.cards) {
         Rect r = placed.rect;
-        r.x += view.x + pad;
+        r.x += column.x;
         r.y += view.y - sc.offset;
         a.card_rects[kCards[placed.index].id] = r;
         if (r.bottom() < view.y - 18 || r.y > view.bottom() + 18)
@@ -1298,8 +1377,7 @@ void draw_content(Ui &ui, App &a, const GalleryLayout &layout, Rect view, bool n
         draw_card(ui, a, kCards[placed.index], r);
     }
 }
-void draw_overlays(Ui &ui, App &a) {
-    float y = 74;
+void draw_overlays(Ui &ui, App &a, float y) {
     for (size_t i = 0; i < a.notices.size(); ++i) {
         auto &n = a.notices[i];
         Rect r{std::max(12.f, ui.width() - 324), y, std::min(300.f, ui.width() - 24), 54};
@@ -1339,21 +1417,17 @@ void build_ui(Ui &ui, App &a) {
     a.notices.erase(
         std::remove_if(a.notices.begin(), a.notices.end(), [](const Notification &n) { return n.dismissed; }),
         a.notices.end());
-    bool narrow = ui.width() <= 900;
-    a.nav_w = narrow ? 0 : kNavW;
-    float pad = narrow ? 14.f : 26.f;
-    GalleryLayout layout = layout_gallery(ui, a, std::max(1.f, ui.width() - a.nav_w - 2 * pad), narrow);
+    const GalleryFrame frame = gallery_frame(ui);
+    a.nav_w = frame.viewport.x;
+    GalleryLayout layout = layout_gallery(ui, a, frame.column.w, frame.narrow);
     const std::string layout_query = a.query;
-    if (!narrow)
+    if (!frame.narrow)
         draw_nav(ui, a, layout);
-    draw_toolbar(ui, a, narrow);
+    draw_toolbar(ui, a, frame);
     if (a.query != layout_query)
-        layout = layout_gallery(ui, a, std::max(1.f, ui.width() - a.nav_w - 2 * pad), narrow);
-    draw_content(
-        ui, a, layout,
-        {a.nav_w, kTitleH, std::max(1.f, ui.width() - a.nav_w), std::max(1.f, ui.height() - kTitleH)},
-        narrow);
-    if (narrow && a.nav_open) {
+        layout = layout_gallery(ui, a, frame.column.w, frame.narrow);
+    draw_content(ui, a, layout, frame);
+    if (frame.narrow && a.nav_open) {
         aino::Ui::Impl::SeqFrameEnd layer(ui.impl);
         ui.impl->gate_claim({0, 0, ui.width(), ui.height()}, aino::Ui::Impl::Z_FRAME_END);
         if (ui.button("", {kNavW, 0, ui.width() - kNavW, ui.height()}, Style().ghost()))
@@ -1361,7 +1435,7 @@ void build_ui(Ui &ui, App &a) {
         // 抽屉本帧已在最后绘制；闸门让背后控件在后续帧不再接收输入。
         draw_nav(ui, a, layout);
     }
-    draw_overlays(ui, a);
+    draw_overlays(ui, a, frame.viewport.y + 12);
 }
 int write_layout_report(Ui &ui, const App &a, const GalleryLayout &layout, float width, std::FILE *f) {
     int over = 0;
@@ -1369,7 +1443,7 @@ int write_layout_report(Ui &ui, const App &a, const GalleryLayout &layout, float
                  layout.height);
     for (size_t i = 0; i < layout.cards.size(); ++i) {
         const auto &c = layout.cards[i];
-        const Rect body{16, 48, c.rect.w - 32, c.rect.h - 66};
+        const Rect body = card_body({0, 0, c.rect.w, c.rect.h});
         Rect used;
         bool overflow = !std::isfinite(c.rect.x) || !std::isfinite(c.rect.y) ||
                         !std::isfinite(c.rect.w) || !std::isfinite(c.rect.h) ||
@@ -1627,8 +1701,8 @@ int main() {
     win.run([&](Ui &ui) {
         if (!dumped) {
             dumped = true;
-            const bool narrow = ui.width() <= 900;
-            dump_layout_report(ui, app, ui.width() - (narrow ? 0 : kNavW) - (narrow ? 28 : 52), narrow);
+            const auto frame = gallery_frame(ui);
+            dump_layout_report(ui, app, frame.column.w, frame.narrow);
         }
         if (shot && shot_pending && (shot_every || frames >= 2)) {
             dump_canvas_bmp(win, shot);
