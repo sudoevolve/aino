@@ -111,6 +111,13 @@ int main(int argc, char** argv) {
 #endif
     ExampleFrame f;
 #ifdef AINO_PROBE_SSH
+    expect(std::string(explain_fail(FailStage::KeyExchange).title) == "SSH 密钥交换失败",
+           "key exchange failure has its own accurate title");
+    expect(std::string(explain_fail(FailStage::KeyExchange).advice).find("WinCNG") != std::string::npos,
+           "key exchange advice identifies the client crypto dependency");
+    expect(std::string(explain_fail(FailStage::Handshake).title).find("不是 SSH") == std::string::npos &&
+           std::string(explain_fail(FailStage::Handshake).advice).find("不是 SSH") == std::string::npos,
+           "an incomplete handshake does not label the peer as a non SSH service");
     {
         App app;
         Profile profile;

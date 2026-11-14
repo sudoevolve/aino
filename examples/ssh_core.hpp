@@ -107,10 +107,11 @@ enum class FailStage {
     None = 0,
     Dns,         // 域名解析不了
     Tcp,         // socket 建不起来 / 连不通（拒绝、超时、不可达）
-    Handshake,   // TCP 通了，但 SSH 协议握手失败（不是 sshd、被中间设备劫持）
+    Handshake,   // TCP 通了，但 SSH 握手未完成；不能据此断定对端不是 SSH
     HostKey,     // 主机密钥变了（可能被劫持，也可能机器重装过）
     Auth,        // SSH 层通了，账号验证没过（密码错 / 账号被禁）
     Shell,       // 认证过了，但开不了交互 shell（禁 login / 无 PTY）
+    KeyExchange, // 客户端算法配置或 SSH 密钥交换失败；保留已有阶段的枚举值
 };
 
 class Engine {
@@ -216,18 +217,24 @@ public:
         libssh2_session_set_timeout(sess, 20000);
         // WinCNG 后端下 group16/18-sha512 走的是 GEX 代码路径：和 paramiko 协商
         // group16-sha512 之后它发的是 GEX_REPLY，对端直接报 MessageOrderError。
-        // 所以这里给一份"新到旧"的完整列表：新版 OpenSSH（10.x）已经彻底停用
-        // diffie-hellman-group*，只留 curve25519 / ecdh，光写 group* 会零交集。
-        // 后端不支持的算法会被 libssh2 自动忽略，所以整列出来是安全的。
-        // 需要别的组合时用 AINO_SSH_KEX 覆盖。
+        // 优先 Curve25519/ECDH，同时保留 DH 选项；是否兼容取决于双方的实际配置。
+        // 列表不会为加密后端增加算法，WinCNG 的 ECDH 仍须在依赖构建时启用。
+        // libssh2 会滤掉后端不支持的算法；可用 AINO_SSH_KEX 覆盖优先级。
         {
             const char* kex = std::getenv("AINO_SSH_KEX");
-            libssh2_session_method_pref(sess, LIBSSH2_METHOD_KEX,
+            const int rc = libssh2_session_method_pref(sess, LIBSSH2_METHOD_KEX,
                 kex ? kex :
                 "curve25519-sha256,curve25519-sha256@libssh.org,"
                 "ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,"
                 "diffie-hellman-group-exchange-sha256,diffie-hellman-group16-sha512,"
                 "diffie-hellman-group18-sha512,diffie-hellman-group14-sha256");
+            if (rc != 0) {
+                const std::string m = err_text(sess, rc);
+                libssh2_session_free(sess);
+                sshc_closesock(fd);
+                fail_stage_ = int(FailStage::KeyExchange);
+                return fail(err, "设置客户端 SSH 算法失败：" + m);
+            }
         }
         if (const int rc = libssh2_session_handshake(sess, fd); rc != 0) {
             const std::string m = err_text(sess, rc);
@@ -235,13 +242,12 @@ public:
             const std::string our_kex = kname ? kname : "(未协商)";
             libssh2_session_free(sess);
             sshc_closesock(fd);
-            // KEX_FAILURE 表示密钥交换算法不匹配，须与协议或端口错误区分。
-            if (rc == LIBSSH2_ERROR_KEX_FAILURE)
-                return fail(err, "算法不匹配 —— 服务器在线、SSH 也在，但双方没有共同的"
-                                 "密钥交换算法（对端多半是新版 OpenSSH，已停用 "
-                                 "diffie-hellman-group*）。本机协商到：" + our_kex);
-            return fail(err, "SSH 握手失败 —— TCP 端口是通的，但对端讲的不是 SSH"
-                             "（连错端口？中间有代理/防火墙改写？）：" + m);
+            if (rc == LIBSSH2_ERROR_KEX_FAILURE) {
+                fail_stage_ = int(FailStage::KeyExchange);
+                return fail(err, "SSH 密钥交换失败，请检查客户端依赖与服务器算法是否兼容。"
+                                 "协商算法：" + our_kex + "；底层错误：" + m);
+            }
+            return fail(err, "SSH 握手失败，TCP 已连接但握手尚未完成：" + m);
         }
 
         // 主机密钥（TOFU）

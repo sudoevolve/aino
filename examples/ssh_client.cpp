@@ -1493,8 +1493,11 @@ FailExplain explain_fail(FailStage st) {
         return {"网络没通 · 连不上端口", kBad,
                 "请求根本没到服务器，与密码无关。先确认机器在线、端口正确、防火墙放行。"};
     case FailStage::Handshake:
-        return {"端口通了 · 但对端不是 SSH", kWarn,
-                "TCP 能连上，回的却不是 SSH 协议 —— 多半是端口填错了，或被代理改写。"};
+        return {"端口已连通 · SSH 握手失败", kWarn,
+                "查看底层错误，检查超时、代理及双方的 SSH 协议兼容性。"};
+    case FailStage::KeyExchange:
+        return {"SSH 密钥交换失败", kWarn,
+                "检查客户端 SSH 依赖与服务器算法配置。使用 WinCNG 时确认已启用 ECDH 支持。"};
     case FailStage::HostKey:
         return {"主机密钥变了", kWarn,
                 "这台机器的密钥与上次记录不一致：可能重装过系统，也可能是中间人。"
@@ -1937,13 +1940,13 @@ void draw_fail_panel(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, 
 
     const Rect panel(area.x + (area.w - pw) * 0.5f,
                      area.y + std::max(24.0f, (area.h - ph) * 0.42f), pw, ph);
-    ui.fill_rect(panel, Color::hex(0x14161B), 10.0f);
-    ui.stroke_rect(panel, Color::hex(0x2A2F3A), 10.0f, 1.0f);
+    ui.fill_rect(panel, th.is_dark() ? Color::hex(0x14161B) : th.control_bg, 10.0f);
+    ui.stroke_rect(panel, th.is_dark() ? Color::hex(0x2A2F3A) : th.border, 10.0f, 1.0f);
     // 错误状态强调线。
     ui.fill_rect(Rect(panel.x + 1.0f, panel.y, panel.w - 2.0f, 2.0f), fx.color, 0.0f);
 
     float y = panel.y + pad;
-    ui.draw_text(fx.title, Rect(panel.x + pad, y, text_w, 24.0f), fx.color,
+    ui.draw_text(fx.title, Rect(panel.x + pad, y, text_w, 24.0f), th.is_dark() ? fx.color : th.foreground,
                  Style().font(15.0f).bold());
     y += 26.0f + 10.0f;
     for (const std::string& ln : err_lines) {
