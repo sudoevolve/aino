@@ -1283,8 +1283,8 @@ public:
     //         while (running) { if (recv_new_bytes()) win.wake(); }
     //     }).detach();
     //
-    // 它只做两件事：置 need_frame、往自己窗口投一条无副作用的消息/空事件。
-    // 主线程调用也可以用来主动唤醒窗口。
+    // 通知内核事件/管道，由 UI 线程消费后请求一帧；不会从后台调用 Xlib/AppKit。
+    // 主线程也可调用。调用方保证窗口存活，后台线程须在窗口析构前结束。
     void wake();
 
     // 常驻动画（spinner / 光标闪烁 / hover 插值）的重绘帧率上限，默认 60fps。
@@ -1430,6 +1430,12 @@ extern char** environ;
 #include <deque>
 #include <memory>
 #include <fstream>
+#include <atomic>
+#if !defined(AINO_PLATFORM_WINDOWS)
+#  include <poll.h>
+#  include <fcntl.h>
+#  include <cerrno>
+#endif
 
 namespace aino {
 namespace detail {
@@ -10129,6 +10135,93 @@ void Ui::scroll_to_index(const Rect& box, int index, float item_h, int count) {
 // =============================================================================
 //  8.17  Window 内部状态
 // =============================================================================
+namespace detail {
+// 后台通知只接触事件/管道，不调用窗口系统。pending 保留 drain 期间到达的请求。
+class WakeSignal {
+public:
+    WakeSignal() {
+#ifdef AINO_PLATFORM_WINDOWS
+        event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+#else
+        if (::pipe(pipe_) == 0) {
+            for (int fd : pipe_) {
+                const int flags = fcntl(fd, F_GETFL);
+                const int descriptor = fcntl(fd, F_GETFD);
+                if (flags < 0 || descriptor < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 ||
+                    fcntl(fd, F_SETFD, descriptor | FD_CLOEXEC) < 0) {
+                    ::close(pipe_[0]); ::close(pipe_[1]);
+                    pipe_[0] = pipe_[1] = -1;
+                    break;
+                }
+            }
+        }
+#endif
+    }
+    ~WakeSignal() {
+#ifdef AINO_PLATFORM_WINDOWS
+        if (event_) CloseHandle(event_);
+#else
+        for (int fd : pipe_) if (fd >= 0) ::close(fd);
+#endif
+    }
+    WakeSignal(const WakeSignal&) = delete;
+    WakeSignal& operator=(const WakeSignal&) = delete;
+    bool valid() const {
+#ifdef AINO_PLATFORM_WINDOWS
+        return event_ != nullptr;
+#else
+        return pipe_[0] >= 0;
+#endif
+    }
+    void notify() {
+        if (pending_.exchange(true)) return;
+#ifdef AINO_PLATFORM_WINDOWS
+        if (event_) SetEvent(event_);
+#else
+        if (pipe_[1] >= 0) {
+            const char byte = 1;
+            while (::write(pipe_[1], &byte, 1) < 0 && errno == EINTR) {}
+        }
+#endif
+    }
+    bool consume() {
+        const bool requested = pending_.exchange(false);
+#ifdef AINO_PLATFORM_WINDOWS
+        if (event_) WaitForSingleObject(event_, 0);
+#else
+        char bytes[128];
+        if (pipe_[0] >= 0) {
+            while (true) {
+                const auto n = ::read(pipe_[0], bytes, sizeof bytes);
+                if (n > 0 || (n < 0 && errno == EINTR)) continue;
+                break;
+            }
+        }
+#endif
+        return requested;
+    }
+    void wait(int timeout_ms = -1, int native_fd = -1) {
+        if (pending_.load()) return;
+#ifdef AINO_PLATFORM_WINDOWS
+        (void)native_fd;
+        const DWORD timeout = timeout_ms < 0 ? INFINITE : DWORD(timeout_ms);
+        MsgWaitForMultipleObjects(event_ ? 1 : 0, event_ ? &event_ : nullptr,
+                                  FALSE, timeout, QS_ALLINPUT);
+#else
+        pollfd fds[2] = {{pipe_[0], POLLIN, 0}, {native_fd, POLLIN, 0}};
+        ::poll(fds, 2, timeout_ms);
+#endif
+    }
+private:
+    std::atomic<bool> pending_{false};
+#ifdef AINO_PLATFORM_WINDOWS
+    HANDLE event_ = nullptr;
+#else
+    int pipe_[2] = {-1, -1};
+#endif
+};
+} // namespace detail
+
 struct Window::Impl {
     Ui ui;
     Theme theme = Theme::light();
@@ -10137,7 +10230,8 @@ struct Window::Impl {
     // 最小 / 最大尺寸的**物理像素**版本，由后端在创建时算好（含边框）。
     // WM_GETMINMAXINFO 里只有它、没有逻辑坐标换算的余量可算。
     int min_pw = 0, min_ph = 0, max_pw = 0, max_ph = 0;
-    bool running = true;
+    std::atomic<bool> running{true};
+    detail::WakeSignal wake_signal;
     bool need_frame = true;
     // 上一帧的时刻（毫秒）。每窗口独立 —— 见 render() 里的说明。
     uint64_t last_frame_ms = 0;
@@ -10201,6 +10295,7 @@ Window::Window(int w, int h, const std::string& title)
     : Window(WindowConfig{ w, h, title }) {}
 
 Window::Window(const WindowConfig& cfg) : impl(new Impl()) {
+    if (!impl->wake_signal.valid()) return;
     impl->cfg = cfg;
     impl->theme = Theme::light();
     // 字体家族名先进主题，再交给后端建文本渲染器 —— 渲染器和主题必须用同一个
@@ -10317,6 +10412,14 @@ void  Window::set_move_fps(float fps) {
 }
 
 void  Window::set_hover_skip(bool on) { impl->hover_skip = on; }
+
+// 调用方须保证窗口存活；后台线程必须在 Window 析构前结束。
+void Window::wake() { if (impl) impl->wake_signal.notify(); }
+void Window::close() {
+    if (!impl) return;
+    impl->running.store(false);
+    impl->wake_signal.notify();
+}
 
 #ifdef AINO_PLATFORM_WINDOWS
 // =============================================================================
@@ -11225,6 +11328,7 @@ bool Window::poll() {
     Window::Impl* o = impl;
     detail::Win32State* s = reinterpret_cast<detail::Win32State*>(o->native);
     if (!s || !o->running) return false;
+    if (o->wake_signal.consume()) o->need_frame = true;
 
     MSG msg;
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -11336,7 +11440,7 @@ void Window::run(const std::function<void(Ui&)>& frame) {
             if (el_us < budget_us) detail::win_timer().wait_us(budget_us - el_us);
         } else {
             // 没有待办 → 阻塞在内核里等消息。这就是空闲 0% CPU 的来源。
-            WaitMessage();
+            o->wake_signal.wait();
         }
     }
     o->frame_cb_ptr = nullptr;
@@ -11360,26 +11464,6 @@ void Window::set_size(int w, int h) {
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
-// 跨线程叫醒主循环：置标志 + 投一条 WM_NULL（对窗口自身零副作用，close() 用的同一招）。
-// 主循环空闲时阻塞在 WaitMessage()，只改标志位叫不醒它。
-void Window::wake() {
-    Window::Impl* o = impl;
-    if (!o) return;
-    o->need_frame = true;
-    detail::Win32State* s = reinterpret_cast<detail::Win32State*>(o->native);
-    if (s && s->hwnd) PostMessageW(s->hwnd, WM_NULL, 0, 0);
-}
-
-void Window::close() {
-    Window::Impl* o = impl;
-    if (!o) return;
-    o->running = false;
-    // 主循环多数时间阻塞在 WaitMessage() 里 —— 只置标志位叫不醒它，得投一条
-    // 消息把阻塞打断。从别的线程（后台任务、自动化探针）调 close() 时这条是
-    // 必须的，否则进程会一直挂着不退出。WM_NULL 对窗口本身没有任何副作用。
-    detail::Win32State* s = reinterpret_cast<detail::Win32State*>(o->native);
-    if (s && s->hwnd) PostMessageW(s->hwnd, WM_NULL, 0, 0);
-}
 
 // OpenClipboard 可能因其它进程占用而失败；最多重试 8 次，每次间隔 1ms。
 namespace detail {
@@ -12854,6 +12938,7 @@ bool Window::poll() {
     Window::Impl* o = impl;
     detail::X11State* s = reinterpret_cast<detail::X11State*>(o->native);
     if (!s || !o->running) return false;
+    if (o->wake_signal.consume()) o->need_frame = true;
     while (XPending(s->dpy)) {
         XEvent e;
         XNextEvent(s->dpy, &e);
@@ -12905,10 +12990,7 @@ void Window::run(const std::function<void(Ui&)>& frame) {
             const uint64_t el = detail::x11_ticks_ms() - t0;
             if (el < o->anim_budget_ms) usleep(useconds_t((o->anim_budget_ms - el) * 1000));
         } else {
-            // 阻塞等事件（XNextEvent 会睡在内核里）
-            XEvent e;
-            XNextEvent(s->dpy, &e);
-            detail::x11_handle(s, e);
+            o->wake_signal.wait(-1, ConnectionNumber(s->dpy));
         }
     }
     o->frame_cb_ptr = nullptr;
@@ -12921,29 +13003,6 @@ void Window::set_title(const std::string& title) {
 void Window::set_size(int w, int h) {
     detail::X11State* s = reinterpret_cast<detail::X11State*>(impl->native);
     if (s && s->dpy && s->win) XResizeWindow(s->dpy, s->win, unsigned(std::max(1, int(w * impl->scale + .5f))), unsigned(std::max(1, int(h * impl->scale + .5f))));
-}
-void Window::close() { if (impl) impl->running = false; }
-
-// X11 的主循环阻塞在 XNextEvent。往自己窗口投一条 ClientMessage（data.l[0]=0，
-// 不会命中 wm_delete）就能把它捅醒；x11_handle 里这条消息落到 default 分支，
-// 除了让循环再空转一圈之外没有别的效果。
-//
-// 提醒：这是"同一个 Xlib 连接被两个线程碰"。Xlib 在 XInitThreads() 之前不是
-// 线程安全的，aino 的 X11 后端没有调它 —— 所以 Linux 上后台线程只改标志，
-// wake() 留给主线程调；要直接从后台线程调，请在建窗前自己 XInitThreads()。
-void Window::wake() {
-    Window::Impl* o = impl;
-    if (!o) return;
-    o->need_frame = true;
-    detail::X11State* s = reinterpret_cast<detail::X11State*>(o->native);
-    if (!s || !s->dpy || !s->win) return;
-    XEvent e{};
-    e.type = ClientMessage;
-    e.xclient.window = s->win;
-    e.xclient.message_type = None;
-    e.xclient.format = 32;
-    XSendEvent(s->dpy, s->win, False, 0, &e);
-    XFlush(s->dpy);
 }
 
 void Window::set_clipboard(const std::string& text) {
@@ -13352,6 +13411,7 @@ bool Window::poll() {
     Window::Impl* o = impl;
     detail::CocoaState* s = reinterpret_cast<detail::CocoaState*>(o->native);
     if (!s) return false;
+    if (o->wake_signal.consume()) o->need_frame = true;
     // 抽干一次 runloop
     id distant = oc_send<id>(oc_send<id>(objc_getClass("NSDate"), sel_registerName("alloc")),
                              sel_registerName("init"));
@@ -13431,15 +13491,6 @@ void Window::set_size(int w, int h) {
     detail::CocoaState* s = reinterpret_cast<detail::CocoaState*>(impl->native);
     if (s && s->window)
         oc_send<void>(s->window, sel_registerName("setContentSize:"), CGSizeMake(CGFloat(w), CGFloat(h)));
-}
-void Window::close() { if (impl) impl->running = false; }
-
-// macOS 的 run() 是 usleep(2000) 轮询（没有真阻塞），所以只改标志就够了，
-// 后台线程直接调也不会碰 UIKit/AppKit。
-void Window::wake() {
-    Window::Impl* o = impl;
-    if (!o) return;
-    o->need_frame = true;
 }
 void Window::set_clipboard(const std::string&) {}
 std::string Window::clipboard() const { return std::string(); }
