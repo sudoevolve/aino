@@ -587,6 +587,39 @@ int main() {
     f.frame(full, time.x + 40, time.y + 104, false, false, -1);
     expect(app.hour == (hour + 1) % 24, "hour picker responds to the mouse wheel");
     expect(approximately(app.content_offset, offset), "wheel picker does not also scroll the outer gallery");
+    {
+        Fixture picker;
+        App state;
+        for (bool dark : {false, true}) {
+            picker.ui.set_theme(dark ? aino::Theme::dark() : aino::Theme::light());
+            for (float scale : {1.f, 1.5f, 2.f}) {
+                for (float width : {160.f, 300.f}) {
+                    const Rect body{40, 40, width, 180};
+                    const float gap_x = body.x + std::min(80.f, (body.w - 24) / 2);
+                    picker.frame([&] { draw_datetime(picker.ui, state, Time, body); },
+                                 -100, -100, false, false, 0, scale);
+                    GdiFlush();
+                    const Color background = picker.ui.theme().background;
+                    int left = picker.canvas.w, right = -1;
+                    for (int y = int((body.y + 52) * scale); y < int((body.y + 78) * scale); ++y) {
+                        for (int x = int((gap_x + 2) * scale); x < int((gap_x + 22) * scale); ++x) {
+                            const Color ink = picker.pixel(x, y);
+                            if (std::abs(int(ink.r) - int(background.r)) > 32 ||
+                                std::abs(int(ink.g) - int(background.g)) > 32 ||
+                                std::abs(int(ink.b) - int(background.b)) > 32) {
+                                left = std::min(left, x);
+                                right = std::max(right, x);
+                            }
+                        }
+                    }
+                    const bool centered = right >= left &&
+                        std::fabs((left + right + 1) * .5f / scale - (gap_x + 12)) <= 1.5f;
+                    expect(centered, "time separator ink stays centered between wheels "
+                                     "at every tested theme, DPI and width");
+                }
+            }
+        }
+    }
     app.pending_anchor = 9;
     f.frame(full);
     f.frame(full);

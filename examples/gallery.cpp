@@ -606,7 +606,7 @@ void draw_datetime(Ui &ui, App &a, CardId id, Rect b) {
     } else {
         float w = std::min(80.f, (b.w - 24) / 2);
         time_wheel(ui, &a.hour, 24, {b.x, b.y, w, 130}, "滚轮选择小时");
-        label(ui, ":", {b.x + w, b.y + 52, 24, 26}, 20);
+        ui.draw_text(":", {b.x + w, b.y + 52, 24, 26}, ui.theme().label, Style().font(20).center());
         time_wheel(ui, &a.minute, 60, {b.x + w + 24, b.y, w, 130}, "滚轮选择分钟");
         char text[40];
         std::snprintf(text, sizeof(text), "所选时间：%02d:%02d", a.hour, a.minute);
