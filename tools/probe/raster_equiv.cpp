@@ -140,7 +140,7 @@ static void ref_poly(Canvas& cv, const std::vector<Vec2>& pts, const Color& c) {
 // ---------------------------------------------------------------------------
 static int compare(const char* what, const Canvas& a, const Canvas& b, int W, int H) {
     int worst = 0, bad = 0;
-    int fx = -1, fy = -1, fr = 0, fg2 = 0, fb = 0;
+    int fx = -1, fy = -1, fr = 0, fg2 = 0;
     for (int y = 0; y < H; ++y) {
         const uint8_t* pa = a.px + size_t(y) * size_t(a.stride);
         const uint8_t* pb = b.px + size_t(y) * size_t(b.stride);
@@ -151,7 +151,7 @@ static int compare(const char* what, const Canvas& a, const Canvas& b, int W, in
                 ++bad;
                 if (fx < 0) {
                     fx = (x / 4); fy = y; fr = pa[(x / 4) * 4 + 1];
-                    fg2 = pb[(x / 4) * 4 + 1]; fb = pa[(x / 4) * 4 + 0];
+                    fg2 = pb[(x / 4) * 4 + 1];
                 }
             }
         }

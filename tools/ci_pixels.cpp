@@ -28,8 +28,7 @@
 //
 //  作者：sudoevolve <sudoevolve@gmail.com>
 //  编译：g++ -std=c++17 -O2 ci_pixels.cpp -o ci_pixels -lX11 -ldl
-//        clang++ -std=c++17 -O2 ci_pixels.cpp -o ci_pixels \
-//                -framework Cocoa -framework CoreText -framework CoreGraphics
+//        clang++ -std=c++17 -O2 ci_pixels.cpp -o ci_pixels -framework Cocoa -framework CoreText -framework CoreGraphics
 // =============================================================================
 #define AINO_IMPLEMENTATION
 #include "../aino.hpp"
@@ -196,15 +195,6 @@ static void want_clean(const Shot& s, const Rect& r, const Color& bg, const char
     char buf[96];
     std::snprintf(buf, sizeof buf, "该区域本应全是背景 %s，却有 %d 个像素被改过",
                   c2s(bg).c_str(), n);
-    fail(name, buf);
-}
-
-// 该区域必须画了东西（数量下限），用来抓"根本没画上去"
-static void want_ink(const Shot& s, const Rect& r, const Color& bg, int min_px, const char* name) {
-    const int n = count_diff(s, r, bg);
-    if (n >= min_px) { pass(name); return; }
-    char buf[96];
-    std::snprintf(buf, sizeof buf, "只画上 %d 个像素（至少期望 %d）", n, min_px);
     fail(name, buf);
 }
 

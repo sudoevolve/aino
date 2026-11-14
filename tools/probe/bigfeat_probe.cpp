@@ -72,8 +72,6 @@ struct Surface {
     }
 };
 
-static aino::Ui* g_ui = nullptr;
-
 struct Harness {
     aino::Ui ui;
     aino::detail::GdiTextRenderer tr;

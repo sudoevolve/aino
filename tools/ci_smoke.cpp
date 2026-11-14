@@ -13,8 +13,7 @@
 //
 //  作者：sudoevolve <sudoevolve@gmail.com>
 //  编译：g++ -std=c++17 -O2 ci_smoke.cpp -o ci_smoke -lX11 -ldl
-//        clang++ -std=c++17 -O2 ci_smoke.cpp -o ci_smoke \
-//                -framework Cocoa -framework CoreText -framework CoreGraphics
+//        clang++ -std=c++17 -O2 ci_smoke.cpp -o ci_smoke -framework Cocoa -framework CoreText -framework CoreGraphics
 // =============================================================================
 #define AINO_IMPLEMENTATION
 #include "../aino.hpp"

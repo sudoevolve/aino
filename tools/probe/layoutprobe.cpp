@@ -18,11 +18,6 @@ static void chk(const char* name, const Rect& r, float x, float y, float w, floa
     std::printf("[FAIL] %-38s got (%.2f,%.2f,%.2f,%.2f)  want (%.2f,%.2f,%.2f,%.2f)\n",
                 name, r.x, r.y, r.w, r.h, x, y, w, h);
 }
-static void chkn(const char* name, float got, float want) {
-    if (approx(got, want)) { ++g_pass; return; }
-    ++g_fail;
-    std::printf("[FAIL] %-38s got %.3f  want %.3f\n", name, got, want);
-}
 
 int main() {
     // ---- T1 纵向顺序 + 元素间 gap ----

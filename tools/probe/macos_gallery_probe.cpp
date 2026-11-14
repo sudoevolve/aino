@@ -601,9 +601,7 @@ int main() {
     app.pending_anchor = 12;
     f.frame(full);
     f.frame(full);
-    Rect carousel = app.card_rects[Carousel];
-    // The carousel spans the full grid and may be below the viewport; target its
-    // section locally too.
+    // The carousel may be below the viewport; target its card locally too.
     f.frame([] {});
     f.frame([] {});
     auto carousel_body = [&] { draw_cards(f.ui, app, Carousel, {20, 20, 500, 200}); };
