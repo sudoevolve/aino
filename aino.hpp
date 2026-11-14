@@ -1430,6 +1430,8 @@ extern char** environ;
 #include <cstdarg>
 #include <algorithm>
 #include <chrono>
+#include <list>
+#include <limits>
 #include <unordered_map>
 #include <deque>
 #include <memory>
@@ -3593,7 +3595,7 @@ struct Ui::Impl {
     // 撤销栈（每个编辑控件一份，按 id 记忆）
     struct EditSnap { std::string text; int caret = 0; int anchor = -1; };
     struct EditStack {
-        std::vector<EditSnap> undo, redo;
+        std::deque<EditSnap> undo, redo;
         float last = -1e9f;       // 上次压栈时间（合并连续输入用）
         uint64_t kind = 0;
     };
@@ -3720,12 +3722,13 @@ struct Ui::Impl {
         int weight = 0;
         bool wrap = false;
         std::vector<std::string> lines;
-        uint64_t used = 0;
+        std::list<uint64_t>::iterator recency;
         size_t bytes = 0;
     };
     std::unordered_map<uint64_t, WrapEntry> wrap_cache;
+    std::list<uint64_t> wrap_lru; // 首部最近使用，尾部可 O(1) 淘汰。
+    std::vector<std::string> wrap_scratch; // 超预算结果只保留到下次折行调用。
     size_t   wrap_bytes = 0;
-    uint64_t wrap_clock = 0;
     size_t   wrap_evictions = 0;      // 统计：被淘汰的段数（探针用）
 
     // 单字宽度缓存：首次折行时每个码点只问一次 GDI。
@@ -4834,13 +4837,26 @@ inline void layout_wrapped_lines(TextRenderer* tr, const std::string& text,
 // 内存有上限（默认 6 MB，环境变量 AINO_WRAP_BUDGET 可改，单位 KiB）：超了按
 // 最久未用淘汰。一段 20 万字的中文大约 1.6 MB 行文本，够放 3~4 段，覆盖
 // "正在看的文档 + 上一份文档"这种真实场景。
+inline size_t memory_budget_kib(const char* variable, size_t fallback) {
+    const char* value = std::getenv(variable);
+    if (!value || *value < '1' || *value > '9') return fallback;
+    char* end = nullptr;
+    const auto n = std::strtoull(value, &end, 10);
+    if (!end || *end || !n || n > std::numeric_limits<size_t>::max() / 1024u) return fallback;
+    return size_t(n) * 1024u;
+}
+
 inline const std::vector<std::string>& wrap_layout(Ui::Impl* im, const std::string& text,
                                                    float max_w, float pfs, int weight, bool wrap) {
     static const std::vector<std::string> kEmpty;
     if (!im->text) return kEmpty;
     // 空串按直接折行的结果走（1 个空行），别在这里搞特殊 —— 否则
     // "缓存命中"和"直接折行"在边界上会给出不同的行数。
-    if (text.empty()) { static const std::vector<std::string> kOne(1); return kOne; }
+    if (text.empty()) {
+        std::vector<std::string>().swap(im->wrap_scratch);
+        static const std::vector<std::string> kOne(1);
+        return kOne;
+    }
 
     // 键里放地址而不是内容哈希：内容哈希要遍历整串（20 万字 ≈ 200µs/帧），
     // 地址在调用方的 string 不扩容时是稳定的。命中后用 memcmp 兜底校验，
@@ -4852,17 +4868,18 @@ inline const std::vector<std::string>& wrap_layout(Ui::Impl* im, const std::stri
     k ^= (uint64_t(uint32_t(weight & 0xFFFF)) << 9);
     k ^= wrap ? 1u : 0u;
 
-    ++im->wrap_clock;
     auto it = im->wrap_cache.find(k);
     if (it != im->wrap_cache.end()) {
         Ui::Impl::WrapEntry& e = it->second;
         if (e.max_w == max_w && e.pfs == pfs && e.weight == weight && e.wrap == wrap
             && e.text.size() == text.size()
             && std::memcmp(e.text.data(), text.data(), text.size()) == 0) {
-            e.used = im->wrap_clock;
+            im->wrap_lru.splice(im->wrap_lru.begin(), im->wrap_lru, e.recency);
+            std::vector<std::string>().swap(im->wrap_scratch);
             return e.lines;
         }
         im->wrap_bytes -= e.bytes;            // 过期条目直接换掉
+        im->wrap_lru.erase(e.recency);
         im->wrap_cache.erase(it);
     }
 
@@ -4873,31 +4890,29 @@ inline const std::vector<std::string>& wrap_layout(Ui::Impl* im, const std::stri
     e.pfs    = pfs;
     e.weight = weight;
     e.wrap   = wrap;
-    e.used   = im->wrap_clock;
-    e.bytes  = e.text.size() + 64;
-    for (const std::string& l : e.lines) e.bytes += l.size() + 40;   // 行内容 + string 头部
+    e.bytes = sizeof(e) + e.text.capacity() + 1 + e.lines.capacity() * sizeof(std::string);
+    for (const std::string& l : e.lines) e.bytes += l.capacity() + 1;
 
-    static const size_t kBudget = [] {
-        if (const char* v = std::getenv("AINO_WRAP_BUDGET")) {
-            const long n = std::strtol(v, nullptr, 10);
-            if (n > 0) return size_t(n) * 1024u;
-        }
-        return size_t(6u << 20);
-    }();
+    static const size_t kBudget = memory_budget_kib("AINO_WRAP_BUDGET", size_t(6u << 20));
+    if (e.bytes > kBudget) {
+        im->wrap_scratch = std::move(e.lines);
+        return im->wrap_scratch; // 不驱逐热缓存，也不将超大条目塞进预算。
+    }
 
     // 先腾地方再插入：保证"刚算出来的这段"不会一进去就把自己挤掉
-    while (im->wrap_bytes + e.bytes > kBudget && !im->wrap_cache.empty()) {
-        uint64_t oldest_key = 0, oldest = ~0ull;
-        for (const auto& kv : im->wrap_cache)
-            if (kv.second.used < oldest) { oldest = kv.second.used; oldest_key = kv.first; }
-        auto o = im->wrap_cache.find(oldest_key);
+    while (im->wrap_bytes > kBudget - e.bytes && !im->wrap_lru.empty()) {
+        auto o = im->wrap_cache.find(im->wrap_lru.back());
         im->wrap_bytes -= o->second.bytes;
         im->wrap_cache.erase(o);
+        im->wrap_lru.pop_back();
         ++im->wrap_evictions;
     }
 
     im->wrap_bytes += e.bytes;
+    im->wrap_lru.push_front(k);
+    e.recency = im->wrap_lru.begin();
     auto ins = im->wrap_cache.emplace(k, std::move(e));
+    std::vector<std::string>().swap(im->wrap_scratch);
     return ins.first->second.lines;
 }
 
@@ -5483,18 +5498,47 @@ enum : uint64_t { EDIT_TYPE = 1, EDIT_DELETE = 2, EDIT_OTHER = 3 };
 
 // 压一份"改动前"的快照。连续同类输入（0.7s 内）合并成一步 —— 否则打 20 个字
 // 要按 20 次 Ctrl+Z 才能退掉一句话，这是编辑器最让人烦的细节之一。
+inline size_t edit_history_bytes(const Ui::Impl::EditStack& st) {
+    size_t bytes = 0;
+    for (const auto& s : st.undo) bytes += sizeof(s) + s.text.capacity() + 1;
+    for (const auto& s : st.redo) bytes += sizeof(s) + s.text.capacity() + 1;
+    return bytes;
+}
+inline size_t edit_history_budget() {
+    static const size_t budget = memory_budget_kib("AINO_UNDO_BUDGET", size_t(4u << 20));
+    return budget;
+}
+inline void trim_edit_history(Ui::Impl::EditStack& st) {
+    const size_t budget = edit_history_budget();
+    size_t bytes = edit_history_bytes(st);
+    while (st.undo.size() + st.redo.size() > 200 || bytes > budget) {
+        // 两端只删最远历史，留下的撤销/重做链仍连续；空栈不参与选择。
+        auto& stack = st.undo.size() > st.redo.size() ? st.undo : st.redo;
+        if (stack.empty()) break;
+        bytes -= sizeof(stack.front()) + stack.front().text.capacity() + 1;
+        stack.pop_front();
+    }
+}
+
 inline void edit_snapshot(Ui::Impl* im, uint64_t id, const std::string& before,
                           int caret0, int anchor0, uint64_t kind) {
     auto& st = im->edit_stack[id];
     const float now = im->clock;
+    if (before.size() > edit_history_budget() - sizeof(Ui::Impl::EditSnap) - 1) {
+        st.undo.clear();
+        st.redo.clear();
+        st.kind = 0;
+        st.last = now;
+        return;
+    }
     if (kind != EDIT_OTHER && st.kind == kind && !st.undo.empty() && (now - st.last) < 0.7f) {
         st.last = now;
         st.redo.clear();
         return;
     }
     st.undo.push_back(Ui::Impl::EditSnap{before, caret0, anchor0});
-    if (st.undo.size() > 200) st.undo.erase(st.undo.begin());
     st.redo.clear();
+    trim_edit_history(st);
     st.last = now;
     st.kind = kind;
 }
@@ -5504,11 +5548,12 @@ inline bool edit_undo(Ui::Impl* im, uint64_t id, std::string* text, int* caret, 
     if (!saved || saved->undo.empty()) return false;
     auto& st = *saved;
     st.redo.push_back(Ui::Impl::EditSnap{*text, *caret, *anchor});
-    const Ui::Impl::EditSnap s = st.undo.back();
+    Ui::Impl::EditSnap s = std::move(st.undo.back());
     st.undo.pop_back();
-    *text = s.text;
+    *text = std::move(s.text);
     *caret = s.caret;
     *anchor = s.anchor;
+    trim_edit_history(st);
     st.kind = 0;
     st.last = -1e9f;                       // 撤销之后不再和后续输入合并
     if (im->request_repaint) im->request_repaint();
@@ -5520,11 +5565,12 @@ inline bool edit_redo(Ui::Impl* im, uint64_t id, std::string* text, int* caret, 
     if (!saved || saved->redo.empty()) return false;
     auto& st = *saved;
     st.undo.push_back(Ui::Impl::EditSnap{*text, *caret, *anchor});
-    const Ui::Impl::EditSnap s = st.redo.back();
+    Ui::Impl::EditSnap s = std::move(st.redo.back());
     st.redo.pop_back();
-    *text = s.text;
+    *text = std::move(s.text);
     *caret = s.caret;
     *anchor = s.anchor;
+    trim_edit_history(st);
     st.kind = 0;
     st.last = -1e9f;
     if (im->request_repaint) im->request_repaint();
