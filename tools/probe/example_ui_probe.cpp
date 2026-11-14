@@ -81,24 +81,33 @@ struct ExampleFrame {
 
 int main(int argc, char** argv) {
 #ifdef AINO_PROBE_SSH
-    // 所有持久化回归都重定向到临时 HOME，不访问开发者的连接或凭据。
+    // 所有持久化回归都重定向到专用目录；写入前先验证每条路径，失败即退出。
     struct TemporaryHome {
         std::filesystem::path root;
         std::string old;
         bool had_old = false;
         TemporaryHome() {
-            if (const char* value = std::getenv("USERPROFILE")) { old = value; had_old = true; }
+            if (const char* value = std::getenv("AINO_SSH_HOME")) { old = value; had_old = true; }
             root = std::filesystem::temp_directory_path() / ("aino-profile-" +
                 std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
             std::filesystem::create_directories(root);
-            _putenv_s("USERPROFILE", root.string().c_str());
+            _putenv_s("AINO_SSH_HOME", root.u8string().c_str());
         }
         ~TemporaryHome() {
-            _putenv_s("USERPROFILE", had_old ? old.c_str() : "");
+            _putenv_s("AINO_SSH_HOME", had_old ? old.c_str() : "");
             std::error_code ec;
             std::filesystem::remove_all(root, ec);
         }
     } temporary_home;
+    auto isolated = [&](const std::string& path) {
+        const auto relative = std::filesystem::u8path(path).lexically_relative(temporary_home.root);
+        return !relative.empty() && !relative.is_absolute() && *relative.begin() != "..";
+    };
+    if (!isolated(cfg_file()) || !isolated(download_file()) ||
+        !isolated(ssh_config_path()) || !isolated(sshc::KnownHosts{}.path)) {
+        std::puts("FAIL: refusing persistence tests outside the dedicated test home");
+        return 1;
+    }
 #endif
     ExampleFrame f;
 #ifdef AINO_PROBE_SSH

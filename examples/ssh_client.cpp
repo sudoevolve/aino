@@ -154,8 +154,11 @@ const char* src_badge(int src) {
     }
 }
 
-// 优先通过系统账户 API 查询主目录，再回退到环境变量，避免继承的 USERPROFILE 指向其他账户。
+// 显式独立目录优先；否则通过系统账户 API 查询，避免继承的 USERPROFILE 指向其他账户。
 std::string home_dir() {
+    if (const char* p = std::getenv("AINO_SSH_HOME")) {
+        if (*p) return p;
+    }
 #if defined(_WIN32)
     PWSTR pw = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, KF_FLAG_DEFAULT, nullptr, &pw)) && pw) {

@@ -35,6 +35,9 @@ inline std::string fmt(const char* f, ...) {
 }
 
 inline std::string home_dir() {
+    if (const char* p = std::getenv("AINO_SSH_HOME")) {
+        if (*p) return p;
+    }
 #if defined(_WIN32)
     const char* p = std::getenv("USERPROFILE");
     if (!p) p = std::getenv("HOMEDRIVE");
