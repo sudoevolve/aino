@@ -108,7 +108,7 @@ cmake -S "$deps/libssh2-1.11.1" -B "$deps/l2mbed" -G Ninja `
   -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON `
   -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF -DENABLE_ZLIB_COMPRESSION=OFF `
   -DCRYPTO_BACKEND=mbedTLS -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
-  -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL `
+  -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
   "-DMBEDTLS_INCLUDE_DIR=$deps/mbedtls-3.6.2/include" `
   "-DMBEDCRYPTO_LIBRARY=$deps/mbedtls-3.6.2/mbedtls_all.lib"
 cmake --build "$deps/l2mbed" --config Release
@@ -119,8 +119,8 @@ cmake --build build --config Release --target aino_ssh
 `build/` 是构建目录，不属于核心库分发；仓库不自动下载 SSH 依赖。安装好依赖后，
 `python tools/build_ssh.py app` 也可构建客户端，`term` 构建终端解析探针，`ui` 构建界面探针。
 `--asan` 使用当前 MSVC 工具链的 ASan x64 运行库，并复制到 EXE 旁。
-libssh2 与 mbedTLS 静态链接不等于 CRT 静态链接：SSH 使用 `/MD`，目标系统仍需对应的
-VC++ 运行库；不能仅凭本机启动成功就认定可在未安装运行库的机器上独立运行。
+发布构建的 libssh2、mbedTLS 与客户端统一使用 `/MT`；已有 `/MD` 依赖必须按上述命令
+重新构建，不能混用 CRT。`--asan` 仍需要对应的 ASan 诊断运行库，不作为单文件发布产物。
 
 MinGW 使用 libssh2 的 WinCNG 后端时，面向 Windows 10 及以上系统须显式启用
 `-DENABLE_ECDSA_WINCNG=ON`，以编入 ECDH 密钥交换。仅有源码中的算法优先级列表
@@ -138,6 +138,32 @@ cmake --build "$deps/l2wincng" --parallel 2
 主项目使用 `AINO_LIBSSH2_INCLUDE_DIR` 和 `AINO_LIBSSH2_LIBRARY` 指向该库的头文件目录和
 静态库文件。启用 SSH 和测试时，CTest 的 `ssh_crypto` 会检查实际链接库是否具备
 Curve25519/ECDH，不连接服务器，也不访问用户配置或凭据。此项通过仍不能代替真实握手和认证。
+
+Windows 单文件发布可使用提供完整静态运行时的 MinGW（例如已安装的 w64devkit）。
+在新的构建目录中指定工具链，依赖库也用同一工具链构建；仅修改当前 PowerShell 的 PATH：
+
+```powershell
+$mingw = 'C:/Tools/w64devkit/bin'
+$env:PATH = "$mingw;" + $env:PATH
+$deps = (Resolve-Path build/third_party).Path
+cmake -S "$deps/libssh2-1.11.1" -B "$deps/l2wincng-static" -G 'MinGW Makefiles' `
+  "-DCMAKE_C_COMPILER=$mingw/gcc.exe" "-DCMAKE_MAKE_PROGRAM=$mingw/mingw32-make.exe" `
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON `
+  -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF -DENABLE_ZLIB_COMPRESSION=OFF `
+  -DCRYPTO_BACKEND=WinCNG -DENABLE_ECDSA_WINCNG=ON
+cmake --build "$deps/l2wincng-static" --parallel 3
+cmake -S . -B build/ssh-static -G 'MinGW Makefiles' `
+  "-DCMAKE_CXX_COMPILER=$mingw/g++.exe" "-DCMAKE_MAKE_PROGRAM=$mingw/mingw32-make.exe" `
+  -DCMAKE_BUILD_TYPE=Release -DAINO_STATIC_EXE=ON -DAINO_BUILD_SSH=ON -DAINO_BUILD_TESTS=ON `
+  "-DAINO_LIBSSH2_INCLUDE_DIR=$deps/libssh2-1.11.1/include" `
+  "-DAINO_LIBSSH2_LIBRARY=$deps/l2wincng-static/src/libssh2.a"
+cmake --build build/ssh-static --parallel 3
+ctest --test-dir build/ssh-static --output-on-failure
+```
+
+`AINO_STATIC_EXE=ON` 在静态运行时不完整时直接报错，不再自动回退为 EXE 加 DLL。
+MinGW 的 SSH 产物在构建后及 `ssh_static_runtime` 测试中检查实际导入表，只允许 Windows
+系统 DLL；`libwinpthread`、libstdc++、libgcc 或第三方加密 DLL 都会使检查失败。
 
 后台传输的定向检查使用仓库自带的本地服务器。测试工具另需 Python `paramiko`，
 仅用于检查，不是客户端运行依赖。在终端 A 启动：
@@ -167,10 +193,10 @@ python tools/build_ssh.py ui
 | GCC/X11 | `g++ -std=c++17 -O2 main.cpp -o app -lX11 -ldl` |
 | Clang/macOS | `clang++ -std=c++17 -O2 main.cpp -o app -framework Cocoa -framework CoreText -framework CoreGraphics` |
 
-Windows 普通示例默认静态链接编译器运行时，仍使用系统 DLL。
-`-static` 需要工具链提供完整静态运行时；不能全静态链接时可用
-`-static-libgcc -static-libstdc++`，并按导入表随附所需的 `libwinpthread-1.dll`。
-`AINO_STATIC_EXE=OFF` 可关闭 CMake 的全静态运行时请求。
+Windows 示例默认静态链接编译器运行时，仍使用系统 DLL。
+`-static` 需要工具链提供完整静态运行时；CMake 不会静默回退。
+仅当明确接受 DLL 部署时使用 `AINO_STATIC_EXE=OFF`；MinGW 此时采用
+`-static-libgcc -static-libstdc++`，并随附工具链提供的 `libwinpthread-1.dll`。
 
 Linux 文字后端运行时加载 FreeType/fontconfig，无需链接其开发库；缺失时回退到 XFontSet。
 中文还需安装 CJK 字体。Debian/Ubuntu 可安装：

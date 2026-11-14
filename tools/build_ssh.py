@@ -1,4 +1,4 @@
-"""构建 SSH 客户端与探针（MSVC x64、静态 libssh2 + mbedTLS、动态 CRT）。
+"""构建 SSH 客户端与探针（MSVC x64、静态 libssh2 + mbedTLS、静态 CRT）。
 
 依赖准备见 docs/01-quickstart.md；本脚本不下载第三方源码。
 ASan 构建从当前 MSVC 工具链复制运行库，不使用仓库内预编译 DLL。
@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 from msvc_build import msvc_env  # noqa: E402
 
 L2_SRC = os.path.join(ROOT, "build", "third_party", "libssh2-1.11.1", "include")
-# libssh2 与 mbedTLS 均静态链接；/MD 仍要求目标系统安装对应的 VC++ 运行库。
+# libssh2、mbedTLS 和客户端统一使用 /MT；依赖更换 CRT 后必须重新构建。
 L2_BUILD = os.path.join(ROOT, "build", "third_party", "l2mbed", "src")
 L2_LIB = os.path.join(L2_BUILD, "libssh2.lib")
 MBED_DIR = os.path.join(ROOT, "build", "third_party", "mbedtls-3.6.2")
@@ -54,7 +54,7 @@ def build(src, out, extra_flags=(), asan=False, gui=False):
     if not os.path.isfile(cl):
         raise SystemExit("找不到 cl.exe（VCToolsInstallDir 没导出来）")
     cmd = [cl, "/nologo", "/std:c++17", "/utf-8", "/EHsc", "/W3",
-           "/DNDEBUG", "/DNOMINMAX", "/MD"]
+           "/DNDEBUG", "/DNOMINMAX", "/MT"]
     if asan:
         cmd += ["/fsanitize=address", "/Od", "/Zi"]
     else:
@@ -63,7 +63,7 @@ def build(src, out, extra_flags=(), asan=False, gui=False):
     cmd += list(extra_flags)
     cmd += [L2_LIB, MBED_LIB, "user32.lib", "gdi32.lib", "msimg32.lib", "ws2_32.lib", "crypt32.lib",
             "bcrypt.lib",     # mbedTLS 的熵源用 BCryptGenRandom
-            "shell32.lib", "ole32.lib"]     # shell32/ole32：SHBrowseForFolder 选下载目录
+            "shell32.lib", "ole32.lib", "uuid.lib"]     # 系统文件/目录选择及 KnownFolder ID
     if gui:
         # GUI 程序必须声明 WINDOWS 子系统，否则双击/启动会先弹一个黑色控制台窗口
         # （就是"启动还开着个终端"）。入口是 WinMain 转发，见 ssh_client.cpp。

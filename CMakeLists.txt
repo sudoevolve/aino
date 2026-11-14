@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(AINO_STATIC_EXE "静态链接普通示例的编译器运行时" ON)
+option(AINO_STATIC_EXE "静态链接 Windows 示例及测试的编译器运行时" ON)
 if(MSVC AND AINO_STATIC_EXE)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
@@ -49,19 +49,22 @@ function(aino_configure_target name)
     else()
         target_compile_options(${name} PRIVATE -Wall)
         if(MINGW)
-            # 配置期验证静态运行时是否完整；失败时回退并随附 pthread DLL。
-            set(_aino_static_ok OFF)
+            # 静态请求不能静默回退成依赖 pthread DLL 的产物。
             if(AINO_STATIC_EXE)
                 include(CheckCXXSourceCompiles)
+                include(CMakePushCheckState)
+                cmake_push_check_state(RESET)
                 set(CMAKE_REQUIRED_LINK_OPTIONS -static)
                 check_cxx_source_compiles(
-                    "#include <string>\nint main(){std::string s=\"x\";return s.size()==1?0:1;}"
-                    AINO_STATIC_LINK_OK)
-                unset(CMAKE_REQUIRED_LINK_OPTIONS)
-                set(_aino_static_ok ${AINO_STATIC_LINK_OK})
-            endif()
-
-            if(_aino_static_ok)
+                    "#include <string>\n#include <thread>\n#include <stdexcept>\nthread_local std::string value=\"x\";\nint main(){std::thread t([]{try{throw std::runtime_error(value);}catch(const std::exception&){}});t.join();}"
+                    AINO_STATIC_RUNTIME_LINK_OK)
+                cmake_pop_check_state()
+                if(NOT AINO_STATIC_RUNTIME_LINK_OK)
+                    message(FATAL_ERROR
+                        "AINO_STATIC_EXE=ON requires a complete static MinGW runtime. "
+                        "Choose a working toolchain with -DCMAKE_CXX_COMPILER in a new build directory "
+                        "(for example w64devkit), or explicitly use -DAINO_STATIC_EXE=OFF for a DLL build.")
+                endif()
                 target_link_options(${name} PRIVATE -static)
             else()
                 target_link_options(${name} PRIVATE -static-libgcc -static-libstdc++)
@@ -88,7 +91,7 @@ function(aino_add_ssh source)
     endif()
     if(WIN32 AND MSVC)
         set(_ssh_l2_inc  "${AINO_SSH_DEPS}/libssh2-1.11.1/include")
-        # 预编译 libssh2 使用 mbedTLS 后端与动态 CRT。
+        # libssh2 与 mbedTLS 的 CRT 必须与 AINO_STATIC_EXE 一致，默认 /MT。
         set(_ssh_l2_bld  "${AINO_SSH_DEPS}/l2mbed/src")
         set(_ssh_mbed_inc "${AINO_SSH_DEPS}/mbedtls-3.6.2/include")
         set(_ssh_mbed_lib "${AINO_SSH_DEPS}/mbedtls-3.6.2/mbedtls_all.lib")
@@ -108,8 +111,6 @@ function(aino_add_ssh source)
                 "  依赖构建说明见 docs/01-quickstart.md。")
         else()
             aino_add_demo(aino_ssh "${source}" NATIVE_ENTRY)
-            set_target_properties(aino_ssh PROPERTIES
-                MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
             target_include_directories(aino_ssh PRIVATE
                 "${_ssh_l2_inc}" "${_ssh_l2_bld}" "${_ssh_mbed_inc}")
             target_compile_definitions(aino_ssh PRIVATE NOMINMAX)
@@ -118,7 +119,7 @@ function(aino_add_ssh source)
                 "${_ssh_l2_bld}/libssh2.lib" "${_ssh_mbed_lib}"
                 msimg32
                 ws2_32 crypt32 bcrypt
-                shell32 ole32)
+                shell32 ole32 uuid)
         endif()
     else()
         find_path(AINO_LIBSSH2_INCLUDE_DIR libssh2.h)
@@ -132,8 +133,14 @@ function(aino_add_ssh source)
         find_package(Threads REQUIRED)
         target_link_libraries(aino_ssh PRIVATE "${AINO_LIBSSH2_LIBRARY}" Threads::Threads)
         if(WIN32)
-            target_link_libraries(aino_ssh PRIVATE ws2_32 crypt32 bcrypt shell32 ole32 msimg32)
+            target_link_libraries(aino_ssh PRIVATE ws2_32 crypt32 bcrypt shell32 ole32 uuid msimg32)
         endif()
+    endif()
+    if(TARGET aino_ssh AND MINGW AND AINO_STATIC_EXE)
+        add_custom_command(TARGET aino_ssh POST_BUILD
+            COMMAND ${CMAKE_COMMAND} "-DEXE=$<TARGET_FILE:aino_ssh>" "-DOBJDUMP=${CMAKE_OBJDUMP}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckStaticRuntime.cmake"
+            VERBATIM)
     endif()
 endfunction()
 

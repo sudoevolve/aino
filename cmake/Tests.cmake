@@ -43,6 +43,12 @@ if(WIN32)
 endif()
 
 if(TARGET aino_ssh)
+    if(MINGW AND AINO_STATIC_EXE)
+        add_test(NAME ssh_static_runtime COMMAND ${CMAKE_COMMAND}
+            "-DEXE=$<TARGET_FILE:aino_ssh>" "-DOBJDUMP=${CMAKE_OBJDUMP}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckStaticRuntime.cmake")
+        set_tests_properties(ssh_static_runtime PROPERTIES LABELS headless TIMEOUT 10)
+    endif()
     aino_add_test(ssh_crypto tools/probe/ssh_crypto_probe.cpp)
     set(_ssh_tests ssh_crypto)
     if(WIN32)

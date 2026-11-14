@@ -1,4 +1,4 @@
-"""用 MSVC x64 编译本地 mbedTLS 3.6.2 源码，生成 /MD 静态库。
+"""用 MSVC x64 编译本地 mbedTLS 3.6.2 源码，生成 /MT 静态库。
 
 直接编译 library/*.c，不依赖源码包中可能缺失的 CMake framework 子模块。
 
@@ -32,7 +32,7 @@ def main():
     BATCH = 25
     for i in range(0, len(srcs), BATCH):
         batch = srcs[i:i + BATCH]
-        cmd = [cl, "/nologo", "/c", "/O2", "/MD", "/DNDEBUG", "/DMBEDTLS_ALLOW_PRIVATE_ACCESS",
+        cmd = [cl, "/nologo", "/c", "/O2", "/MT", "/DNDEBUG", "/DMBEDTLS_ALLOW_PRIVATE_ACCESS",
                "/I", os.path.join(SRC, "include"), "/I", os.path.join(SRC, "library"),
                "/Fo" + OBJ + "\\"] + batch
         r = subprocess.run(cmd, env=env, cwd=SRC, stdout=subprocess.PIPE,
