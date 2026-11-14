@@ -80,8 +80,66 @@ struct ExampleFrame {
 }
 
 int main(int argc, char** argv) {
+#ifdef AINO_PROBE_SSH
+    // 所有持久化回归都重定向到临时 HOME，不访问开发者的连接或凭据。
+    struct TemporaryHome {
+        std::filesystem::path root;
+        std::string old;
+        bool had_old = false;
+        TemporaryHome() {
+            if (const char* value = std::getenv("USERPROFILE")) { old = value; had_old = true; }
+            root = std::filesystem::temp_directory_path() / ("aino-profile-" +
+                std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
+            std::filesystem::create_directories(root);
+            _putenv_s("USERPROFILE", root.string().c_str());
+        }
+        ~TemporaryHome() {
+            _putenv_s("USERPROFILE", had_old ? old.c_str() : "");
+            std::error_code ec;
+            std::filesystem::remove_all(root, ec);
+        }
+    } temporary_home;
+#endif
     ExampleFrame f;
 #ifdef AINO_PROBE_SSH
+    {
+        App app;
+        Profile profile;
+        profile.name = "saved";
+        profile.host = "original.example";
+        expect(save_profile(app, profile, -1), "save profile persists before publishing model");
+        expect(load_local_profiles().size() == 1, "saved profile reloads");
+        app.draft = profile;
+        app.draft.host = "edited.example";
+        app.editing = 0;
+        app.editor_open = true;
+        const HANDLE held = CreateFileW(std::filesystem::path(cfg_file()).c_str(), GENERIC_READ,
+            FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+        expect(held != INVALID_HANDLE_VALUE, "block profile replacement for failure test");
+        auto editor = [&] { draw_editor(f.ui, app, f.ui.theme()); };
+        f.click(editor, 480, 475);
+        expect(app.editor_open && app.draft.host == "edited.example" && app.profiles[0].host == profile.host,
+               "failed save preserves editor draft and previously committed profile");
+        expect(!app.status.empty(), "failed save reports an error");
+        if (held != INVALID_HANDLE_VALUE) CloseHandle(held);
+        expect(load_local_profiles()[0].host == profile.host, "failed save leaves disk profile unchanged");
+        expect(save_profile(app, app.draft, 0) && load_local_profiles()[0].host == "edited.example",
+               "retry persists edited profile");
+        expect(save_download_dir(temporary_home.root.string()) && load_download_dir() == temporary_home.root.string(),
+               "download preference atomically round trips");
+        std::string error;
+        expect(sshc::atomic_write_file(ssh_config_path(), "# original\n", &error), "prepare ssh config");
+        app.cfg_text = "# edited\n";
+        app.cfg_dirty = true;
+        const HANDLE config_held = CreateFileW(std::filesystem::path(ssh_config_path()).c_str(), GENERIC_READ,
+            FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+        expect(config_held != INVALID_HANDLE_VALUE, "block ssh config replacement");
+        expect(!save_cfg_editor(app) && app.cfg_dirty && !app.cfg_msg.empty(), "failed config save retains dirty draft");
+        if (config_held != INVALID_HANDLE_VALUE) CloseHandle(config_held);
+        expect(save_cfg_editor(app) && !app.cfg_dirty && read_text_file(ssh_config_path()) == app.cfg_text,
+               "config retry persists and clears dirty state");
+        g_block_input = false;
+    }
     std::string password;
     bool reveal = false;
     const Rect box(40, 40, 240, 30);

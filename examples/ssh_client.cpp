@@ -216,12 +216,6 @@ bool is_machine_wide_path(const std::string& path) {
 std::string cfg_file()       { return home_dir() + "/.aino_ssh/profiles.json"; }
 std::string download_file()  { return home_dir() + "/.aino_ssh/download_dir.txt"; }
 
-void ensure_cfg_dir() {
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    fs::create_directories(fs::path(cfg_file()).parent_path(), ec);
-}
-
 std::string json_esc(const std::string& s) {
     std::string o;
     o.reserve(s.size() + 8);
@@ -383,8 +377,7 @@ std::vector<Profile> load_local_profiles() {
     return out;
 }
 
-void save_local_profiles(const std::vector<Profile>& all) {
-    ensure_cfg_dir();
+bool save_local_profiles(const std::vector<Profile>& all, std::string* err = nullptr) {
     std::string txt = "[\n";
     bool first = true;
     for (const Profile& p : all) {
@@ -401,10 +394,7 @@ void save_local_profiles(const std::vector<Profile>& all) {
         txt += "\", \"remember\":" + std::string(p.remember ? "1" : "0") + "}";
     }
     txt += "\n]\n";
-    if (std::FILE* f = std::fopen(cfg_file().c_str(), "wb")) {
-        std::fwrite(txt.data(), 1, txt.size(), f);
-        std::fclose(f);
-    }
+    return sshc::atomic_write_file(cfg_file(), txt, err);
 }
 
 std::string expand_home(std::string p) {
@@ -599,15 +589,9 @@ void open_external(const std::string& path) {
 // 文件不存在时先建一份带注释的空壳，否则"打开"点下去是个死路
 void ensure_ssh_config() {
     const std::string p = ssh_config_path();
-    if (std::FILE* f = std::fopen(p.c_str(), "rb")) { std::fclose(f); return; }
-    std::string dir = p.substr(0, p.find_last_of("/\\"));
-#if defined(_WIN32)
-    std::system(("mkdir \"" + dir + "\" 2>nul").c_str());
-#else
-    std::system(("mkdir -p \"" + dir + "\"").c_str());
-#endif
-    if (std::FILE* f = std::fopen(p.c_str(), "wb")) {
-        std::fputs("# ~/.ssh/config —— aino SSH 与 VSCode Remote-SSH 共用这份\n"
+    std::error_code ec;
+    if (std::filesystem::exists(p, ec) || ec) return;
+    sshc::atomic_write_file(p, "# ~/.ssh/config —— aino SSH 与 VSCode Remote-SSH 共用这份\n"
                    "#\n"
                    "# Host 别名\n"
                    "#   HostName 1.2.3.4\n"
@@ -615,9 +599,7 @@ void ensure_ssh_config() {
                    "#   Port 22\n"
                    "#   IdentityFile ~/.ssh/id_ed25519\n"
                    "#\n"
-                   "# 存好以后回到 aino 点「重新导入」，别名就会变成一张连接卡片。\n", f);
-        std::fclose(f);
-    }
+                   "# 存好以后回到 aino 点「重新导入」，别名就会变成一张连接卡片。\n", nullptr);
 }
 
 std::vector<Profile> load_all_profiles() {
@@ -659,12 +641,8 @@ std::string load_download_dir() {
     return s.empty() ? home_dir() : s;
 }
 
-void save_download_dir(const std::string& d) {
-    ensure_cfg_dir();
-    if (std::FILE* f = std::fopen(download_file().c_str(), "wb")) {
-        std::fwrite(d.data(), 1, d.size(), f);
-        std::fclose(f);
-    }
+bool save_download_dir(const std::string& d, std::string* err = nullptr) {
+    return sshc::atomic_write_file(download_file(), d, err);
 }
 
 // =============================================================================
@@ -1670,8 +1648,9 @@ void draw_sftp(aino::Ui& ui, Session& a, const aino::Theme& th, const Rect& area
     if (tool_button(ui, th, "浏览…", Rect(area.x + pad + W - browse_w, fy, browse_w, 28.0f), false)) {
         const std::string picked = pick_folder(*download_dir);
         if (!picked.empty()) {
-            *download_dir = picked;
-            save_download_dir(picked);
+            std::string err;
+            if (save_download_dir(picked, &err)) *download_dir = picked;
+            else set_notice(a, err, true);
         }
     }
     fy += 34.0f;
@@ -1885,18 +1864,21 @@ Session& active_session(App& app) {
     return *app.tabs[size_t(app.active)];
 }
 
-void save_profile(App& app, const Profile& p, int index) {
-    if (index >= 0 && index < int(app.profiles.size())) {
-        const int src = app.profiles[size_t(index)].src;
-        if (src != 0) return;                        // 导入的不能改
-        app.profiles[size_t(index)] = p;
-        app.profiles[size_t(index)].src = 0;
+bool save_profile(App& app, const Profile& p, int index) {
+    auto next = app.profiles;
+    if (index >= 0 && index < int(next.size())) {
+        const int src = next[size_t(index)].src;
+        if (src != 0) return false;                  // 导入的不能改
+        next[size_t(index)] = p;
+        next[size_t(index)].src = 0;
     } else {
         Profile q = p;
         q.src = 0;
-        app.profiles.push_back(q);
+        next.push_back(q);
     }
-    save_local_profiles(app.profiles);
+    if (!save_local_profiles(next, &app.status)) return false;
+    app.profiles = std::move(next);
+    return true;
 }
 
 // 打开一个会话（补齐密码后再连）
@@ -2091,8 +2073,9 @@ void draw_start(aino::Ui& ui, App& app, const aino::Theme& th, float top) {
                     return;
                 }
                 if (tool_button(ui, th, "删除", {action_x + 148, row.cy() - 12, 60, 24}, true)) {
-                    app.profiles.erase(app.profiles.begin() + i);
-                    save_local_profiles(app.profiles);
+                    auto next = app.profiles;
+                    next.erase(next.begin() + i);
+                    if (save_local_profiles(next, &app.status)) app.profiles = std::move(next);
                     return;
                 }
             } else if (tool_button(ui, th, "打开配置", {action_x + 76, row.cy() - 12, 132, 24}, false)) {
@@ -2173,14 +2156,14 @@ void draw_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
     app.draft.remember = app.draft_remember;
     if (dlg_button(ui, th, "仅保存", Rect(x1 + bw + 10.0f, by, bw, 34.0f), Btn::Normal)) {
         if (!app.draft.host.empty()) {
-            save_profile(app, app.draft, app.editing);
+            if (!save_profile(app, app.draft, app.editing)) return;
             app.editor_open = false;
             app.status = "已保存连接";
         }
     }
     if (dlg_button(ui, th, "保存并连接", Rect(x1 + (bw + 10.0f) * 2.0f, by, bw, 34.0f), Btn::Primary)) {
         if (!app.draft.host.empty()) {
-            save_profile(app, app.draft, app.editing);
+            if (!save_profile(app, app.draft, app.editing)) return;
             const Profile p = app.draft;
             app.editor_open = false;
             if (!p.pass.empty() || !p.key.empty()) open_session(app, p, p.pass);
@@ -2276,10 +2259,7 @@ void open_cfg_editor(App& app) {
 }
 
 bool save_cfg_editor(App& app) {
-    std::FILE* f = std::fopen(ssh_config_path().c_str(), "wb");
-    if (!f) { app.cfg_msg = "保存失败：文件不可写"; return false; }
-    std::fwrite(app.cfg_text.data(), 1, app.cfg_text.size(), f);
-    std::fclose(f);
+    if (!sshc::atomic_write_file(ssh_config_path(), app.cfg_text, &app.cfg_msg)) return false;
     app.cfg_dirty = false;
     return true;
 }
@@ -2479,13 +2459,13 @@ void draw_cfg_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
         }
     }
     if (tool_button(ui, th, "用系统编辑器", r_ext, false)) {
-        if (app.cfg_dirty) save_cfg_editor(app);
+        if (app.cfg_dirty && !save_cfg_editor(app)) return;
         open_external(ssh_config_path());
         app.cfg_msg = "已交给系统默认程序";
     }
     if (dlg_button(ui, th, "关闭", r_close, Btn::Normal) ||
         (in.key_pressed[aino::KEY_ESC] && !in.ctrl_of('C'))) {
-        if (app.cfg_dirty) save_cfg_editor(app);
+        if (app.cfg_dirty && !save_cfg_editor(app)) return;
         app.cfg_open = false;
         const std::string keep = app.download_dir;
         app.profiles = load_all_profiles();

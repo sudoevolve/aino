@@ -2,12 +2,26 @@
 #pragma once
 
 #include <cstdarg>
+#include <cstdint>
+#include <atomic>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <fcntl.h>
+#include <sys/stat.h>
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace sshc {
 
@@ -28,6 +42,99 @@ inline std::string home_dir() {
     const char* p = std::getenv("HOME");
 #endif
     return p ? std::string(p) : std::string(".");
+}
+
+// 临时文件与目标同目录，独占创建；写完并同步后才替换，失败保留旧文件。
+inline bool atomic_write_file(const std::string& path, const std::string& data, std::string* err) {
+    if (err) err->clear();
+    namespace fs = std::filesystem;
+    auto fail = [&](const char* stage) {
+        if (err) *err = std::string("保存失败（") + stage + "）：" + path;
+        return false;
+    };
+    fs::path target = fs::u8path(path);
+    std::error_code ec;
+    const auto status = fs::symlink_status(target, ec);
+    if (ec && ec != std::errc::no_such_file_or_directory) return fail("检查目标");
+    ec.clear();
+    if (fs::is_symlink(status)) {
+        target = fs::canonical(target, ec); // 保留用户的配置符号链接。
+        if (ec) return fail("解析符号链接");
+    }
+    const auto parent = target.parent_path();
+    if (!parent.empty()) fs::create_directories(parent, ec);
+    if (ec) return fail("创建目录");
+    static std::atomic<unsigned long> next{0};
+#if defined(_WIN32)
+    const auto pid = GetCurrentProcessId();
+#else
+    const auto pid = getpid();
+#endif
+    fs::path temp;
+    int fd = -1;
+    for (int attempt = 0; attempt < 16; ++attempt) {
+        temp = target;
+        temp += ".tmp." + std::to_string(pid) + "." + std::to_string(next++);
+#if defined(_WIN32)
+        fd = _wopen(temp.c_str(), _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
+#else
+        fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+#endif
+        if (fd >= 0 || errno != EEXIST) break;
+    }
+    if (fd < 0) return fail("创建临时文件");
+    struct Cleanup {
+        fs::path path;
+        ~Cleanup() { std::error_code ignored; fs::remove(path, ignored); }
+    } cleanup{temp};
+#if defined(_WIN32)
+    std::FILE* file = _fdopen(fd, "wb");
+#else
+    std::FILE* file = fdopen(fd, "wb");
+#endif
+    if (!file) {
+#if defined(_WIN32)
+        _close(fd);
+#else
+        ::close(fd);
+#endif
+        return fail("打开临时流");
+    }
+    bool ok = std::fwrite(data.data(), 1, data.size(), file) == data.size();
+    if (std::fflush(file) != 0) ok = false;
+#if defined(_WIN32)
+    if (_commit(_fileno(file)) != 0) ok = false;
+#else
+    if (fsync(fileno(file)) != 0) ok = false;
+#endif
+    if (std::fclose(file) != 0) ok = false;
+    if (!ok) return fail("写入或同步");
+#if defined(_WIN32)
+    if (!MoveFileExW(temp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        return fail("原子替换");
+#else
+    fs::rename(temp, target, ec);
+    if (ec) return fail("原子替换");
+#endif
+    return true;
+}
+
+// 从已打开的文件取 64 位长度，不移动读取位置，也不把 ftell 的 -1 转成巨大无符号数。
+inline bool local_file_size(std::FILE* file, uint64_t* size, std::string* err) {
+    if (err) err->clear();
+#if defined(_WIN32)
+    struct _stat64 st{};
+    const bool ok = file && _fstat64(_fileno(file), &st) == 0;
+#else
+    struct stat st{};
+    const bool ok = file && fstat(fileno(file), &st) == 0;
+#endif
+    if (!ok || st.st_size < 0 || !size) {
+        if (err) *err = "读取本地文件长度失败";
+        return false;
+    }
+    *size = uint64_t(st.st_size);
+    return true;
 }
 
 struct KnownHosts {
@@ -54,26 +161,21 @@ struct KnownHosts {
         std::error_code ec;
         const bool exists = std::filesystem::exists(path, ec);
         if (ec) return fail("无法检查主机密钥记录");
+        std::string contents;
         if (exists) {
             std::ifstream file(path, std::ios::binary);
             if (!file) return fail("无法读取主机密钥记录");
             std::string line;
             while (std::getline(file, line)) {
                 if (!line.empty() && line.back() == '\r') line.pop_back();
+                contents += line + '\n';
                 if (line.compare(0, prefix.size(), prefix) != 0) continue;
                 if (line.substr(prefix.size()) == fp) return 0;
                 return fail("主机密钥变了！确认服务器密钥后再手动更新记录");
             }
             if (!file.eof()) return fail("读取主机密钥记录失败");
         }
-        const auto parent = std::filesystem::path(path).parent_path();
-        if (!parent.empty()) std::filesystem::create_directories(parent, ec);
-        if (ec) return fail("无法创建主机密钥目录");
-        std::ofstream file(path, std::ios::binary | std::ios::app);
-        // 前置换行也支持手工编辑后末行没有换行符的记录。
-        file << '\n' << key << ' ' << fp << '\n';
-        file.close();
-        if (!file) return fail("保存主机密钥失败，拒绝仅本次信任");
+        if (!atomic_write_file(path, contents + key + " " + fp + "\n", err)) return -1;
         if (err) *err = "首次连接，已记录 " + key + " 的主机密钥";
         return 1;
     }

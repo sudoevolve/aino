@@ -735,9 +735,10 @@ public:
         xfer_.fh = std::fopen(local.c_str(), "rb");
 #endif
         if (!xfer_.fh) { xfer_.error = "本地读不了：" + local; xfer_.finished = true; return; }
-        std::fseek(xfer_.fh, 0, SEEK_END);
-        xfer_.total = uint64_t(std::ftell(xfer_.fh));
-        std::fseek(xfer_.fh, 0, SEEK_SET);
+        if (!local_file_size(xfer_.fh, &xfer_.total, &xfer_.error)) {
+            xfer_.finished = true;
+            return;
+        }
         xfer_.rh = libssh2_sftp_open(sftp_, remote.c_str(),
                                      LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC, 0644);
         if (!xfer_.rh) { xfer_.error = "打不开远端目标：" + sftp_err_locked(); xfer_.finished = true; }
