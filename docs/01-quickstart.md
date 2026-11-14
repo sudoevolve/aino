@@ -122,6 +122,23 @@ cmake --build build --config Release --target aino_ssh
 libssh2 与 mbedTLS 静态链接不等于 CRT 静态链接：SSH 使用 `/MD`，目标系统仍需对应的
 VC++ 运行库；不能仅凭本机启动成功就认定可在未安装运行库的机器上独立运行。
 
+MinGW 使用 libssh2 的 WinCNG 后端时，面向 Windows 10 及以上系统须显式启用
+`-DENABLE_ECDSA_WINCNG=ON`，以编入 ECDH 密钥交换。仅有源码中的算法优先级列表
+不会为依赖库增加算法；未启用时可能能编译、开窗，却无法与目标 SSH 服务器协商。
+例如对已解压的 libssh2 1.11.1，使用 MinGW 工具链配置：
+
+```powershell
+cmake -S "$deps/libssh2-1.11.1" -B "$deps/l2wincng" -G "MinGW Makefiles" `
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON `
+  -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF -DENABLE_ZLIB_COMPRESSION=OFF `
+  -DCRYPTO_BACKEND=WinCNG -DENABLE_ECDSA_WINCNG=ON
+cmake --build "$deps/l2wincng" --parallel 2
+```
+
+主项目使用 `AINO_LIBSSH2_INCLUDE_DIR` 和 `AINO_LIBSSH2_LIBRARY` 指向该库的头文件目录和
+静态库文件。启用 SSH 和测试时，CTest 的 `ssh_crypto` 会检查实际链接库是否具备
+Curve25519/ECDH，不连接服务器，也不访问用户配置或凭据。此项通过仍不能代替真实握手和认证。
+
 后台传输的定向检查使用仓库自带的本地服务器。测试工具另需 Python `paramiko`，
 仅用于检查，不是客户端运行依赖。在终端 A 启动：
 
@@ -129,21 +146,17 @@ VC++ 运行库；不能仅凭本机启动成功就认定可在未安装运行库
 python tools/dev_ssh_server.py --port 2228 --root build/ssh-session-server
 ```
 
-在终端 B 编译并运行；临时覆盖 `USERPROFILE`，让测试主机密钥写到独立目录：
+在终端 B 编译并运行；`ssh_ui_probe` 自行创建并检查专用临时目录，退出时清理：
 
 ```powershell
 python tools/build_ssh.py ui
-New-Item -ItemType Directory -Force build/ssh-test-home | Out-Null
-$savedProfile = $env:USERPROFILE
-try {
-  $env:USERPROFILE = (Resolve-Path build/ssh-test-home).Path
-  .\build\ssh_ui_probe.exe --local-transfer 2228
-} finally {
-  $env:USERPROFILE = $savedProfile
-}
+.\build\ssh_ui_probe.exe --local-transfer 2228
 ```
 
 该检查只连接 `127.0.0.1`，使用 `demo/demo`；测试后在终端 A 按 `Ctrl+C` 停止服务器。
+客户端需要独立的配置目录时，可显式设置 `AINO_SSH_HOME`，它同时重定向连接配置、
+主机密钥记录、下载目录偏好和 `.ssh/config`；未设置时仍使用当前用户的目录。
+仅修改 `USERPROFILE` 无法覆盖 Windows 系统账户 API 返回的主目录，不应用于测试隔离。
 
 ## 3. 单独编译应用
 
