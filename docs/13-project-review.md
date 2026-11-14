@@ -150,16 +150,18 @@ X11 的 `wake()` 还直接操作同一 Xlib 连接，公开跨线程承诺与内
 | 14 | SSH 错误分类与错误卡片可读性 | 已完成，真实认证另验 | 密钥交换与普通握手失败分开分类，检查算法配置返回值，保留 libssh2 底层错误，不再把握手失败误报为非 SSH 服务；去除对 OpenSSH 算法默认值的武断推断。修复浅色错误卡片对比度；SSH UI 40 项断言及全量 32/32 通过。离线原生窗口样本覆盖深浅主题、默认/最小窗口和 96/144 DPI 事件路径，检查折行及实际截图；不作为远端连接验证。桌面同步最终程序及配套运行库，哈希一致，仅系统 PATH 下自检退出 0 |
 | 15 | Windows SSH 单文件静态发布 | MinGW 已验证，MSVC 待原生构建 | 使用完整 w64devkit 运行时重新构建 libssh2/WinCNG 与客户端，保留 ECDH；静态请求失败即报错，不再静默回退并复制 pthread DLL。构建后及 CTest 检查真实导入表，只允许系统 DLL；已验证旧 DLL 产物和不完整工具链被拒绝。静态产物、算法 2/2 检查通过，仅 EXE、系统 PATH 的启动自检通过。MSVC 脚本与依赖说明统一 /MT，该路径本机未构建 |
 | 16 | SSH 配置使用外部编辑器 | 已实现，专项回归通过 | 主界面和导入连接的编辑入口直接打开实际来源文件；无文件关联时 Windows 回退到系统记事本，错误可见。删除内置配置编辑器、光标/滚动/草稿状态和专用文本辅助函数；保留连接表单与密码输入。专用临时目录内验证缺失模板、已有文件字节不变、外部调用路径、无内置弹窗及失败反馈；SSH 算法/静态导入/UI 3/3 检查通过 |
+| 17 | SSH 工作区与文件交互布局 | 已完成，真实认证和传输另验 | 采用顶部工具栏、可收起和拖动的连接/远程文件侧栏、右侧会话标签与终端；连接搜索、返回已有会话、切换终端焦点，保留后台会话和输出。文件名按宽度折行，固定操作区与滚动列表分离；上传使用系统文件选择器，Windows 本地文件读写支持中文路径，目录选择可返回父目录。SSH UI 53 项断言通过；原生窗口样本覆盖深浅主题、默认/最小窗口、96/144 DPI 事件路径与 4 种工作区状态，生成 32 张截图，长标题及主机名做实际像素边界检查；保存截图时 1704 项检查通过，全量 34/34 通过 |
 
 ## 最新全量验证
 
-2026-11-14，截至第 14 批：Windows / MinGW Release，启用 `AINO_BUILD_TESTS` 和 `AINO_BUILD_SSH`，
-成功构建 6 个示例及全部测试目标，CTest **32/32 通过**（25 项 headless、7 项 native）。
-本次在修改 SSH 错误处理及卡片显示后重新构建了相关目标；SSH 使用本地构建的 libssh2 1.11.1 / WinCNG 静态库。
+2026-11-14，截至第 17 批：Windows / w64devkit MinGW（GCC 16.2.0）Release，启用
+`AINO_BUILD_TESTS`、`AINO_BUILD_SSH` 和 `AINO_STATIC_EXE`，成功构建 6 个示例及全部测试目标，
+本次在最后的 SSH 工作区交互修改后重新构建相关目标，CTest **34/34 通过**（26 项 headless、8 项 native）。
+SSH 使用同一工具链构建的 libssh2 1.11.1 / WinCNG 静态库，包含 ECDH；构建后和 CTest 均检查真实 PE 导入表。
 
 ```sh
-cmake --build build/audit-review --parallel 3
-ctest --test-dir build/audit-review --output-on-failure --parallel 2
+cmake --build build/ssh-static --parallel 3
+ctest --test-dir build/ssh-static --output-on-failure --parallel 2
 ```
 
 WSL 文件探针的通过范围见批次 9b。三平台远端 CI、X11 原生交互、macOS 真机和真实 SSH/SFTP

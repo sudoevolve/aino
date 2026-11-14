@@ -119,7 +119,7 @@ function(aino_add_ssh source)
                 "${_ssh_l2_bld}/libssh2.lib" "${_ssh_mbed_lib}"
                 msimg32
                 ws2_32 crypt32 bcrypt
-                shell32 ole32 uuid)
+                shell32 ole32 uuid comdlg32)
         endif()
     else()
         find_path(AINO_LIBSSH2_INCLUDE_DIR libssh2.h)
@@ -133,7 +133,7 @@ function(aino_add_ssh source)
         find_package(Threads REQUIRED)
         target_link_libraries(aino_ssh PRIVATE "${AINO_LIBSSH2_LIBRARY}" Threads::Threads)
         if(WIN32)
-            target_link_libraries(aino_ssh PRIVATE ws2_32 crypt32 bcrypt shell32 ole32 uuid msimg32)
+            target_link_libraries(aino_ssh PRIVATE ws2_32 crypt32 bcrypt shell32 ole32 uuid msimg32 comdlg32)
         endif()
     endif()
     if(TARGET aino_ssh AND MINGW AND AINO_STATIC_EXE)

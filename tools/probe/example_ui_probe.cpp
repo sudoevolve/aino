@@ -229,31 +229,32 @@ int main(int argc, char** argv) {
             app.tabs.push_back(session);
         }
         app.active = 0;
-        auto tabs = [&] { draw_tabs(f.ui, app, f.ui.theme(), 40); };
+        auto tabs = [&] { draw_tabs(f.ui, app, f.ui.theme(), {0, 0, 960, 40}); };
         const float first_w = f.ui.text_width("one", 12.5f, 500) + 70.0f;
-        f.click(tabs, 8 + first_w + 25, 20);
+        f.click(tabs, 96 + first_w + 25, 20);
         expect(app.active == 1 && !app.show_start, "native tabs return from home to selected session");
+        expect(app.tabs[1]->term_focus, "selecting a session tab returns keyboard focus to its terminal");
         const auto selected = app.tabs[1];
         g_block_input = true;
-        f.click(tabs, 30, 20);
-        f.click(tabs, 8 + first_w - 15, 20);
+        f.click(tabs, 118, 20);
+        f.click(tabs, 96 + first_w - 15, 20);
         f.click(tabs, 936, 20);
         expect(app.active == 1 && app.tabs.size() == 3 && !app.show_start,
                "modal blocks tab selection, close and new controls");
         g_block_input = false;
-        f.click(tabs, 8 + first_w - 15, 20);
+        f.click(tabs, 96 + first_w - 15, 20);
         expect(app.tabs.size() == 2 && app.active == 0 && app.tabs[0] == selected,
                "closing earlier tab preserves the selected session");
         f.click(tabs, 936, 20);
         expect(app.show_start && app.tabs.size() == 2, "native new button opens home without closing sessions");
-        f.click(tabs, 30, 20);
+        f.click(tabs, 118, 20);
         expect(!app.show_start && app.tabs[app.active] == selected, "selected session remains reachable from home");
         const float second_w = f.ui.text_width("two", 12.5f, 500) + 70.0f;
-        f.click(tabs, 8 + second_w - 15, 20);
+        f.click(tabs, 96 + second_w - 15, 20);
         expect(app.tabs.size() == 1 && app.active == 0 && !app.show_start,
                "closing active tab selects remaining session");
         const float last_w = f.ui.text_width("three", 12.5f, 500) + 70.0f;
-        f.click(tabs, 8 + last_w - 15, 20);
+        f.click(tabs, 96 + last_w - 15, 20);
         expect(app.tabs.empty() && app.active == -1 && app.show_start, "last native tab closes safely to home");
         for (int i = 0; i < 9; ++i) {
             auto session = std::make_shared<Session>();
@@ -277,29 +278,67 @@ int main(int argc, char** argv) {
             p.src = i < 10 ? 0 : 1;
             app.profiles.push_back(p);
         }
-        auto home = [&] { draw_start(f.ui, app, f.ui.theme(), 40); };
+        auto toolbar = [&] { draw_toolbar(f.ui, app, f.ui.theme()); };
         g_block_input = true;
-        f.click(home, 80, 215);
-        expect(!app.editor_open, "home actions respect modal blocking");
+        f.click(toolbar, 216, 28);
+        expect(!app.editor_open, "workspace toolbar respects modal blocking");
         g_block_input = false;
-        f.click(home, 80, 215);
-        expect(app.editor_open && app.editing == -1, "home new action opens an empty editor");
+        f.click(toolbar, 216, 28);
+        expect(app.editor_open && app.editing == -1, "toolbar opens a new connection editor");
         app.editor_open = false;
-        f.click(home, 804, 254);
+        auto home = [&] { draw_workspace(f.ui, app, f.ui.theme()); };
+        f.frame(home);
+        const auto layout = workspace_layout(f.ui, app);
+        const float card_right = layout.content.right() - 28;
+        const float row_middle = layout.content.y + 108 + 8 + 38 + 38;
+        f.click(home, card_right - 120, row_middle);
         expect(app.editor_open && app.editing == 0 && app.draft.host == "server.example.com",
                "grouped row edits the correct profile");
         app.editor_open = false;
-        f.click(home, 730, 254);
+        f.click(home, card_right - 194, row_middle);
         expect(app.ask_open && app.ask_index == 0, "grouped row connects the correct profile");
         app.ask_open = false;
         f.frame(home);
         aino::Input wheel;
-        wheel.mouse = {500, 400};
+        wheel.mouse = {600, 400};
         wheel.wheel = -1000;
         f.frame(home, wheel);
-        expect(f.ui.scroll_offset({200, 40, 760, 600}) > 0, "long connection groups scroll");
+        const Rect list(layout.content.x, layout.content.y + 108, layout.content.w, layout.content.h - 108);
+        expect(f.ui.scroll_offset(list) > 0, "long connection groups scroll");
         expect(app.profiles.size() == 12 && app.profiles.back().src == 1,
                "grouping and scrolling preserve profiles and sources");
+        expect(matches_profile(app.profiles.front(), "SERVER.EXAMPLE") && matches_profile(app.profiles.front(), "development"),
+               "connection search matches host and name without ASCII case sensitivity");
+        const auto wrapped = wrap_text(f.ui, std::string(180, 'w') + "中文主机名称", 12, 120);
+        bool fits = wrapped.size() > 1;
+        for (const auto& line : wrapped) fits = fits && f.ui.text_width(line, 12) <= 120.1f;
+        expect(fits, "long Latin and CJK labels wrap within measured width");
+        app.profile_filter = "server";
+        f.click(home, 28, 28);
+        expect(!app.sidebar_open && workspace_layout(f.ui, app).content.x == 0 && app.profiles.size() == 12,
+               "collapsing sidebar expands workspace without resetting connections");
+        f.click(home, 28, 28);
+        expect(app.sidebar_open && app.profile_filter == "server", "expanding sidebar preserves search state");
+        app.profile_filter.clear();
+        app.sidebar_page = 1;
+        f.frame(home);
+        expect(app.tabs.empty(), "opening remote files without a session does not create a connection");
+        app.sidebar_page = 0;
+        f.frame(home);
+        const float original_sidebar = app.sidebar_width;
+        aino::Input drag;
+        drag.mouse = {original_sidebar + 3.5f, 300};
+        drag.down[0] = drag.pressed[0] = true;
+        f.frame(home, drag);
+        drag.pressed[0] = false;
+        drag.mouse.x = 412;
+        f.frame(home, drag);
+        drag.down[0] = false;
+        drag.released[0] = true;
+        f.frame(home, drag);
+        expect(app.sidebar_width > original_sidebar + 50 && workspace_layout(f.ui, app).content.w >= 460,
+               "native splitter resizes sidebar while protecting terminal width");
+        app.sidebar_width = original_sidebar;
         if (const char* path = std::getenv("AINO_SSH_UI_SHOT")) {
             // 离线样本用于人工查看，不读取用户配置或建立连接。
             app.profiles.resize(4);
@@ -324,6 +363,55 @@ int main(int argc, char** argv) {
                 std::fclose(out);
             }
         }
+    }
+    {
+        App app;
+        auto session = std::make_shared<Session>();
+        session->ui_scope = 100;
+        session->title = "retained session";
+        session->host = "host.example";
+        session->user = "demo";
+        session->sftp_path = "/home/demo";
+        const std::string output = "retained terminal contents";
+        session->term.feed(output.data(), output.size());
+        for (int i = 0; i < 40; ++i) {
+            Entry entry;
+            entry.name = "file-" + std::to_string(i) + ".txt";
+            session->entries.push_back(entry);
+        }
+        app.tabs.push_back(session);
+        app.active = 0;
+        app.show_start = false;
+        app.sidebar_page = 1;
+        auto workspace = [&] { draw_workspace(f.ui, app, f.ui.theme()); };
+        f.frame(workspace);
+        const float before_width = session->r_term.w;
+        f.click(workspace, 28, 28);
+        expect(!app.sidebar_open && session->r_term.w > before_width && app.tabs[0] == session &&
+               session->term.line_text(0).find("retained terminal contents") != std::string::npos,
+               "terminal expands without resetting session or terminal output");
+        f.click(workspace, 28, 28);
+        aino::Input wheel;
+        wheel.mouse = {150, 300};
+        wheel.wheel = -1000;
+        f.frame(workspace, wheel);
+        const auto rows = sftp_rows(f.ui, *session, session->r_list.w - 10);
+        f.click(workspace, 120, session->r_list.bottom() - 8 - rows.back().height * .5f);
+        expect(session->sel == int(session->entries.size()), "last remote file remains reachable above fixed actions");
+        const float sidebar = app.sidebar_width;
+        app.editor_open = true;
+        aino::Input drag;
+        drag.mouse = {sidebar + 3.5f, 300};
+        drag.down[0] = drag.pressed[0] = true;
+        f.frame(workspace, drag);
+        drag.pressed[0] = false;
+        drag.mouse.x += 60;
+        f.frame(workspace, drag);
+        expect(app.sidebar_width == sidebar && app.tabs.size() == 1,
+               "modal blocks splitter changes and underlying session actions");
+        app.editor_open = false;
+        g_block_input = false;
+        app.shutdown_all();
     }
     if (argc > 1 && std::string(argv[1]) == "--local-transfer") {
         Session session;

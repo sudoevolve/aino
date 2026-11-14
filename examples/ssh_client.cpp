@@ -15,7 +15,7 @@
 //            重命名、删除；所有文件操作在后台线程，界面永不等网络
 //    · 多会话：每个标签独立连接、独立读线程、独立文件面板
 //    · 跨平台：Windows / Linux / macOS 同一份源码。SSH 用 libssh2
-//      （Windows 静态链接 mbedTLS 后端；Linux 用发行版包）
+//      （Windows 发布版静态链接 libssh2/WinCNG；Linux 用发行版包）
 //
 //  编译（Windows）：
 //    cmake --build build --config Release --target aino_ssh
@@ -50,6 +50,7 @@
 #if defined(_WIN32)
 #  include <shlobj.h>
 #  include <shellapi.h>
+#  include <commdlg.h>
 #endif
 
 using aino::Color;
@@ -680,23 +681,28 @@ std::wstring to_wide(const std::string& s) {
 std::string from_wide(const wchar_t* w) {
     if (!w) return std::string();
     const int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
-    std::string s(size_t(n > 0 ? n - 1 : 0), '\0');
-    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), n, nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string s(size_t(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), n, nullptr, nullptr);
+    s.pop_back();
     return s;
+}
+int CALLBACK set_initial_folder(HWND dialog, UINT message, LPARAM, LPARAM initial) {
+    if (message == BFFM_INITIALIZED && initial)
+        SendMessageW(dialog, BFFM_SETSELECTIONW, TRUE, initial);
+    return 0;
 }
 #endif
 
 std::string pick_folder(const std::string& initial) {
 #if defined(_WIN32)
     BROWSEINFOW bi{};
+    bi.hwndOwner = GetActiveWindow();
     bi.lpszTitle = L"选择下载保存目录";
     bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_EDITBOX;
-    LPITEMIDLIST root = nullptr;
     const std::wstring w = to_wide(initial);
-    if (!w.empty()) {
-        if (FAILED(SHParseDisplayName(w.c_str(), nullptr, &root, 0, nullptr))) root = nullptr;
-    }
-    bi.pidlRoot = root;
+    bi.lpfn = set_initial_folder;
+    bi.lParam = reinterpret_cast<LPARAM>(w.c_str());
     LPITEMIDLIST idl = SHBrowseForFolderW(&bi);
     std::string out;
     if (idl) {
@@ -704,7 +710,6 @@ std::string pick_folder(const std::string& initial) {
         if (SHGetPathFromIDListW(idl, path)) out = from_wide(path);
         CoTaskMemFree(idl);
     }
-    if (root) CoTaskMemFree(root);
     return out;
 #else
     // Linux/macOS：让系统自己的目录选择器干这活儿
@@ -721,6 +726,36 @@ std::string pick_folder(const std::string& initial) {
     }
     (void)initial;
     return std::string();
+#endif
+}
+
+std::string pick_upload_file(const std::string& initial) {
+#if defined(_WIN32)
+    std::vector<wchar_t> file(32768, L'\0');
+    const std::wstring directory = to_wide(initial);
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = GetActiveWindow();
+    dialog.lpstrFile = file.data();
+    dialog.nMaxFile = DWORD(file.size());
+    dialog.lpstrFilter = L"All files\0*.*\0\0";
+    dialog.lpstrTitle = L"选择要上传的文件";
+    dialog.lpstrInitialDir = directory.empty() ? nullptr : directory.c_str();
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+    return GetOpenFileNameW(&dialog) ? from_wide(file.data()) : std::string();
+#else
+    (void)initial;
+    const char* commands[] = {
+        "zenity --file-selection --title='选择要上传的文件' 2>/dev/null",
+        "kdialog --getopenfilename \"$HOME\" 2>/dev/null",
+        "osascript -e 'POSIX path of (choose file)' 2>/dev/null"
+    };
+    for (const char* command : commands) {
+        std::string result = shell_capture(command);
+        while (!result.empty() && (result.back() == '\n' || result.back() == '\r')) result.pop_back();
+        if (!result.empty()) return result;
+    }
+    return {};
 #endif
 }
 
@@ -808,6 +843,7 @@ struct Session {
 
     // ---- 终端 ----
     bool  term_focus = false;
+    bool  path_focus = false;
     float font = 13.0f;
     int   view_offset = 0;
     bool  follow = true;
@@ -815,9 +851,9 @@ struct Session {
 
     // ---- 文件 ----
     std::string sftp_path;            // 只有 UI 线程读写
+    bool reset_file_scroll = true;
     std::vector<Entry> entries;
     int   sel = -1;
-    int   list_scroll = 0;
     Prompt prompt = Prompt::None;
     std::string prompt_text, prompt_src;
     bool  confirm_delete = false;
@@ -841,7 +877,6 @@ struct Session {
     std::thread             fs_thread;
 
     Rect r_list{};
-    float row_h = 28.0f;
 
     ~Session() { shutdown(); }
 
@@ -1477,6 +1512,7 @@ void refresh_list(Session& a) {
 
 void enter_dir(Session& a, const std::string& path) {
     a.sftp_path = path;
+    a.reset_file_scroll = true;
     refresh_list(a);
 }
 
@@ -1528,210 +1564,168 @@ FailExplain explain_fail(FailStage st) {
     }
 }
 
-// 按像素宽度折行（中文按显示宽度算，不能按字节数切）
-std::vector<std::string> wrap_text(aino::Ui& ui, const std::string& s, float font, float max_w) {
-    std::vector<std::string> out;
-    std::string line, word;
-    auto flush_word = [&] {
-        if (word.empty()) return;
-        const std::string trial = line + word;
-        if (!line.empty() && ui.text_width(trial, font) > max_w) {
-            out.push_back(line);
-            line = word;
-        } else {
-            line = trial;
+// 按实际宽度折行；长主机名和文件名也按 UTF-8 字符拆分。
+std::vector<std::string> wrap_text(aino::Ui& ui, const std::string& text, float font, float width, int weight = 400) {
+    std::vector<std::string> lines;
+    std::string line;
+    for (size_t i = 0; i < text.size();) {
+        const unsigned char head = static_cast<unsigned char>(text[i]);
+        const size_t length = std::min(text.size() - i, size_t(head >= 0xf0 ? 4 : head >= 0xe0 ? 3 : head >= 0xc0 ? 2 : 1));
+        const std::string character = text.substr(i, length);
+        i += length;
+        if (character == "\r") continue;
+        if (character == "\n") { lines.push_back(line); line.clear(); continue; }
+        if (!line.empty() && ui.text_width(line + character, font, weight) > width) {
+            lines.push_back(line);
+            line.clear();
         }
-        word.clear();
-    };
-    size_t i = 0;
-    while (i < s.size()) {
-        const unsigned char c = static_cast<unsigned char>(s[i]);
-        size_t n = 1;
-        if (c >= 0xF0) n = 4; else if (c >= 0xE0) n = 3; else if (c >= 0xC0) n = 2;
-        if (i + n > s.size()) n = 1;
-        const std::string ch = s.substr(i, n);
-        i += n;
-        const bool cjk = (n >= 3);
-        const bool space = (ch == " ");
-        if (cjk) { flush_word(); word = ch; flush_word(); }
-        else if (space) { flush_word(); line += " "; }
-        else word += ch;
+        line += character;
     }
-    flush_word();
-    if (!line.empty()) out.push_back(line);
-    return out;
+    if (!line.empty()) lines.push_back(line);
+    return lines;
 }
 
-void draw_sftp(aino::Ui& ui, Session& a, const aino::Theme& th, const Rect& area,
-               std::string* download_dir, aino::Window* win = nullptr) {
-    const Session::ConnInfo cs = a.conn_snapshot();
-    const std::string& sftp_err = cs.sftp_err;
-    ui.fill_rect(area, th.background);
-    ui.fill_rect(Rect(area.right() - 1.0f, area.y, 1.0f, area.h), th.border);
+struct SftpRow {
+    int index = 0;
+    std::vector<std::string> lines;
+    float height = 48;
+};
 
-    const float pad = 12.0f;
-    const float W = area.w - pad * 2.0f;
-    float y = area.y + 12.0f;
+std::vector<SftpRow> sftp_rows(aino::Ui& ui, const Session& session, float width) {
+    std::vector<SftpRow> rows;
+    rows.push_back({0, {".."}, 36});
+    for (size_t i = 0; i < session.entries.size(); ++i) {
+        SftpRow row;
+        row.index = int(i + 1);
+        row.lines = wrap_text(ui, session.entries[i].name, 12.f, std::max(40.f, width - 48));
+        row.height = 28 + float(row.lines.size()) * 18;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
 
-    // 路径行
-    const float ih = 28.0f;
-    Rect r_up(area.x + pad, y, 46.0f, ih);
-    Rect r_re(area.x + pad + 50.0f, y, 46.0f, ih);
-    if (tool_button(ui, th, "上级", r_up, false)) go_up(a);
-    if (tool_button(ui, th, "刷新", r_re, false)) refresh_list(a);
-    Rect r_path(area.x + pad + 104.0f, y, W - 104.0f, ih);
-    ui.input(&a.sftp_path, r_path);
-    if (ui.input().key_pressed[aino::KEY_ENTER] && r_path.contains(ui.input().mouse)) refresh_list(a);
-    y += ih + 8.0f;
+void draw_sftp(aino::Ui& ui, Session& session, const aino::Theme& theme, const Rect& area,
+               std::string* download_dir, aino::Window* window = nullptr) {
+    const auto connection = session.conn_snapshot();
+    const auto& input = ui.input();
+    ui.fill_rect(area, theme.sidebar_bg);
+    const float x = area.x + 12, width = area.w - 24;
+    ui.label("SFTP", {x + 4, area.y + 6, width - 112, 28}, Style().font(13).semi_bold());
+    if (tool_button(ui, theme, "上级", {area.right() - 118, area.y + 6, 50, 28}, false)) go_up(session);
+    if (tool_button(ui, theme, "刷新", {area.right() - 62, area.y + 6, 50, 28}, false)) refresh_list(session);
+    const Rect path(x, area.y + 44, width, 30);
+    Style path_style = Style().hint("远程目录，回车打开");
+    path_style.disabled = g_block_input;
+    if (input.pressed[0] && !g_block_input) session.path_focus = path.contains(input.mouse);
+    ui.input(&session.sftp_path, path, path_style);
+    if (!g_block_input && session.path_focus && input.key_pressed[aino::KEY_ENTER]) refresh_list(session);
+    ui.draw_text("名称 / 大小 · 修改时间", {x + 4, path.bottom() + 10, width - 8, 18}, theme.label2, Style().font(10.5f));
 
-    // 底部高度先算出来，列表吃剩下的
-    const float foot_h = 16.0f + 34.0f + 34.0f + 34.0f;
-    const float list_top = y + 20.0f;
-    const float list_bottom = std::max(list_top + 60.0f, area.bottom() - pad - foot_h);
-
-    // 表头
-    const float size_w = 60.0f, time_w = 76.0f;
-    const float name_w = W - size_w - time_w - 10.0f;
-    ui.draw_text("名称", Rect(area.x + pad + 8.0f, y, name_w, 16.0f), th.muted_foreground, Style().font(11.0f));
-    ui.draw_text("大小", Rect(area.x + pad + 8.0f + name_w, y, size_w, 16.0f),
-                 th.muted_foreground, Style().font(11.0f).right());
-    ui.draw_text("修改时间", Rect(area.x + pad + 8.0f + name_w + size_w, y, time_w, 16.0f),
-                 th.muted_foreground, Style().font(11.0f).right());
-
-    // 列表
-    a.r_list = Rect(area.x + pad, list_top, W, std::max(40.0f, list_bottom - list_top));
-    a.row_h = 28.0f;
-    const int visible = std::max(1, int(a.r_list.h / a.row_h));
-    const aino::Input& in = ui.input();
-
-    const int total = int(a.entries.size()) + 1;   // +1 = ".."
-    if (a.r_list.contains(in.mouse) && std::fabs(in.wheel) > 0.01f)
-        a.list_scroll = std::max(0, std::min(std::max(0, total - visible),
-                                             a.list_scroll - int(in.wheel)));
-    a.list_scroll = std::max(0, std::min(a.list_scroll, std::max(0, total - visible)));
-
-    ui.push_clip(a.r_list);
-    for (int i = 0; i < visible && a.list_scroll + i < total; ++i) {
-        const int idx = a.list_scroll + i;
-        const float ry = a.r_list.y + float(i) * a.row_h;
-        const Rect row(a.r_list.x, ry, a.r_list.w, a.row_h);
-        const bool is_up = idx == 0;
-        const Entry* e = is_up ? nullptr : &a.entries[size_t(idx - 1)];
-        const bool selected = a.sel == idx;
-
-        if (selected) {
-            ui.fill_rect(row.inset(0.0f, 1.0f), Color(110, 168, 254, 40), 5.0f);
-            ui.fill_rect(Rect(row.x + 1.0f, row.y + 6.0f, 2.5f, row.h - 12.0f), kAccent, 1.5f);
-        } else if (a.r_list.contains(in.mouse) && row.contains(in.mouse)) {
-            ui.fill_rect(row.inset(0.0f, 1.0f), Color(255, 255, 255, 12), 5.0f);
+    const Rect footer(x, area.bottom() - 22 - 152, width, 152);
+    session.r_list = {x, path.bottom() + 34, width, std::max(0.f, footer.y - path.bottom() - 46)};
+    const auto rows = sftp_rows(ui, session, width - 10);
+    float height = 0;
+    for (const auto& row : rows) height += row.height;
+    const std::string note = !connection.sftp_err.empty() ? connection.sftp_err
+        : (session.entries.empty() ? (session.engine.connected() ? "此目录为空" : "连接后显示远程文件") : "");
+    const auto note_lines = wrap_text(ui, note, 11.f, width - 20);
+    const float note_height = note.empty() ? 0.f : 16 + float(note_lines.size()) * 17;
+    if (session.reset_file_scroll) {
+        ui.scroll_to_index(session.r_list, 0, 1, int(height + note_height));
+        session.reset_file_scroll = false;
+    }
+    {
+        auto scroll = ui.scroll(session.r_list, height + note_height + 8);
+        float y = session.r_list.y - scroll.offset;
+        for (const auto& line : note_lines) {
+            ui.draw_text(line, {x + 10, y + 8, width - 20, 17}, theme.label2, Style().font(11));
+            y += 17;
         }
-
-        const Color c = (is_up || (e && e->dir)) ? kAccent : th.foreground;
-        ui.draw_text(is_up ? ".." : e->name, Rect(row.x + 10.0f, row.y, name_w, row.h), c, Style().font(12.5f));
-        if (e && !e->dir) {
-            ui.draw_text(human_size(e->size), Rect(row.x + 8.0f + name_w, row.y, size_w, row.h),
-                         th.muted_foreground, Style().font(11.5f).right());
-            ui.draw_text(human_time(e->mtime), Rect(row.x + 8.0f + name_w + size_w, row.y, time_w, row.h),
-                         th.muted_foreground, Style().font(11.5f).right());
-        }
-
-        if (in.pressed[0] && row.contains(in.mouse)) {
-            a.sel = idx;
-            a.confirm_delete = false;
-            // 单击就进目录：这是文件管理器的直觉操作，非要双击才进会让人以为"点了没反应"
-            if (is_up) go_up(a);
-            else if (e && e->dir) enter_dir(a, join_remote(a.sftp_path, e->name));
+        if (!note.empty()) y += 16;
+        for (const auto& layout : rows) {
+            const Rect row(x, y, width - 10, layout.height);
+            y += layout.height;
+            if (row.bottom() < session.r_list.y || row.y >= session.r_list.bottom()) continue;
+            const bool up = layout.index == 0;
+            const Entry* entry = up ? nullptr : &session.entries[size_t(layout.index - 1)];
+            if (session.sel == layout.index) ui.fill_rect(row, theme.tint.scaled_alpha(.13f), 6);
+            Style row_style = Style().ghost().id(0x5346545000ull + uint64_t(layout.index));
+            row_style.disabled = g_block_input;
+            if (ui.button("", row, row_style)) session.sel = layout.index;
+            const bool directory = up || entry->dir;
+            ui.system_icon(directory ? aino::SystemIcon::Folder : aino::SystemIcon::Text,
+                {row.x + 8, row.y + 10, 16, 16}, directory ? theme.tint : theme.label2);
+            float text_y = row.y + 8;
+            for (const auto& line : layout.lines) {
+                ui.draw_text(line, {row.x + 34, text_y, row.w - 48, 18}, theme.foreground, Style().font(12));
+                text_y += 18;
+            }
+            if (entry) ui.draw_text((entry->dir ? std::string("文件夹") : human_size(entry->size)) + " · " + human_time(entry->mtime),
+                {row.x + 34, text_y + 2, row.w - 48, 16}, theme.label2, Style().font(10.5f));
+            if (!g_block_input && session.r_list.contains(input.mouse) && row.contains(input.mouse) &&
+                input.pressed[0] && input.double_click && directory) {
+                if (up) go_up(session);
+                else enter_dir(session, join_remote(session.sftp_path, entry->name));
+            }
         }
     }
-    if (a.entries.empty()) {
-        const char* hint = !a.engine.connected() ? "连接后这里显示远程文件"
-                         : !sftp_err.empty()   ? "SFTP 不可用（终端仍可用）"
-                         : a.fs_busy.load()      ? "读取中…"
-                                                 : "（空目录）";
-        ui.draw_text(hint, Rect(a.r_list.x, a.r_list.y + 16.0f, a.r_list.w, 20.0f),
-                     Color::hex(0x4A4F5A), Style().font(12.0f).center());
-    }
-    if (!sftp_err.empty() && a.engine.connected()) {
-        ui.draw_text(sftp_err, Rect(a.r_list.x, a.r_list.bottom() - 20.0f, a.r_list.w, 18.0f),
-                     kBad, Style().font(11.0f));
-    }
-    ui.pop_clip();
 
-    // 底部：本地路径（可用系统对话框选）+ 操作按钮
-    const Entry* cur = (a.sel >= 1 && a.sel - 1 < int(a.entries.size())) ? &a.entries[size_t(a.sel - 1)] : nullptr;
-    float fy = list_bottom + 10.0f;
-
-    ui.draw_text("本地路径（下载到这里）", Rect(area.x + pad, fy, W, 14.0f), th.muted_foreground, Style().font(11.0f));
-    fy += 16.0f;
-    const float browse_w = 64.0f;
-    ui.input(download_dir, Rect(area.x + pad, fy, W - browse_w - 6.0f, 28.0f));
-    if (tool_button(ui, th, "浏览…", Rect(area.x + pad + W - browse_w, fy, browse_w, 28.0f), false)) {
+    ui.panel(footer, Style().background(theme.is_dark() ? theme.card : theme.control_bg).corner(12));
+    const float inner_x = footer.x + 16, inner_w = footer.w - 32;
+    ui.label("本地保存目录", {inner_x, footer.y + 12, inner_w, 16}, Style().font(11).semi_bold());
+    Style input_style;
+    input_style.disabled = g_block_input;
+    ui.input(download_dir, {inner_x, footer.y + 34, inner_w - 50, 28}, input_style);
+    if (tool_button(ui, theme, "浏览", {footer.right() - 60, footer.y + 34, 44, 28}, false)) {
         const std::string picked = pick_folder(*download_dir);
         if (!picked.empty()) {
-            std::string err;
-            if (save_download_dir(picked, &err)) *download_dir = picked;
-            else set_notice(a, err, true);
+            std::string error;
+            if (save_download_dir(picked, &error)) *download_dir = picked;
+            else set_notice(session, error, true);
         }
     }
-    fy += 34.0f;
-
-    const float gap = 6.0f;
-    const float bw3 = (W - gap * 2.0f) / 3.0f;
-    const float bw2 = (W - gap) / 2.0f;
-
-    if (tool_button(ui, th, "上传", Rect(area.x + pad, fy, bw3, 28.0f), false)) {
-        namespace fs = std::filesystem;
-        if (!a.engine.connected()) set_notice(a, "尚未连接", true);
-        else if (download_dir->empty()) set_notice(a, "先选一个本地文件所在的目录", true);
-        else {
-            // 目录里只有一个文件时才自动挑它，否则提示改路径
-            std::string pick, count_name;
-            int files = 0;
-            std::error_code ec;
-            for (auto it = fs::directory_iterator(*download_dir, ec);
-                 !ec && it != fs::directory_iterator(); it.increment(ec)) {
-                if (it->is_regular_file(ec)) { ++files; pick = it->path().string(); count_name = it->path().filename().string(); }
-            }
-            if (files == 1) {
-                if (start_transfer(a, true, pick, join_remote(a.sftp_path, count_name), win))
-                    set_notice(a, "开始上传 " + count_name, false);
-            } else if (files == 0) {
-                set_notice(a, "这个目录里没有文件可传", true);
-            } else {
-                set_notice(a, "上传请在终端里用 scp/sftp（这里暂只支持单文件目录）", true);
-            }
+    const Entry* selected = session.sel >= 1 && session.sel <= int(session.entries.size())
+        ? &session.entries[size_t(session.sel - 1)] : nullptr;
+    const bool connected = session.engine.connected();
+    const bool busy = session.xfer_running.load();
+    auto action = [&](const char* title, const Rect& box, bool enabled, bool danger = false) {
+        Style style;
+        if (danger) style.destructive(); else style.outline();
+        style.disabled = g_block_input || !enabled;
+        return ui.button(title, box, style);
+    };
+    const float two = (inner_w - 6) / 2;
+    if (action("上传文件", {inner_x, footer.y + 72, two, 28}, connected && !busy)) {
+        const std::string file = pick_upload_file(*download_dir);
+        if (!file.empty()) {
+            const std::string name = std::filesystem::u8path(file).filename().u8string();
+            if (start_transfer(session, true, file, join_remote(session.sftp_path, name), window))
+                set_notice(session, "开始上传 " + name, false);
         }
     }
-    if (tool_button(ui, th, "下载", Rect(area.x + pad + bw3 + gap, fy, bw3, 28.0f), false)) {
-        namespace fs = std::filesystem;
-        if (!cur) set_notice(a, "先选一个文件", true);
-        else if (cur->dir) set_notice(a, "目录请打包成文件后再下载", true);
-        else if (download_dir->empty()) set_notice(a, "先选下载目录", true);
-        else if (!a.engine.connected()) set_notice(a, "尚未连接", true);
-        else {
-            std::error_code ec;
-            fs::create_directories(*download_dir, ec);
-            const std::string dst = (fs::path(*download_dir) / cur->name).string();
-            if (start_transfer(a, false, dst, join_remote(a.sftp_path, cur->name), win))
-                set_notice(a, "开始下载到 " + dst, false);
-        }
+    if (action("下载文件", {inner_x + two + 6, footer.y + 72, two, 28}, connected && !busy && selected && !selected->dir)) {
+        const std::string target = (std::filesystem::u8path(*download_dir) / std::filesystem::u8path(selected->name)).u8string();
+        std::error_code error;
+        std::filesystem::create_directories(std::filesystem::u8path(*download_dir), error);
+        if (error) set_notice(session, "无法创建本地目录：" + error.message(), true);
+        else if (start_transfer(session, false, target, join_remote(session.sftp_path, selected->name), window))
+            set_notice(session, "开始下载 " + selected->name, false);
     }
-    if (tool_button(ui, th, "新建目录", Rect(area.x + pad + (bw3 + gap) * 2.0f, fy, bw3, 28.0f), false)) {
-        a.prompt = Prompt::Mkdir;
-        a.prompt_text.clear();
-        a.prompt_src = a.sftp_path;
+    const float three = (inner_w - 12) / 3;
+    if (action("新建", {inner_x, footer.y + 108, three, 28}, connected)) {
+        session.prompt = Prompt::Mkdir;
+        session.prompt_text.clear();
+        session.prompt_src = session.sftp_path;
     }
-    fy += 34.0f;
-
-    if (tool_button(ui, th, "重命名", Rect(area.x + pad, fy, bw2, 28.0f), false)) {
-        if (cur) { a.prompt = Prompt::Rename; a.prompt_text = cur->name; a.prompt_src = cur->name; }
-        else set_notice(a, "先选一个条目", true);
+    if (action("改名", {inner_x + three + 6, footer.y + 108, three, 28}, connected && selected)) {
+        session.prompt = Prompt::Rename;
+        session.prompt_text = selected->name;
+        session.prompt_src = selected->name;
     }
-    if (tool_button(ui, th, "删除", Rect(area.x + pad + bw2 + gap, fy, bw2, 28.0f), true)) {
-        if (cur) a.confirm_delete = true;
-        else set_notice(a, "先选一个条目", true);
-    }
+    if (action("删除", {inner_x + (three + 6) * 2, footer.y + 108, three, 28}, connected && selected, true))
+        session.confirm_delete = true;
 }
+
 
 // 确认 / 新建 / 重命名的浮层
 void draw_prompt(aino::Ui& ui, Session& a, const aino::Theme& th) {
@@ -1798,6 +1792,10 @@ struct App {
     std::vector<std::shared_ptr<Session>> dying;
     int  active = -1;
     bool show_start = true;
+    bool sidebar_open = true;
+    int sidebar_page = 0;       // 0：保存的连接；1：活动会话的 SFTP
+    float sidebar_width = 300;
+    std::string profile_filter;
 
     // 启动页
     std::string status;
@@ -1905,12 +1903,14 @@ void open_session(App& app, const Profile& p, const std::string& pass) {
     s->title = !p.name.empty() ? p.name
              : (!p.user.empty() ? p.user + "@" + p.host : p.host);
     s->clip = &app.clip;
+    s->term_focus = true;
     s->engine.set_wake([w = app.win] { if (w) w->wake(); });
     s->fs_thread = std::thread(fs_worker, s.get(), app.win);
     begin_connect(*s, *app.win);
     app.tabs.push_back(std::move(s));
     app.active = int(app.tabs.size()) - 1;
     app.show_start = false;
+    app.sidebar_page = 1;
     app.status.clear();
 }
 
@@ -2010,120 +2010,260 @@ void draw_fail_panel(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, 
 // ---- 会话视图 ----
 void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, const Rect& body);
 
-// 启动页从 top 起算，为常驻标签栏预留高度。
-void draw_start(aino::Ui& ui, App& app, const aino::Theme& th, float top) {
-    const float W = ui.width(), H = ui.height(), sidebar = 200;
-    const bool dark = th.window_bg.luminance() < .5f;
-    const Color backdrop = dark ? th.window_bg : Color::hex(0xF5F5F7);
-    const Color surface = dark ? th.card : th.control_bg;
-    ui.fill_rect({0, top, W, H - top}, backdrop);
-    ui.fill_rect({0, top, sidebar, H - top}, th.sidebar_bg);
-    ui.separator({sidebar - 1, top, 1, H - top});
-    ui.fill_rect({20, top + 26, 32, 32}, th.tint.scaled_alpha(.13f), 8);
-    ui.system_icon(aino::SystemIcon::Network, {27, top + 33, 18, 18}, th.tint);
-    ui.label("SSH", {64, top + 24, 116, 24}, Style().font(16).semi_bold());
-    ui.draw_text("服务器与连接", {64, top + 51, 116, 18}, th.label2, Style().font(11));
-    Style nav = Style().font(13).padding(36);
-    if (g_block_input) nav.off();
-    ui.nav_item("所有连接", true, {10, top + 106, 180, 32}, nav);
-    ui.system_icon(aino::SystemIcon::List, {22, top + 114, 16, 16}, th.tint);
+void new_profile(App& app) {
+    app.editor_open = true;
+    app.editing = -1;
+    app.draft = Profile{};
+    app.draft_reveal = app.draft_remember = false;
+}
 
-    auto new_profile = [&] {
-        app.editor_open = true;
-        app.editing = -1;
-        app.draft = Profile{};
-        app.draft.port = 22;
-        app.draft_reveal = false;
-        app.draft_remember = false;
+void request_connection(App& app, int index, bool reuse = false) {
+    if (index < 0 || index >= int(app.profiles.size())) return;
+    const Profile& profile = app.profiles[size_t(index)];
+    if (reuse) for (size_t i = 0; i < app.tabs.size(); ++i) {
+        const auto& session = app.tabs[i];
+        if (session->host == profile.host && session->port == profile.port && session->user == profile.user) {
+            app.active = int(i);
+            app.show_start = false;
+            session->term_focus = true;
+            if (app.win) app.win->ui().set_focus(nullptr);
+            return;
+        }
+    }
+    if (app.win && (!profile.pass.empty() || !profile.key.empty())) open_session(app, profile, profile.pass);
+    else {
+        app.ask_open = true;
+        app.ask_index = index;
+        app.ask_pass.clear();
+        app.ask_reveal = false;
+    }
+}
+
+struct ConnectionRow {
+    int index = 0;
+    std::vector<std::string> title, detail;
+    float height = 76;
+};
+
+bool matches_profile(const Profile& profile, const std::string& filter) {
+    auto fold = [](std::string text) {
+        for (char& c : text) c = char(std::tolower(static_cast<unsigned char>(c)));
+        return text;
     };
-    if (dlg_button(ui, th, "新建连接", {20, top + 160, 160, 30}, Btn::Primary)) {
-        new_profile();
-        return;
-    }
-    if (tool_button(ui, th, "打开 ssh config", {20, H - 92, 160, 28}, false)) {
-        open_config_file(app);
-        return;
-    }
-    if (tool_button(ui, th, "重新导入连接", {20, H - 54, 160, 28}, false)) {
-        app.profiles = load_all_profiles();
-        app.status = "已重新读取 ssh config / VSCode 设置";
-    }
+    return filter.empty() || fold(profile.name + " " + profile.host + " " + profile.user).find(fold(filter)) != std::string::npos;
+}
 
-    const Rect view(sidebar, top, W - sidebar, H - top);
-    const float width = std::min(820.f, view.w - 56);
+ConnectionRow connection_row(aino::Ui& ui, const Profile& profile, int index, float width, bool compact) {
+    ConnectionRow row;
+    row.index = index;
+    const float text_width = std::max(40.f, width - (compact ? 100.f : 286.f));
+    row.title = wrap_text(ui, profile.name.empty() ? profile.host : profile.name, 12.5f, text_width, 600);
+    row.detail = wrap_text(ui, (profile.user.empty() ? "默认用户" : profile.user) + "@" + profile.host + ":" +
+        std::to_string(profile.port), 11.f, text_width);
+    row.height = std::max(76.f, 28.f + float(row.title.size()) * 18.f + float(row.detail.size()) * 16.f);
+    return row;
+}
+
+void draw_connection_text(aino::Ui& ui, const ConnectionRow& layout, const Rect& row,
+                          const aino::Theme& theme, bool compact) {
+    const float text_width = std::max(40.f, row.w - (compact ? 100.f : 286.f));
+    const float text_x = row.x + 44;
+    float y = row.y + 12;
+    for (const auto& line : layout.title) {
+        ui.draw_text(line, {text_x, y, text_width, 18}, theme.foreground, Style().font(12.5f).semi_bold());
+        y += 18;
+    }
+    for (const auto& line : layout.detail) {
+        ui.draw_text(line, {text_x, y, text_width, 16}, theme.label2, Style().font(11));
+        y += 16;
+    }
+}
+
+void draw_connections(aino::Ui& ui, App& app, const aino::Theme& theme, const Rect& view, bool compact) {
+    const float margin = compact ? 12.f : 28.f;
+    const float width = std::min(compact ? view.w - margin * 2 : 820.f, view.w - margin * 2);
     const float x = view.cx() - width * .5f;
-    std::array<int, 3> counts{};
-    for (const auto& p : app.profiles) ++counts[std::max(0, std::min(2, p.src))];
-    float total = 150;
-    for (int n : counts) if (n) total += 38 + n * 76.f + 28;
-    total += app.profiles.empty() ? 180.f : 36.f;
+    std::array<std::vector<ConnectionRow>, 3> groups;
+    float total = 8;
+    int count = 0;
+    for (size_t i = 0; i < app.profiles.size(); ++i) {
+        const auto& profile = app.profiles[i];
+        if (!matches_profile(profile, app.profile_filter)) continue;
+        auto row = connection_row(ui, profile, int(i), width, compact);
+        groups[size_t(std::max(0, std::min(2, profile.src)))].push_back(std::move(row));
+        ++count;
+    }
+    for (const auto& group : groups) if (!group.empty()) {
+        total += 38 + 24;
+        for (const auto& row : group) total += row.height;
+    }
+    if (!count) total += 164;
     auto scroll = ui.scroll(view, total);
-    float y = top + 32 - scroll.offset;
-    ui.heading("所有连接", {x, y, width, 36}, Style().font(26).bold());
-    ui.draw_text("选择一台服务器，开始新的会话。", {x, y + 44, width, 22}, th.label2, Style().font(12));
-    y += 106;
-
-    for (int source = 0; source < 3; ++source) {
-        if (!counts[source]) continue;
-        const std::string title = std::string(src_badge(source)) + " · " + std::to_string(counts[source]);
+    float y = view.y + 8 - scroll.offset;
+    for (size_t source = 0; source < groups.size(); ++source) {
+        const auto& group = groups[source];
+        if (group.empty()) continue;
+        const std::string title = std::string(src_badge(int(source))) + " · " + std::to_string(group.size());
         ui.label(title, {x + 2, y, width - 4, 24}, Style().font(13).semi_bold());
         y += 38;
-        ui.panel({x, y, width, counts[source] * 76.f}, Style().background(surface).corner(12));
-        int row_index = 0;
-        for (int i = 0; i < int(app.profiles.size()); ++i) {
-            const Profile& p = app.profiles[size_t(i)];
-            if (std::max(0, std::min(2, p.src)) != source) continue;
-            const Rect row(x, y + row_index * 76.f, width, 76);
-            const float action_x = row.right() - 234;
-            ui.system_icon(aino::SystemIcon::Network, {row.x + 16, row.cy() - 10, 20, 20}, th.tint);
-            ui.label(p.name.empty() ? p.user + "@" + p.host : p.name,
-                     {row.x + 50, row.y + 14, action_x - row.x - 66, 24}, Style().font(13).semi_bold());
-            const std::string host = (p.user.empty() ? "?" : p.user) + "@" + p.host + ":" + std::to_string(p.port);
-            ui.draw_text(host, {row.x + 50, row.y + 42, action_x - row.x - 66, 18}, th.label2, Style().font(11));
-            if (dlg_button(ui, th, "连接", {action_x, row.cy() - 12, 64, 24}, Btn::Normal)) {
-                if (!p.pass.empty() || !p.key.empty()) open_session(app, p, p.pass);
-                else {
-                    app.ask_open = true;
-                    app.ask_index = i;
-                    app.ask_pass.clear();
-                    app.ask_reveal = false;
+        float height = 0;
+        for (const auto& row : group) height += row.height;
+        ui.panel({x, y, width, height}, Style().background(theme.is_dark() ? theme.card : theme.control_bg).corner(12));
+        for (size_t i = 0; i < group.size(); ++i) {
+            const auto& layout = group[i];
+            const auto& profile = app.profiles[size_t(layout.index)];
+            const Rect row(x, y, width, layout.height);
+            if (row.bottom() >= view.y && row.y < view.bottom()) {
+                bool active = false;
+                if (!app.show_start && app.active >= 0 && app.active < int(app.tabs.size()))
+                    active = find_profile_index(app, *app.tabs[size_t(app.active)]) == layout.index;
+                if (compact) {
+                    Style style = Style().ghost().id(0x434F4E0000ull + uint64_t(layout.index));
+                    style.disabled = g_block_input;
+                    if (ui.button("", {row.x, row.y, row.w - 48, row.h}, style))
+                        request_connection(app, layout.index, true);
+                    if (active) ui.fill_rect({row.x + 1, row.y + 8, 3, row.h - 16}, theme.tint, 1.5f);
                 }
-                return;
+                ui.system_icon(aino::SystemIcon::Network, {row.x + 14, row.y + 17, 18, 18}, active ? theme.tint : theme.label2);
+                draw_connection_text(ui, layout, row, theme, compact);
+                if (compact) {
+                    const Rect connect(row.right() - 42, row.cy() - 16, 32, 32);
+                    Style style = Style().ghost().id(0x434F4E1000ull + uint64_t(layout.index));
+                    style.disabled = g_block_input;
+                    if (ui.icon_button("", connect, style)) request_connection(app, layout.index);
+                    ui.system_icon(aino::SystemIcon::Play, connect.inset(8), theme.tint);
+                    ui.tooltip(connect, "新建此服务器的会话");
+                } else {
+                    const float action = row.right() - 226;
+                    if (dlg_button(ui, theme, "连接", {action, row.cy() - 15, 64, 30}, Btn::Normal)) {
+                        request_connection(app, layout.index);
+                        return;
+                    }
+                    if (profile.src == 0) {
+                        if (tool_button(ui, theme, "编辑", {action + 76, row.cy() - 15, 60, 30}, false)) {
+                            app.editor_open = true;
+                            app.editing = layout.index;
+                            app.draft = profile;
+                            app.draft_remember = profile.remember;
+                            app.draft_reveal = false;
+                            return;
+                        }
+                        if (tool_button(ui, theme, "删除", {action + 148, row.cy() - 15, 60, 30}, true)) {
+                            auto next = app.profiles;
+                            next.erase(next.begin() + layout.index);
+                            if (save_local_profiles(next, &app.status)) app.profiles = std::move(next);
+                            return;
+                        }
+                    } else if (tool_button(ui, theme, "打开配置", {action + 76, row.cy() - 15, 132, 30}, false)) {
+                        open_config_file(app, profile_config_path(profile));
+                        return;
+                    }
+                }
             }
-            if (p.src == 0) {
-                if (tool_button(ui, th, "编辑", {action_x + 76, row.cy() - 12, 60, 24}, false)) {
-                    app.editor_open = true;
-                    app.editing = i;
-                    app.draft = p;
-                    app.draft_remember = p.remember;
-                    app.draft_reveal = false;
-                    return;
-                }
-                if (tool_button(ui, th, "删除", {action_x + 148, row.cy() - 12, 60, 24}, true)) {
-                    auto next = app.profiles;
-                    next.erase(next.begin() + i);
-                    if (save_local_profiles(next, &app.status)) app.profiles = std::move(next);
-                    return;
-                }
-            } else if (tool_button(ui, th, "打开配置", {action_x + 76, row.cy() - 12, 132, 24}, false)) {
-                open_config_file(app, profile_config_path(p));
-                return;
-            }
-            if (++row_index < counts[source])
-                ui.separator({row.x + 50, row.bottom() - 1, row.w - 66, 1},
-                             Style().background(th.separator.scaled_alpha(.65f)));
+            y += row.h;
+            if (i + 1 < group.size()) ui.separator({x + 16, y - 1, width - 32, 1});
         }
-        y += counts[source] * 76.f + 28;
+        y += 24;
     }
-    if (app.profiles.empty()) {
-        ui.panel({x, y, width, 160}, Style().background(surface).corner(12));
-        ui.system_icon(aino::SystemIcon::Network, {x + width * .5f - 16, y + 22, 32, 32}, th.label2);
-        ui.label("还没有连接", {x + 16, y + 68, width - 32, 24}, Style().font(14).semi_bold().center());
-        if (dlg_button(ui, th, "新建连接", {x + width * .5f - 52, y + 108, 104, 28}, Btn::Primary)) new_profile();
-        y += 180;
+    if (!count) {
+        ui.panel({x, y, width, 140}, Style().background(theme.is_dark() ? theme.card : theme.control_bg).corner(12));
+        ui.label(app.profile_filter.empty() ? "还没有连接" : "没有匹配的连接",
+            {x + 12, y + 28, width - 24, 24}, Style().font(14).semi_bold().center());
+        if (!app.profile_filter.empty()) {
+            if (tool_button(ui, theme, "清除搜索", {x + width * .5f - 52, y + 76, 104, 30}, false)) app.profile_filter.clear();
+        } else if (dlg_button(ui, theme, "新建连接", {x + width * .5f - 52, y + 76, 104, 30}, Btn::Primary)) new_profile(app);
     }
-    if (!app.status.empty()) ui.draw_text(app.status, {x + 2, y, width - 4, 24}, th.label2, Style().font(11));
 }
+
+void draw_start(aino::Ui& ui, App& app, const aino::Theme& theme, const Rect& view) {
+    ui.fill_rect(view, theme.is_dark() ? theme.window_bg : Color::hex(0xF5F5F7));
+    const float width = std::min(820.f, view.w - 56);
+    const float x = view.cx() - width * .5f;
+    ui.heading("连接管理", {x, view.y + 26, width, 36}, Style().font(26).bold());
+    ui.draw_text("选择连接开启终端；已有会话可从顶部标签继续。",
+        {x, view.y + 72, width, 22}, theme.label2, Style().font(12));
+    const Rect list(view.x, view.y + 108, view.w, std::max(0.f, view.h - 108));
+    draw_connections(ui, app, theme, list, false);
+}
+
+struct WorkspaceLayout { Rect sidebar, tabs, content; };
+
+WorkspaceLayout workspace_layout(aino::Ui& ui, App& app) {
+    const Rect body(0, 56, ui.width(), std::max(0.f, ui.height() - 56));
+    float start = 0;
+    if (app.sidebar_open) {
+        const float maximum = std::min(420.f, std::max(260.f, body.w - 467.f));
+        app.sidebar_width = std::max(260.f, std::min(maximum, app.sidebar_width));
+        float ratio = (app.sidebar_width + 3.5f) / body.w;
+        if (!g_block_input) ui.split_pane(&ratio, body, nullptr, nullptr, true, 0.f, Style().id(0x53534853504C4954ull));
+        app.sidebar_width = std::max(260.f, std::min(maximum, body.w * ratio - 3.5f));
+        start = app.sidebar_width + 7;
+    }
+    return {{0, body.y, start ? app.sidebar_width : 0, body.h},
+            {start, body.y, body.w - start, 40},
+            {start, body.y + 40, body.w - start, std::max(0.f, body.h - 40)}};
+}
+
+void draw_toolbar(aino::Ui& ui, App& app, const aino::Theme& theme) {
+    ui.fill_rect({0, 0, ui.width(), 56}, theme.card);
+    ui.separator({0, 55, ui.width(), 1});
+    Style style = Style().ghost();
+    style.disabled = g_block_input;
+    const Rect toggle(12, 12, 32, 32);
+    if (ui.icon_button("", toggle, style)) app.sidebar_open = !app.sidebar_open;
+    ui.system_icon(aino::SystemIcon::Navigation, toggle.inset(7), theme.label2);
+    ui.tooltip(toggle, app.sidebar_open ? "收起侧栏" : "展开侧栏");
+    ui.label("aino SSH", {56, 14, 94, 28}, Style().font(16).semi_bold());
+    if (dlg_button(ui, theme, "新建连接", {164, 12, 104, 32}, Btn::Primary)) new_profile(app);
+    if (tool_button(ui, theme, "连接管理", {280, 12, 96, 32}, false)) app.show_start = true;
+    if (tool_button(ui, theme, "打开配置文件", {ui.width() - 286, 12, 120, 32}, false)) open_config_file(app);
+    if (tool_button(ui, theme, "重新导入连接", {ui.width() - 156, 12, 104, 32}, false)) {
+        app.profiles = load_all_profiles();
+        app.status = "已重新读取 SSH / VSCode 连接配置，现有会话继续运行。";
+    }
+    const Rect appearance(ui.width() - 42, 12, 30, 32);
+    if (ui.icon_button("", appearance, style)) ui.set_theme(theme.is_dark() ? aino::Theme::light() : aino::Theme::dark());
+    ui.system_icon(theme.is_dark() ? aino::SystemIcon::Sun : aino::SystemIcon::Moon, appearance.inset(7), theme.label2);
+    ui.tooltip(appearance, "切换深浅主题");
+}
+
+void draw_workspace_sidebar(aino::Ui& ui, App& app, const aino::Theme& theme, const Rect& area) {
+    ui.fill_rect(area, theme.sidebar_bg);
+    ui.separator({area.right(), area.y, 1, area.h});
+    Style style;
+    style.disabled = g_block_input;
+    ui.segmented({"连接", "远程文件"}, &app.sidebar_page, {area.x + 12, area.y + 12, area.w - 24, 30}, style);
+    if (app.sidebar_page == 1) {
+        if (app.active >= 0 && app.active < int(app.tabs.size())) {
+            auto& session = *app.tabs[size_t(app.active)];
+            auto scope = ui.state_scope(session.ui_scope);
+            draw_sftp(ui, session, theme, {area.x, area.y + 52, area.w, area.h - 52}, &app.download_dir, app.win);
+        } else {
+            ui.label("尚无活动会话", {area.x + 16, area.y + 88, area.w - 32, 24}, Style().font(14).semi_bold().center());
+            ui.draw_text("连接服务器后在这里浏览远程文件。", {area.x + 16, area.y + 124, area.w - 32, 20},
+                theme.label2, Style().font(11));
+            if (tool_button(ui, theme, "查看所有连接", {area.cx() - 64, area.y + 166, 128, 32}, false)) {
+                app.sidebar_page = 0;
+                app.show_start = true;
+            }
+        }
+        return;
+    }
+    ui.search_field(&app.profile_filter, {area.x + 12, area.y + 58, area.w - 24, 30}, style.hint("搜索名称、主机、用户"));
+    const auto path_lines = wrap_text(ui, display_path(ssh_config_path()), 10.5f, area.w - 56);
+    const float footer_h = 48 + float(path_lines.size()) * 15;
+    const Rect footer(area.x + 12, area.bottom() - 22 - footer_h, area.w - 24, footer_h);
+    ui.panel(footer, Style().background(theme.is_dark() ? theme.card : theme.control_bg).corner(12));
+    ui.label("SSH 配置文件", {footer.x + 16, footer.y + 12, footer.w - 32, 18}, Style().font(11).semi_bold());
+    float y = footer.y + 34;
+    for (const auto& line : path_lines) {
+        ui.draw_text(line, {footer.x + 16, y, footer.w - 32, 15}, theme.label2, Style().font(10.5f));
+        y += 15;
+    }
+    const Rect list(area.x, area.y + 104, area.w, std::max(0.f, footer.y - 16 - area.y - 104));
+    draw_connections(ui, app, theme, list, true);
+}
+
 
 // ---- 连接编辑器（新建 / 编辑）----
 void draw_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
@@ -2243,10 +2383,13 @@ void draw_ask_password(aino::Ui& ui, App& app, const aino::Theme& th) {
 }
 
 // ---- 标签栏 ----
-void draw_tabs(aino::Ui& ui, App& app, const aino::Theme& th, float h) {
-    const float W = ui.width();
-    ui.fill_rect(Rect(0, 0, W, h), th.card);
-    ui.fill_rect(Rect(0, h - 1.0f, W, 1.0f), th.border);
+void draw_tabs(aino::Ui& ui, App& app, const aino::Theme& th, const Rect& area) {
+    const float W = area.w, h = area.h;
+    ui.fill_rect(area, th.card);
+    ui.separator({area.x, area.bottom() - 1, W, 1});
+    Style home_style = Style().font(12).padding(12);
+    home_style.disabled = g_block_input;
+    if (ui.nav_item("连接管理", app.show_start, {area.x + 8, area.y + 6, 80, h - 12}, home_style)) app.show_start = true;
 
     std::vector<std::string> labels;
     std::vector<Color> indicators;
@@ -2264,12 +2407,14 @@ void draw_tabs(aino::Ui& ui, App& app, const aino::Theme& th, float h) {
     options.max_width = 200.0f;
     Style style = Style().font(12.5f);
     style.disabled = g_block_input;
-    if (ui.tabs(labels, &selected, Rect(8.0f, 6.0f, std::max(0.0f, W - 52.0f), h - 12.0f), options, style)) {
+    if (ui.tabs(labels, &selected, Rect(area.x + 96, area.y + 6, std::max(0.0f, W - 140), h - 12), options, style)) {
         app.active = selected;
         app.show_start = false;
+        if (selected >= 0 && selected < int(app.tabs.size())) app.tabs[size_t(selected)]->term_focus = true;
+        ui.set_focus(nullptr);
     }
 
-    const Rect add(W - 36.0f, (h - 24.0f) * 0.5f, 24.0f, 24.0f);
+    const Rect add(area.right() - 36, area.y + (h - 24) * .5f, 24, 24);
     Style add_style = Style().ghost();
     add_style.disabled = g_block_input;
     if (ui.icon_button("", add, add_style)) app.show_start = true;
@@ -2326,7 +2471,6 @@ void update_session(Session& a) {
                     a.entries.swap(got);
                     if (!cwd.empty()) a.sftp_path = cwd;
                     a.sel = -1;
-                    a.list_scroll = 0;
                 } else {
                     set_notice(a, err, true);
                 }
@@ -2343,40 +2487,34 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
     auto owner = ui.state_scope(a.ui_scope);
     const Session::ConnInfo cs = a.conn_snapshot();
     const float W = body.w, H = body.h;
-    const float status_h = 26.0f;
-    const float side_w = std::min(400.0f, std::max(300.0f, W * 0.32f));
-
-    draw_sftp(ui, a, th, Rect(body.x, body.y, side_w, H - status_h), &app.download_dir, app.win);
-
-    const Rect r_frame(body.x + side_w, body.y, W - side_w, H - status_h);
-
-    // 终端标题条：目标 + 状态 + 尺寸 + 断开
-    const float strip_h = 30.0f;
-    ui.fill_rect(Rect(r_frame.x, r_frame.y, r_frame.w, strip_h), th.card);
-    ui.fill_rect(Rect(r_frame.x, r_frame.y + strip_h - 1.0f, r_frame.w, 1.0f), th.border);
-    {
-        const bool ok = a.engine.connected();
-        ui.draw_text(a.user + "@" + a.host + ":" + std::to_string(a.port),
-                     Rect(r_frame.x + 14.0f, r_frame.y, r_frame.w * 0.5f, strip_h),
-                     ok ? th.foreground : th.muted_foreground, Style().font(11.5f));
-        // 标题条只放"状态"，长错误交给下面的失败卡片 —— 塞这里会被截成半句话
-        const char* state = cs.connecting ? "连接中…"
-                          : ok             ? "已连接"
-                                           : "已断开";
-        const Color sc = cs.connecting ? kWarn : (ok ? kOk : Color::hex(0x8A8F9A));
-        ui.fill_rect(Rect(r_frame.x + r_frame.w * 0.5f - 8.0f, r_frame.y + strip_h * 0.5f - 3.0f,
-                          6.0f, 6.0f), sc, 3.0f);
-        ui.draw_text(state, Rect(r_frame.x + r_frame.w * 0.5f + 2.0f, r_frame.y, 90.0f, strip_h),
-                     sc, Style().font(11.0f));
-        char sz[64];
-        std::snprintf(sz, sizeof sz, "%d × %d", a.term.cols, a.term.rows);
-        ui.draw_text(sz, Rect(r_frame.x, r_frame.y, r_frame.w - 86.0f, strip_h),
-                     th.muted_foreground, Style().font(11.0f).right());
-        // 断开时移除会话，网络与线程清理由后台完成，避免阻塞 UI。
-        if (tool_button(ui, th, "断开", Rect(r_frame.right() - 76.0f, r_frame.y + 4.0f, 64.0f, 22.0f), false)) {
-            app.retire(app.active);
-            return;                       // a 已经交给后台了，这一帧不要再碰
-        }
+    const auto transfer = a.transfer_snapshot();
+    const double now = double(std::clock()) / CLOCKS_PER_SEC;
+    const std::string status = !app.status.empty() ? app.status
+        : (!a.notice.empty() && now - a.notice_at < 3 ? a.notice
+        : (a.engine.connected() ? "Ctrl+Shift+C/V 复制粘贴 · PgUp 回滚 · " + std::to_string(a.term.cols) + " × " +
+            std::to_string(a.term.rows) : "尚未连接"));
+    const auto status_lines = wrap_text(ui, status, 11.f, W - 28);
+    const auto transfer_lines = wrap_text(ui, transfer.name + " · " + human_size(transfer.done) + " / " + human_size(transfer.total),
+        11.f, W - 224);
+    const float transfer_h = transfer.busy ? std::max(30.f, float(transfer_lines.size()) * 16 + 8) : 0;
+    const float status_h = 12 + float(status_lines.size()) * 16 + transfer_h;
+    const Rect r_frame(body.x, body.y, W, H - status_h);
+    const auto target_lines = wrap_text(ui, a.user + "@" + a.host + ":" + std::to_string(a.port), 11.5f, W - 208);
+    const float strip_h = std::max(40.f, 16 + float(target_lines.size()) * 17);
+    ui.fill_rect({r_frame.x, r_frame.y, r_frame.w, strip_h}, th.card);
+    ui.separator({r_frame.x, r_frame.y + strip_h - 1, r_frame.w, 1});
+    float target_y = r_frame.y + 8;
+    for (const auto& line : target_lines) {
+        ui.draw_text(line, {r_frame.x + 14, target_y, W - 208, 17}, th.foreground, Style().font(11.5f));
+        target_y += 17;
+    }
+    const bool connected = a.engine.connected();
+    const char* state = cs.connecting ? "连接中…" : connected ? "已连接" : "已断开";
+    ui.fill_circle(r_frame.right() - 184, r_frame.y + strip_h * .5f, 3, cs.connecting ? kWarn : connected ? kOk : th.label3);
+    ui.draw_text(state, {r_frame.right() - 174, r_frame.y, 86, strip_h}, th.label2, Style().font(11));
+    if (tool_button(ui, th, "关闭", {r_frame.right() - 82, r_frame.y + (strip_h - 28) * .5f, 70, 28}, false)) {
+        app.retire(app.active);
+        return;
     }
 
     const Rect r_ter(r_frame.x, r_frame.y + strip_h, r_frame.w, r_frame.h - strip_h);
@@ -2406,7 +2544,10 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
     }
 
     ui.fill_rect(r_ter, kTermBg);
-    if (!a.engine.connected() && a.term.history_size() == 0) {
+    bool empty_terminal = a.term.history_size() == 0;
+    for (int row = 0; empty_terminal && row < a.term.rows; ++row)
+        empty_terminal = !row_has_text(a.term.screen_row(row));
+    if (!a.engine.connected() && empty_terminal) {
         ui.draw_text("连接后这里就是远程 shell", Rect(r_ter.x, r_ter.y + 24.0f, r_ter.w, 20.0f),
                      Color::hex(0x3F4450), Style().font(12.0f).center());
     }
@@ -2441,7 +2582,7 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
     // 终端交互
     const aino::Input& in = ui.input();
     // 失败卡片盖在终端上时必须挡住底层交互，否则点「重试」会顺带在终端里起选区
-    const bool over_term = r_ter.contains(in.mouse) && !fail_shown;
+    const bool over_term = !g_block_input && r_ter.contains(in.mouse) && !fail_shown;
     if (in.pressed[0]) {
         a.term_focus = over_term;
         if (over_term) {
@@ -2474,69 +2615,72 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
         a.view_offset = std::max(0, std::min(maxoff, a.view_offset + int(in.wheel * 3.0f)));
         a.follow = a.view_offset == 0;
     }
-    if (a.term_focus && !fail_shown && !a.confirm_delete && a.prompt == Prompt::None)
+    if (!g_block_input && a.term_focus && !fail_shown && !a.confirm_delete && a.prompt == Prompt::None)
         handle_term_keys(ui, a);
 
-    // 状态条
-    const Rect sb(body.x, body.bottom() - status_h, W, status_h);
-    ui.fill_rect(sb, th.card);
-    ui.fill_rect(Rect(sb.x, sb.y, sb.w, 1.0f), th.border);
-    const double now = double(std::clock()) / CLOCKS_PER_SEC;
-    if (!a.notice.empty() && now - a.notice_at < 3.0) {
-        ui.fill_circle(sb.x + 14.0f, sb.y + status_h * 0.5f, 3.0f, a.notice_bad ? kBad : kOk);
-        ui.draw_text(a.notice, Rect(sb.x + 24.0f, sb.y, W * 0.55f, status_h),
-                     a.notice_bad ? kBad : th.muted_foreground, Style().font(11.5f));
-    } else {
-        ui.draw_text(a.engine.connected()
-                         ? ("回滚 " + std::to_string(a.term.history_size()) + " 行 · Ctrl+Shift+C/V 复制粘贴 · PgUp 回滚")
-                         : "未连接",
-                     Rect(sb.x + 14.0f, sb.y, W * 0.62f, status_h),
-                     th.muted_foreground, Style().font(11.0f));
+    const Rect footer(body.x, body.bottom() - status_h, W, status_h);
+    ui.fill_rect(footer, th.card);
+    ui.separator({footer.x, footer.y, footer.w, 1});
+    float status_y = footer.y + 6;
+    for (const auto& line : status_lines) {
+        ui.draw_text(line, {footer.x + 14, status_y, W - 28, 16}, th.label2, Style().font(11));
+        status_y += 16;
     }
-    const auto t = a.transfer_snapshot();
-    if (t.busy) {
-        const float frac = t.total ? float(double(t.done) / double(t.total)) : 0.0f;
-        const Rect pb(sb.right() - 200.0f, sb.y + status_h * 0.5f - 3.0f, 120.0f, 6.0f);
-        ui.fill_rect(pb, Color::hex(0x27272A), 3.0f);
-        ui.fill_rect(Rect(pb.x, pb.y, pb.w * frac, pb.h), kAccent, 3.0f);
-        ui.draw_text(t.name + "  " + human_size(t.done), Rect(pb.x - 220.0f, sb.y, 210.0f, status_h),
-                     th.muted_foreground, Style().font(11.0f).right());
-        if (tool_button(ui, th, "取消", Rect(sb.right() - 70, sb.y + 2, 58, 22), false))
+    if (transfer.busy) {
+        float text_y = status_y + 4;
+        for (const auto& line : transfer_lines) {
+            ui.draw_text(line, {footer.x + 14, text_y, W - 224, 16}, th.label2, Style().font(11));
+            text_y += 16;
+        }
+        const Rect progress(footer.right() - 190, status_y + transfer_h * .5f - 3, 100, 6);
+        const float fraction = transfer.total ? std::min(1.f, float(double(transfer.done) / double(transfer.total))) : 0;
+        ui.fill_rect(progress, th.border, 3);
+        ui.fill_rect({progress.x, progress.y, progress.w * fraction, progress.h}, th.tint, 3);
+        if (tool_button(ui, th, "取消", {footer.right() - 76, status_y + (transfer_h - 26) * .5f, 62, 26}, false))
             a.xfer_cancel = true;
     }
 
-    draw_prompt(ui, a, th);
 }
 
 // =============================================================================
 //  十一、每帧入口
 // =============================================================================
-void frame(aino::Ui& ui, App& app, aino::Window& win, const aino::Theme& th) {
-    ui.clear(th.background);
-    ui.set_animating(false);
-    app.reap();                  // 后台已经收拾完的会话，这里真正释放
-    for (auto& s : app.tabs) if (s) update_session(*s);
-    const float tab_h = 40.0f;
-    // 页面先画、弹窗后画；页面这一趟只画不吃输入
-    g_block_input = app.modal_open();
-
-    // 标签栏在启动页和会话页均保持可见。
+void draw_workspace(aino::Ui& ui, App& app, const aino::Theme& th) {
+    // 常驻工具栏、可收起的连接/SFTP 侧栏、独立标签栏与终端工作区。
+    bool session_modal = false;
+    if (app.active >= 0 && app.active < int(app.tabs.size())) {
+        const auto& session = *app.tabs[size_t(app.active)];
+        session_modal = session.confirm_delete || session.prompt != Prompt::None;
+    }
+    g_block_input = app.modal_open() || session_modal;
+    draw_toolbar(ui, app, th);
+    g_block_input = app.modal_open() || session_modal;
+    const auto layout = workspace_layout(ui, app);
+    if (app.sidebar_open) draw_workspace_sidebar(ui, app, th, layout.sidebar);
+    g_block_input = app.modal_open() || session_modal;
     if (!app.tabs.empty() && (app.active < 0 || app.active >= int(app.tabs.size()))) app.active = 0;
-    draw_tabs(ui, app, th, tab_h);
-
-    // draw_tabs 可能移除最后一个会话，访问 active_session 前必须重新检查索引和列表。
+    draw_tabs(ui, app, th, layout.tabs);
     if (app.tabs.empty() || app.show_start) {
-        draw_start(ui, app, th, tab_h);
-    } else if (app.active >= 0 && app.active < int(app.tabs.size())) {
-        session_frame(ui, active_session(app), app, th,
-                      Rect(0.0f, tab_h, ui.width(), ui.height() - tab_h));
+        const auto notices = wrap_text(ui, app.status, 11.f, layout.content.w - 56);
+        const float note_height = app.status.empty() ? 0.f : 16 + float(notices.size()) * 16;
+        draw_start(ui, app, th, {layout.content.x, layout.content.y, layout.content.w, layout.content.h - note_height});
         if (!app.status.empty()) {
-            ui.draw_text(app.status, Rect(14.0f, ui.height() - 16.0f, ui.width() * 0.6f, 14.0f),
-                         th.muted_foreground, Style().font(10.5f));
+            const auto lines = wrap_text(ui, app.status, 11.f, layout.content.w - 56);
+            const float height = 16 + float(lines.size()) * 16;
+            const Rect note(layout.content.x, layout.content.bottom() - height, layout.content.w, height);
+            ui.fill_rect(note, th.card);
+            float y = note.y + 8;
+            for (const auto& line : lines) {
+                ui.draw_text(line, {note.x + 28, y, note.w - 56, 16}, th.label2, Style().font(11));
+                y += 16;
+            }
         }
-    } else {
-        // 刚在这一帧关掉了最后一个会话：立刻补画启动页，避免闪一帧空白
-        draw_start(ui, app, th, tab_h);
+    } else if (app.active >= 0 && app.active < int(app.tabs.size())) {
+        session_frame(ui, active_session(app), app, th, layout.content);
+    }
+    if (app.active >= 0 && app.active < int(app.tabs.size())) {
+        g_block_input = false;
+        draw_prompt(ui, active_session(app), th);
     }
 
     if (app.editor_open) draw_editor(ui, app, th);
@@ -2562,7 +2706,14 @@ void frame(aino::Ui& ui, App& app, aino::Window& win, const aino::Theme& th) {
             }
         }
     }
-    (void)win;
+}
+
+void frame(aino::Ui& ui, App& app, aino::Window&, const aino::Theme& theme) {
+    ui.clear(theme.background);
+    ui.set_animating(false);
+    app.reap();
+    for (auto& session : app.tabs) if (session) update_session(*session);
+    draw_workspace(ui, app, theme);
 }
 
 }  // namespace

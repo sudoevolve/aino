@@ -63,7 +63,7 @@ def build(src, out, extra_flags=(), asan=False, gui=False):
     cmd += list(extra_flags)
     cmd += [L2_LIB, MBED_LIB, "user32.lib", "gdi32.lib", "msimg32.lib", "ws2_32.lib", "crypt32.lib",
             "bcrypt.lib",     # mbedTLS 的熵源用 BCryptGenRandom
-            "shell32.lib", "ole32.lib", "uuid.lib"]     # 系统文件/目录选择及 KnownFolder ID
+            "shell32.lib", "ole32.lib", "uuid.lib", "comdlg32.lib"]     # 系统文件/目录选择及 KnownFolder ID
     if gui:
         # GUI 程序必须声明 WINDOWS 子系统，否则双击/启动会先弹一个黑色控制台窗口
         # （就是"启动还开着个终端"）。入口是 WinMain 转发，见 ssh_client.cpp。

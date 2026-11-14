@@ -25,6 +25,18 @@
 
 namespace sshc {
 
+// File picker paths are UTF-8; use the wide file API on Windows.
+inline std::FILE* open_local_file(const std::string& path, const char* mode) {
+#if defined(_WIN32)
+    const auto wide = std::filesystem::u8path(path).wstring();
+    std::wstring wide_mode;
+    for (const char* p = mode; *p; ++p) wide_mode.push_back(wchar_t(*p));
+    return _wfopen(wide.c_str(), wide_mode.c_str());
+#else
+    return std::fopen(path.c_str(), mode);
+#endif
+}
+
 inline std::string fmt(const char* f, ...) {
     char buf[512];
     va_list ap;

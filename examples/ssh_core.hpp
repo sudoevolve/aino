@@ -713,11 +713,7 @@ public:
             LIBSSH2_SFTP_ATTRIBUTES at{};
             if (xfer_.rh && libssh2_sftp_fstat(xfer_.rh, &at) == 0) xfer_.total = at.filesize;
             if (xfer_.rh) {
-#if defined(_WIN32)
-                fopen_s(&xfer_.fh, local.c_str(), "wb");
-#else
-                xfer_.fh = std::fopen(local.c_str(), "wb");
-#endif
+                xfer_.fh = open_local_file(local, "wb");
                 if (!xfer_.fh) { xfer_.error = "本地写不了：" + local; xfer_.finished = true; }
             }
         } else {
@@ -735,11 +731,7 @@ public:
         xfer_.local = local;
         xfer_.remote = remote;
         xfer_.name = base_name(local);
-#if defined(_WIN32)
-        fopen_s(&xfer_.fh, local.c_str(), "rb");
-#else
-        xfer_.fh = std::fopen(local.c_str(), "rb");
-#endif
+        xfer_.fh = open_local_file(local, "rb");
         if (!xfer_.fh) { xfer_.error = "本地读不了：" + local; xfer_.finished = true; return; }
         if (!local_file_size(xfer_.fh, &xfer_.total, &xfer_.error)) {
             xfer_.finished = true;

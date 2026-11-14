@@ -71,6 +71,15 @@ int main() {
     const auto unicode = root / std::filesystem::u8path("配置.json");
     check(sshc::atomic_write_file(unicode.u8string(), "UTF-8 path", &err) && read(unicode) == "UTF-8 path",
           "atomic save supports Unicode filenames");
+    std::FILE* unicode_input = sshc::open_local_file(unicode.u8string(), "rb");
+    char unicode_buffer[32]{};
+    const auto unicode_size = unicode_input ? std::fread(unicode_buffer, 1, sizeof(unicode_buffer), unicode_input) : 0;
+    if (unicode_input) std::fclose(unicode_input);
+    check(std::string(unicode_buffer, unicode_size) == "UTF-8 path", "upload opens Unicode local path");
+    std::FILE* unicode_output = sshc::open_local_file(unicode.u8string(), "wb");
+    check(unicode_output && std::fwrite("download", 1, 8, unicode_output) == 8, "download opens Unicode local path");
+    if (unicode_output) std::fclose(unicode_output);
+    check(read(unicode) == "download", "Unicode download path contains exact bytes");
 #if !defined(_WIN32)
     const auto link = root / "config-link";
     std::filesystem::create_symlink(config.filename(), link);
