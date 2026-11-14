@@ -1536,6 +1536,9 @@ struct FailExplain {
 
 FailExplain explain_fail(FailStage st) {
     switch (st) {
+    case FailStage::Input:
+        return {"连接信息有误", kWarn,
+                "检查主机、端口和用户名；用户名中不能包含 Tab 等控制字符。尚未向服务器提交密码。"};
     case FailStage::Dns:
         return {"网络没通 · 域名解析失败", kBad,
                 "这台机器的名字在本机解析不出来。检查拼写，或确认 VPN / hosts 配置。"};
@@ -1553,8 +1556,8 @@ FailExplain explain_fail(FailStage st) {
                 "这台机器的密钥与上次记录不一致：可能重装过系统，也可能是中间人。"
                 "确认无误后删掉 known_hosts 里那条再连。"};
     case FailStage::Auth:
-        return {"网络通了 · 密码或凭据不对", kBad,
-                "网络和 SSH 都是好的，是账号验证没过：核对用户名 / 密码，或改用密钥登录。"};
+        return {"网络通了 · 账号认证失败", kBad,
+                "先核对用户名，再检查密码、账号登录权限或认证方式。"};
     case FailStage::Shell:
         return {"登录成功 · 但开不了终端", kWarn,
                 "账号能登录，但这台机器禁止交互 shell 或不允许分配 PTY"
@@ -1875,14 +1878,18 @@ Session& active_session(App& app) {
 }
 
 bool save_profile(App& app, const Profile& p, int index) {
+    Profile clean = p;
+    clean.host = sshc::trim_connection_identity(clean.host);
+    clean.user = sshc::trim_connection_identity(clean.user);
+    if (!sshc::validate_connection_identity(clean.host, clean.port, clean.user, &app.status)) return false;
     auto next = app.profiles;
     if (index >= 0 && index < int(next.size())) {
         const int src = next[size_t(index)].src;
         if (src != 0) return false;                  // 导入的不能改
-        next[size_t(index)] = p;
+        next[size_t(index)] = clean;
         next[size_t(index)].src = 0;
     } else {
-        Profile q = p;
+        Profile q = clean;
         q.src = 0;
         next.push_back(q);
     }
@@ -1895,13 +1902,13 @@ bool save_profile(App& app, const Profile& p, int index) {
 void open_session(App& app, const Profile& p, const std::string& pass) {
     auto s = std::make_shared<Session>();
     s->ui_scope = app.next_session_scope++;
-    s->host = p.host;
+    s->host = sshc::trim_connection_identity(p.host);
     s->port = p.port > 0 ? p.port : 22;
-    s->user = p.user;
+    s->user = sshc::trim_connection_identity(p.user);
     s->pass = pass;
     s->key = p.key;
     s->title = !p.name.empty() ? p.name
-             : (!p.user.empty() ? p.user + "@" + p.host : p.host);
+             : (!s->user.empty() ? s->user + "@" + s->host : s->host);
     s->clip = &app.clip;
     s->term_focus = true;
     s->engine.set_wake([w = app.win] { if (w) w->wake(); });

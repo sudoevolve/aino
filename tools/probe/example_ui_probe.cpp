@@ -124,6 +124,44 @@ int main(int argc, char** argv) {
     expect(std::string(explain_fail(FailStage::Handshake).title).find("不是 SSH") == std::string::npos &&
            std::string(explain_fail(FailStage::Handshake).advice).find("不是 SSH") == std::string::npos,
            "an incomplete handshake does not label the peer as a non SSH service");
+    expect(std::string(explain_fail(FailStage::Auth).title).find("账号认证失败") != std::string::npos,
+           "authentication rejection does not claim the password is wrong");
+    expect(std::string(explain_fail(FailStage::Input).advice).find("尚未") != std::string::npos,
+           "invalid local identity is distinct from server authentication failure");
+    {
+        App app;
+        Profile dirty;
+        dirty.host = " \t host.example \r\n";
+        dirty.user = " aino\t\t\t\t";
+        dirty.remember = true;
+        dirty.pass = " \t sample pass \t ";
+        expect(save_profile(app, dirty, -1), "profile normalizes identity boundary whitespace");
+        const auto saved = load_local_profiles();
+        expect(saved.size() == 1 && saved[0].host == "host.example" && saved[0].user == "aino",
+               "normalized host and username persist without invisible suffixes");
+        expect(saved.size() == 1 && saved[0].pass == dirty.pass,
+               "identity normalization preserves password bytes including whitespace");
+        const std::string before = read_text_file(cfg_file());
+        dirty.user = "ai\tno";
+        expect(!save_profile(app, dirty, 0) && app.status.find("用户名") != std::string::npos &&
+               read_text_file(cfg_file()) == before && app.profiles[0].user == "aino",
+               "embedded username control rejects save without changing disk or model");
+        dirty.user = "aino";
+        dirty.host = "host\n.example";
+        expect(!save_profile(app, dirty, 0) && read_text_file(cfg_file()) == before,
+               "embedded host control rejects save");
+        Engine engine;
+        std::string error;
+        expect(!engine.connect("no-network.invalid", 22, "ai\tno", "unused", "", &error) &&
+               engine.fail_stage() == FailStage::Input && error.find("用户名") != std::string::npos,
+               "engine rejects malformed username before DNS or authentication");
+        expect(!engine.connect("no-network.invalid", 0, "aino", "unused", "", &error) &&
+               engine.fail_stage() == FailStage::Input,
+               "engine rejects invalid port before network access");
+        expect(!engine.connect("no-network.invalid", 22, "\t ", "unused", "", &error) &&
+               engine.fail_stage() == FailStage::Input && error.find("用户名不能为空") != std::string::npos,
+               "engine rejects empty normalized username before network access");
+    }
     {
         App app;
         Profile profile;

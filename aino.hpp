@@ -580,7 +580,7 @@ struct Input {
     bool key_ctrl[KEY_COUNT]  = {};
     bool key_shift[KEY_COUNT] = {};
     bool key_alt[KEY_COUNT]   = {};
-    std::string text_input;     // 本帧输入的 UTF-8 文本（已过滤控制字符）
+    std::string text_input;     // 本帧输入的 UTF-8 文本（多行编辑可能包含 Tab）
     bool shift() const { return key_down[KEY_SHIFT]; }
     bool ctrl()  const { return key_down[KEY_CTRL]; }
     bool alt()   const { return key_down[KEY_ALT]; }
@@ -6352,9 +6352,9 @@ bool Ui::input(std::string* value, const Rect& box, const Style& st) {
         }
         if (!undone && kin.ctrl_of('V')) {
             std::string paste = impl->get_clipboard ? impl->get_clipboard() : std::string();
-            // 单行输入：过滤换行
+            // 单行输入不接收 Tab、换行及其它控制字符，保留 UTF-8 字节。
             std::string filtered;
-            for (char ch : paste) if (ch != '\n' && ch != '\r') filtered.push_back(ch);
+            for (unsigned char ch : paste) if (ch >= 32 && ch != 127) filtered.push_back(char(ch));
             // 先确认有东西可粘再删选区 —— 剪贴板为空（或只有换行）时先删后插
             // 会把选区直接抹掉，什么都没换来。
             if (!filtered.empty()) {
@@ -6375,15 +6375,19 @@ bool Ui::input(std::string* value, const Rect& box, const Style& st) {
 
         // 组合键期间不提交文本，避免输入法将快捷键字符写入输入框。
         if (!undone && !kin.ctrl() && impl->text_veto <= 0.0f && !kin.text_input.empty()) {
-            edit_kind = detail::EDIT_TYPE;
-            delete_selection();
-            std::vector<uint32_t> cps = utf8_codepoints(*value);
-            std::vector<uint32_t> ins = utf8_codepoints(kin.text_input);
-            cps.insert(cps.begin() + impl->caret, ins.begin(), ins.end());
-            *value = utf8_from_codepoints(cps, 0, cps.size());
-            impl->caret += int(ins.size());
-            impl->caret_blink = 0.0f;
-            changed = true;
+            std::string filtered;
+            for (unsigned char ch : kin.text_input) if (ch >= 32 && ch != 127) filtered.push_back(char(ch));
+            if (!filtered.empty()) {
+                edit_kind = detail::EDIT_TYPE;
+                delete_selection();
+                std::vector<uint32_t> cps = utf8_codepoints(*value);
+                std::vector<uint32_t> ins = utf8_codepoints(filtered);
+                cps.insert(cps.begin() + impl->caret, ins.begin(), ins.end());
+                *value = utf8_from_codepoints(cps, 0, cps.size());
+                impl->caret += int(ins.size());
+                impl->caret_blink = 0.0f;
+                changed = true;
+            }
         }
 
         // 有实际文本改动才进撤销栈（光标移动、选区变化不算）

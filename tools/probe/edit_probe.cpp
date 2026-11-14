@@ -108,6 +108,14 @@ int main() {
         v = snapshot_single();
         check(v == "abcdef", "撤销回到替换前", "(\"" + v + "\")");
 
+        type_text(h, "\t");
+        check(snapshot_single() == "abcdef", "真实 WM_CHAR Tab 不进入单行输入");
+        key(h, 'A', true);
+        type_text(h, "\t");
+        check(snapshot_single() == "abcdef", "真实 Tab 不删除单行选区");
+        type_text(h, "name");
+        check(snapshot_single() == "name", "忽略真实 Tab 后仍保留原选区");
+
         std::printf("== 多行 textarea ==\n");
         click(kMultiBox.cx(), kMultiBox.y + 40);                 // textarea 区域
         key(h, VK_END, true);                  // Ctrl+End 到文档末尾

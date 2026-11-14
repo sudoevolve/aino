@@ -88,6 +88,29 @@ inline std::string err_text(LIBSSH2_SESSION* s, int code) {
     }
 }
 
+// 只清理连接标识两端的空白，绝不修改密码或私钥口令。
+inline std::string trim_connection_identity(const std::string& value) {
+    const auto first = value.find_first_not_of(" \t\r\n\v\f");
+    return first == std::string::npos ? std::string()
+        : value.substr(first, value.find_last_not_of(" \t\r\n\v\f") - first + 1);
+}
+
+inline bool validate_connection_identity(const std::string& host, int port,
+                                         const std::string& user, std::string* error) {
+    const char* message = nullptr;
+    if (host.empty()) message = "主机地址不能为空";
+    else if (port < 1 || port > 65535) message = "端口必须在 1 到 65535 之间";
+    else {
+        for (unsigned char c : host) if (c <= 32 || c == 127) { message = "主机地址包含空格或控制字符，请重新输入"; break; }
+        if (!message) for (unsigned char c : user) if (c < 32 || c == 127) {
+            message = "用户名包含 Tab 或其它控制字符，请重新输入";
+            break;
+        }
+    }
+    if (error) *error = message ? message : "";
+    return !message;
+}
+
 // 本地 TOFU 主机记录及文件支持见 ssh_files.hpp，可不链接 libssh2 独立验证。
 // =============================================================================
 //  2. Engine —— SSH 会话
@@ -112,6 +135,7 @@ enum class FailStage {
     Auth,        // SSH 层通了，账号验证没过（密码错 / 账号被禁）
     Shell,       // 认证过了，但开不了交互 shell（禁 login / 无 PTY）
     KeyExchange, // 客户端算法配置或 SSH 密钥交换失败；保留已有阶段的枚举值
+    Input,       // 本地连接信息无效，尚未访问网络或提交凭据
 };
 
 class Engine {
@@ -137,10 +161,15 @@ public:
     void set_wake(WakeFn fn) { wake_ = std::move(fn); }
 
     // ---- 连接 ----
-    bool connect(const std::string& host, int port, const std::string& user,
+    bool connect(const std::string& raw_host, int port, const std::string& raw_user,
                  const std::string& pass, const std::string& key_path,
                  std::string* err) {
         disarm(err);
+        fail_stage_ = int(FailStage::Input);
+        const std::string host = trim_connection_identity(raw_host);
+        const std::string user = trim_connection_identity(raw_user);
+        if (!validate_connection_identity(host, port, user, err)) return false;
+        if (user.empty()) return fail(err, "用户名不能为空，请填写远程系统的登录用户");
         static std::once_flag once;
         std::call_once(once, [] {
 #if defined(_WIN32)
@@ -301,8 +330,8 @@ public:
             if (pass.empty() && key_path.empty())
                 return fail(err, "认证失败 —— 网络和 SSH 都是通的，但没有可用的凭据："
                                  "这台服务器需要密码或密钥，补一个再连");
-            return fail(err, "认证失败 —— 网络和 SSH 都是通的，是账号验证没过："
-                             "密码不对、账号被禁，或该服务器只接受密钥登录（服务端回：" + m + "）");
+            return fail(err, "认证失败 —— 服务器未接受用户「" + user + "」的登录。"
+                             "请核对用户名、密码及账号登录权限（服务端回：" + m + "）");
         }
 
         {

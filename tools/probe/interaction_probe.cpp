@@ -290,6 +290,23 @@ static void test_input_edit() {
     d.type("中文", draw);
     check(v == "中文XabZY", "多字节 UTF-8 按码点编辑", "v=" + v);
 
+    const std::string before_controls = v;
+    d.type("\t\r\n\x1b\x7f", draw);
+    check(v == before_controls, "单行输入不写入 Tab 或其它控制字符");
+    d.key_ctrl('A', draw);
+    d.type("\t", draw);
+    check(v == before_controls, "仅控制字符输入不删除选区");
+    d.type("替换", draw);
+    check(v == "替换", "忽略 Tab 后原选区仍可替换");
+    ui.impl->get_clipboard = [] { return std::string("用\t户\r\n名\x7f"); };
+    d.key_ctrl('A', draw);
+    d.key_ctrl('V', draw);
+    check(v == "用户名", "单行粘贴过滤控制字符并保留 UTF-8");
+    ui.impl->get_clipboard = [] { return std::string("\t\r\n"); };
+    d.key_ctrl('A', draw);
+    d.key_ctrl('V', draw);
+    check(v == "用户名", "只有控制字符的粘贴不清空选区");
+
     // 点外部失焦后，键盘输入不应再进入这个框
     d.click(330.0f, 160.0f, draw);
     const std::string before = v;
@@ -327,6 +344,8 @@ static void test_textarea() {
     check(v == "ab\n", "退格到行首后停在换行前", "v=" + v);
     d.key(aino::KEY_BACKSPACE, draw);
     check(v == "ab", "再退格把换行删掉（行合并）", "v=" + v);
+    d.type("\t", draw);
+    check(v == "ab\t", "多行输入保留 Tab，单行过滤不影响缩进");
 }
 
 // ---------------------------------------------------------------- 5. 复选框
