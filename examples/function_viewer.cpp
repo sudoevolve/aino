@@ -15,7 +15,7 @@
 //  热力图就是 ui.fill_rect() 画的色块。aino 只提供笔画，几何全在这里算。
 //
 //  编译：
-//    g++ -std=c++17 -O2 -static -s function_viewer.cpp -o function_viewer.exe \
+//    g++ -std=c++17 -O2 -static -s function_viewer.cpp -o function_viewer.exe
 //        -mwindows -luser32 -lgdi32
 //  表达式自测（不开窗口，结果写文件）：
 //    AINO_FN_SELFTEST=out.txt ./function_viewer.exe
@@ -1303,7 +1303,7 @@ struct UiState {
 
 void draw_sidebar(aino::Ui& ui, UiState& st, const aino::Theme& th) {
     App& a = st.app;
-    const float W = ui.width(), H = ui.height();
+    const float H = ui.height();
     const float SIDE = 232.0f;
 
     // 侧栏使用 sidebar_bg，避免混合半透明填充色与背景。

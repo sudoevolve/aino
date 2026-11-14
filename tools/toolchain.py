@@ -13,11 +13,11 @@
   那是"清理垃圾"脚本和清理软件的重点扫描区，700+ MB 的工具链很容易被顺手清掉；
   清掉之后产物就从「一个 exe」变回「exe + 一堆 DLL」，报错还很难看懂。
   所以约定装到 `C:\\Tools\\w64devkit`（可用 AINO_TOOLS_DIR 改根目录），
-  丢了就跑 `python tools/get_toolchain.py` 一键重装。
+  缺失时自行安装 w64devkit，或用 AINO_GXX 指向现有 g++；本脚本不下载工具链。
 
 优先级由高到低：
   1. 环境变量 AINO_GXX（显式指定编译器，最优先）
-  2. C:\\Tools\\w64devkit\\bin（get_toolchain.py 的默认安装位置）
+  2. C:\\Tools\\w64devkit\\bin（约定的手动安装位置）
   3. 其它常见位置（w64devkit / MSYS2 / winlibs，含早先下载到 Downloads 的旧目录）
   4. PATH 里的 g++（最后兜底）
 """
@@ -47,7 +47,7 @@ def gxx_candidates():
     root = tools_root()
     home = os.path.expanduser("~")
     for d in (
-        # 主位置：tools/get_toolchain.py 装到这里
+        # 主位置：约定的手动安装目录
         os.path.join(root, "w64devkit", "bin"),
         os.path.join(root, "w64devkit", "w64devkit", "bin"),   # 解压时多套了一层
         r"C:\w64devkit\bin",

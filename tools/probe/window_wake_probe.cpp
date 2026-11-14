@@ -5,8 +5,30 @@
 #include <chrono>
 #include <thread>
 #include <cstdio>
+#include <filesystem>
 
 int main() {
+#if defined(_WIN32)
+    // Windows 不允许删除仍由 CRT 打开的文件，分别检查替换和析构两条释放路径。
+    const auto temp = std::filesystem::temp_directory_path();
+    const auto suffix = std::to_string(GetCurrentProcessId());
+    const std::string first = (temp / ("aino-frame-" + suffix + ".log")).string();
+    const std::string second = (temp / ("aino-prof-" + suffix + ".log")).string();
+    const char* old_frame = std::getenv("AINO_FRAME_LOG");
+    const char* old_prof = std::getenv("AINO_PROF");
+    const std::string frame_env = old_frame ? old_frame : "", prof_env = old_prof ? old_prof : "";
+    _putenv_s("AINO_FRAME_LOG", first.c_str());
+    _putenv_s("AINO_PROF", second.c_str());
+    bool replaced_closed = false;
+    {
+        aino::Window logged(320, 200, "aino log lifetime probe");
+        replaced_closed = logged.ok() && std::remove(first.c_str()) == 0;
+    }
+    const bool destroyed_closed = std::remove(second.c_str()) == 0;
+    _putenv_s("AINO_FRAME_LOG", frame_env.c_str());
+    _putenv_s("AINO_PROF", prof_env.c_str());
+    if (!replaced_closed || !destroyed_closed) return 6;
+#endif
     aino::Window window(320, 200, "aino window wake probe");
     if (!window.ok()) return 1;
     int manual_frames = 0;
@@ -38,7 +60,10 @@ int main() {
     });
     window.run([&](aino::Ui& ui) { ui.clear(ui.theme().background); ++frames; });
     producer.join();
-    if (failed || frames < 21) return 2;
+    if (failed || frames < 21) {
+        std::printf("[window-wake] frames=%d timeout=%d\n", frames.load(), int(failed.load()));
+        return 2;
+    }
     int caret_frames = 0;
     std::string text = "caret";
     aino::Window caret_window(320, 200, "aino caret timer probe");

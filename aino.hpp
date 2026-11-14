@@ -10289,7 +10289,7 @@ struct Window::Impl {
     // 值是文件路径时写文件 —— WIN32 子系统的程序没有控制台，stderr 是无效句柄，
     // 重定向到文件也拿不到任何输出（实测：0 字节），而示例程序全是 WIN32 子系统。
     bool frame_log = false;
-    std::FILE* frame_log_out = nullptr;
+    std::unique_ptr<std::FILE, decltype(&std::fclose)> frame_log_out{nullptr, &std::fclose};
     uint32_t frame_log_n = 0;
     uint64_t frame_log_sum = 0;     // µs
     uint32_t frame_log_worst = 0;   // µs
@@ -10374,13 +10374,13 @@ Window::Window(const WindowConfig& cfg) : impl(new Impl()) {
         if (fl && fl[0] && fl[0] != '0') {
             impl->frame_log = true;
             if (!(fl[0] == '1' && fl[1] == 0))          // 不是 "1" 就当输出路径
-                impl->frame_log_out = std::fopen(fl, "w");
+                impl->frame_log_out.reset(std::fopen(fl, "w"));
         } }
     {   const char* pf = std::getenv("AINO_PROF");
         if (pf && pf[0] && pf[0] != '0') {
             impl->ui.impl->prof_on = true;              // 分项计时，帧日志里多打一行
             impl->frame_log = true;
-            if (!(pf[0] == '1' && pf[1] == 0)) impl->frame_log_out = std::fopen(pf, "w");
+            if (!(pf[0] == '1' && pf[1] == 0)) impl->frame_log_out.reset(std::fopen(pf, "w"));
         } }
 #if defined(_MSC_VER)
 #  pragma warning(pop)
@@ -11325,7 +11325,7 @@ inline void win_frame_log(Window::Impl* o, uint64_t render_us) {
     // 60 帧一块：交互驱动的帧是零散的（拖着鼠标扫过一排控件才有几帧），
     // 攒到 120 帧往往要等很久，探针还没采到样进程就被关掉了。
     if (o->frame_log_n >= 60) {
-        std::FILE* out = o->frame_log_out ? o->frame_log_out : stderr;
+        std::FILE* out = o->frame_log_out ? o->frame_log_out.get() : stderr;
         const double n = double(o->frame_log_n);
         std::fprintf(out,
             "[aino] 60 帧  渲染均 %.2f ms  最差 %.2f ms  (预算 %.0f ms)\n"
@@ -13275,9 +13275,8 @@ inline void cocoa_view_draw(id self, SEL, id) {
     if (!s) return;
     id ctx_obj = oc_send<id>(objc_getClass("NSGraphicsContext"), sel_registerName("currentContext"));
     CGContextRef cg = oc_send<CGContextRef>(ctx_obj, sel_registerName("CGContext"));
-    if (!cg || !s->ctx) return;
-    CGImageRef img = CGBitmapContextCreateImage(s->ctx);
-    if (!img) return;
+    if (!cg || !s->pending_image) return;
+    CGImageRef img = s->pending_image;
     CGRect r = CGRectMake(0, 0, s->pw, s->ph);
     // NSView 默认原点在左下，图片需要翻转
     CGContextSaveGState(cg);
@@ -13285,7 +13284,6 @@ inline void cocoa_view_draw(id self, SEL, id) {
     CGContextScaleCTM(cg, 1, -1);
     CGContextDrawImage(cg, r, img);
     CGContextRestoreGState(cg);
-    CGImageRelease(img);
 }
 
 inline void cocoa_mouse_moved(id self, SEL, id ev) {
