@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(AINO_STATIC_EXE "静态链接 Windows 示例及测试的编译器运行时" ON)
+option(AINO_STATIC_EXE "静态链接 Windows 示例及测试的编译器运行时" OFF)
 if(MSVC AND AINO_STATIC_EXE)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
@@ -60,12 +60,13 @@ function(aino_configure_target name)
                     AINO_STATIC_RUNTIME_LINK_OK)
                 cmake_pop_check_state()
                 if(NOT AINO_STATIC_RUNTIME_LINK_OK)
-                    message(FATAL_ERROR
-                        "AINO_STATIC_EXE=ON requires a complete static MinGW runtime. "
-                        "Choose a working toolchain with -DCMAKE_CXX_COMPILER in a new build directory "
-                        "(for example w64devkit), or explicitly use -DAINO_STATIC_EXE=OFF for a DLL build.")
+                    message(WARNING
+                        "AINO_STATIC_EXE=ON requested but the current MinGW toolchain does not provide a complete static runtime. "
+                        "Disabling static EXE mode and continuing with the DLL-compatible build.")
+                    set(AINO_STATIC_EXE OFF CACHE BOOL "静态链接 Windows 示例及测试的编译器运行时" FORCE)
+                else()
+                    target_link_options(${name} PRIVATE -static)
                 endif()
-                target_link_options(${name} PRIVATE -static)
             else()
                 target_link_options(${name} PRIVATE -static-libgcc -static-libstdc++)
                 get_filename_component(_gxx_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
@@ -81,7 +82,7 @@ function(aino_configure_target name)
     endif()
 endfunction()
 
-option(AINO_BUILD_SSH "构建 SSH 客户端示例（需要第三方静态依赖）" ON)
+option(AINO_BUILD_SSH "构建 SSH 客户端示例（需要第三方静态依赖）" OFF)
 set(AINO_SSH_DEPS "${CMAKE_CURRENT_SOURCE_DIR}/build/third_party"
     CACHE PATH "libssh2 / mbedTLS 依赖目录")
 
