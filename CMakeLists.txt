@@ -19,11 +19,23 @@ function(aino_add_demo name)
     cmake_parse_arguments(DEMO "NATIVE_ENTRY" "" "" ${ARGN})
     # Windows 必须用 WIN32 子系统，否则双击 exe 会先弹一个控制台窗口。
     if(WIN32)
-        add_executable(${name} WIN32 ${DEMO_UNPARSED_ARGUMENTS})
+        add_executable(${name} WIN32 ${DEMO_UNPARSED_ARGUMENTS} "${CMAKE_CURRENT_SOURCE_DIR}/assets/aino_icon.rc")
     else()
         add_executable(${name} ${DEMO_UNPARSED_ARGUMENTS})
     endif()
     aino_configure_target(${name})
+    if(WIN32)
+        set_property(TARGET ${name} APPEND PROPERTY LINK_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/aino_icon.rc"
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/aino_icon.ico"
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/aino_icon.png")
+    else()
+        add_custom_command(TARGET ${name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/aino_icon.png"
+                "$<TARGET_FILE_DIR:${name}>/aino_icon.png"
+            VERBATIM)
+    endif()
     if(WIN32 AND MSVC AND NOT DEMO_NATIVE_ENTRY)
         target_link_options(${name} PRIVATE /ENTRY:mainCRTStartup)
     endif()
@@ -33,10 +45,10 @@ function(aino_configure_target name)
     find_package(Threads REQUIRED)
     target_link_libraries(${name} PRIVATE Threads::Threads)
     if(WIN32)
-        target_link_libraries(${name} PRIVATE user32 gdi32)
+        target_link_libraries(${name} PRIVATE user32 gdi32 ole32 windowscodecs)
     elseif(APPLE)
         target_link_libraries(${name} PRIVATE
-            "-framework Cocoa" "-framework CoreText" "-framework CoreGraphics"
+            "-framework Cocoa" "-framework CoreText" "-framework CoreGraphics" "-framework ImageIO"
             "-framework ApplicationServices")
     else()
         target_link_libraries(${name} PRIVATE X11 ${CMAKE_DL_LIBS})

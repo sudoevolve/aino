@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 src, out = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
 extra = sys.argv[3:] or ["user32.lib", "gdi32.lib", "msimg32.lib"]
+extra += ["ole32.lib", "windowscodecs.lib"]
 
 os.makedirs(os.path.dirname(out), exist_ok=True)
 

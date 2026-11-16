@@ -129,6 +129,7 @@ struct BodyMeasurements {
     std::array<float, CardCount> widths{}, heights{};
 };
 struct App {
+    aino::Image icon;
     bool dark = std::getenv("AINO_DARK") && std::strcmp(std::getenv("AINO_DARK"), "0") != 0;
     int appearance = dark ? 0 : 1, well = 0, page = 0, pending_anchor = 0, nav_page = -1;
     bool custom_accent = false;
@@ -1249,13 +1250,9 @@ void draw_about(Ui &ui, App &a, Rect b) {
     const float cx = b.x + b.w * 0.5f;
     const float x = cx - w * 0.5f;
 
-    // 应用图标：暂用占位（石墨渐变圆角方块 + 白色 A）。
-    // 真图标 / GitHub 头像到位后只换这一段，版面其余部分不用动。
     const float icon = 88.f;
     const Rect box = Rect::centered(cx, b.y + icon * 0.5f, icon, icon);
-    ui.fill_rect_grad(box, Color(0x9C, 0x9C, 0xA2), Color(0x2E, 0x2E, 0x33), icon * 0.235f, 1.0f);
-    ui.draw_text("A", box, Color(0xFF, 0xFF, 0xFF, 255),
-                 Style().font(icon * 0.60f).weight(700).center().middle());
+    ui.draw_image(a.icon, box);
 
     float y = b.y + icon + 18;
     ui.draw_text("Aino", {x, y, w, 36}, th.label, Style().font(26).weight(700).center());
@@ -1807,6 +1804,9 @@ void open_material_window(const std::shared_ptr<MaterialEditor>& state, aino::Th
     }
     std::thread([state, theme] {
         aino::WindowConfig cfg;
+#if !defined(AINO_PLATFORM_WINDOWS)
+        cfg.icon_path = aino::executable_directory() + "aino_icon.png";
+#endif
         cfg.width = cfg.min_width = 460;
         cfg.height = cfg.min_height = 340;
         cfg.title = "新建素材";
@@ -1924,6 +1924,9 @@ static const char *app_name_from_env() {
 
 int main() {
     aino::WindowConfig cfg;
+#if !defined(AINO_PLATFORM_WINDOWS)
+    cfg.icon_path = aino::executable_directory() + "aino_icon.png";
+#endif
     cfg.width = 1180;
     cfg.height = 760;
     cfg.min_width = 640;
@@ -1933,6 +1936,13 @@ int main() {
     if (!win.ok())
         return 1;
     App app;
+    std::string icon_error;
+#if defined(AINO_PLATFORM_WINDOWS)
+    if (!app.icon.load_resource(2, &icon_error))
+#else
+    if (!app.icon.load(aino::executable_directory() + "aino_icon.png", &icon_error))
+#endif
+        std::fprintf(stderr, "[gallery] %s\n", icon_error.c_str());
     app.material_editor->parent = &win;
     app.page = start_page_from_env();
     app.pending_anchor = app.page;

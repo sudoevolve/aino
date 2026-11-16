@@ -2783,6 +2783,9 @@ int app_main() {
     if (std::getenv("AINO_SSH_SELFTEST")) return color_selftest();
 
     aino::WindowConfig cfg;
+#if !defined(AINO_PLATFORM_WINDOWS)
+    cfg.icon_path = aino::executable_directory() + "aino_icon.png";
+#endif
     cfg.width = 1320;
     cfg.height = 820;
     cfg.min_width = 980;

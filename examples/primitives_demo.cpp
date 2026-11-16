@@ -31,6 +31,9 @@ static aino::Theme app_theme(bool dark) {
 
 int main() {
     aino::WindowConfig cfg;
+#if !defined(AINO_PLATFORM_WINDOWS)
+    cfg.icon_path = aino::executable_directory() + "aino_icon.png";
+#endif
     cfg.width = 1000; cfg.height = 780;
     cfg.min_width = 720; cfg.min_height = 520;
     cfg.title = "aino · 基础图元";

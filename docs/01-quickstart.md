@@ -204,10 +204,10 @@ python tools/build_ssh.py ui
 
 | 工具链 | 命令 |
 |---|---|
-| MSVC | `cl /std:c++17 /utf-8 /EHsc /O2 /MT main.cpp user32.lib gdi32.lib` |
-| MinGW | `g++ -std=c++17 -O2 -mwindows -s -static main.cpp -o app.exe -lgdi32 -luser32` |
+| MSVC | `cl /std:c++17 /utf-8 /EHsc /O2 /MT main.cpp user32.lib gdi32.lib ole32.lib windowscodecs.lib` |
+| MinGW | `g++ -std=c++17 -O2 -mwindows -s -static main.cpp -o app.exe -lgdi32 -luser32 -lole32 -lwindowscodecs` |
 | GCC/X11 | `g++ -std=c++17 -O2 main.cpp -o app -lX11 -ldl` |
-| Clang/macOS | `clang++ -std=c++17 -O2 main.cpp -o app -framework Cocoa -framework CoreText -framework CoreGraphics` |
+| Clang/macOS | `clang++ -std=c++17 -O2 main.cpp -o app -framework Cocoa -framework CoreText -framework CoreGraphics -framework ImageIO` |
 
 Windows 示例默认静态链接编译器运行时，仍使用系统 DLL。
 `-static` 需要工具链提供完整静态运行时；CMake 不会静默回退。

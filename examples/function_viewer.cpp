@@ -1722,6 +1722,9 @@ int main() {
     if (const char* path = std::getenv("AINO_FN_SELFTEST")) return run_selftest(path);
 
     aino::WindowConfig cfg;
+#if !defined(AINO_PLATFORM_WINDOWS)
+    cfg.icon_path = aino::executable_directory() + "aino_icon.png";
+#endif
     cfg.width = 1180;
     cfg.height = 760;
     // 截图/回归用：AINO_FN_SIZE=960x640 直接指定初始尺寸

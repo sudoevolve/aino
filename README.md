@@ -1,5 +1,7 @@
 ﻿# aino
 
+<img src="assets/aino_icon.svg" alt="aino 图标" width="128">
+
 单头文件 C++17 桌面 UI 库，采用立即模式与事件驱动主循环。定位是跨平台极低占用
 
 核心库只有一个 `aino.hpp`，使用系统绘制和字体接口，无第三方 UI 或图标依赖。采用 macOS 风格，背景材质以模糊近似。
@@ -12,7 +14,7 @@
 | ------------------------------------------- | --------------------------------------------------- |
 | ![设置页](screenshots/sidebar-settings.png) | ![按钮与输入控件](screenshots/gallery-overview.png) |
 | ![磨砂面板](screenshots/gallery-button.png) | ![深色主题](screenshots/gallery-dark.png)           |
-| ![对话框](screenshots/gallery-dialog.png)   | ![基础图元](screenshots/primitives.png)             |
+|  ![关于页面](screenshots/gallery-about.png) | ![基础图元](screenshots/primitives.png)             |
 
 ## 开发规范
 
@@ -66,10 +68,10 @@ Build：
 
 ```sh
 # MSVC（/utf-8 必须加，否则中文字面量按 GBK 编；/MT = 静态链 CRT，目标机不用装运行库）
-cl /std:c++17 /utf-8 /EHsc /O2 /MT main.cpp user32.lib gdi32.lib
+cl /std:c++17 /utf-8 /EHsc /O2 /MT main.cpp user32.lib gdi32.lib ole32.lib windowscodecs.lib
 
 # MinGW（-static = 静态链接编译器运行时）
-g++ -std=c++17 -O2 -mwindows -s -static main.cpp -o app.exe -lgdi32 -luser32
+g++ -std=c++17 -O2 -mwindows -s -static main.cpp -o app.exe -lgdi32 -luser32 -lole32 -lwindowscodecs
 
 # GCC / X11
 g++ -std=c++17 -O2 main.cpp -o app -lX11 -ldl
@@ -107,6 +109,12 @@ cmake --build build --config Release --target aino_primitives_demo
 
 `win.run(frame_cb)` 管理主循环，窗口按需重绘；动画与后台数据更新方式见
 [快速开始](docs/01-quickstart.md)。
+
+图片可使用 `aino::Image` 加载一次，再通过 `ui.draw_image(image, box)` 绘制；
+支持 PNG、JPEG、BMP 和 GIF 首帧。Linux 运行时需要 GdkPixbuf。
+可通过 `WindowConfig::icon_path` 自定义窗口图标；Windows 示例将默认 ICO 和 Gallery 图片嵌入可执行文件。
+macOS Finder 图标需要 `.app` 和 `.icns`；Linux 桌面图标需要 `.desktop` 入口，
+仅设置窗口图标不会改变文件管理器显示的图标。非 Windows 示例仍需旁置 PNG。详见 [图元文档](docs/09-primitives.md)。
 
 三个后端：Windows（GDI）、Linux（X11）和 macOS（Cocoa）。**Windows 是唯一完成实机验收的后端**；
 Linux/macOS 的绘制、像素断言与窗口路径已接通，但键盘输入、剪贴板与关闭事件仍有缺口，

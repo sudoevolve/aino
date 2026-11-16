@@ -78,7 +78,7 @@ else:
     out = OUT
 
     common = ["-std=c++17", "-O2", "-mwindows", "-s",
-              "-o", out, src, "-lgdi32", "-luser32"]
+              "-o", out, src, "-lgdi32", "-luser32", "-lole32", "-lwindowscodecs"]
 
     gxx, r = None, None
     for cand in cands:
@@ -102,5 +102,8 @@ else:
 print(r.stdout[-4000:])
 if r.stderr:
     print(r.stderr[-3000:], file=sys.stderr)
+if r.returncode == 0 and os.path.dirname(SRC) == os.path.join(ROOT, "examples"):
+    shutil.copy2(os.path.join(ROOT, "assets", "aino_icon.png"),
+                 os.path.join(os.path.dirname(OUT), "aino_icon.png"))
 print("rc =", r.returncode)
 sys.exit(r.returncode)

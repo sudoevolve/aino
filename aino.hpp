@@ -10,9 +10,9 @@
 //      #include "aino.hpp"
 //
 //  编译：
-//      MSVC: cl /std:c++17 /utf-8 /EHsc /MT main.cpp user32.lib gdi32.lib
+//      MSVC: cl /std:c++17 /utf-8 /EHsc /MT main.cpp user32.lib gdi32.lib ole32.lib windowscodecs.lib
 //      GCC: g++ -std=c++17 main.cpp -lX11 -ldl
-//      Clang: clang++ -std=c++17 main.cpp -framework Cocoa -framework CoreText -framework CoreGraphics
+//      Clang: clang++ -std=c++17 main.cpp -framework Cocoa -framework CoreText -framework CoreGraphics -framework ImageIO
 //
 //  源码为 UTF-8，MSVC 使用 /utf-8。
 //  静态运行时与平台依赖说明见 docs/01-quickstart.md。
@@ -145,6 +145,24 @@ struct Color {
     bool operator==(const Color& o) const { return r == o.r && g == o.g && b == o.b && a == o.a; }
     bool operator!=(const Color& o) const { return !(*this == o); }
 };
+
+// Decoded, straight-alpha RGBA pixels. Load once and reuse across frames.
+struct Image {
+    int width = 0, height = 0;
+    std::vector<uint8_t> pixels;
+    bool load(const std::string& path, std::string* error = nullptr);
+    bool load_resource(int resource_id, std::string* error = nullptr);
+    bool valid() const {
+        return width > 0 && height > 0 && width <= 16384 && height <= 16384 &&
+               uint64_t(width) * uint64_t(height) <= 67108864u &&
+               pixels.size() == size_t(width) * size_t(height) * 4u;
+    }
+};
+
+/** @brief Directory of the current executable in UTF-8, including its trailing separator.
+ * Returns an empty string if the platform cannot determine it.
+ */
+std::string executable_directory();
 
 struct Vec2 {
     float x = 0, y = 0;
@@ -887,6 +905,8 @@ public:
     void fill_crescent(float cx, float cy, float radius,
                        float cut_cx, float cut_cy, float cut_radius, const Color& c);
     void draw_line(float x0, float y0, float x1, float y1, const Color& c, float width = 1.0f);
+    /** @brief Draw an already decoded image stretched to box, respecting clip and transform. */
+    void draw_image(const Image& image, const Rect& box);
     // 画文本；Style 支持字号、字重、斜体、对齐、折行与行距。
     void draw_text(const std::string& text, const Rect& box, const Color& c, const Style& st = Style());
     /** @brief 在指定区域居中绘制系统图标；尊重当前裁剪、缩放和颜色。 */
@@ -1238,9 +1258,7 @@ struct WindowConfig {
     std::string title  = "aino";
 
     // ---- 图标 ----
-    // Windows 读 .ico（LoadImage 直接认）；macOS 读 .png / .icns 并设成
-    // **应用图标**（macOS 的窗口本身没有标题栏图标这个位置，只能改 Dock）；
-    // X11 目前忽略（_NET_WM_ICON 要自己把 PNG 解成 ARGB，这一版不做）。
+    // Windows: .ico; macOS: image or .icns for Dock; X11: decoded image for _NET_WM_ICON.
     std::string icon_path;
 
     // ---- 字体 ----
@@ -1395,6 +1413,7 @@ int system_icon_worker_entry(int argc, char** argv);
 #  endif
 #  include <windows.h>
 #  include <windowsx.h>
+#  include <wincodec.h>
 #elif defined(AINO_PLATFORM_X11)
 #  include <X11/Xlib.h>
 #  include <X11/Xutil.h>
@@ -1438,9 +1457,11 @@ extern char** environ;
 #  define Style MacStyle
 #  include <ApplicationServices/ApplicationServices.h>
 #  include <CoreText/CoreText.h>
+#  include <ImageIO/ImageIO.h>
 #  include <objc/objc.h>
 #  include <objc/message.h>
 #  include <objc/runtime.h>
+#  include <mach-o/dyld.h>
 #  undef Rect
 #  undef Style
 #  include <unistd.h>
@@ -4603,6 +4624,59 @@ void Ui::fill_rect(const Rect& r, const Color& c, float radius) {
         return;
     }
     detail::raster_rrect(*impl->canvas, p, c, rad, impl->theme.corner_smoothing);
+}
+
+void Ui::draw_image(const Image& image, const Rect& box) {
+    if (!image.valid() || box.empty()) return;
+    if (impl->measure_on) { impl->measure_add(box); return; }
+    if (!impl->canvas) return;
+    const auto& m = impl->xf;
+    const float det = m.a * m.d - m.b * m.c;
+    if (!std::isfinite(det) || std::fabs(det) < 1e-8f || impl->scale <= 0) return;
+    const Vec2 p0 = impl->xf_map(box.x, box.y), p1 = impl->xf_map(box.right(), box.y);
+    const Vec2 p2 = impl->xf_map(box.right(), box.bottom()), p3 = impl->xf_map(box.x, box.bottom());
+    const float left = std::min(std::min(p0.x, p1.x), std::min(p2.x, p3.x));
+    const float top = std::min(std::min(p0.y, p1.y), std::min(p2.y, p3.y));
+    const float right = std::max(std::max(p0.x, p1.x), std::max(p2.x, p3.x));
+    const float bottom = std::max(std::max(p0.y, p1.y), std::max(p2.y, p3.y));
+    const Rect bounds(left, top, right - left, bottom - top);
+    if (!std::isfinite(bounds.x) || !std::isfinite(bounds.y) ||
+        !std::isfinite(bounds.right()) || !std::isfinite(bounds.bottom())) return;
+    Canvas& cv = *impl->canvas;
+    const int x0 = std::max(cv.clipped ? cv.clip_x0 : 0,
+        int(std::max(0.f, std::min(float(cv.w), std::floor(bounds.x)))));
+    const int y0 = std::max(cv.clipped ? cv.clip_y0 : 0,
+        int(std::max(0.f, std::min(float(cv.h), std::floor(bounds.y)))));
+    const int x1 = std::min(cv.clipped ? cv.clip_x1 : cv.w,
+        int(std::max(0.f, std::min(float(cv.w), std::ceil(bounds.right())))));
+    const int y1 = std::min(cv.clipped ? cv.clip_y1 : cv.h,
+        int(std::max(0.f, std::min(float(cv.h), std::ceil(bounds.bottom())))));
+    for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) {
+        const float px = (float(x) + .5f) / impl->scale - m.e;
+        const float py = (float(y) + .5f) / impl->scale - m.f;
+        const float lx = (m.d * px - m.c * py) / det;
+        const float ly = (m.a * py - m.b * px) / det;
+        const float u = (lx - box.x) / box.w, v = (ly - box.y) / box.h;
+        if (u < 0.f || u >= 1.f || v < 0.f || v >= 1.f) continue;
+        const float fx = std::max(0.f, std::min(float(image.width - 1), u * image.width - .5f));
+        const float fy = std::max(0.f, std::min(float(image.height - 1), v * image.height - .5f));
+        const int sx = int(fx), sy = int(fy);
+        const int sx1 = std::min(sx + 1, image.width - 1), sy1 = std::min(sy + 1, image.height - 1);
+        const float dx = fx - sx, dy = fy - sy;
+        const float weights[] = {(1 - dx) * (1 - dy), dx * (1 - dy), (1 - dx) * dy, dx * dy};
+        const size_t indices[] = {
+            (size_t(sy) * image.width + sx) * 4u, (size_t(sy) * image.width + sx1) * 4u,
+            (size_t(sy1) * image.width + sx) * 4u, (size_t(sy1) * image.width + sx1) * 4u};
+        float alpha = 0, red = 0, green = 0, blue = 0;
+        for (int i = 0; i < 4; ++i) {
+            const uint8_t* p = &image.pixels[indices[i]];
+            const float a = weights[i] * p[3];
+            alpha += a; red += a * p[0]; green += a * p[1]; blue += a * p[2];
+        }
+        if (alpha > 0) cv.blend(x, y, Color(uint8_t(red / alpha + .5f),
+            uint8_t(green / alpha + .5f), uint8_t(blue / alpha + .5f),
+            uint8_t(std::min(alpha + .5f, 255.f))), 1.f);
+    }
 }
 
 void Ui::stroke_rect(const Rect& r, const Color& c, float radius, float width) {
@@ -11014,6 +11088,7 @@ inline Fn dll_proc(HMODULE module, const char* name) {
 struct Win32State {
     Window::Impl* owner = nullptr;
     HWND hwnd = nullptr;
+    HICON icon_big = nullptr, icon_small = nullptr;
     HDC mem_dc = nullptr;
     HBITMAP hbmp = nullptr;
     void* bits = nullptr;
@@ -11660,6 +11735,9 @@ inline void w32_create(Window* self, const WindowConfig& cfg) {
         wc.lpfnWndProc   = win_proc;
         wc.hInstance     = GetModuleHandleW(nullptr);
         wc.hCursor       = LoadCursorW(nullptr, AINO_IDC_ARROW);
+        wc.hIcon         = LoadIconW(wc.hInstance, MAKEINTRESOURCEW(1));
+        wc.hIconSm       = reinterpret_cast<HICON>(LoadImageW(wc.hInstance, MAKEINTRESOURCEW(1),
+                              IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED));
         wc.lpszClassName = L"AinoWindowClass";
         wc.hbrBackground = nullptr;
         RegisterClassExW(&wc);
@@ -11727,7 +11805,9 @@ inline void w32_create(Window* self, const WindowConfig& cfg) {
                                                       LR_LOADFROMFILE));
         if (ib) SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(ib));
         if (is) SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(is));
-        // 句柄交给窗口自己管（DestroyWindow 会释放通过 WM_SETICON 设进去的图标）
+        if (!ib || !is) std::fprintf(stderr, "[aino] Cannot load icon: %s\n", cfg.icon_path.c_str());
+        s->icon_big = ib;
+        s->icon_small = is;
     }
 
     GdiTextRenderer* tr = new GdiTextRenderer();
@@ -11768,6 +11848,8 @@ inline void w32_destroy(Window* self) {
     }
     if (s->hbmp) { DeleteObject(s->hbmp); s->hbmp = nullptr; }
     if (s->hwnd && IsWindow(s->hwnd)) DestroyWindow(s->hwnd);
+    if (s->icon_big) DestroyIcon(s->icon_big);
+    if (s->icon_small) DestroyIcon(s->icon_small);
     delete s;
     o->native = nullptr;
 }
@@ -13422,6 +13504,26 @@ inline void x11_create(Window* self, const WindowConfig& cfg) {
     s->win = XCreateSimpleWindow(s->dpy, root, wx, wy, unsigned(w), unsigned(h), 0,
                                  BlackPixel(s->dpy, screen), WhitePixel(s->dpy, screen));
     x11_set_title(s->dpy, s->win, cfg.title);
+    if (!cfg.icon_path.empty()) {
+        Image icon;
+        std::string error;
+        if (icon.load(cfg.icon_path, &error)) {
+            const float scale = std::min(1.f, 128.f / float(std::max(icon.width, icon.height)));
+            const int iw = std::max(1, int(icon.width * scale)), ih = std::max(1, int(icon.height * scale));
+            std::vector<unsigned long> data(2u + size_t(iw) * size_t(ih));
+            data[0] = static_cast<unsigned long>(iw);
+            data[1] = static_cast<unsigned long>(ih);
+            for (int y = 0; y < ih; ++y) for (int x = 0; x < iw; ++x) {
+                const int sx = int(int64_t(x) * icon.width / iw), sy = int(int64_t(y) * icon.height / ih);
+                const auto* p = &icon.pixels[(size_t(sy) * size_t(icon.width) + size_t(sx)) * 4u];
+                data[2u + size_t(y) * size_t(iw) + size_t(x)] = (static_cast<unsigned long>(p[3]) << 24) | (static_cast<unsigned long>(p[0]) << 16) |
+                              (static_cast<unsigned long>(p[1]) << 8) | static_cast<unsigned long>(p[2]);
+            }
+            const Atom property = XInternAtom(s->dpy, "_NET_WM_ICON", False);
+            XChangeProperty(s->dpy, s->win, property, XA_CARDINAL, 32, PropModeReplace,
+                            reinterpret_cast<const unsigned char*>(data.data()), int(data.size()));
+        } else std::fprintf(stderr, "[aino] %s\n", error.c_str());
+    }
     XSelectInput(s->dpy, s->win,
                  ExposureMask | StructureNotifyMask | PointerMotionMask |
                  ButtonPressMask | ButtonReleaseMask | KeyPressMask | KeyReleaseMask |
@@ -13433,10 +13535,7 @@ inline void x11_create(Window* self, const WindowConfig& cfg) {
     // 尺寸约束。X11 没有"不可缩放"这个位，只能把 min 和 max 设成同一个值 ——
     // 主流 WM 都按这个理解（ICCCM 里没人保证，但这是唯一可移植的做法）。
     x11_size_hints(s, w, h);
-    // 图标与字体文件在 X11 上不做：_NET_WM_ICON 要自己把 PNG 解成 ARGB，
-    // 而核心 X 字体（XLFD）没有"装一个字体文件进进程"这条路。
-    // 行为：图标忽略；字体只按 cfg.font_family 挑已装的家族（见 CoreTextRenderer
-    // 同款的 init 约定）。
+    // X11 字体按 cfg.font_family 选择系统已安装的家族。
 
     // 输入法：中文输入需要 XIM/XIC
     if (XSetLocaleModifiers("") != nullptr) {
@@ -13948,7 +14047,10 @@ inline void cocoa_create(Window* self, const WindowConfig& cfg) {
                                                    kCFStringEncodingUTF8);
         id img = oc_send<id>(oc_send<id>(objc_getClass("NSImage"), sel_registerName("alloc")),
                              sel_registerName("initWithContentsOfFile:"), ip);
-        if (img) oc_send<void>(app, sel_registerName("setApplicationIconImage:"), img);
+        if (img) {
+            oc_send<void>(app, sel_registerName("setApplicationIconImage:"), img);
+            oc_send<void>(img, sel_registerName("release"));
+        } else std::fprintf(stderr, "[aino] Cannot load icon: %s\n", cfg.icon_path.c_str());
         CFRelease(ip);
     }
 
@@ -14492,6 +14594,178 @@ inline SystemIconMask load_system_icon(SystemIcon icon, int size) {
     return mask;
 }
 } // namespace detail
+
+std::string executable_directory() {
+    std::string path;
+#if defined(AINO_PLATFORM_WINDOWS)
+    std::vector<wchar_t> buffer(32768);
+    const DWORD n = GetModuleFileNameW(nullptr, buffer.data(), DWORD(buffer.size()));
+    if (n && n < buffer.size()) path = detail::from_wide(std::wstring(buffer.data(), n));
+#elif defined(AINO_PLATFORM_MACOS)
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::vector<char> buffer(size);
+    if (size && _NSGetExecutablePath(buffer.data(), &size) == 0) path = buffer.data();
+#elif defined(AINO_PLATFORM_X11)
+    std::vector<char> buffer(4096);
+    const ssize_t n = readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
+    if (n > 0 && size_t(n) < buffer.size() - 1) path.assign(buffer.data(), size_t(n));
+#endif
+    const auto separator = path.find_last_of("/\\");
+    if (separator == std::string::npos) {
+        std::fprintf(stderr, "[aino] Cannot locate executable directory\n");
+        return {};
+    }
+    return path.substr(0, separator + 1);
+}
+
+bool Image::load(const std::string& path, std::string* error) {
+    Image result;
+    if (error) error->clear();
+#if defined(AINO_PLATFORM_WINDOWS)
+    const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool uninit = SUCCEEDED(init);
+    IWICImagingFactory* factory = nullptr;
+    IWICBitmapDecoder* decoder = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICFormatConverter* converter = nullptr;
+    HRESULT hr = (uninit || init == RPC_E_CHANGED_MODE)
+        ? CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                           IID_IWICImagingFactory, reinterpret_cast<void**>(&factory)) : init;
+    if (SUCCEEDED(hr)) hr = factory->CreateDecoderFromFilename(detail::to_wide(path).c_str(),
+        nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder);
+    if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
+    UINT w = 0, h = 0;
+    if (SUCCEEDED(hr)) hr = frame->GetSize(&w, &h);
+    if (SUCCEEDED(hr) && (w == 0 || h == 0 || w > 16384 || h > 16384 ||
+                          uint64_t(w) * h > 67108864u)) hr = E_FAIL;
+    if (SUCCEEDED(hr)) hr = factory->CreateFormatConverter(&converter);
+    if (SUCCEEDED(hr)) hr = converter->Initialize(frame, GUID_WICPixelFormat32bppRGBA,
+        WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom);
+    if (SUCCEEDED(hr)) {
+        result.width = int(w); result.height = int(h);
+        result.pixels.resize(size_t(w) * size_t(h) * 4u);
+        hr = converter->CopyPixels(nullptr, w * 4u, UINT(result.pixels.size()), result.pixels.data());
+    }
+    if (converter) converter->Release();
+    if (frame) frame->Release();
+    if (decoder) decoder->Release();
+    if (factory) factory->Release();
+    if (uninit) CoUninitialize();
+    if (FAILED(hr)) result = Image{};
+#elif defined(AINO_PLATFORM_MACOS)
+    CFURLRef url = CFURLCreateFromFileSystemRepresentation(nullptr,
+        reinterpret_cast<const UInt8*>(path.data()), CFIndex(path.size()), false);
+    CGImageSourceRef source = url ? CGImageSourceCreateWithURL(url, nullptr) : nullptr;
+    CGImageRef image = source ? CGImageSourceCreateImageAtIndex(source, 0, nullptr) : nullptr;
+    const size_t w = image ? CGImageGetWidth(image) : 0, h = image ? CGImageGetHeight(image) : 0;
+    if (w && h && w <= 16384 && h <= 16384 && w * h <= 67108864u) {
+        result.width = int(w); result.height = int(h);
+        result.pixels.resize(w * h * 4u);
+        CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+        CGContextRef context = space ? CGBitmapContextCreate(result.pixels.data(), w, h, 8, w * 4u,
+            space, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big) : nullptr;
+        if (context) {
+            CGContextTranslateCTM(context, 0, CGFloat(h));
+            CGContextScaleCTM(context, 1, -1);
+            CGContextDrawImage(context, CGRectMake(0, 0, w, h), image);
+            CGContextRelease(context);
+            for (size_t i = 0; i < result.pixels.size(); i += 4) {
+                const unsigned a = result.pixels[i + 3];
+                if (a) for (int c = 0; c < 3; ++c)
+                    result.pixels[i + c] = uint8_t(std::min(255u, (unsigned(result.pixels[i + c]) * 255u + a / 2) / a));
+            }
+        } else result = Image{};
+        if (space) CGColorSpaceRelease(space);
+    }
+    if (image) CGImageRelease(image);
+    if (source) CFRelease(source);
+    if (url) CFRelease(url);
+#elif defined(AINO_PLATFORM_X11)
+    static detail::X11IconPixels api;
+    void* image = api.lib ? api.load(path.c_str(), -1, -1, 1, nullptr) : nullptr;
+    if (image) {
+        const int w = api.width(image), h = api.height(image), n = api.channels(image);
+        const int stride = api.stride(image);
+        const auto* src = api.pixels(image);
+        if (src && w > 0 && h > 0 && w <= 16384 && h <= 16384 &&
+            uint64_t(w) * uint64_t(h) <= 67108864u && (n == 3 || n == 4) && stride >= w * n) {
+            result.width = w; result.height = h;
+            result.pixels.resize(size_t(w) * size_t(h) * 4u);
+            const bool alpha = n == 4 && api.has_alpha(image);
+            for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
+                const auto* p = src + size_t(y) * size_t(stride) + size_t(x) * size_t(n);
+                auto* d = &result.pixels[(size_t(y) * size_t(w) + size_t(x)) * 4u];
+                d[0] = p[0]; d[1] = p[1]; d[2] = p[2]; d[3] = alpha ? p[3] : 255;
+            }
+        }
+        api.unref(image);
+    }
+#endif
+    if (!result.valid()) {
+        if (error) *error = "Unable to decode image: " + path;
+        return false;
+    }
+    *this = std::move(result);
+    return true;
+}
+
+bool Image::load_resource(int resource_id, std::string* error) {
+    if (error) error->clear();
+#if defined(AINO_PLATFORM_WINDOWS)
+    Image result;
+    HMODULE module = GetModuleHandleW(nullptr);
+    HRSRC resource = resource_id > 0
+        ? FindResourceW(module, MAKEINTRESOURCEW(resource_id), MAKEINTRESOURCEW(10)) : nullptr;
+    HGLOBAL loaded = resource ? LoadResource(module, resource) : nullptr;
+    const DWORD size = resource ? SizeofResource(module, resource) : 0;
+    const BYTE* bytes = loaded && size ? static_cast<const BYTE*>(LockResource(loaded)) : nullptr;
+    const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool uninit = SUCCEEDED(init);
+    IWICImagingFactory* factory = nullptr;
+    IWICStream* stream = nullptr;
+    IWICBitmapDecoder* decoder = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICFormatConverter* converter = nullptr;
+    HRESULT hr = bytes && size && (uninit || init == RPC_E_CHANGED_MODE)
+        ? CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                           IID_IWICImagingFactory, reinterpret_cast<void**>(&factory))
+        : E_FAIL;
+    if (SUCCEEDED(hr)) hr = factory->CreateStream(&stream);
+    if (SUCCEEDED(hr)) hr = stream->InitializeFromMemory(const_cast<BYTE*>(bytes), size);
+    if (SUCCEEDED(hr)) hr = factory->CreateDecoderFromStream(stream, nullptr,
+        WICDecodeMetadataCacheOnLoad, &decoder);
+    if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
+    UINT w = 0, h = 0;
+    if (SUCCEEDED(hr)) hr = frame->GetSize(&w, &h);
+    if (SUCCEEDED(hr) && (w == 0 || h == 0 || w > 16384 || h > 16384 ||
+                          uint64_t(w) * h > 67108864u)) hr = E_FAIL;
+    if (SUCCEEDED(hr)) hr = factory->CreateFormatConverter(&converter);
+    if (SUCCEEDED(hr)) hr = converter->Initialize(frame, GUID_WICPixelFormat32bppRGBA,
+        WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom);
+    if (SUCCEEDED(hr)) {
+        result.width = int(w); result.height = int(h);
+        result.pixels.resize(size_t(w) * size_t(h) * 4u);
+        hr = converter->CopyPixels(nullptr, w * 4u, UINT(result.pixels.size()), result.pixels.data());
+    }
+    if (converter) converter->Release();
+    if (frame) frame->Release();
+    if (decoder) decoder->Release();
+    if (stream) stream->Release();
+    if (factory) factory->Release();
+    if (uninit) CoUninitialize();
+    if (!result.valid()) {
+        if (error) *error = "Unable to decode Windows image resource " + std::to_string(resource_id);
+        return false;
+    }
+    *this = std::move(result);
+    return true;
+#else
+    if (error) *error = "Image resources are only supported on Windows";
+    (void)resource_id;
+    return false;
+#endif
+}
 
 int system_icon_worker_entry(int argc, char** argv) {
 #if defined(AINO_PLATFORM_X11) && defined(__linux__)

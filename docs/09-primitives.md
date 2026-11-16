@@ -31,6 +31,33 @@ void draw_line(float x0, float y0, float x1, float y1, const Color& c, float wid
 `fill_crescent` 是圆减圆的几何差集，挖空部分保留原背景；不需要用背景色覆盖。
 它适合展示几何构造；应用里的月亮图标使用 `SystemIcon::Moon`。
 
+### 图片
+
+```cpp
+aino::Image image;
+std::string error;
+if (!image.load("photo.png", &error)) {
+    std::fprintf(stderr, "%s\n", error.c_str());
+    return 1;
+}
+// 在帧回调中：
+ui.draw_image(image, {24, 24, 120, 120});
+```
+
+加载一次后可跨帧复用，失败时保留原图片并返回错误；支持 PNG、JPEG、BMP 和 GIF
+首帧，不支持 SVG。Windows 使用 WIC，macOS 使用 ImageIO；Linux 动态加载
+GdkPixbuf，缺少运行时或对应格式的 loader 时加载失败。图片以双线性缩放填满指定
+矩形，尊重裁剪、变换和 DPI；需要保持比例时先用 `Ui::aspect_rect` 计算矩形。
+图片限定为每边不超过 16384 像素、总计不超过 67108864 像素。
+
+`WindowConfig::icon_path` 在 Windows 接受 `.ico`，macOS 接受系统支持的图片或
+`.icns`，Linux 接受 GdkPixbuf 支持的图片。窗口图标与文件图标是独立的：
+Windows 文件图标需在构建时嵌入 ICO 资源；macOS Finder 图标需应用包和 ICNS；
+Linux 桌面入口需 `.desktop` 和图标文件。示例构建将 PNG 放到可执行文件旁，
+Windows 同时嵌入 ICO。Windows 资源也可以直接解码到 `Image`，不需要释放成文件：
+`image.load_resource(2, &error)`；资源 ID 由应用的 `.rc` 文件定义，非 Windows 返回错误。
+`aino::executable_directory()` 可用于定位旁边的资源。
+
 ```cpp
 ui.fill_rect_s({24, 24, 120, 64}, ui.theme().tint, 12, .6f);
 ui.stroke_rect({160, 24, 120, 64}, ui.theme().tint, 12, 2);

@@ -188,6 +188,9 @@ int main() {
     if (!XInitThreads()) return 1;
 #endif
     aino::WindowConfig cfg;
+#if !defined(AINO_PLATFORM_WINDOWS)
+    cfg.icon_path = aino::executable_directory() + "aino_icon.png";
+#endif
     cfg.width = 880;
     cfg.height = 600;
     cfg.min_width = 720;
