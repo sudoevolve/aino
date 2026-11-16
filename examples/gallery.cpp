@@ -85,6 +85,7 @@ enum CardId {
     Settings,
     Accordions,
     Carousel,
+    FrostedPanel,
     Toolbar,
     Breadcrumb,
     Sidebar,
@@ -143,6 +144,10 @@ struct App {
     bool readonly = false, privacy = true, running = true;
     int radio = 0, seg = 1, chart_view = 0, tab = 0, combo = 0;
     float vol = 44, opacity = 78, step = 12, second_step = 3, loading_left = 0, progress_phase = 0;
+    float glass_blur = 16, glass_opacity = .38f, glass_corner = 24;
+    float glass_x = .5f, glass_y = .5f, glass_grab_x = 0, glass_grab_y = 0;
+    bool glass_dragging = false;
+    aino::GlassPanel glass_panel{0};
     bool chips[4] = {true, false, false, true}, chip_removed = false;
     bool date_open = false, color_open = false, dlg = false, confirm = false;
     int cy = 2026, cm = 11, cd = 10, hour = 9, minute = 30, menu_pick = -1, ctx_pick = -1;
@@ -216,6 +221,7 @@ const Card kCards[] = {
     {Settings, "设置行", "row", "settings 通用 网络 隐私"},
     {Accordions, "折叠面板", "details", "accordion 折叠 面板"},
     {Carousel, "轮播", "scroll-snap", "carousel release design engine 轮播", true},
+    {FrostedPanel, "磨砂面板", "glass", "glass frosted blur 磨砂 玻璃 面板 模糊 材质"},
     {Toolbar, "工具栏", "toolbar", "toolbar 翻页 筛选"},
     {Breadcrumb, "面包屑", "path", "breadcrumb 资料库 设计系统"},
     {Sidebar, "侧边栏条目", "nav", "sidebar nav 工作台 素材 成员"},
@@ -241,11 +247,11 @@ const Page kPages[] = {
     {"数据", "表格", "table", "Table · 点击表头排序", 25, 1, 300, true},
     {"数据", "图表", "charts", "Charts · 柱状 / 折线 / 环形 / 指标", 26, 4, 380},
     {"数据", "进度", "progress", "Progress · 线性与环形", 30, 2},
-    {"容器", "卡片与列表", "cards", "Containers · 内容与设置", 32, 4},
-    {"容器", "导航", "navigation", "Navigation · 工具栏与路径", 36, 3},
-    {"容器", "高级列表", "advanced", "Advanced · 大数据 / Markdown / 空状态", 39, 4},
-    {"规范", "风格", "style", "Style · 字号阶梯 / 颜色令牌 / macOS 与 iOS 布局度量", 43, 3, 380},
-    {"关于", "关于", "about", "About · 版本、许可证与第三方组件", 46, 1, 380, true},
+    {"容器", "卡片与列表", "cards", "Containers · 内容 / 设置 / 磨砂材质", 32, 5},
+    {"容器", "导航", "navigation", "Navigation · 工具栏与路径", 37, 3},
+    {"容器", "高级列表", "advanced", "Advanced · 大数据 / Markdown / 空状态", 40, 4},
+    {"规范", "风格", "style", "Style · 字号阶梯 / 颜色令牌 / macOS 与 iOS 布局度量", 44, 3, 380},
+    {"关于", "关于", "about", "About · 版本、许可证与第三方组件", 47, 1, 380, true},
 };
 static_assert(sizeof(kCards) / sizeof(kCards[0]) == CardCount, "card manifest mismatch");
 static_assert(sizeof(kPages) / sizeof(kPages[0]) == kPageCount, "section manifest mismatch");
@@ -489,6 +495,68 @@ void draw_buttons(Ui &ui, App &a, CardId id, Rect b) {
             }
         }
     }
+}
+void draw_frosted_panel(Ui &ui, App &a, Rect b) {
+        const Rect preview{b.x, b.y, b.w, 148};
+        ui.fill_rect_grad(preview, Color::hex(0xE98D9E), Color::hex(0x344D9A));
+        ui.push_clip(preview);
+        ui.fill_circle(preview.x + preview.w * .18f, preview.y + 35, 44, Color::hex(0xFFB454));
+        ui.fill_circle(preview.right() - 38, preview.y + 48, 52, Color::hex(0x43C6C8));
+        ui.fill_circle(preview.x + preview.w * .7f, preview.bottom() - 10, 48, Color::hex(0xD85FB7));
+        const float panel_w = std::min(220.f, preview.w - 48);
+        const float panel_h = 78;
+        const float travel_x = preview.w - panel_w;
+        const float travel_y = preview.h - panel_h;
+        Rect panel{preview.x + travel_x * a.glass_x, preview.y + travel_y * a.glass_y,
+                   panel_w, panel_h};
+        const auto &input = ui.raw_input();
+        if (!ui.measuring()) {
+            const bool hovered = ui.hovered(panel);
+            if (input.pressed[0] && hovered) {
+                a.glass_dragging = true;
+                a.glass_grab_x = input.mouse.x - panel.x;
+                a.glass_grab_y = input.mouse.y - panel.y;
+                ui.set_focus(nullptr);
+            }
+            if (!input.down[0])
+                a.glass_dragging = false;
+            if (a.glass_dragging) {
+                a.glass_x = std::max(0.f, std::min(1.f, (input.mouse.x - a.glass_grab_x - preview.x) / travel_x));
+                a.glass_y = std::max(0.f, std::min(1.f, (input.mouse.y - a.glass_grab_y - preview.y) / travel_y));
+                panel.x = preview.x + travel_x * a.glass_x;
+                panel.y = preview.y + travel_y * a.glass_y;
+            }
+            if (hovered || a.glass_dragging)
+                ui.set_cursor(aino::Cursor::Hand);
+        }
+        const bool dark = ui.theme().is_dark();
+        const Color material = dark
+            ? Color(25, 28, 42, static_cast<uint8_t>(a.glass_opacity * 255))
+            : Color(255, 255, 255, static_cast<uint8_t>(a.glass_opacity * 255));
+        const Style glass_style = Style().blur(a.glass_blur).background(material);
+        if (ui.measuring() || (panel.y >= 0 && panel.bottom() <= ui.height()))
+            panel = a.glass_panel.draw(ui, panel, a.glass_corner, glass_style);
+        else
+            ui.glass(panel, a.glass_corner, glass_style);
+        label(ui, "磨砂面板", {panel.x + 16, panel.y + 12, panel.w - 32, 22}, 13, false, 600);
+        label(ui, "拖动面板移动", {panel.x + 16, panel.y + 38, panel.w - 32, 20}, 11);
+        ui.pop_clip();
+        const char *titles[] = {"模糊半径", "材质浓度", "圆角半径"};
+        float *values[] = {&a.glass_blur, &a.glass_opacity, &a.glass_corner};
+        const float minimum[] = {1, .12f, 8};
+        const float maximum[] = {30, .72f, 32};
+        for (int i = 0; i < 3; ++i) {
+            const float y = preview.bottom() + 16 + i * 48;
+            char value[24];
+            if (i == 1)
+                std::snprintf(value, sizeof(value), "%.0f%%", *values[i] * 100);
+            else
+                std::snprintf(value, sizeof(value), "%.0f", *values[i]);
+            label(ui, titles[i], {b.x, y, b.w - 54, 18}, 12);
+            ui.draw_text(value, {b.right() - 50, y, 50, 18}, ui.theme().label2,
+                         Style().font(11).right());
+            ui.slider(values[i], minimum[i], maximum[i], {b.x, y + 22, b.w, 20});
+        }
 }
 void draw_inputs(Ui &ui, App &a, CardId id, Rect b) {
     const Style field = Style().font(13);
@@ -1271,6 +1339,8 @@ void draw_body(Ui &ui, App &a, CardId id, Rect b) {
         draw_charts(ui, a, id, b);
     else if (id <= ProgressRings)
         draw_progress(ui, a, id, b);
+    else if (id == FrostedPanel)
+        draw_frosted_panel(ui, a, b);
     else if (id <= Carousel)
         draw_cards(ui, a, id, b);
     else if (id <= Sidebar)
@@ -1295,7 +1365,7 @@ struct GalleryFrame {
     bool narrow = false;
     Rect title, caption, search, menu, column, viewport;
 };
-const char *kGalleryCaption = "47 个原生风格组件 · 零依赖";
+const char *kGalleryCaption = "48 个原生风格组件 · 零依赖";
 GalleryFrame gallery_frame(Ui &ui) {
     GalleryFrame frame;
     frame.narrow = ui.width() <= 900;
@@ -1434,7 +1504,7 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
     ui.separator({kNavW - 1, 0, 1, ui.height()});
     glyph(ui, Navigation, {22, 27, 22, 22}, ui.theme().tint);
     label(ui, "aino", {58, 21, 142, 23}, 15, false, 600);
-    label(ui, "组件总览 · 47 项", {58, 44, 142, 18}, 11, true);
+    label(ui, "组件总览 · 48 项", {58, 44, 142, 18}, 11, true);
     if (ui.width() <= 900 && icon(ui, Close, "关闭侧边栏", {212, 20, 28, 28}, Style().ghost())) {
         a.nav_open = false;
         ui.request_animation_frame();

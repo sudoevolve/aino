@@ -185,7 +185,7 @@ draw_my_panel(ui, app, aino::Rect(x, y, w, used.h));
 外层高度，否则一张卡片会被撑成几千像素。
 
 画廊布局报告通过 `AINO_LAYOUT_REPORT=<路径>` 输出当前卡片的名称、分类、位置和尺寸。
-未搜索时为 17 个分类、47 张卡片；它与测量 API 的用途不同。
+未搜索时为 17 个分类、48 张卡片；它与测量 API 的用途不同。
 卡片内容高度、窄窗口与搜索结果由 `macos_gallery_probe.cpp` 检查。
 
 ---

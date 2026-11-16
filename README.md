@@ -8,11 +8,11 @@
 
 以下为 Windows 上的示例实窗截图，界面采用 iOS／macOS 风格。
 
-| 分组设置                                          | 组件画廊                                            |
-| ------------------------------------------------- | --------------------------------------------------- |
-| ![设置页](screenshots/sidebar-settings.png)       | ![按钮与输入控件](screenshots/gallery-overview.png) |
-| ![分组卡片与列表](screenshots/gallery-button.png) | ![深色主题](screenshots/gallery-dark.png)           |
-| ![对话框](screenshots/gallery-dialog.png)         | ![基础图元](screenshots/primitives.png)             |
+| 分组设置                                    | 组件画廊                                            |
+| ------------------------------------------- | --------------------------------------------------- |
+| ![设置页](screenshots/sidebar-settings.png) | ![按钮与输入控件](screenshots/gallery-overview.png) |
+| ![磨砂面板](screenshots/gallery-button.png) | ![深色主题](screenshots/gallery-dark.png)           |
+| ![对话框](screenshots/gallery-dialog.png)   | ![基础图元](screenshots/primitives.png)             |
 
 ## 开发规范
 

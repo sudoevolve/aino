@@ -26,7 +26,7 @@ CMake 自动扫描 `examples/*.cpp`，每个文件生成 `aino_<文件名>` 目�
 
 | 源文件 | 目标 | 内容 |
 |---|---|---|
-| `gallery.cpp` | `aino_gallery` | 17 分类、47 张卡片、搜索和素材子窗口 |
+| `gallery.cpp` | `aino_gallery` | 17 分类、48 张卡片（含磨砂面板）、搜索和素材子窗口 |
 | `sidebar_demo.cpp` | `aino_sidebar_demo` | 侧栏导航与应用状态 |
 | `pomodoro.cpp` | `aino_pomodoro` | 番茄钟、侧栏布局、专注与休息计时 |
 | `primitives_demo.cpp` | `aino_primitives_demo` | 图形、阴影、裁剪、变换、系统图标和背景模糊 |

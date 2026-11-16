@@ -2599,16 +2599,32 @@ inline void raster_rrect_inner(Canvas& cv, const Rect& r, float rad, float blur,
     if (c.a == 0 || blur <= 0.01f) return;
     int y0 = std::max(0, (int)std::floor(r.y)), y1 = std::min(cv.h, (int)std::ceil(r.bottom()));
     int x0 = std::max(0, (int)std::floor(r.x)), x1 = std::min(cv.w, (int)std::ceil(r.right()));
+    if (cv.clipped) {
+        x0 = std::max(x0, cv.clip_x0); x1 = std::min(x1, cv.clip_x1);
+        y0 = std::max(y0, cv.clip_y0); y1 = std::min(y1, cv.clip_y1);
+    }
     if (y1 <= y0 || x1 <= x0) return;
+    const float inset = std::max(blur, std::min(rad, std::min(r.w, r.h) * 0.5f));
+    const int middle0 = clampi(int(std::ceil(r.x + inset - 0.5f)), x0, x1);
+    const int middle1 = clampi(int(std::ceil(r.right() - inset - 0.5f)), middle0, x1);
     for (int py = y0; py < y1; ++py) {
-        if (cv.clipped && (py < cv.clip_y0 || py >= cv.clip_y1)) continue;
-        for (int px = x0; px < x1; ++px) {
-            const float d = -rrect_sdf(float(px) + 0.5f, float(py) + 0.5f - dy, r, rad);
-            if (d <= -1.0f) continue;                       // 完全在形状外
-            const float edge = clampf(d + 1.0f, 0.0f, 1.0f); // 边界抗锯齿
-            const float t = clampf(1.0f - std::max(d, 0.0f) / blur, 0.0f, 1.0f);
-            const float a = t * t * edge;
-            if (a > 0.002f) cv.blend(px, py, c, a);
+        const float sample_y = float(py) + 0.5f - dy;
+        const bool skip_middle = sample_y >= r.y + inset && sample_y <= r.bottom() - inset;
+        auto draw_range = [&](int first, int last) {
+            for (int px = first; px < last; ++px) {
+                const float d = -rrect_sdf(float(px) + 0.5f, sample_y, r, rad);
+                if (d <= -1.0f) continue;
+                const float edge = clampf(d + 1.0f, 0.0f, 1.0f);
+                const float t = clampf(1.0f - std::max(d, 0.0f) / blur, 0.0f, 1.0f);
+                const float a = t * t * edge;
+                if (a > 0.002f) cv.blend(px, py, c, a);
+            }
+        };
+        if (skip_middle) {
+            draw_range(x0, middle0);
+            draw_range(middle1, x1);
+        } else {
+            draw_range(x0, x1);
         }
     }
 }
@@ -4564,12 +4580,15 @@ void Ui::fill_rect(const Rect& r, const Color& c, float radius) {
                 float cov_y = clampf(std::min(float(y + 1), p.bottom()) - std::max(float(y), p.y), 0.0f, 1.0f);
                 if (cov_y >= 0.999f) {
                     impl->canvas->fill_row_fast(y, x0, x1, c);
-                    // 左右边缘单独补
-                    for (int x = x0; x < x1; ++x) {
-                        if (x < p.x || x + 1 > p.right()) {
-                            float cov = clampf(std::min(float(x + 1), p.right()) - std::max(float(x), p.x), 0.0f, 1.0f);
-                            impl->canvas->blend(x, y, c, cov);
-                        }
+                    // 只有首尾像素可能与矩形边界相交。
+                    if (x0 < p.x || x0 + 1 > p.right()) {
+                        float cov = clampf(std::min(float(x0 + 1), p.right()) - std::max(float(x0), p.x), 0.0f, 1.0f);
+                        impl->canvas->blend(x0, y, c, cov);
+                    }
+                    const int last = x1 - 1;
+                    if (last > x0 && (last < p.x || last + 1 > p.right())) {
+                        float cov = clampf(std::min(float(last + 1), p.right()) - std::max(float(last), p.x), 0.0f, 1.0f);
+                        impl->canvas->blend(last, y, c, cov);
                     }
                 } else {
                     for (int x = x0; x < x1; ++x) {
