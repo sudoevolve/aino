@@ -1197,6 +1197,26 @@ private:
     friend struct ScrollScope;
 };
 
+// 带可拖动标题区的玻璃面板。每帧传入 bounds 作为默认位置；draw() 返回实际绘制位置，
+// 子控件基于返回值定位。radius、Style().blur(...) 和 Style().background(...) 可调节材质。
+//   GlassPanel panel(64.0f);
+//   Rect r = panel.draw(ui, bounds, 18.0f, Style().blur(14.0f).background(tint));
+class GlassPanel {
+public:
+    explicit GlassPanel(float drag_height = 72.0f) : drag_height_(drag_height) {}
+
+    Rect draw(Ui& ui, const Rect& bounds, float radius = 12.0f,
+              const Style& st = Style());
+    void set_drag_height(float height) { drag_height_ = std::max(0.0f, height); }
+    void reset() { offset_x_ = offset_y_ = 0.0f; dragging_ = false; }
+
+private:
+    float drag_height_ = 72.0f;
+    float offset_x_ = 0.0f, offset_y_ = 0.0f;
+    float drag_offset_x_ = 0.0f, drag_offset_y_ = 0.0f;
+    bool dragging_ = false;
+};
+
 // =============================================================================
 //  七、Window —— 窗口与主循环
 // =============================================================================
@@ -2888,6 +2908,7 @@ inline void blur_backdrop(Canvas& cv, const Rect& p, float rad, float blur) {
     // 8.8 定点：两级插值各 1/256 精度，肉眼足够；关键是乘积留在 32 位里
     // （16.16 的两段相乘要到 2^48，只能用 64 位乘法，慢一倍）。
     const int step = 256 / S;                   // 输出 1px 在缩小图上的步进
+    const int channels[3] = {CH_R, CH_G, CH_B};
     const float frad = rad;
     for (int y = ry0; y < ry1; ++y) {
         if (cv.clipped && (y < cv.clip_y0 || y >= cv.clip_y1)) continue;
@@ -2924,9 +2945,10 @@ inline void blur_backdrop(Canvas& cv, const Rect& p, float rad, float blur) {
                 const int top = int(s00[ch]) * iw + int(s10[ch]) * wx;
                 const int bot = int(s01[ch]) * iw + int(s11[ch]) * wx;
                 const int v = (top * ih + bot * wy) >> 16;
-                q[ch] = (cov >= 0.999f)
-                      ? uint8_t(v)
-                      : uint8_t(float(q[ch]) + (float(v) - float(q[ch])) * cov + 0.5f);
+                const int channel = channels[ch];
+                q[channel] = (cov >= 0.999f)
+                            ? uint8_t(v)
+                            : uint8_t(float(q[channel]) + (float(v) - float(q[channel])) * cov + 0.5f);
             }
         };
         if (y_flat) {
@@ -3744,7 +3766,8 @@ struct Ui::Impl {
     // 判定只用**上一帧**的信息（布局每帧基本一致，而且真有变化的那一帧本来
     // 就会自己排帧）。
     bool hover_would_change(float x, float y) const {
-        if (active != 0) return true;                 // 拖动中：位置本身就影响画面
+        if (active != 0 || input.down[0] || input.down[1] || input.down[2])
+            return true;                              // 控件或自定义拖动中：位置会影响画面
         if (hot_rect_valid) return !hot_rect.contains(x, y);
         for (const Rect& r : hit_rects)
             if (r.contains(x, y)) return true;        // 从空白进了某个控件
@@ -4748,6 +4771,40 @@ void Ui::glass(const Rect& r, float radius, const Style& st) {
     // 5) 外描边：只描一圈极淡的冷白，把玻璃从同色背景上分出来。
     stroke_rect_s(r, Color(255, 255, 255, dark ? 30 : 90), rad, 1.0f,
                   th.corner_smoothing);
+}
+
+Rect GlassPanel::draw(Ui& ui, const Rect& bounds, float radius, const Style& st) {
+    const float min_x = -bounds.x;
+    const float max_x = ui.width() - bounds.right();
+    const float min_y = -bounds.y;
+    const float max_y = ui.height() - bounds.bottom();
+    if (max_x >= min_x) offset_x_ = std::max(min_x, std::min(offset_x_, max_x));
+    else offset_x_ = (ui.width() - bounds.w) * 0.5f - bounds.x;
+    if (max_y >= min_y) offset_y_ = std::max(min_y, std::min(offset_y_, max_y));
+    else offset_y_ = (ui.height() - bounds.h) * 0.5f - bounds.y;
+
+    Rect panel = bounds.offset(offset_x_, offset_y_);
+    const Rect drag_area(panel.x, panel.y, panel.w, std::min(panel.h, drag_height_));
+    const Input& input = ui.input();
+
+    if (input.pressed[0] && drag_area.contains(input.mouse)) {
+        dragging_ = true;
+        drag_offset_x_ = input.mouse.x - panel.x;
+        drag_offset_y_ = input.mouse.y - panel.y;
+        ui.set_focus(nullptr);
+    }
+    if (!input.down[0]) dragging_ = false;
+    if (dragging_ && input.down[0]) {
+        offset_x_ = input.mouse.x - drag_offset_x_ - bounds.x;
+        offset_y_ = input.mouse.y - drag_offset_y_ - bounds.y;
+        panel = bounds.offset(offset_x_, offset_y_);
+    }
+
+    // Keep the title strip attached to the effective panel bounds on every frame.
+    const Rect effective_drag_area(panel.x, panel.y, panel.w, std::min(panel.h, drag_height_));
+    if (effective_drag_area.contains(input.mouse)) ui.set_cursor(Cursor::Hand);
+    ui.glass(panel, radius, st);
+    return panel;
 }
 
 // -----------------------------------------------------------------------------
