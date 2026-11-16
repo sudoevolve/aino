@@ -1,20 +1,44 @@
-﻿# aino
+<div align="center">
+  <img src="assets/aino_icon.svg" alt="aino logo" width="112">
+  <h1>aino</h1>
+  <p><strong>跨平台 C++17 桌面 UI 库</strong></p>
+  <p>单头文件 · 立即模式 · CPU 光栅化 · 事件驱动 · 空闲时阻塞等待</p>
+  <p>
+    <a href="#quick-start">快速开始</a> ·
+    <a href="#features">特性</a> ·
+    <a href="#docs">文档</a> ·
+    <a href="LICENSE">Apache-2.0</a>
+  </p>
+</div>
 
-<img src="assets/aino_icon.svg" alt="aino 图标" width="128">
+aino 以原生桌面体验和低空闲开销为目标。核心库集中在 `aino.hpp`，直接使用各平台窗口、
+字体与系统接口，不依赖第三方 UI 框架。界面采用 macOS 风格，背景材质以 CPU 模糊近似。
 
-单头文件 C++17 桌面 UI 库，采用立即模式与事件驱动主循环。定位是跨平台极低占用
+## Screenshots
 
-核心库只有一个 `aino.hpp`，使用系统绘制和字体接口，无第三方 UI 或图标依赖。采用 macOS 风格，背景材质以模糊近似。
+以下为 Windows 示例实窗截图。
 
-## Preview
+<table>
+  <tr>
+    <td align="center"><strong>分组设置</strong><br><img src="screenshots/sidebar-settings.png" alt="分组设置" width="300"></td>
+    <td align="center"><strong>组件画廊</strong><br><img src="screenshots/gallery-overview.png" alt="组件画廊" width="300"></td>
+    <td align="center"><strong>按钮与输入控件</strong><br><img src="screenshots/gallery-button.png" alt="按钮与输入控件" width="300"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>深色外观</strong><br><img src="screenshots/gallery-dark.png" alt="深色外观" width="300"></td>
+    <td align="center"><strong>关于页面</strong><br><img src="screenshots/gallery-about.png" alt="关于页面" width="300"></td>
+    <td align="center"><strong>基础图元</strong><br><img src="screenshots/primitives.png" alt="基础图元" width="300"></td>
+  </tr>
+</table>
 
-以下为 Windows 上的示例实窗截图，界面采用 iOS／macOS 风格。
+## Features
 
-| 分组设置                                    | 组件画廊                                            |
-| ------------------------------------------- | --------------------------------------------------- |
-| ![设置页](screenshots/sidebar-settings.png) | ![按钮与输入控件](screenshots/gallery-overview.png) |
-| ![磨砂面板](screenshots/gallery-button.png) | ![深色主题](screenshots/gallery-dark.png)           |
-|  ![关于页面](screenshots/gallery-about.png) | ![基础图元](screenshots/primitives.png)             |
+- **单头文件**：核心实现位于 `aino.hpp`，C++17，无第三方 UI 依赖。
+- **事件驱动**：无事件时阻塞等待；仅在需要时重绘，空闲时 CPU 占用接近 0。
+- **CPU 光栅化**：自绘几何、图像和材质效果，配合系统字体与窗口后端。
+- **原生平台后端**：Windows GDI、macOS Cocoa、Linux X11。
+- **完整组件集**：布局、主题、输入控件、表格、图表、浮层与动画等。
+- **图像支持**：PNG、JPEG、BMP 与 GIF 首帧，可加载后复用并绘制。
 
 ## 开发规范
 
