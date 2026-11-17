@@ -31,8 +31,8 @@
 
 #define AINO_VERSION_MAJOR 0
 #define AINO_VERSION_MINOR 5
-#define AINO_VERSION_PATCH 2
-#define AINO_VERSION "0.5.2"
+#define AINO_VERSION_PATCH 3
+#define AINO_VERSION "0.5.3"
 
 #include <cstdint>
 #include <cstddef>
@@ -1213,6 +1213,8 @@ public:
     Impl* impl = nullptr;
 
 private:
+    bool tabs_impl(const std::vector<std::string>& labels, int* index, const Rect& box,
+                   const TabOptions& options, bool segmented_control, const Style& st);
     void repaint();
     friend struct ScrollScope;
 };
@@ -3492,8 +3494,8 @@ Theme Theme::light() {
     t.row_alt           = Color::rgba(0, 0, 0, 13);
     t.overlay           = Color::rgba(171, 171, 171, 153);   // Miscellaneous/Alerts/Overlay
 
-    // ---- 强调色（macOS 27 Accents）----
-    t.blue   = Color::hex(0x0088FF); t.red    = Color::hex(0xFF383C);
+    // ---- 强调色（按 macOS 官方界面参考图取值）----
+    t.blue   = Color::hex(0x0084F7); t.red    = Color::hex(0xFF383C);
     t.orange = Color::hex(0xFF8D28); t.yellow = Color::hex(0xFFCC00);
     t.green  = Color::hex(0x34C759); t.mint   = Color::hex(0x00C8B3);
     t.teal   = Color::hex(0x00C3D0); t.cyan   = Color::hex(0x00C0E8);
@@ -3523,7 +3525,7 @@ Theme Theme::light() {
     t.destructive_foreground= Color::hex(0xFFFFFF);
     t.border                = t.separator;
     t.input                 = Color::rgba(0, 0, 0, 26);
-    t.ring                  = Color::rgba(0, 136, 255, 128);  // 焦点环 = 强调色 50%
+    t.ring                  = Color::rgba(0, 132, 247, 128); // 焦点环 = 强调色 50%
     return t;
 }
 
@@ -3562,7 +3564,7 @@ Theme Theme::dark() {
     t.overlay           = Color::rgba(23, 23, 23, 158);
 
     // ---- 强调色 ----
-    t.blue   = Color::hex(0x0091FF); t.red    = Color::hex(0xFF4245);
+    t.blue   = Color::hex(0x0A95FF); t.red    = Color::hex(0xFF4245);
     t.orange = Color::hex(0xFF9230); t.yellow = Color::hex(0xFFD600);
     t.green  = Color::hex(0x30D158); t.mint   = Color::hex(0x00DAC3);
     t.teal   = Color::hex(0x00D2E0); t.cyan   = Color::hex(0x3CD3FE);
@@ -3592,7 +3594,7 @@ Theme Theme::dark() {
     t.destructive_foreground= Color::hex(0xFFFFFF);
     t.border                = t.separator;
     t.input                 = Color::rgba(255, 255, 255, 26);
-    t.ring                  = Color::rgba(0, 145, 255, 140);
+    t.ring                  = Color::rgba(10, 149, 255, 140);
     return t;
 }
 
@@ -7093,13 +7095,16 @@ bool Ui::tabs(const std::vector<std::string>& labels, int* index, const Rect& bo
 
 bool Ui::tabs(const std::vector<std::string>& labels, int* index, const Rect& box,
                      const TabOptions& options, const Style& st) {
+    return tabs_impl(labels, index, box, options, false, st);
+}
+
+bool Ui::tabs_impl(const std::vector<std::string>& labels, int* index, const Rect& box,
+                   const TabOptions& options, bool segmented_control, const Style& st) {
     if (options.close_index) *options.close_index = -1;
     if (!index || labels.empty() || box.w <= 0.0f || box.h <= 0.0f) return false;
     const Theme& th = impl->theme;
     uint64_t base_id = impl->widget_id("tabs", box, 0, st.identity);
     const bool pill = (st.variant == Style::Secondary || st.variant == Style::Outline);
-    // 参考资料 Segmented Control 是**胶囊**（Figma 里 r=1000，按钮 r=100），不是
-    // r6 的圆角矩形：24 高的控件整个是圆的，选中段内缩 2 之后也是胶囊。
     const float rad = st.radius >= 0.0f ? st.radius : (pill ? box.h * 0.5f : 6.0f);
     const float fs = st.font_size > 0.0f ? st.font_size : th.font_size;
     const bool closable = !pill && options.close_index;
@@ -7110,8 +7115,8 @@ bool Ui::tabs(const std::vector<std::string>& labels, int* index, const Rect& bo
 
     bool changed = false;
     Rect container(box.x, box.y, box.w, box.h);
-    // 参考资料 Segmented Control：容器 8% 半透明底，选中段内缩 2px、圆角比容器小 2（同心圆角）
-    const Rect inner = pill ? container.inset(2.0f, 2.0f) : container;
+    // Segmented Control 的选中段与轨道等高；普通胶囊页签仍保留 2px 内缩。
+    const Rect inner = pill && !segmented_control ? container.inset(2.0f, 2.0f) : container;
     const float equal_w = inner.w / float(labels.size());
 
     // 胶囊分段等宽，普通标签栏按文字宽度计算位置。
@@ -7170,8 +7175,10 @@ bool Ui::tabs(const std::vector<std::string>& labels, int* index, const Rect& bo
         Color container_bg = !st.bg.is_none() ? st.bg : th.track_well();
         if (st.disabled) container_bg.a = uint8_t(float(container_bg.a) * 0.45f);
         fill_rect_s(container, container_bg, rad, 0.35f);
-        // 段间细缝：1×14 的 25% 标签色。必须先画，选中的滑块（内缩 2）才会盖住它。
-        const float ph = std::min(14.0f, std::max(inner.h - 10.0f, 1.0f));
+        // 段间细缝：1×14 的 25% 标签色，选中段随后会盖住对应分隔线。
+        const float separator_h = box.h <= 16.0f ? 10.0f : box.h <= 20.0f ? 12.0f
+                                 : box.h <= 24.0f ? 14.0f : box.h <= 28.0f ? 18.0f : 20.0f;
+        const float ph = std::min(separator_h, std::max(inner.h - 4.0f, 1.0f));
         for (size_t i = 1; i < labels.size(); ++i)
             fill_rect(Rect(inner.x + equal_w * float(i), inner.y + (inner.h - ph) * 0.5f, 1.0f, ph),
                       th.label3, 0.0f);
@@ -7193,11 +7200,12 @@ bool Ui::tabs(const std::vector<std::string>& labels, int* index, const Rect& bo
         const float t_hov = detail::animate_value(impl, id * 47u + 2u, in.hovered ? 1.0f : 0.0f, 18.0f);
 
         if (pill) {
-            // 选中段 = **强调色实心 + 白字**。依据是 kit 里分段的两个变体：
-            //   `Segmented Control/3/1/True`  → 活动窗口：BG #0088FF，Label #FFFFFF
-            //   `Segmented Control/3/1/False` → 非活动窗口：BG #0000001A，Label 85%
-            const Rect seg = item.inset(2.0f, 2.0f);
-            const float sr = std::max(0.0f, seg.h * 0.5f);
+            // Segmented 的活动段填满所属分段；普通胶囊页签仍上下内缩 2px。
+            const Rect seg = segmented_control
+                                 ? item
+                                 : item.inset(2.0f, 2.0f);
+            const float sr = segmented_control ? std::min(seg.h * 0.5f, rad)
+                                               : std::max(0.0f, seg.h * 0.5f);
             if (t_sel > 0.02f) {
                 Color sel_bg = !st.border_color.is_none() ? st.border_color : th.tint;
                 sel_bg.a = uint8_t(float(sel_bg.a) * t_sel + 0.5f);
@@ -7246,13 +7254,14 @@ bool Ui::tabs(const std::vector<std::string>& labels, int* index, const Rect& bo
 }
 
 // -----------------------------------------------------------------------------
-//  segmented —— 语义上"选一个值"，视觉固定走胶囊式（凹槽 + 浮起的滑块）
+//  segmented —— 等宽胶囊分段选择
 // -----------------------------------------------------------------------------
 bool Ui::segmented(const std::vector<std::string>& items, int* index, const Rect& box, const Style& st) {
-    // 调用方没点明变体时补成 Secondary；显式传了别的就照它画。
+    // 调用方没点明变体时使用分段控件样式；显式传了别的则沿用 tabs 对应变体。
     Style ps = st;
     if (ps.variant < 0) ps.variant = Style::Secondary;
-    return tabs(items, index, box, ps);
+    const bool segmented_control = ps.variant == Style::Secondary || ps.variant == Style::Outline;
+    return tabs_impl(items, index, box, TabOptions{}, segmented_control, ps);
 }
 
 // -----------------------------------------------------------------------------
@@ -9966,11 +9975,12 @@ bool Ui::alert_dialog(const std::string& title, const std::string& body,
     if (kin.key_pressed[KEY_ESC]) dismiss = true;
 
     // 操作按钮以通宽行纵向排列，取消位于底部；交互在遮罩绘制前处理。
-    const float pad_v = 16.0f;
+    const float pad_v = 14.0f;
     const float btn_h = 28.0f;
+    const float action_gap = 6.0f;
     const float inner_w = std::max(box.w - pad * 2.0f, 1.0f);
     const Rect cancel_r(box.x + pad, box.bottom() - pad_v - btn_h, inner_w, btn_h);
-    const Rect ok_r(box.x + pad, cancel_r.y - 16.0f - btn_h, inner_w, btn_h);
+    const Rect ok_r(box.x + pad, cancel_r.y - action_gap - btn_h, inner_w, btn_h);
 
     const uint64_t ok_id = impl->widget_id("alert_ok", box, 0, st.identity);
     const uint64_t no_id = impl->widget_id("alert_no", box, 1u, st.identity);
@@ -9988,8 +9998,9 @@ bool Ui::alert_dialog(const std::string& title, const std::string& body,
     // ---- 画 ----
     // 不铺整屏黑幕：macOS 的 alert 是"浮起来的一块面板 + 强投影"，窗口本身
     // 只是失去焦点，不会被压暗。整屏 35% 黑是 Web Dialog 的 overlay。
+    const Color panel_bg = !st.bg.is_none() ? st.bg : th.popover_bg;
     detail::pop_shadow(*this, box, rad, th, 2);
-    fill_rect(box, !st.bg.is_none() ? st.bg : th.popover_bg, rad);
+    fill_rect(box, panel_bg, rad);
     // 面板不描边：macOS 靠投影与底色分层，一圈 1px 会让它看起来像 Web 的卡片
 
     push_clip(box);
@@ -10021,7 +10032,12 @@ bool Ui::alert_dialog(const std::string& title, const std::string& body,
     const float cr = cancel_r.h * 0.5f;
     Style ok_style, cancel_style;
     ok_style.corner(cr);
-    if (danger) ok_style.destructive(); else ok_style.primary();
+    if (danger) {
+        ok_style.destructive();
+        ok_style.background(th.red.mix(panel_bg, 0.78f));
+    } else {
+        ok_style.primary();
+    }
     cancel_style.secondary().corner(cr);
     const auto ok_skin = detail::make_skin(th, ok_style, Style::Default, cr);
     const auto cancel_skin = detail::make_skin(th, cancel_style, Style::Default, cr);

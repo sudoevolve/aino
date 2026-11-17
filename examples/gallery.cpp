@@ -272,6 +272,11 @@ Color accent_color(int index, bool dark = false) {
 Color current_accent(const App &a) {
     return a.custom_accent ? a.custom_color : accent_color(a.well, a.dark);
 }
+Color sidebar_icon_tint(const App &a) {
+    if (a.custom_accent || a.well != 0)
+        return current_accent(a);
+    return a.dark ? Color::hex(0x28B7FF) : Color::hex(0x0084F7);
+}
 std::string color_hex(Color color) {
     char text[8];
     std::snprintf(text, sizeof(text), "#%02X%02X%02X", color.r, color.g, color.b);
@@ -1499,7 +1504,8 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
     Rect nav{0, 0, kNavW, ui.height()};
     ui.fill_rect(nav, ui.theme().sidebar_bg);
     ui.separator({kNavW - 1, 0, 1, ui.height()});
-    glyph(ui, Navigation, {22, 27, 22, 22}, ui.theme().tint);
+    const Color icon_tint = sidebar_icon_tint(a);
+    glyph(ui, Navigation, {22, 27, 22, 22}, icon_tint);
     label(ui, "aino", {58, 21, 142, 23}, 15, false, 600);
     label(ui, "组件总览 · 48 项", {58, 44, 142, 18}, 11, true);
     if (ui.width() <= 900 && icon(ui, Close, "关闭侧边栏", {212, 20, 28, 28}, Style().ghost())) {
@@ -1543,7 +1549,7 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
                 ui.request_animation_frame();
             }
             glyph(ui, i == kStylePage ? Text : (i == kAboutPage ? InfoIcon : i),
-                  {22, y + (kNavStep - 16) / 2, 16, 16}, ui.theme().tint);
+                  {22, y + (kNavStep - 16) / 2, 16, 16}, icon_tint);
             char count[12];
             // 关于页不是组件列表，右侧那栏给破折号，别写「01」。
             if (i == kAboutPage) std::snprintf(count, sizeof(count), "—");
@@ -1697,15 +1703,16 @@ void draw_overlays(Ui &ui, App &a, float y) {
         y += 64;
     }
     if (a.dlg || a.confirm) {
-        Rect r{(ui.width() - std::min(420.f, ui.width() - 32)) / 2, (ui.height() - 210) / 2,
-               std::min(420.f, ui.width() - 32), 210};
+        const float dialog_w = std::min(320.f, ui.width() - 32);
+        const float dialog_h = 176.f;
+        Rect r{(ui.width() - dialog_w) / 2, (ui.height() - dialog_h) / 2, dialog_w, dialog_h};
         bool danger = a.confirm;
         bool *open = danger ? &a.confirm : &a.dlg;
         if (ui.alert_dialog(danger ? "删除此项目？" : "保存更改？",
                             danger ? "此操作无法撤销，请确认需要删除的内容。"
                                    : "你的设置已准备好，可以保存并继续。",
                             danger ? "删除" : "保存", "取消", open, r,
-                            danger ? Style().destructive().background(ui.theme().popover)
+                            danger ? Style().destructive()
                                    : Style().background(ui.theme().popover)))
             notify(ui, a, danger ? "项目已删除" : "设置已保存", danger ? 2 : 0);
     }

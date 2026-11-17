@@ -256,7 +256,7 @@ variant 决定 base/fg/border
 | `sidebar_bg/title_bg` | `#EAEAEA` / `#1E1E1E` | 侧栏和工具栏 |
 | `popover_bg/tooltip_bg` | `#F6F6F6` / `#282828` | 浮层表面 |
 | `separator` | 黑 / 白 alpha 26 | 分隔线 |
-| `tint` | `#0088FF` / `#0091FF` | 默认强调色 |
+| `tint` | `#0084F7` / `#0A95FF` | 默认强调色（浅色 / 深色） |
 | `tint_foreground` | 白色 | 强调色上的文字 |
 | `track` | 黑 alpha 18 / 白 alpha 10 | 环形进度轨道 |
 | `shadow_color` | 黑 alpha 64 / 150 | 阴影 |
