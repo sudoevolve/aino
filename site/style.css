@@ -60,6 +60,7 @@ a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visibl
 .nav-links .nav-cta { background: #0071e3; color: #fff; padding: 7px 17px; border-radius: 30px; }
 .nav-cta:hover, .button:hover { background: #0077ed; text-decoration: none; }
 .hero { padding-top: 80px; background: var(--card); text-align: center; }
+.hero-logo { display: block; width: 104px; height: 104px; margin: 0 auto 26px; }
 .eyebrow { font-size: 17px; font-weight: 600; margin: 0 0 20px; }
 .hero .eyebrow { font-size: 22px; }
 h1, h2, h3 { line-height: 1.13; letter-spacing: -.045em; margin: 0; }
@@ -211,6 +212,7 @@ th { background: var(--code); font-weight: 600; }
   .nav-links button { font-size: 11px; }
   .nav-links .nav-cta { padding: 6px 12px; }
   .hero { padding-top: 58px; }
+  .hero-logo { width: 80px; height: 80px; margin-bottom: 22px; }
   .hero .eyebrow { font-size: 18px; }
   .hero h1 { font-size: clamp(44px, 11vw, 65px); }
   .hero-intro { font-size: 17px; margin: 24px 0; }
