@@ -235,7 +235,8 @@ def nav_item_y(name):
     if table is None:
         raise ValueError("gallery catalog not found")
     y, previous_group = NAV_TOP, None
-    for group, page in re.findall(r'\{\s*"([^"]*)"\s*,\s*"([^"]*)"', table.group(1)):
+    for group, page in re.findall(
+            r'\{\s*SystemIcon::\w+\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"', table.group(1)):
         if group != previous_group:
             if previous_group is not None:
                 y += 14.0
