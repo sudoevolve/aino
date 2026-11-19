@@ -1,4 +1,4 @@
-"""从仓库 SVG 内嵌原图生成统一留白的 PNG 和 Windows 多尺寸 ICO。
+"""从仓库 SVG 内嵌原图生成紧凑透明 PNG 和 Windows 多尺寸 ICO。
 
 仅更新品牌资源时运行：python tools/build_icons.py。需要 Pillow，普通构建不需要。
 SVG 保留原始素材；PNG 与所有 ICO 图层从同一份高分辨率素材生成。
@@ -27,8 +27,10 @@ def main():
         raise ValueError("原图没有可见内容")
     artwork = source.crop(bounds)
     canvas = Image.new("RGBA", (1024, 1024))
-    # 最长边占 98%，留少量安全边距；不改变图案比例。
-    artwork.thumbnail((1004, 1004), Image.Resampling.LANCZOS)
+    # thumbnail 不会放大素材，会在画布上留下额外透明边距；显式等比缩放至最长边满幅。
+    scale = 1024 / max(artwork.size)
+    artwork = artwork.resize((round(artwork.width * scale), round(artwork.height * scale)),
+                             Image.Resampling.LANCZOS)
     canvas.alpha_composite(artwork, ((1024 - artwork.width) // 2, (1024 - artwork.height) // 2))
     canvas.resize((256, 256), Image.Resampling.LANCZOS).save(assets / "aino_icon.png")
     canvas.save(assets / "aino_icon.ico", sizes=[(side, side) for side in
