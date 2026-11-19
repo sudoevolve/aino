@@ -157,7 +157,7 @@ static void test_text_wrap() {
             "删除后无法恢复。这个对话框的遮罩、面板、关闭按钮都由 dialog() 负责，"
             "下面两个按钮是调用方画的 —— 正文一长就必须自己折行，"
             "否则会一直向右爬出面板，压在半透明遮罩上。";
-        h.ui.dialog("确认删除", body, &open, box);
+        h.ui.dialog("确认删除", body, &open, box, Style().padding(pad));
         h.ui.end_frame();
 
         const int y0 = int(box.y + pad) + 30, y1 = int(box.bottom() - pad);

@@ -114,6 +114,10 @@ int main() {
         outer.right = outer.left + width * dpi / 96 + (outer.right - outer.left) - client.right;
         outer.bottom = outer.top + height * dpi / 96 + (outer.bottom - outer.top) - client.bottom;
         SendMessageW(native->hwnd, WM_DPICHANGED, MAKEWPARAM(dpi, dpi), reinterpret_cast<LPARAM>(&outer));
+        // Simulated DPI may require a client larger than the runner's desktop.
+        SetWindowPos(native->hwnd, nullptr, outer.left, outer.top,
+            outer.right - outer.left, outer.bottom - outer.top,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
         if (!window.poll()) return 3;
         App app;
         populate(app);
@@ -125,6 +129,8 @@ int main() {
             for (int frame_index = 0; frame_index < frames; ++frame_index) {
                 if (directory && frame_index) std::this_thread::sleep_for(std::chrono::milliseconds(16));
                 window.render([&](aino::Ui& ui) {
+                expect(std::abs(ui.width() - width) <= 1 && std::abs(ui.height() - height) <= 1,
+                    "fixture retains requested logical client size");
                 ui.clear(ui.theme().background);
                 draw_workspace(ui, app, ui.theme());
                 const auto layout = workspace_layout(ui, app);
@@ -160,7 +166,9 @@ int main() {
         });
         expect(text_pixels_fit(window.impl->canvas, window.impl->scale, ink_bounds, background),
             "actual long-label pixels remain within padded text bounds");
-        std::printf("layout %s %dx%d %d DPI checked\n", dark ? "dark" : "light", width, height, dpi);
+        std::printf("layout %s %dx%d %d DPI checked (client %dx%d, scale %.2f)\n",
+            dark ? "dark" : "light", width, height, dpi,
+            window.impl->canvas.w, window.impl->canvas.h, window.impl->scale);
         app.shutdown_all();
     }
     std::printf("[ssh-layout] %d passed, %d failed\n", passed, failed);
