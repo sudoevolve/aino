@@ -1451,7 +1451,9 @@ private:
             fd_set set, errors; FD_ZERO(&set); FD_ZERO(&errors);
             FD_SET(fd, &set); FD_SET(fd, &errors);
             const long slice = long(std::min<int64_t>(remaining, 100));
-            timeval tv{0, slice * 1000};
+            timeval tv{};
+            // slice 最多 100 ms；macOS 的 tv_usec 为 int，按成员类型显式转换。
+            tv.tv_usec = static_cast<decltype(tv.tv_usec)>(slice * 1000);
             const int r = ::select(int(fd) + 1, writing ? nullptr : &set, writing ? &set : nullptr, &errors, &tv);
             if (r != 0) return r > 0;
         }

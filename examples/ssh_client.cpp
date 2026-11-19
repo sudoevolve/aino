@@ -28,6 +28,11 @@
 #define AINO_IMPLEMENTATION
 #include "../aino.hpp"
 
+// X11 在后端实现中定义 None 宏；应用的同名枚举不应被它展开。
+#if defined(AINO_PLATFORM_X11) && defined(None)
+#  undef None
+#endif
+
 #include "ssh_core.hpp"
 #include "ssh_credentials.hpp"
 
