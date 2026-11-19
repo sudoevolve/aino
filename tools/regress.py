@@ -58,7 +58,8 @@ def run_probe(name, want_tail):
     exe = os.path.join(PROBE, name + ".exe")
     r = run([exe], cwd=PROBE)
     out = (r.stdout or "") + (r.stderr or "")
-    ok = r.returncode == 0 and want_tail in out
+    # 探针返回码是稳定契约；断言条数只供展示，新增断言不应造成假失败。
+    ok = r.returncode == 0
     tail = [l for l in out.strip().splitlines() if l.strip()][-1:] or [""]
     return ok, tail[0][:90]
 

@@ -4,9 +4,8 @@
 //  分三层，全部平台无关（Windows / Linux / macOS 同一份代码）：
 //
 //    1. Engine    libssh2 的封装：TCP 连接、主机密钥校验（TOFU）、认证、
-//                 PTY shell 通道、SFTP 子系统。所有 libssh2 调用都在一把
-//                 互斥锁下面 —— libssh2 的 session 不是线程安全的，而这里有
-//                 一个后台读线程在收终端输出。
+//                 PTY shell 通道、SFTP 子系统。认证完成后只有 I/O owner 线程
+//                 调用 libssh2；后台业务提交有界命令，UI 只收发队列与快照。
 //    2. Terminal  VT100/xterm 解析器 + 字符网格 + 回滚缓冲。不做渲染，
 //                 只维护"屏幕状态"，渲染在 app 那边用 ui.draw_mono_text()。
 //    3. Transfer  上传/下载的分块状态机，由后台线程推进。
@@ -32,12 +31,20 @@
 #include <cstring>
 #include <deque>
 #include <functional>
+#include <future>
+#include <memory>
+#include <stdexcept>
+#include <type_traits>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 #if defined(_WIN32)
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
 #  endif
@@ -50,6 +57,7 @@
 #  include <arpa/inet.h>
 #  include <fcntl.h>
 #  include <netdb.h>
+#  include <poll.h>
 #  include <netinet/in.h>
 #  include <netinet/tcp.h>
 #  include <sys/ioctl.h>
@@ -138,33 +146,69 @@ enum class FailStage {
     Input,       // 本地连接信息无效，尚未访问网络或提交凭据
 };
 
+// 一个非阻塞 loopback UDP socket 同时等待网络与本地命令，避免定期唤醒线程。
+class EngineWake {
+public:
+    ~EngineWake() { if (fd_ != SSHC_BADSOCK) sshc_closesock(fd_); }
+    bool open() {
+        if (fd_ != SSHC_BADSOCK) return true;
+        SSHC_SOCK candidate = ::socket(AF_INET, SOCK_DGRAM, 0);
+        if (candidate == SSHC_BADSOCK) return false;
+        sockaddr_in address{}; address.sin_family = AF_INET; address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+#if defined(_WIN32)
+        int length = sizeof(address);
+        u_long nonblocking = 1;
+        if (ioctlsocket(candidate, FIONBIO, &nonblocking) != 0) { sshc_closesock(candidate); return false; }
+#else
+        socklen_t length = sizeof(address);
+        const int flags = fcntl(candidate, F_GETFL, 0);
+        if (flags < 0 || fcntl(candidate, F_SETFL, flags | O_NONBLOCK) != 0) {
+            sshc_closesock(candidate); return false;
+        }
+        fcntl(candidate, F_SETFD, FD_CLOEXEC);
+#endif
+        if (::bind(candidate, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
+            getsockname(candidate, reinterpret_cast<sockaddr*>(&address), &length) != 0 ||
+            ::connect(candidate, reinterpret_cast<sockaddr*>(&address), length) != 0) {
+            sshc_closesock(candidate); return false;
+        }
+        fd_.store(candidate);
+        return true;
+    }
+    void notify() { if (fd_ != SSHC_BADSOCK) (void)::send(fd_, "w", 1, 0); }
+    void consume() { char data[256]; if (fd_ != SSHC_BADSOCK) while (::recv(fd_, data, sizeof(data), 0) > 0) {} }
+    SSHC_SOCK descriptor() const { return fd_; }
+private:
+    std::atomic<SSHC_SOCK> fd_{SSHC_BADSOCK};
+};
+
 class Engine {
 public:
-    // SFTP 的 API 在非阻塞模式下每个调用都要处理 EAGAIN，写起来全是重试循环。
-    // 调用方在后台线程持有会话锁期间临时切回阻塞，退出时恢复。
-    struct BlockingGuard {
-        LIBSSH2_SESSION* s;
-        int prev;
-        explicit BlockingGuard(LIBSSH2_SESSION* sess) : s(sess) {
-            prev = sess ? libssh2_session_get_blocking(sess) : 0;
-            if (s) libssh2_session_set_blocking(s, 1);
-        }
-        ~BlockingGuard() { if (s) libssh2_session_set_blocking(s, prev); }
-        // 显式放弃还原：调用方打算在作用域内就把 session 释放掉时先喊一声，
-        // 否则析构里那一下 set_blocking 就是 use-after-free（实测崩溃点）。
-        void forget() { s = nullptr; }
-    };
-
     using WakeFn = std::function<void()>;
 
     ~Engine() { disconnect(); }
     void set_wake(WakeFn fn) { wake_ = std::move(fn); }
+    // 永久终止此 Engine。只 shutdown、不 close；拥有者释放前句柄不会被系统复用。
+    // 不等待命令队列，关会话时可打断握手或 SFTP 网络等待。
+    void request_stop() {
+        std::lock_guard<std::mutex> lock(transport_mtx_);
+        stop_requested_ = true;
+        if (transport_ != SSHC_BADSOCK) {
+#if defined(_WIN32)
+            ::shutdown(transport_, SD_BOTH);
+#else
+            ::shutdown(transport_, SHUT_RDWR);
+#endif
+        }
+        io_wake_.notify();
+    }
 
     // ---- 连接 ----
     bool connect(const std::string& raw_host, int port, const std::string& raw_user,
                  const std::string& pass, const std::string& key_path,
                  std::string* err) {
         disarm(err);
+        if (stop_requested_) return fail(err, "连接已取消");
         fail_stage_ = int(FailStage::Input);
         const std::string host = trim_connection_identity(raw_host);
         const std::string user = trim_connection_identity(raw_user);
@@ -193,22 +237,31 @@ public:
                              "（机器名拼错了？或需要连 VPN / 改 hosts）");
         }
         fail_stage_ = int(FailStage::Tcp);
+        if (stop_requested_) { freeaddrinfo(res); return fail(err, "连接已取消"); }
         SSHC_SOCK fd = SSHC_BADSOCK;
         // 每个地址都可能以不同方式失败，只报"连不上"用户没法判断到底是
         // 网络不通、端口没开、还是被防火墙丢包。这里把最后一次的原因留住。
         int  last_so   = 0;
         bool tried_any = false;
         for (addrinfo* ai = res; ai; ai = ai->ai_next) {
+            if (stop_requested_) break;
             fd = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
             if (fd == SSHC_BADSOCK) continue;
+            {
+                std::lock_guard<std::mutex> lock(transport_mtx_);
+                if (stop_requested_) { sshc_closesock(fd); fd = SSHC_BADSOCK; break; }
+                transport_ = fd;
+            }
             tried_any = true;
             // 非阻塞 connect + select，这样"连不上"能在 10 秒内报错，
             // 而不是让整个界面等内核的 20 秒默认超时。
-            set_nonblocking(fd, true);
+            if (!set_nonblocking(fd, true)) {
+                last_so = sock_last_error(); close_transport(fd); fd = SSHC_BADSOCK; continue;
+            }
             int rc = ::connect(fd, ai->ai_addr, int(ai->ai_addrlen));
             if (rc != 0 && !connect_in_progress()) {
                 last_so = sock_last_error();
-                sshc_closesock(fd); fd = SSHC_BADSOCK; continue;
+                close_transport(fd); fd = SSHC_BADSOCK; continue;
             }
             if (rc != 0) {
                 const bool ready = wait_sock(fd, true, kTcpTimeoutMs);
@@ -220,29 +273,33 @@ public:
                 ::getsockopt(fd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&soerr), &l);
                 if (soerr != 0) {
                     last_so = soerr;
-                    sshc_closesock(fd); fd = SSHC_BADSOCK; continue;
+                    close_transport(fd); fd = SSHC_BADSOCK; continue;
                 }
                 if (!ready) {
                     last_so = kSoTimedOut;             // 真·一直没有回应
-                    sshc_closesock(fd); fd = SSHC_BADSOCK; continue;
+                    close_transport(fd); fd = SSHC_BADSOCK; continue;
                 }
             }
             int soerr = 0; socklen_t l = sizeof soerr;
             ::getsockopt(fd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&soerr), &l);
-            if (soerr != 0) { last_so = soerr; sshc_closesock(fd); fd = SSHC_BADSOCK; continue; }
+            if (soerr != 0) { last_so = soerr; close_transport(fd); fd = SSHC_BADSOCK; continue; }
             break;
         }
         freeaddrinfo(res);
+        if (stop_requested_) {
+            if (fd != SSHC_BADSOCK) close_transport(fd);
+            return fail(err, "连接已取消");
+        }
         if (fd == SSHC_BADSOCK)
             return fail(err, tcp_trouble_text(last_so, tried_any, host, port));
-        set_nonblocking(fd, false);
+        // libssh2 的阻塞模式通过内部 select 实现超时；OS socket 必须保持非阻塞。
         set_nodelay(fd);
 
         // 握手
         fail_stage_ = int(FailStage::Handshake);
         kbd_pass_ = pass;    // keyboard-interactive 回调要拿到密码（经 session 的 abstract）
         LIBSSH2_SESSION* sess = libssh2_session_init_ex(nullptr, nullptr, nullptr, &kbd_pass_);
-        if (!sess) { sshc_closesock(fd); return fail(err, "libssh2_session_init 失败"); }
+        if (!sess) { close_transport(fd); return fail(err, "libssh2_session_init 失败"); }
         libssh2_session_set_timeout(sess, 20000);
         // WinCNG 后端下 group16/18-sha512 走的是 GEX 代码路径：和 paramiko 协商
         // group16-sha512 之后它发的是 GEX_REPLY，对端直接报 MessageOrderError。
@@ -260,7 +317,7 @@ public:
             if (rc != 0) {
                 const std::string m = err_text(sess, rc);
                 libssh2_session_free(sess);
-                sshc_closesock(fd);
+                close_transport(fd);
                 fail_stage_ = int(FailStage::KeyExchange);
                 return fail(err, "设置客户端 SSH 算法失败：" + m);
             }
@@ -270,7 +327,7 @@ public:
             const char* kname = libssh2_session_methods(sess, LIBSSH2_METHOD_KEX);
             const std::string our_kex = kname ? kname : "(未协商)";
             libssh2_session_free(sess);
-            sshc_closesock(fd);
+            close_transport(fd);
             if (rc == LIBSSH2_ERROR_KEX_FAILURE) {
                 fail_stage_ = int(FailStage::KeyExchange);
                 return fail(err, "SSH 密钥交换失败，请检查客户端依赖与服务器算法是否兼容。"
@@ -285,7 +342,7 @@ public:
         if (!hash) {
             libssh2_session_disconnect(sess, "missing host key fingerprint");
             libssh2_session_free(sess);
-            sshc_closesock(fd);
+            close_transport(fd);
             return fail(err, "无法取得主机密钥指纹，拒绝未经验证的连接");
         }
         {
@@ -301,7 +358,7 @@ public:
             if (known_.verify(host, port, fp, &herr) < 0) {
                 libssh2_session_disconnect(sess, "host key mismatch");
                 libssh2_session_free(sess);
-                sshc_closesock(fd);
+                close_transport(fd);
                 return fail(err, herr);
             }
             note_ = herr;
@@ -325,7 +382,7 @@ public:
             const std::string m = err_text(sess, auth);
             libssh2_session_disconnect(sess, "auth failed");
             libssh2_session_free(sess);
-            sshc_closesock(fd);
+            close_transport(fd);
             // 认证阶段的错误与网络错误分开报告；无凭据时提供补充提示。
             if (pass.empty() && key_path.empty())
                 return fail(err, "认证失败 —— 网络和 SSH 都是通的，但没有可用的凭据："
@@ -343,23 +400,32 @@ public:
             port_ = port;
             user_ = user;
         }
+        try { start_io(); }
+        catch (const std::exception& e) {
+            disconnect();
+            return fail(err, std::string("无法启动 SSH I/O 线程：") + e.what());
+        }
         if (err) *err = note_;
         return true;
     }
 
     void disconnect() {
-        stop_reader();
-        // 注意析构顺序：BlockingGuard 的析构函数会拿**构造时那个 session 指针**
-        // 去调 libssh2_session_set_blocking()。如果在这个 guard 还活着的时候就把
-        // session free 掉，析构那一刻就是 use-after-free —— 现象是"断开时偶发
-        // 0xC0000005"，且只在 release 下偶现（ASan 不拦：libssh2 是预编译的，
-        // 没插桩；而且 release 里释放后的内存有时还能读，所以概率性崩）。
-        // 所以：guard 作用域里只做"跟活着的 session 打交道的事"，free 挪到作用域外。
+        // 调用者先停止命令生产者。shutdown 打断正在等待的协议，再 join 唯一执行线程。
+        interrupt_transport();
+        stop_io();
         LIBSSH2_SESSION* dead = nullptr;
         {
             std::lock_guard<std::mutex> lk(mtx_);
-            BlockingGuard bg(sess_);
+            use_cleanup_transport();
+            if (xfer_.kind != Transfer::None && !xfer_.finalized) {
+                xfer_.error = "连接已关闭";
+                xfer_.finished = true;
+                finish_transfer();
+            }
+            if (sess_) libssh2_session_set_blocking(sess_, 1);
+            if (sess_) libssh2_session_set_timeout(sess_, 100);
             if (sftp_) { libssh2_sftp_shutdown(sftp_); sftp_ = nullptr; }
+            sftp_ready_ = false;
             if (chan_) {
                 libssh2_channel_send_eof(chan_);
                 libssh2_channel_close(chan_);
@@ -368,20 +434,23 @@ public:
             }
             if (sess_) {
                 libssh2_session_disconnect(sess_, "bye");
-                bg.forget();             // 下面要把 session 摘出去，guard 别再碰它
-                dead = sess_;            // 先摘下来，等 guard 结束再放
+                dead = sess_;
                 sess_ = nullptr;
             }
-            if (sock_ != SSHC_BADSOCK) { sshc_closesock(sock_); sock_ = SSHC_BADSOCK; }
+            if (sock_ != SSHC_BADSOCK) { close_transport(sock_); sock_ = SSHC_BADSOCK; }
             connected_ = false;
             shell_open_ = false;
             pty_cols_ = 0;
             pty_rows_ = 0;
             pty_request_ = 0;
             eof_ = false;
+            xfer_ = Transfer{};
+            write_buffer_.clear(); write_offset_ = 0;
+            wire_failed_ = false; wire_error_.clear(); reader_enabled_ = false;
+            transfer_cancel_ = false; cancel_deadline_ = IoClock::time_point::max();
             { std::lock_guard<std::mutex> g(rx_mtx_); rx_.clear(); }
-            { std::lock_guard<std::mutex> g(tx_mtx_); tx_.clear(); }
-        }   // bg 析构：对**仍存活**的 session 还原阻塞模式
+            { std::lock_guard<std::mutex> g(tx_mtx_); tx_.clear(); queued_input_ = 0; io_error_.clear(); }
+        }
         if (dead) libssh2_session_free(dead);
     }
 
@@ -394,16 +463,21 @@ public:
     int  pty_rows() const { return pty_rows_.load(); }
     FailStage fail_stage() const { return FailStage(fail_stage_.load()); }
     bool shell_eof() const { return eof_; }
+    std::string cwd_snapshot() {
+        if (!on_io_thread() && io_running_) return run_io([this] { return cwd_; });
+        return cwd_;
+    }
+    // 兼容引用接口仅限无并发目录修改的调用者；后台客户端使用 cwd_snapshot()。
     const std::string& cwd() const { return cwd_; }
     const std::string& fingerprint() const { return fingerprint_; }
     std::string who() const { return fmt("%s@%s:%d", user_.c_str(), host_.c_str(), port_); }
 
     // ---- 终端通道 ----
     bool open_shell(int cols, int rows, std::string* err) {
-        std::lock_guard<std::mutex> lk(mtx_);
-        if (!sess_) return fail(err, "尚未连接");
+        if (!on_io_thread() && io_running_) return run_io([&] { return open_shell(cols, rows, err); });
+        if (!sess_ || !connected_) return fail(err, "尚未连接");
         if (chan_) return true;
-        LIBSSH2_CHANNEL* ch = libssh2_channel_open_session(sess_);
+        LIBSSH2_CHANNEL* ch = await_io([&] { return libssh2_channel_open_session(sess_); });
         if (!ch) return fail(err, "打不开通道：" + err_text(sess_, libssh2_session_last_errno(sess_)));
         // 告诉远端"我们支持 24 位真彩"。
         //
@@ -412,40 +486,39 @@ public:
         // 把默认主题按 256 色抖动，观感就是"颜色不对、发灰"。
         // sshd 端要配 AcceptEnv 才会收（Ubuntu 常见 `AcceptEnv LANG LC_*`，
         // 有的机器额外放行 COLORTERM）；对方不收就返回错误，退回 256 色，无副作用。
-        libssh2_channel_setenv(ch, "COLORTERM", "truecolor");
+        await_io([&] { return libssh2_channel_setenv(ch, "COLORTERM", "truecolor"); });
         // xterm-256color：远端程序据此决定配色与按键序列，报别的会导致 vim 之类退化
-        if (libssh2_channel_request_pty_ex(ch, "xterm-256color", 14, nullptr, 0,
-                                           cols, rows, 0, 0) != 0) {
-            libssh2_channel_free(ch);
+        if (await_io([&] { return libssh2_channel_request_pty_ex(ch, "xterm-256color", 14, nullptr, 0,
+                                           cols, rows, 0, 0); }) != 0) {
+            await_io([&] { return libssh2_channel_free(ch); }, false);
             return fail(err, "申请 PTY 失败（该账号可能禁止交互登录）");
         }
-        if (libssh2_channel_shell(ch) != 0) {
-            libssh2_channel_free(ch);
+        if (await_io([&] { return libssh2_channel_shell(ch); }) != 0) {
+            await_io([&] { return libssh2_channel_free(ch); }, false);
             return fail(err, "启动 shell 失败");
         }
         chan_ = ch;
         shell_open_ = true;
         eof_ = false;
-        buf_bytes_ = 0;
         pty_cols_ = cols;
         pty_rows_ = rows;
         return true;
     }
 
     void resize_pty(int cols, int rows) {
-        std::lock_guard<std::mutex> lk(mtx_);
+        if (!on_io_thread() && io_running_) return run_io([&] { resize_pty(cols, rows); });
         if (!chan_) return;
-        BlockingGuard bg(sess_);
-        if (libssh2_channel_request_pty_size_ex(chan_, cols, rows, 0, 0) == 0) {
+        if (await_io([&] { return libssh2_channel_request_pty_size_ex(chan_, cols, rows, 0, 0); }, false) == 0) {
             pty_cols_ = cols;
             pty_rows_ = rows;
         }
     }
 
-    // UI 只提交最新尺寸，网络请求由 reader 执行，避免等待 SFTP 占用的会话锁。
+    // UI 只提交最新尺寸，网络请求由 I/O owner 执行。
     void request_pty_resize(int cols, int rows) {
         if (cols > 0 && rows > 0)
             pty_request_ = (uint64_t(uint32_t(cols)) << 32) | uint32_t(rows);
+        io_wake_.notify();
     }
 
     // 写终端（键盘输入、粘贴、鼠标上报）。
@@ -453,49 +526,67 @@ public:
     // **不在这里直接写网络**：远端的窗口（flow control）满了以后
     // libssh2_channel_write 会阻塞，如果就地写，UI 线程会跟着卡住 —— 敲键盘没反应
     // 但鼠标还能动，是这类客户端最经典的假死。所以这里只入队，真正的写由后台
-    // 读线程顺带做（见 start_reader）。
-    void send(const std::string& bytes) {
-        if (bytes.empty()) return;
+    // I/O owner 执行（start_reader 仅启用终端读取）。
+    bool send(const std::string& bytes) {
+        if (bytes.empty()) return true;
         {
             std::lock_guard<std::mutex> lk(tx_mtx_);
-            if (tx_.size() + bytes.size() > (1u << 22)) return;     // 对端彻底不读就丢，防止内存爆掉
-            tx_ += bytes;
-        }
-        if (!reader_.joinable()) write_pending();                   // 没起线程（少见）就同步写
-    }
-
-    void write_pending() {
-        std::string local;
-        {
-            std::lock_guard<std::mutex> lk(tx_mtx_);
-            if (tx_.empty()) return;
-            local.swap(tx_);
-        }
-        std::lock_guard<std::mutex> lk(mtx_);
-        if (!chan_) return;
-        size_t off = 0;
-        int spins = 0;
-        while (off < local.size() && spins++ < 8000) {
-            const ssize_t n = libssh2_channel_write_ex(chan_, 0, local.data() + off, local.size() - off);
-            if (n == LIBSSH2_ERROR_EAGAIN) {                 // 窗口满了，等对端消费
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                continue;
+            if (!shell_open_ || eof_ || bytes.size() > kQueueLimit - queued_input_) {
+                io_error_ = "终端发送队列已满或通道已关闭，本次输入未发送，请稍后重试";
+                if (wake_) wake_();
+                return false;
             }
-            if (n < 0) return;
-            off += size_t(n);
+            tx_ += bytes;
+            queued_input_ += bytes.size();
         }
-        if (off < local.size()) {                                   // 没写完的塞回去，下一轮继续
-            std::lock_guard<std::mutex> g(tx_mtx_);
-            tx_.insert(0, local.substr(off));
-        }
+        io_wake_.notify();
+        return true;
     }
 
-    // 取走后台线程收到的字节（UI 每帧调一次）
-    std::string take_output() {
-        std::lock_guard<std::mutex> lk(rx_mtx_);
+    std::string take_io_error() {
+        std::lock_guard<std::mutex> lk(tx_mtx_);
+        std::string error; error.swap(io_error_); return error;
+    }
+
+private:
+    bool write_pending() {
+        // EAGAIN 后保持地址和长度，满足 libssh2 的写入重试契约。每轮只发一块，不持锁睡眠。
+        if (write_buffer_.empty()) {
+            std::lock_guard<std::mutex> lk(tx_mtx_);
+            write_buffer_.swap(tx_); write_offset_ = 0;
+        }
+        if (write_buffer_.empty()) return false;
+        if (!chan_ || eof_) return false;
+        const size_t count = std::min<size_t>(16384, write_buffer_.size() - write_offset_);
+        const ssize_t n = await_io([&] { return libssh2_channel_write_ex(chan_, 0, write_buffer_.data() + write_offset_, count); }, false, true);
+        if (n == LIBSSH2_ERROR_EAGAIN || n == 0) {
+            return false;
+        }
+        if (n < 0) {
+            eof_ = true;
+            std::lock_guard<std::mutex> queue(tx_mtx_);
+            io_error_ = "终端写入失败：" + err_text(sess_, int(n));
+            if (wake_) wake_();
+            return false;
+        }
+        write_offset_ += size_t(n);
+        { std::lock_guard<std::mutex> queue(tx_mtx_); queued_input_ -= size_t(n); }
+        if (write_offset_ == write_buffer_.size()) { write_buffer_.clear(); write_offset_ = 0; }
+        return true;
+    }
+
+public:
+    // 限制单帧解析工作量；满队列停止读通道，让 SSH/TCP 的窗口提供无损背压。
+    std::string take_output(size_t budget = 256u << 10) {
         std::string out;
-        out.swap(rx_);
-        buf_bytes_ = 0;
+        bool remaining = false;
+        {
+            std::lock_guard<std::mutex> lk(rx_mtx_);
+            if (rx_.size() <= budget) out.swap(rx_);
+            else { out = rx_.substr(0, budget); rx_.erase(0, budget); remaining = true; }
+        }
+        if (!out.empty()) io_wake_.notify();
+        if (remaining && wake_) wake_();
         return out;
     }
     bool has_output() const {
@@ -507,89 +598,23 @@ public:
         return rx_.size();
     }
 
-    void start_reader() {
-        if (reader_.joinable()) return;
-        // 到这里握手/认证/开通道都已经做完（阻塞语义），现在才切非阻塞：
-        // 读线程靠 channel_read 返回 EAGAIN 轮询。不能"select 可读才读" ——
-        // libssh2 会贪婪地把 socket 吃进自己的缓冲，那些字节 select 永远看不到。
-        {
-            std::lock_guard<std::mutex> lk(mtx_);
-            if (sess_) libssh2_session_set_blocking(sess_, 0);
-        }
-        stop_reader_ = false;
-        reader_ = std::thread([this] {
-            while (!stop_reader_) {
-                bool got = false;
-                if (const uint64_t size = pty_request_.exchange(0))
-                    resize_pty(int(size >> 32), int(uint32_t(size)));
+    void start_reader() { reader_enabled_ = true; io_wake_.notify(); }
+    void stop_reader() { reader_enabled_ = false; io_wake_.notify(); }
 
-                // 1) 把积压的按键发出去
-                write_pending();
-
-                // 2) 读通道：session 是非阻塞模式，没数据就返回 EAGAIN，
-                //    所以这里可以无条件读（不用 select 门禁 —— 见 connect 里的注释）。
-                if (true) {
-                    std::lock_guard<std::mutex> lk(mtx_);
-                    if (chan_ && !eof_) {
-                        for (;;) {
-                            char buf[16384];
-                            const ssize_t n = libssh2_channel_read_ex(chan_, 0, buf, sizeof buf);
-                            if (n > 0) {
-                                std::lock_guard<std::mutex> g(rx_mtx_);
-                                rx_.append(buf, size_t(n));
-                                got = true;
-                                if (size_t(n) < sizeof buf) break;
-                                continue;
-                            }
-                            if (n == LIBSSH2_ERROR_EAGAIN) break;
-                            if (n == 0) {
-                                if (libssh2_channel_eof(chan_)) { eof_ = true; got = true; }
-                                break;
-                            }
-                            eof_ = true;
-                            got = true;
-                            break;
-                        }
-                        // stderr 也读出来（有的程序往那儿写）
-                        for (;;) {
-                            char buf[8192];
-                            const ssize_t n = libssh2_channel_read_ex(
-                                chan_, SSH_EXTENDED_DATA_STDERR, buf, sizeof buf);
-                            if (n <= 0) break;
-                            std::lock_guard<std::mutex> g(rx_mtx_);
-                            rx_.append(buf, size_t(n));
-                            got = true;
-                        }
-                    }
-                }
-
-                if (got && wake_) wake_();
-
-                // 还有按键没发完就别睡（打字手感优先）
-                bool pending = false;
-                { std::lock_guard<std::mutex> lk(tx_mtx_); pending = !tx_.empty(); }
-                if (pending) continue;
-                std::this_thread::sleep_for(std::chrono::milliseconds(6));
-            }
-        });
-    }
-
-    void stop_reader() {
-        stop_reader_ = true;
-        if (reader_.joinable()) reader_.join();
-    }
+    // UI 可以立即通知正在等待的传输；只停止新数据，已发出的请求必须先收尾。
+    void request_transfer_cancel() { transfer_cancel_ = true; io_wake_.notify(); }
 
     // ---- SFTP ----
-    bool sftp_ready() { return sftp_ != nullptr; }
+    bool sftp_ready() const { return sftp_ready_; }
 
     bool open_sftp(std::string* err) {
-        std::lock_guard<std::mutex> lk(mtx_);
-        BlockingGuard bg(sess_);
-        if (!sess_) return fail(err, "尚未连接");
+        if (!on_io_thread() && io_running_) return run_io([&] { return open_sftp(err); });
+        if (!sess_ || !connected_) return fail(err, "尚未连接");
         if (sftp_) return true;
-        sftp_ = libssh2_sftp_init(sess_);
+        sftp_ = await_io([&] { return libssh2_sftp_init(sess_); });
         if (!sftp_) return fail(err, "SFTP 不可用（服务端未开子系统？）：" +
                                      err_text(sess_, libssh2_session_last_errno(sess_)));
+        sftp_ready_ = true;
         return true;
     }
 
@@ -601,95 +626,92 @@ public:
     }
 
     bool list(const std::string& path, std::vector<Entry>* out, std::string* err) {
-        std::lock_guard<std::mutex> lk(mtx_);
-        BlockingGuard bg(sess_);
-        if (!sftp_ && !init_locked(err)) return false;
+        if (!on_io_thread() && io_running_) return run_io([&] { return list(path, out, err); });
+        if (!sess_ || !connected_) return fail(err, "尚未连接");
+        if (!sftp_ && !init_sftp(err)) return false;
         const std::string real = resolve(path);
-        LIBSSH2_SFTP_HANDLE* h = libssh2_sftp_opendir(sftp_, real.c_str());
+        LIBSSH2_SFTP_HANDLE* h = await_io([&] { return libssh2_sftp_opendir(sftp_, real.c_str()); });
         if (!h) return fail(err, fmt("打不开目录 %s（%s）", real.c_str(),
-                                     sftp_err_locked().c_str()));
-        out->clear();
+                                     sftp_error().c_str()));
+        std::vector<Entry> entries;
+        int read_error = 0;
         for (;;) {
             char name[1024];
             LIBSSH2_SFTP_ATTRIBUTES attrs{};
-            const int n = libssh2_sftp_readdir_ex(h, name, sizeof name, nullptr, 0, &attrs);
-            if (n <= 0) break;
+            const int n = await_io([&] { return libssh2_sftp_readdir_ex(h, name, sizeof name, nullptr, 0, &attrs); });
+            if (n <= 0) { read_error = n; break; }
             Entry e;
-            e.name = name;
-            if (n == int(sizeof name)) e.name.assign(name, sizeof name);   // 截断的极端情况
-            if (std::strcmp(name, ".") == 0 || std::strcmp(name, "..") == 0) continue;
+            e.name.assign(name, size_t(n));
+            if (e.name == "." || e.name == "..") continue;
             e.size  = attrs.filesize;
             e.mtime = int64_t(attrs.mtime);
             e.perm  = attrs.permissions;
             e.dir   = (attrs.permissions & LIBSSH2_SFTP_S_IFMT) == LIBSSH2_SFTP_S_IFDIR;
             e.link  = (attrs.permissions & LIBSSH2_SFTP_S_IFMT) == LIBSSH2_SFTP_S_IFLNK;
-            out->push_back(std::move(e));
+            entries.push_back(std::move(e));
         }
-        libssh2_sftp_closedir(h);
-        std::sort(out->begin(), out->end(), [](const Entry& a, const Entry& b) {
+        const std::string read_message = read_error < 0 ? sftp_error() : std::string();
+        const int close_error = await_io([&] { return libssh2_sftp_closedir(h); });
+        if (read_error < 0) return fail(err, "读取目录失败：" + read_message);
+        if (close_error < 0) return fail(err, "关闭目录失败：" + sftp_error());
+        std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
             if (a.dir != b.dir) return a.dir;                  // 目录在前
-            std::string x = a.name, y = b.name;
-            for (char& c : x) c = char(std::tolower(static_cast<unsigned char>(c)));
-            for (char& y2 : y) y2 = char(std::tolower(static_cast<unsigned char>(y2)));
-            return x < y;
+            return std::lexicographical_compare(a.name.begin(), a.name.end(), b.name.begin(), b.name.end(),
+                [](unsigned char x, unsigned char y) { return std::tolower(x) < std::tolower(y); });
         });
+        *out = std::move(entries);
         cwd_ = real;
         return true;
     }
 
     // 服务端当前目录（登录后问一次，作为文件面板的起点）
     bool fetch_home(std::string* err) {
-        std::lock_guard<std::mutex> lk(mtx_);
-        BlockingGuard bg(sess_);
-        if (!sftp_ && !init_locked(err)) return false;
+        if (!on_io_thread() && io_running_) return run_io([&] { return fetch_home(err); });
+        if (!sess_ || !connected_) return fail(err, "尚未连接");
+        if (!sftp_ && !init_sftp(err)) return false;
         char buf[1024];
-        const int n = libssh2_sftp_realpath(sftp_, ".", buf, sizeof buf);
-        if (n > 0) { cwd_ = normalize(buf); return true; }
-        cwd_ = "/";
-        return true;
+        const int n = await_io([&] { return libssh2_sftp_realpath(sftp_, ".", buf, sizeof buf); });
+        if (n > 0) { cwd_ = normalize(std::string(buf, size_t(n))); return true; }
+        return fail(err, "无法读取远端主目录：" + sftp_error());
     }
 
     bool mkdir(const std::string& p, std::string* err) {
-        std::lock_guard<std::mutex> lk(mtx_);
-        BlockingGuard bg(sess_);
-        if (!sftp_) return fail(err, "SFTP 未就绪");
+        if (!on_io_thread() && io_running_) return run_io([&] { return mkdir(p, err); });
+        if (!sftp_ || !connected_) return fail(err, "SFTP 未就绪或连接已关闭");
         const std::string r = resolve(p);
-        if (libssh2_sftp_mkdir(sftp_, r.c_str(), 0755) != 0)
-            return fail(err, "新建目录失败：" + sftp_err_locked());
+        if (await_io([&] { return libssh2_sftp_mkdir(sftp_, r.c_str(), 0755); }) != 0)
+            return fail(err, "新建目录失败：" + sftp_error());
         return true;
     }
 
     bool rmdir(const std::string& p, std::string* err) {
-        std::lock_guard<std::mutex> lk(mtx_);
-        BlockingGuard bg(sess_);
-        if (!sftp_) return fail(err, "SFTP 未就绪");
+        if (!on_io_thread() && io_running_) return run_io([&] { return rmdir(p, err); });
+        if (!sftp_ || !connected_) return fail(err, "SFTP 未就绪或连接已关闭");
         const std::string r = resolve(p);
-        if (libssh2_sftp_rmdir(sftp_, r.c_str()) != 0)
-            return fail(err, "删除目录失败（非空？）：" + sftp_err_locked());
+        if (await_io([&] { return libssh2_sftp_rmdir(sftp_, r.c_str()); }) != 0)
+            return fail(err, "删除目录失败（非空？）：" + sftp_error());
         return true;
     }
 
     bool unlink(const std::string& p, std::string* err) {
-        std::lock_guard<std::mutex> lk(mtx_);
-        BlockingGuard bg(sess_);
-        if (!sftp_) return fail(err, "SFTP 未就绪");
+        if (!on_io_thread() && io_running_) return run_io([&] { return unlink(p, err); });
+        if (!sftp_ || !connected_) return fail(err, "SFTP 未就绪或连接已关闭");
         const std::string r = resolve(p);
-        if (libssh2_sftp_unlink(sftp_, r.c_str()) != 0)
-            return fail(err, "删除文件失败：" + sftp_err_locked());
+        if (await_io([&] { return libssh2_sftp_unlink(sftp_, r.c_str()); }) != 0)
+            return fail(err, "删除文件失败：" + sftp_error());
         return true;
     }
 
     // 不管它是什么，删掉就行（UI 上"删除"按钮只有一条路径）。
-    // 先 stat 看类型：目录走 rmdir，其余走 unlink。
+    // 用 lstat 看条目本身：目录走 rmdir，目录符号链接仍走 unlink。
     bool remove(const std::string& p, std::string* err) {
+        if (!on_io_thread() && io_running_) return run_io([&] { return remove(p, err); });
         bool is_dir = false;
         {
-            std::lock_guard<std::mutex> lk(mtx_);
-            BlockingGuard bg(sess_);
-            if (!sftp_) return fail(err, "SFTP 未就绪");
+            if (!sftp_ || !connected_) return fail(err, "SFTP 未就绪或连接已关闭");
             const std::string r = resolve(p);
             LIBSSH2_SFTP_ATTRIBUTES at{};
-            if (libssh2_sftp_stat(sftp_, r.c_str(), &at) != 0)
+            if (await_io([&] { return libssh2_sftp_lstat(sftp_, r.c_str(), &at); }) != 0)
                 return fail(err, "找不到：" + r);
             is_dir = (at.permissions & LIBSSH2_SFTP_S_IFMT) == LIBSSH2_SFTP_S_IFDIR;
         }
@@ -697,20 +719,24 @@ public:
     }
 
     bool rename(const std::string& from, const std::string& to, std::string* err) {
-        std::lock_guard<std::mutex> lk(mtx_);
-        BlockingGuard bg(sess_);
-        if (!sftp_) return fail(err, "SFTP 未就绪");
+        if (!on_io_thread() && io_running_) return run_io([&] { return rename(from, to, err); });
+        if (!sftp_ || !connected_) return fail(err, "SFTP 未就绪或连接已关闭");
         const std::string a = resolve(from), b = resolve(to);
         // 目标已存在时 SFTP 默认覆盖；这里先探一下，避免误删——重命名不该有破坏性
         LIBSSH2_SFTP_ATTRIBUTES at{};
-        if (libssh2_sftp_stat(sftp_, b.c_str(), &at) == 0)
+        const int inspected = await_io([&] { return libssh2_sftp_lstat(sftp_, b.c_str(), &at); });
+        if (inspected == 0)
             return fail(err, "目标已存在：" + b);
-        if (libssh2_sftp_rename(sftp_, a.c_str(), b.c_str()) != 0)
-            return fail(err, "重命名失败：" + sftp_err_locked());
+        if (!sftp_missing(inspected))
+            return fail(err, "无法检查重命名目标：" + sftp_error());
+        // 检查和提交间目标仍可能出现；明确不请求覆盖，由服务端原子判定冲突。
+        if (await_io([&] { return libssh2_sftp_rename_ex(sftp_, a.c_str(), unsigned(a.size()),
+                                 b.c_str(), unsigned(b.size()), 0); }) != 0)
+            return fail(err, "重命名失败：" + sftp_error());
         return true;
     }
 
-    // ---- 分块传输（每帧推进一步，UI 不卡） ----
+    // ---- 分块传输（业务后台分块提交，I/O owner 执行） ----
     struct Transfer {
         enum Kind { None, Download, Upload };
         Kind kind = None;
@@ -722,72 +748,136 @@ public:
         LIBSSH2_SFTP_HANDLE* rh = nullptr;
         std::FILE* fh = nullptr;
         bool dir_mode = false;
+        bool total_known = false;
+        bool finalized = false;
+        std::string temporary;
+        LIBSSH2_SFTP_ATTRIBUTES destination_attributes{};
     };
 
-    void start_download(const std::string& remote, const std::string& local, bool is_dir) {
-        std::lock_guard<std::mutex> lk(mtx_);
-        BlockingGuard bg(sess_);
+    void start_download(const std::string& remote, const std::string& local, bool is_dir, const std::atomic<bool>* cancel = nullptr) {
+        if (!on_io_thread() && io_running_) return run_io([&] { start_download(remote, local, is_dir, cancel); });
+        TransferOperation operation(*this, cancel);
         if (xfer_.kind != Transfer::None) return;
+        cancel_deadline_ = IoClock::time_point::max();
         xfer_ = Transfer{};
         xfer_.kind = Transfer::Download;
         xfer_.remote = remote;
         xfer_.local = local;
         xfer_.name = base_name(remote);
         xfer_.dir_mode = is_dir;
+        if (!sftp_) { xfer_.error = "SFTP 尚未就绪"; xfer_.finished = true; finish_transfer(); return; }
         // 目录下载：把"服务器上的目录"映射到本地同名目录（不做递归 —— 递归很容易
         // 一层层卡住界面，v1 明确只搬单文件/整个目录用打包，见 README 的说明）
         if (!is_dir) {
-            xfer_.rh = libssh2_sftp_open(sftp_, remote.c_str(), LIBSSH2_FXF_READ, 0);
-            if (!xfer_.rh) { xfer_.error = "打不开远端文件：" + sftp_err_locked(); xfer_.finished = true; }
+            xfer_.rh = await_io([&] { return libssh2_sftp_open(sftp_, remote.c_str(), LIBSSH2_FXF_READ, 0); });
+            if (!xfer_.rh) { xfer_.error = "打不开远端文件：" + sftp_error(); xfer_.finished = true; }
             LIBSSH2_SFTP_ATTRIBUTES at{};
-            if (xfer_.rh && libssh2_sftp_fstat(xfer_.rh, &at) == 0) xfer_.total = at.filesize;
+            if (xfer_.rh && await_io([&] { return libssh2_sftp_fstat(xfer_.rh, &at); }) == 0 && (at.flags & LIBSSH2_SFTP_ATTR_SIZE)) {
+                xfer_.total = at.filesize;
+                xfer_.total_known = true;
+            }
             if (xfer_.rh) {
-                xfer_.fh = open_local_file(local, "wb");
+                std::error_code path_error;
+                const auto destination = std::filesystem::u8path(local);
+                const auto status = std::filesystem::symlink_status(destination, path_error);
+                if (path_error && path_error != std::errc::no_such_file_or_directory) {
+                    xfer_.error = "无法检查下载目标"; xfer_.finished = true; finish_transfer(); return;
+                }
+                if (std::filesystem::is_symlink(status)) {
+                    const auto resolved = std::filesystem::canonical(destination, path_error);
+                    if (path_error) { xfer_.error = "无法解析下载目标符号链接"; xfer_.finished = true; finish_transfer(); return; }
+                    xfer_.local = resolved.u8string();
+                }
+                xfer_.fh = create_transfer_file(xfer_.local, &xfer_.temporary);
                 if (!xfer_.fh) { xfer_.error = "本地写不了：" + local; xfer_.finished = true; }
             }
         } else {
             xfer_.error = "暂不支持整目录下载";
             xfer_.finished = true;
         }
+        if (xfer_.finished) finish_transfer();
     }
 
-    void start_upload(const std::string& local, const std::string& remote) {
-        std::lock_guard<std::mutex> lk(mtx_);
-        BlockingGuard bg(sess_);
+    void start_upload(const std::string& local, const std::string& remote, const std::atomic<bool>* cancel = nullptr) {
+        if (!on_io_thread() && io_running_) return run_io([&] { start_upload(local, remote, cancel); });
+        TransferOperation operation(*this, cancel);
         if (xfer_.kind != Transfer::None) return;
+        cancel_deadline_ = IoClock::time_point::max();
         xfer_ = Transfer{};
         xfer_.kind = Transfer::Upload;
         xfer_.local = local;
         xfer_.remote = remote;
         xfer_.name = base_name(local);
-        xfer_.fh = open_local_file(local, "rb");
+        if (!sftp_) { xfer_.error = "SFTP 尚未就绪"; xfer_.finished = true; finish_transfer(); return; }
+        xfer_.fh = open_upload_file(local);
         if (!xfer_.fh) { xfer_.error = "本地读不了：" + local; xfer_.finished = true; return; }
         if (!local_file_size(xfer_.fh, &xfer_.total, &xfer_.error)) {
             xfer_.finished = true;
+            finish_transfer();
             return;
         }
-        xfer_.rh = libssh2_sftp_open(sftp_, remote.c_str(),
-                                     LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC, 0644);
-        if (!xfer_.rh) { xfer_.error = "打不开远端目标：" + sftp_err_locked(); xfer_.finished = true; }
+        xfer_.total_known = true;
+        LIBSSH2_SFTP_ATTRIBUTES attributes{};
+        const int inspected = await_io([&] { return libssh2_sftp_lstat(sftp_, remote.c_str(), &attributes); });
+        if (inspected == 0 && (attributes.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS)
+            && (attributes.permissions & LIBSSH2_SFTP_S_IFMT) == LIBSSH2_SFTP_S_IFLNK) {
+            char resolved[32768];
+            const int count = await_io([&] { return libssh2_sftp_realpath(sftp_, remote.c_str(), resolved, sizeof(resolved)); });
+            if (count <= 0) {
+                xfer_.error = "无法解析上传目标符号链接"; xfer_.finished = true; finish_transfer(); return;
+            }
+            xfer_.remote.assign(resolved, size_t(count));
+        } else if (inspected != 0 && !sftp_missing(inspected)) {
+            xfer_.error = "无法检查上传目标：" + sftp_error(); xfer_.finished = true; finish_transfer(); return;
+        }
+        const int target_status = await_io([&] { return libssh2_sftp_stat(sftp_, xfer_.remote.c_str(), &attributes); });
+        if (target_status == 0) {
+            xfer_.destination_attributes = attributes;
+            xfer_.destination_attributes.flags &= LIBSSH2_SFTP_ATTR_UIDGID | LIBSSH2_SFTP_ATTR_PERMISSIONS;
+        } else if (!sftp_missing(target_status)) {
+            xfer_.error = "无法读取目标属性：" + sftp_error(); xfer_.finished = true; finish_transfer(); return;
+        } else {
+            xfer_.destination_attributes.flags = LIBSSH2_SFTP_ATTR_PERMISSIONS;
+            // 新文件保持私有；不能在提交前 chmod(0644) 绕过服务端的私有 umask。
+            xfer_.destination_attributes.permissions = 0600;
+        }
+        static std::atomic<unsigned long> next{0};
+        const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
+        for (int attempt = 0; attempt < 16; ++attempt) {
+            xfer_.temporary = xfer_.remote + ".aino-part." + std::to_string(tick) + "." + std::to_string(next++);
+            xfer_.rh = await_io([&] { return libssh2_sftp_open(sftp_, xfer_.temporary.c_str(),
+                LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_EXCL, 0600); });
+            if (xfer_.rh || libssh2_session_last_errno(sess_) != LIBSSH2_ERROR_SFTP_PROTOCOL
+                || libssh2_sftp_last_error(sftp_) != LIBSSH2_FX_FILE_ALREADY_EXISTS) break;
+        }
+        if (!xfer_.rh) { xfer_.error = "打不开远端目标：" + sftp_error(); xfer_.finished = true; }
+        if (xfer_.finished) { xfer_.temporary.clear(); finish_transfer(); }
     }
 
+    // 兼容旧调用：只允许同一传输生产者在同步命令返回后读取；UI 使用 Session 快照。
     Transfer& transfer() { return xfer_; }
     bool transfer_busy() const { return xfer_.kind != Transfer::None && !xfer_.finished; }
 
     // 由传输线程分块推进；返回 true 表示本次搬运了字节。
-    bool xfer_step(uint64_t budget = 128 * 1024) {
-        std::lock_guard<std::mutex> lk(mtx_);
-        BlockingGuard bg(sess_);
+    bool xfer_step(uint64_t budget = 16 * 1024, const std::atomic<bool>* cancel = nullptr) {
+        if (!on_io_thread() && io_running_) return run_io([&] { return xfer_step(budget, cancel); });
+        TransferOperation operation(*this, cancel);
         if (xfer_.kind == Transfer::None || xfer_.finished) return false;
+        budget = std::min<uint64_t>(budget, 16u << 10);
         static thread_local std::vector<char> buf;
         if (buf.size() < budget) buf.resize(size_t(budget));
         uint64_t moved = 0;
-        while (moved < budget && !xfer_.finished) {
+        auto cancelled = [&] {
+            if (!wire_failed_ && !transfer_cancel_ && (!cancel || !cancel->load())) return false;
+            xfer_.error = wire_failed_ ? wire_error_ : "已取消";
+            xfer_.finished = true; return true;
+        };
+        while (moved < budget && !xfer_.finished && !cancelled()) {
             const size_t want = size_t(std::min<uint64_t>(budget - moved, buf.size()));
             if (xfer_.kind == Transfer::Download) {
-                const ssize_t n = libssh2_sftp_read(xfer_.rh, buf.data(), want);
+                const ssize_t n = await_io([&] { return libssh2_sftp_read(xfer_.rh, buf.data(), want); });
                 if (n == LIBSSH2_ERROR_EAGAIN) { std::this_thread::yield(); continue; }
-                if (n < 0) { xfer_.error = "读取失败：" + sftp_err_locked(); xfer_.finished = true; break; }
+                if (n < 0) { xfer_.error = "读取失败：" + sftp_error(); xfer_.finished = true; break; }
                 if (n == 0) { xfer_.finished = true; break; }
                 const size_t written = xfer_.fh ? std::fwrite(buf.data(), 1, size_t(n), xfer_.fh) : 0;
                 xfer_.done += written;
@@ -805,40 +895,41 @@ public:
                     break;
                 }
                 size_t off = 0;
-                while (off < got) {
-                    const ssize_t n = libssh2_sftp_write(xfer_.rh, buf.data() + off, got - off);
+                while (off < got && !cancelled()) {
+                    const ssize_t n = await_io([&] { return libssh2_sftp_write(xfer_.rh, buf.data() + off, got - off); });
                     if (n == LIBSSH2_ERROR_EAGAIN) { std::this_thread::yield(); continue; }
-                    if (n <= 0) { xfer_.error = "写入失败：" + sftp_err_locked(); xfer_.finished = true; break; }
+                    if (n <= 0) { xfer_.error = "写入失败：" + sftp_error(); xfer_.finished = true; break; }
                     off += size_t(n);
                 }
                 xfer_.done += off;
                 moved += off;
             }
         }
-        if (xfer_.finished) finish_locked();
+        if (xfer_.finished) finish_transfer();
         return moved > 0;
     }
 
     void cancel_transfer() {
-        std::lock_guard<std::mutex> lk(mtx_);
-        BlockingGuard bg(sess_);
-        if (xfer_.kind == Transfer::None) return;
-        xfer_.error = "已取消";
+        if (!on_io_thread() && io_running_) return run_io([&] { cancel_transfer(); });
+        TransferOperation operation(*this, nullptr);
+        if (xfer_.kind == Transfer::None || xfer_.finalized) return;
+        xfer_.error = wire_failed_ ? wire_error_ : "已取消";
         xfer_.finished = true;
-        finish_locked();
+        finish_transfer();
     }
 
     void clear_transfer() {
-        std::lock_guard<std::mutex> lk(mtx_);
+        if (!on_io_thread() && io_running_) return run_io([&] { clear_transfer(); });
+        TransferOperation operation(*this, nullptr);
         if (xfer_.kind != Transfer::None && xfer_.finished) {
-            BlockingGuard bg(sess_);
-            finish_locked();
+            finish_transfer();
             xfer_.kind = Transfer::None;
             xfer_.done = xfer_.total = 0;
             xfer_.error.clear();
             xfer_.name.clear();
             xfer_.remote.clear();
             xfer_.local.clear();
+            transfer_cancel_ = false;
         }
     }
 
@@ -869,27 +960,286 @@ public:
     }
 
 private:
+    static Engine*& current_io_engine() { static thread_local Engine* owner = nullptr; return owner; }
+    bool on_io_thread() const { return current_io_engine() == this; }
+
+    template<class Fn> auto run_io(Fn fn) -> decltype(fn()) {
+        using Result = decltype(fn());
+        auto task = std::make_shared<std::packaged_task<Result()>>([this, fn = std::move(fn)]() mutable -> Result {
+            try { return fn(); }
+            catch (...) {
+                // 异常可能打断协议阶段；关闭传输后才能安全处理后续的清理命令。
+                fail_transport("SSH 命令执行失败，已断开连接");
+                throw;
+            }
+        });
+        auto result = task->get_future();
+        {
+            std::lock_guard<std::mutex> lock(command_mtx_);
+            if (io_stopping_ || commands_.size() >= 64) {
+                // 客户端只有连接、目录和传输三个生产者；上限避免未来调用者无界排队。
+                throw std::runtime_error(io_stopping_ ? "SSH I/O 正在关闭" : "SSH 命令队列已满");
+            }
+            commands_.push_back([task] { (*task)(); });
+        }
+        io_wake_.notify();
+        return result.get();
+    }
+
+    struct TransferOperation {
+        Engine& owner;
+        bool previous;
+        const std::atomic<bool>* token;
+        TransferOperation(Engine& engine, const std::atomic<bool>* cancel)
+            : owner(engine), previous(engine.transfer_operation_), token(engine.transfer_token_) {
+            owner.transfer_operation_ = true;
+            if (cancel) owner.transfer_token_ = cancel;
+        }
+        ~TransferOperation() { owner.transfer_operation_ = previous; owner.transfer_token_ = token; }
+    };
+
+    void interrupt_transport() {
+        std::lock_guard<std::mutex> lock(transport_mtx_);
+        if (transport_ == SSHC_BADSOCK) return;
+#if defined(_WIN32)
+        ::shutdown(transport_, SD_BOTH);
+#else
+        ::shutdown(transport_, SHUT_RDWR);
+#endif
+        io_wake_.notify();
+    }
+
+    void fail_transport(const char* message) {
+        if (wire_failed_) return;
+        wire_failed_ = true;
+        wire_error_ = message;
+        connected_ = false; sftp_ready_ = false; eof_ = true;
+        interrupt_transport();
+        use_cleanup_transport();
+        {
+            std::lock_guard<std::mutex> lock(tx_mtx_);
+            io_error_ = message;
+        }
+        if (wake_) wake_();
+    }
+
+    // 仅用于已经 shutdown 的会话：丢弃待发半包、令读取立即失败，完成库内部的
+    // EAGAIN 状态收尾。绝不重新访问网络；避免旧半包阻止 CLOSE/free 释放句柄。
+    void use_cleanup_transport() {
+        if (!sess_) return;
+        const auto send = +[](libssh2_socket_t, const void*, size_t length, int, void**) -> ssize_t {
+            return ssize_t(length);
+        };
+        const auto recv = +[](libssh2_socket_t, void*, size_t, int, void**) -> ssize_t {
+            return -ECONNRESET;
+        };
+#if LIBSSH2_VERSION_NUM >= 0x010B01
+        libssh2_session_callback_set2(sess_, LIBSSH2_CALLBACK_SEND, reinterpret_cast<libssh2_cb_generic*>(send));
+        libssh2_session_callback_set2(sess_, LIBSSH2_CALLBACK_RECV, reinterpret_cast<libssh2_cb_generic*>(recv));
+#else
+        libssh2_session_callback_set(sess_, LIBSSH2_CALLBACK_SEND, reinterpret_cast<void*>(send));
+        libssh2_session_callback_set(sess_, LIBSSH2_CALLBACK_RECV, reinterpret_cast<void*>(recv));
+#endif
+    }
+
+    void wait_transport(int directions, int timeout_ms, bool network = true) {
+        const auto signal = io_wake_.descriptor();
+        if (signal == SSHC_BADSOCK && (timeout_ms < 0 || timeout_ms > 50)) timeout_ms = 50;
+#if defined(_WIN32)
+        fd_set reads, writes; FD_ZERO(&reads); FD_ZERO(&writes);
+        if (signal != SSHC_BADSOCK) FD_SET(signal, &reads);
+        if (network && sock_ != SSHC_BADSOCK) {
+            if (directions & LIBSSH2_SESSION_BLOCK_INBOUND) FD_SET(sock_, &reads);
+            if (directions & LIBSSH2_SESSION_BLOCK_OUTBOUND) FD_SET(sock_, &writes);
+        }
+        timeval timeout{timeout_ms < 0 ? 0 : timeout_ms / 1000, timeout_ms < 0 ? 0 : (timeout_ms % 1000) * 1000};
+        const int rc = ::select(0, &reads, &writes, nullptr, timeout_ms < 0 ? nullptr : &timeout);
+        if (rc == SOCKET_ERROR && WSAGetLastError() != WSAEINTR) fail_transport("SSH socket 等待失败");
+#else
+        pollfd descriptors[2] = {{signal, POLLIN, 0}, {network ? sock_ : SSHC_BADSOCK,
+            short(((directions & LIBSSH2_SESSION_BLOCK_INBOUND) ? POLLIN : 0)
+                | ((directions & LIBSSH2_SESSION_BLOCK_OUTBOUND) ? POLLOUT : 0)), 0}};
+        const int rc = ::poll(descriptors, 2, timeout_ms);
+        if ((rc < 0 && errno != EINTR) || (descriptors[1].revents & POLLNVAL))
+            fail_transport("SSH socket 等待失败");
+#endif
+        io_wake_.consume();
+    }
+
+    // 参数和栈上缓冲在重试期间保持存活。单 owner 调用 libssh2，等待时不持应用锁。
+    // 仅在没有待发 transport packet 时服务终端；不能在 OUTBOUND 的半包中插入另一条写入。
+    template<class Fn> auto await_io(Fn fn, bool service_terminal = true, bool zero_waits = false,
+                                     bool idle_read = false) -> decltype(fn()) {
+        using Result = decltype(fn());
+        const auto previous = operation_deadline_;
+        operation_deadline_ = std::min(previous, IoClock::now() + std::chrono::seconds(20));
+        struct Restore {
+            Engine& owner; IoClock::time_point previous;
+            ~Restore() { owner.operation_deadline_ = previous; }
+        } restore{*this, previous};
+        auto failure = []() -> Result {
+            if constexpr (std::is_pointer_v<Result>) return nullptr;
+            else return Result(LIBSSH2_ERROR_SOCKET_DISCONNECT);
+        };
+        for (;;) {
+            const Result result = fn();
+            bool pending;
+            if constexpr (std::is_pointer_v<Result>)
+                pending = !result && sess_ && libssh2_session_last_errno(sess_) == LIBSSH2_ERROR_EAGAIN;
+            else pending = result == LIBSSH2_ERROR_EAGAIN || (zero_waits && result == 0);
+            if (!pending) {
+                int code;
+                if constexpr (std::is_pointer_v<Result>) code = result ? 0 : libssh2_session_last_errno(sess_);
+                else code = int(result);
+                if (!wire_failed_ && (code == LIBSSH2_ERROR_SOCKET_SEND || code == LIBSSH2_ERROR_SOCKET_RECV
+                    || code == LIBSSH2_ERROR_SOCKET_DISCONNECT || code == LIBSSH2_ERROR_SOCKET_TIMEOUT))
+                    fail_transport("SSH 网络连接已中断");
+                return result;
+            }
+            if (wire_failed_) return failure();
+            auto deadline = operation_deadline_;
+            // UI 取消也覆盖排在传输前面的目录请求，不能再等待它的完整 20 秒。
+            const bool cancelling = transfer_cancel_
+                || (transfer_operation_ && transfer_token_ && transfer_token_->load());
+            if (cancelling) {
+                if (cancel_deadline_ == IoClock::time_point::max())
+                    cancel_deadline_ = IoClock::now() + std::chrono::seconds(2);
+                deadline = std::min(deadline, cancel_deadline_);
+            }
+            if (stop_requested_ || io_stopping_ || IoClock::now() >= deadline) {
+                fail_transport(stop_requested_ || io_stopping_ ? "会话已关闭"
+                    : cancelling && cancel_deadline_ <= IoClock::now()
+                        ? "取消收尾超时，已断开连接；远端临时文件可能需要清理"
+                        : "SSH 请求超时，已断开连接以释放未完成的协议状态");
+                // 网络已关闭；cleanup callbacks 完成原半包并让响应等待立即失败。
+                const Result stopped = fn();
+                if constexpr (std::is_pointer_v<Result>) return stopped;
+                else return stopped == LIBSSH2_ERROR_EAGAIN ? failure() : stopped;
+            }
+            int directions = libssh2_session_block_directions(sess_);
+            if (!directions) directions = LIBSSH2_SESSION_BLOCK_INBOUND;
+            if (idle_read && !(directions & LIBSSH2_SESSION_BLOCK_OUTBOUND)) return result;
+            if (service_terminal && !(directions & LIBSSH2_SESSION_BLOCK_OUTBOUND)
+                && pump_terminal(true)) continue; // 终端读取也可能把当前 SFTP 回复读入 libssh2。
+            const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - IoClock::now()).count();
+            // 兼容旧调用者直接写 cancel token；UI 入口另会主动 wake，无常态轮询。
+            const int delay = int(std::max<int64_t>(0, std::min<int64_t>(left, transfer_token_ ? 50 : 20000)));
+            wait_transport(directions, delay, !wire_failed_);
+        }
+    }
+
+    bool pump_terminal(bool buffered_only = false) {
+        if (!reader_enabled_ || !chan_ || wire_failed_ || eof_) return false;
+        bool changed = false;
+        if (const auto size = pty_request_.exchange(0)) resize_pty(int(size >> 32), int(uint32_t(size)));
+        // write_pending 完整恢复其半包后才返回，保证下一命令能安全使用同一 transport。
+        changed |= write_pending();
+        size_t budget = 256u << 10;
+        for (int stream : {0, SSH_EXTENDED_DATA_STDERR}) {
+            while (budget && !wire_failed_) {
+                size_t available;
+                { std::lock_guard<std::mutex> lock(rx_mtx_); available = kQueueLimit - rx_.size(); }
+                if (!available || (buffered_only && libssh2_poll_channel_read(chan_, stream) <= 0)) break;
+                char buffer[16384];
+                const auto count = std::min({sizeof(buffer), available, budget});
+                ssize_t n = libssh2_channel_read_ex(chan_, stream, buffer, count);
+                if (n == LIBSSH2_ERROR_EAGAIN && (libssh2_session_block_directions(sess_) & LIBSSH2_SESSION_BLOCK_OUTBOUND))
+                    n = await_io([&] { return libssh2_channel_read_ex(chan_, stream, buffer, count); }, false, false, true);
+                if (n > 0) {
+                    std::lock_guard<std::mutex> lock(rx_mtx_);
+                    rx_.append(buffer, size_t(n)); budget -= size_t(n); changed = true;
+                } else {
+                    if (n != LIBSSH2_ERROR_EAGAIN && (n < 0 || libssh2_channel_eof(chan_))) {
+                        eof_ = true; changed = true;
+                    }
+                    break;
+                }
+            }
+        }
+        if (changed && wake_) wake_();
+        return changed;
+    }
+
+    void start_io() {
+        libssh2_session_set_blocking(sess_, 0);
+        io_wake_.open(); io_stopping_ = false; io_running_ = true;
+        try { io_thread_ = std::thread([this] {
+            current_io_engine() = this;
+            for (;;) {
+                std::function<void()> command;
+                {
+                    std::lock_guard<std::mutex> lock(command_mtx_);
+                    if (!commands_.empty()) { command = std::move(commands_.front()); commands_.pop_front(); }
+                }
+                if (command) command(); // packaged_task 将异常交回等待者，不能让 future 悬挂。
+                else if (io_stopping_) break;
+                bool progress = false;
+                try { progress = pump_terminal(); }
+                catch (const std::exception&) { fail_transport("SSH I/O 执行失败，已断开连接"); }
+                {
+                    std::lock_guard<std::mutex> lock(command_mtx_);
+                    if (!commands_.empty() || io_stopping_) continue;
+                }
+                if (progress) continue;
+                bool full;
+                { std::lock_guard<std::mutex> lock(rx_mtx_); full = rx_.size() == kQueueLimit; }
+                wait_transport(LIBSSH2_SESSION_BLOCK_INBOUND, -1,
+                    reader_enabled_ && !wire_failed_ && !eof_ && !full);
+            }
+            current_io_engine() = nullptr; io_running_ = false;
+        }); } catch (...) { io_running_ = false; io_stopping_ = true; throw; }
+    }
+
+    void stop_io() {
+        { std::lock_guard<std::mutex> lock(command_mtx_); io_stopping_ = true; }
+        io_wake_.notify();
+        if (io_thread_.joinable()) io_thread_.join();
+    }
+
+    std::mutex transport_mtx_;
+    SSHC_SOCK transport_ = SSHC_BADSOCK;
+    std::atomic<bool> stop_requested_{false};
+    void close_transport(SSHC_SOCK descriptor) {
+        std::lock_guard<std::mutex> lock(transport_mtx_);
+        if (transport_ == descriptor) transport_ = SSHC_BADSOCK;
+        sshc_closesock(descriptor);
+    }
     LIBSSH2_SESSION* sess_ = nullptr;
     LIBSSH2_CHANNEL* chan_ = nullptr;
     LIBSSH2_SFTP*    sftp_ = nullptr;
     SSHC_SOCK        sock_ = SSHC_BADSOCK;
+    EngineWake io_wake_;
+
+    static constexpr size_t kQueueLimit = 4u << 20;
+    std::string write_buffer_, io_error_;
+    size_t write_offset_ = 0, queued_input_ = 0;
     mutable std::mutex mtx_;
     mutable std::mutex rx_mtx_;
     mutable std::mutex tx_mtx_;
     std::string      rx_;
     std::string      tx_;          // 待发送（键盘输入）
-    std::thread      reader_;
-    std::atomic<bool> stop_reader_{false};
+    std::thread io_thread_;
+    std::atomic<bool> io_running_{false}, io_stopping_{false}, reader_enabled_{false};
+    std::atomic<bool> sftp_ready_{false}, transfer_cancel_{false};
+    std::mutex command_mtx_;
+    std::deque<std::function<void()>> commands_;
+    bool wire_failed_ = false;
+    std::string wire_error_;
+    using IoClock = std::chrono::steady_clock;
+    IoClock::time_point operation_deadline_ = IoClock::time_point::max();
+    IoClock::time_point cancel_deadline_ = IoClock::time_point::max();
+    const std::atomic<bool>* transfer_token_ = nullptr;
+    bool transfer_operation_ = false;
+
     std::atomic<bool> connected_{false};
     std::atomic<bool> shell_open_{false};
     // 远端 pty 认定的尺寸。用 atomic 是因为 UI 线程每帧都要读它比对，
-    // 而连接线程 / reader 会更新这些值。
+    // 而 I/O owner 会更新这些值。
     std::atomic<int>  pty_cols_{0};
     std::atomic<uint64_t> pty_request_{0};
     std::atomic<int>  pty_rows_{0};
     std::atomic<bool> eof_{false};
     std::atomic<int>  fail_stage_{0};     // 上次 connect 失败在 FailStage 的哪一层
-    std::atomic<size_t> buf_bytes_{0};
     WakeFn           wake_;
     KnownHosts       known_;
     std::string      fingerprint_, note_, host_, user_, cwd_;
@@ -897,13 +1247,18 @@ private:
     int              port_ = 22;
     Transfer         xfer_;
 
-    bool init_locked(std::string* err) {
-        sftp_ = libssh2_sftp_init(sess_);
+    bool init_sftp(std::string* err) {
+        sftp_ = await_io([&] { return libssh2_sftp_init(sess_); });
         if (!sftp_) return fail(err, "SFTP 初始化失败：" + err_text(sess_, libssh2_session_last_errno(sess_)));
+        sftp_ready_ = true;
         return true;
     }
 
-    std::string sftp_err_locked() const {
+    std::string sftp_error() const {
+        if (wire_failed_) return wire_error_;
+        const int code = sess_ ? libssh2_session_last_errno(sess_) : LIBSSH2_ERROR_SOCKET_DISCONNECT;
+        if (code < 0 && code != LIBSSH2_ERROR_SFTP_PROTOCOL) return err_text(sess_, code);
+        if (!sftp_) return "SFTP 未就绪";
         const unsigned long e = libssh2_sftp_last_error(sftp_);
         switch (e) {
         case LIBSSH2_FX_NO_SUCH_FILE:    return "文件或目录不存在";
@@ -916,15 +1271,87 @@ private:
         }
     }
 
-    void finish_locked() {
-        if (xfer_.rh) { libssh2_sftp_close(xfer_.rh); xfer_.rh = nullptr; }
+    bool sftp_missing(int result) const {
+        // 传输层失败不一定刷新 SFTP status，不能把上一次的“不存在”用于当前请求。
+        if (result != LIBSSH2_ERROR_SFTP_PROTOCOL) return false;
+        const auto status = libssh2_sftp_last_error(sftp_);
+        return status == LIBSSH2_FX_NO_SUCH_FILE || status == LIBSSH2_FX_NO_SUCH_PATH;
+    }
+
+    bool commit_upload() {
+        if (!sftp_) return false;
+#if LIBSSH2_VERSION_NUM >= 0x010B01
+        // SFTP v3 的标准 RENAME 不携带覆盖标志；OpenSSH 另提供原子替换扩展。
+        const int rc = await_io([&] { return libssh2_sftp_posix_rename_ex(sftp_, xfer_.temporary.c_str(), xfer_.temporary.size(),
+                                                   xfer_.remote.c_str(), xfer_.remote.size()); });
+        if (rc == 0) return true;
+        // 超时/断线可能已提交，不能再执行一次替换；仅“不支持”允许走标准路径。
+        if (rc != LIBSSH2_FX_OP_UNSUPPORTED && !(rc == LIBSSH2_ERROR_SFTP_PROTOCOL
+            && libssh2_sftp_last_error(sftp_) == LIBSSH2_FX_OP_UNSUPPORTED)) return false;
+#endif
+        return await_io([&] { return libssh2_sftp_rename_ex(sftp_, xfer_.temporary.c_str(), unsigned(xfer_.temporary.size()),
+            xfer_.remote.c_str(), unsigned(xfer_.remote.size()),
+            LIBSSH2_SFTP_RENAME_OVERWRITE | LIBSSH2_SFTP_RENAME_ATOMIC | LIBSSH2_SFTP_RENAME_NATIVE); }) == 0;
+    }
+
+    void finish_transfer() {
+        if (xfer_.kind == Transfer::None || xfer_.finalized) return;
+        if (xfer_.rh) {
+            if (xfer_.kind == Transfer::Upload && xfer_.error.empty()) {
+                auto attributes = xfer_.destination_attributes;
+                LIBSSH2_SFTP_ATTRIBUTES staged{};
+                if (await_io([&] { return libssh2_sftp_fstat(xfer_.rh, &staged); }) == 0) {
+                    if ((staged.flags & LIBSSH2_SFTP_ATTR_UIDGID) && staged.uid == attributes.uid
+                        && staged.gid == attributes.gid) attributes.flags &= ~LIBSSH2_SFTP_ATTR_UIDGID;
+                    if ((staged.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS)
+                        && (staged.permissions & 07777) == (attributes.permissions & 07777))
+                        attributes.flags &= ~LIBSSH2_SFTP_ATTR_PERMISSIONS;
+                }
+                if (attributes.flags && await_io([&] { return libssh2_sftp_fstat_ex(xfer_.rh, &attributes, 1); }) != 0)
+                    xfer_.error = "无法保留目标权限或属主，未替换目标文件";
+            }
+            const int rc = await_io([&] { return libssh2_sftp_close(xfer_.rh); });
+            xfer_.rh = nullptr;
+            if (rc != 0 && xfer_.error.empty()) xfer_.error = "远端文件关闭失败";
+        }
         if (xfer_.fh) {
+            if (xfer_.kind == Transfer::Download && xfer_.error.empty()) {
+                bool synced = std::fflush(xfer_.fh) == 0;
+#if defined(_WIN32)
+                if (synced) synced = _commit(_fileno(xfer_.fh)) == 0;
+#else
+                if (synced) synced = fsync(fileno(xfer_.fh)) == 0;
+#endif
+                if (!synced) xfer_.error = "本地文件同步失败：" + xfer_.local;
+            }
             const int rc = std::fclose(xfer_.fh);
             xfer_.fh = nullptr;
             if (rc != 0 && xfer_.error.empty()) xfer_.error = "本地文件关闭失败：" + xfer_.local;
         }
-        if (xfer_.kind == Transfer::None) return;
-        if (xfer_.error.empty() && xfer_.done == 0 && xfer_.total > 0) xfer_.error = "传输中断";
+        if (xfer_.error.empty() && xfer_.total_known && xfer_.done != xfer_.total)
+            xfer_.error = "传输长度不一致（源文件变化或传输中断）";
+        // 此处是最后一个可取消边界。进入原子替换后只报告真实提交结果。
+        if (xfer_.error.empty() && (wire_failed_ || transfer_cancel_ || (transfer_token_ && transfer_token_->load())))
+            xfer_.error = wire_failed_ ? wire_error_ : "已取消";
+        if (xfer_.temporary.empty()) { xfer_.finalized = true; return; }
+        if (xfer_.error.empty()) {
+            const bool committed = xfer_.kind == Transfer::Download
+                ? replace_transfer_file(xfer_.temporary, xfer_.local)
+                : commit_upload();
+            if (!committed) xfer_.error = "无法确认目标文件替换结果，请核对目标文件；未继续覆盖";
+        }
+        if (!xfer_.error.empty()) {
+            if (xfer_.kind == Transfer::Download) {
+                std::error_code ignored;
+                std::filesystem::remove(std::filesystem::u8path(xfer_.temporary), ignored);
+                if (ignored) xfer_.error += "；本地临时文件需手动清理：" + xfer_.temporary;
+            } else if (sftp_) {
+                if (await_io([&] { return libssh2_sftp_unlink(sftp_, xfer_.temporary.c_str()); }) != 0)
+                    xfer_.error += "；远端临时文件需手动清理：" + xfer_.temporary;
+            }
+        }
+        xfer_.temporary.clear();
+        xfer_.finalized = true;
     }
 
     static bool fail(std::string* err, const std::string& m) { if (err) *err = m; return false; }
@@ -995,13 +1422,13 @@ private:
             });
     }
 
-    static void set_nonblocking(SSHC_SOCK fd, bool on) {
+    static bool set_nonblocking(SSHC_SOCK fd, bool on) {
 #if defined(_WIN32)
         u_long v = on ? 1 : 0;
-        ioctlsocket(fd, FIONBIO, &v);
+        return ioctlsocket(fd, FIONBIO, &v) == 0;
 #else
         const int fl = fcntl(fd, F_GETFL, 0);
-        fcntl(fd, F_SETFL, on ? (fl | O_NONBLOCK) : (fl & ~O_NONBLOCK));
+        return fl >= 0 && fcntl(fd, F_SETFL, on ? (fl | O_NONBLOCK) : (fl & ~O_NONBLOCK)) == 0;
 #endif
     }
     static bool connect_in_progress() {
@@ -1015,13 +1442,20 @@ private:
         int one = 1;
         ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof one);
     }
-    static bool wait_sock(SSHC_SOCK fd, bool writing, int ms) {
-        fd_set set;
-        FD_ZERO(&set);
-        FD_SET(fd, &set);
-        timeval tv{ms / 1000, (ms % 1000) * 1000};
-        const int r = ::select(int(fd) + 1, writing ? nullptr : &set, writing ? &set : nullptr, nullptr, &tv);
-        return r > 0;
+    bool wait_sock(SSHC_SOCK fd, bool writing, int ms) {
+        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+        while (!stop_requested_) {
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                until - std::chrono::steady_clock::now()).count();
+            if (remaining <= 0) return false;
+            fd_set set, errors; FD_ZERO(&set); FD_ZERO(&errors);
+            FD_SET(fd, &set); FD_SET(fd, &errors);
+            const long slice = long(std::min<int64_t>(remaining, 100));
+            timeval tv{0, slice * 1000};
+            const int r = ::select(int(fd) + 1, writing ? nullptr : &set, writing ? &set : nullptr, &errors, &tv);
+            if (r != 0) return r > 0;
+        }
+        return false;
     }
 };
 
@@ -1249,6 +1683,7 @@ inline void Terminal::push_history() {
 }
 
 inline void Terminal::scroll_up(int n) {
+    n = std::max(0, std::min(n, bot_ - top_ + 1));
     for (int i = 0; i < n; ++i) {
         // 只有"整屏滚动"（top==0 && bot==rows-1）才进历史；区域内滚动（vim 的状态行）不算
         const bool full = (top_ == 0 && bot_ == rows - 1);
@@ -1260,6 +1695,7 @@ inline void Terminal::scroll_up(int n) {
 }
 
 inline void Terminal::scroll_down(int n) {
+    n = std::max(0, std::min(n, bot_ - top_ + 1));
     for (int i = 0; i < n; ++i) {
         for (int y = bot_; y > top_; --y) grid_[size_t(y)] = grid_[size_t(y - 1)];
         blank_row(&grid_[size_t(top_)]);
@@ -1430,20 +1866,20 @@ inline void Terminal::sgr(const std::vector<int>& p) {
 inline void Terminal::csi_dispatch(char final, const std::vector<int>& p, char priv) {
     auto arg = [&](size_t i, int def) { return i < p.size() && p[i] != 0 ? p[i] : def; };
     switch (final) {
-    case 'A': move_to(cy_ - arg(0, 1), cx_); break;
-    case 'B': move_to(cy_ + arg(0, 1), cx_); break;
-    case 'C': move_to(cy_, cx_ + arg(0, 1)); break;
-    case 'D': move_to(cy_, cx_ - arg(0, 1)); break;
-    case 'E': move_to(cy_ + arg(0, 1), 0); break;
-    case 'F': move_to(cy_ - arg(0, 1), 0); break;
-    case 'G': case '`': move_to(cy_, arg(0, 1) - 1); break;
-    case 'd': move_to(arg(0, 1) - 1, cx_); break;
-    case 'H': case 'f': move_to(arg(0, 1) - 1, arg(1, 1) - 1); break;
+    case 'A': move_to(cy_ - std::min(arg(0, 1), rows), cx_); break;
+    case 'B': move_to(cy_ + std::min(arg(0, 1), rows), cx_); break;
+    case 'C': move_to(cy_, cx_ + std::min(arg(0, 1), cols)); break;
+    case 'D': move_to(cy_, cx_ - std::min(arg(0, 1), cols)); break;
+    case 'E': move_to(cy_ + std::min(arg(0, 1), rows), 0); break;
+    case 'F': move_to(cy_ - std::min(arg(0, 1), rows), 0); break;
+    case 'G': case '`': move_to(cy_, std::min(arg(0, 1), cols) - 1); break;
+    case 'd': move_to(std::min(arg(0, 1), rows) - 1, cx_); break;
+    case 'H': case 'f': move_to(std::min(arg(0, 1), rows) - 1, std::min(arg(1, 1), cols) - 1); break;
     case 'J': erase_display(arg(0, 0)); break;
     case 'K': erase_line(arg(0, 0)); break;
     case 'L': {                                   // 插入行
         if (cy_ < top_ || cy_ > bot_) break;
-        const int n = arg(0, 1);
+        const int n = std::min(arg(0, 1), bot_ - cy_ + 1);
         for (int i = 0; i < n; ++i) {
             for (int y = bot_; y > cy_; --y) grid_[size_t(y)] = grid_[size_t(y - 1)];
             blank_row(&grid_[size_t(cy_)]);
@@ -1452,7 +1888,7 @@ inline void Terminal::csi_dispatch(char final, const std::vector<int>& p, char p
     }
     case 'M': {                                   // 删除行
         if (cy_ < top_ || cy_ > bot_) break;
-        const int n = arg(0, 1);
+        const int n = std::min(arg(0, 1), bot_ - cy_ + 1);
         for (int i = 0; i < n; ++i) {
             for (int y = cy_; y < bot_; ++y) grid_[size_t(y)] = grid_[size_t(y + 1)];
             blank_row(&grid_[size_t(bot_)]);
@@ -1460,20 +1896,20 @@ inline void Terminal::csi_dispatch(char final, const std::vector<int>& p, char p
         break;
     }
     case 'P': {                                   // 删字符
-        const int n = arg(0, 1);
+        const int n = std::min(arg(0, 1), cols - cx_);
         std::vector<Cell>& r = row_ref(cy_);
         for (int x = cx_; x < cols; ++x)
-            r[size_t(x)] = (x + n < cols) ? r[size_t(x + n)] : Cell{};
+            r[size_t(x)] = (n < cols - x) ? r[size_t(x + n)] : Cell{};
         break;
     }
     case '@': {                                   // 插入字符
-        const int n = arg(0, 1);
+        const int n = std::min(arg(0, 1), cols - cx_);
         std::vector<Cell>& r = row_ref(cy_);
         for (int x = cols - 1; x >= cx_ + n; --x) r[size_t(x)] = r[size_t(x - n)];
         for (int x = cx_; x < cx_ + n && x < cols; ++x) r[size_t(x)] = Cell{};
         break;
     }
-    case 'X': clear_cells(cy_, cx_, cx_ + arg(0, 1) - 1); break;
+    case 'X': clear_cells(cy_, cx_, cx_ + std::min(arg(0, 1), cols - cx_) - 1); break;
     case 'S': scroll_up(arg(0, 1)); break;
     case 'T': scroll_down(arg(0, 1)); break;
     case 'm': sgr(p); break;
@@ -1572,7 +2008,12 @@ inline void Terminal::feed(const char* data, size_t n) {
                 int cur = -1;
                 for (char c : csi_) {
                     if (c == '?' || c == '>' || c == '<' || c == '=') { if (p.empty() && cur < 0) priv = c; }
-                    else if (c >= '0' && c <= '9') { cur = (cur < 0 ? 0 : cur) * 10 + (c - '0'); }
+                    else if (c >= '0' && c <= '9') {
+                        const int value = cur < 0 ? 0 : cur;
+                        const int digit = c - '0';
+                        cur = value > (std::numeric_limits<int>::max() - digit) / 10
+                            ? std::numeric_limits<int>::max() : value * 10 + digit;
+                    }
                     else if (c == ';' || c == ':') { p.push_back(cur < 0 ? 0 : cur); cur = -1; }
                 }
                 if (cur >= 0 || !csi_.empty()) p.push_back(cur < 0 ? 0 : cur);
@@ -1665,9 +2106,8 @@ inline std::string Terminal::selected_text() const {
     if (l0 > l1 || (l0 == l1 && c0 > c1)) { std::swap(l0, l1); std::swap(c0, c1); }
     std::string out;
     for (int l = l0; l <= l1; ++l) {
-        std::string full = line_text(l);
         // 按列裁（列 → 字节，够用即可：终端里绝大多数是单字节字符）
-        auto slice = [&](const std::string& s, int from_col, int to_col) {
+        auto slice = [&](int from_col, int to_col) {
             // 用网格逐格取更准，这里走网格
             const std::vector<Cell>* r = nullptr;
             if (l < int(hist_.size())) r = &hist_[size_t(l)];
@@ -1690,10 +2130,10 @@ inline std::string Terminal::selected_text() const {
             return o;
         };
         std::string piece;
-        if (l == l0 && l == l1) piece = slice(full, c0, c1);
-        else if (l == l0) piece = slice(full, c0, -1);
-        else if (l == l1) piece = slice(full, 0, c1);
-        else piece = full;
+        if (l == l0 && l == l1) piece = slice(c0, c1);
+        else if (l == l0) piece = slice(c0, -1);
+        else if (l == l1) piece = slice(0, c1);
+        else piece = slice(0, -1);
         // 行尾补的空格别复制出去（UTF-8 续字节都 >= 0x80，退到 0x20 停是安全的）
         while (!piece.empty() && piece.back() == ' ') piece.pop_back();
         out += piece;

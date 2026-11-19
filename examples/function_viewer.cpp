@@ -115,6 +115,12 @@ struct Parser {
     Program& out;
     std::string err;
     int abs_depth = 0;          // |x| 的嵌套层数（见 starts_factor）
+    int parse_depth = 0;
+    struct DepthGuard {
+        int& depth;
+        explicit DepthGuard(int& value) : depth(value) { ++depth; }
+        ~DepthGuard() { --depth; }
+    };
 
     explicit Parser(const std::string& s, Program& p) : src(s), out(p) {}
 
@@ -127,7 +133,10 @@ struct Parser {
         if (i < src.size() && src[i] == c) { ++i; return true; }
         return false;
     }
-    void emit(int op, float imm = 0.0f) { out.code.push_back({op, imm}); }
+    void emit(int op, float imm = 0.0f) {
+        if (out.code.size() >= 4096) { fail("表达式指令过多"); return; }
+        out.code.push_back({op, imm});
+    }
     bool fail(const char* m) { if (err.empty()) err = m; return false; }
 
     bool parse() {
@@ -135,10 +144,12 @@ struct Parser {
         skip_ws();
         if (i < src.size()) return fail("多余的字符");
         if (out.code.empty()) return fail("空表达式");
-        return true;
+        return err.empty();
     }
 
     bool expr() {
+        DepthGuard guard(parse_depth);
+        if (parse_depth > 128) return fail("表达式嵌套过深");
         if (!term()) return false;
         for (;;) {
             if (eat('+'))      { if (!term()) return false; emit(ADD); }
@@ -172,6 +183,8 @@ struct Parser {
         return false;
     }
     bool unary() {
+        DepthGuard guard(parse_depth);
+        if (parse_depth > 128) return fail("表达式嵌套过深");
         if (eat('-')) { if (!unary()) return false; emit(NEG); return true; }
         if (eat('+')) return unary();
         return power();
@@ -280,6 +293,7 @@ inline bool compile(const std::string& src, Program& out) {
     out.code.clear();
     out.ok = false;
     out.error.clear();
+    if (src.size() > 16384) { out.error = "表达式过长（最多 16384 字节）"; return false; }
     if (src.find_first_not_of(" \t\r\n") == std::string::npos) {
         out.error = "空表达式";
         return false;

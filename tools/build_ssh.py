@@ -1,6 +1,6 @@
 """构建 SSH 客户端与探针（MSVC x64、静态 libssh2 + mbedTLS、静态 CRT）。
 
-依赖准备见 docs/01-quickstart.md；本脚本不下载第三方源码。
+依赖准备见 docs/wiki/01-quickstart.md；本脚本不下载第三方源码。
 ASan 构建从当前 MSVC 工具链复制运行库，不使用仓库内预编译 DLL。
 
 用法：
@@ -37,7 +37,7 @@ def check_deps():
         print("缺依赖产物：")
         for m in missing:
             print("  " + m)
-        print("依赖准备与构建命令见 docs/01-quickstart.md 的可选 SSH 示例。")
+        print("依赖准备与构建命令见 docs/wiki/01-quickstart.md 的可选 SSH 示例。")
         raise SystemExit(1)
 
 

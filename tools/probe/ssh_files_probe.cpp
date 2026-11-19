@@ -2,6 +2,7 @@
 #include "../../examples/ssh_files.hpp"
 #include <chrono>
 #include <iterator>
+#include <fstream>
 #if defined(_WIN32)
 #include <windows.h>
 #include <winioctl.h>
@@ -114,6 +115,49 @@ int main() {
     check(file && std::ftell(file) == 0, "length query preserves read position");
     if (file) std::fclose(file);
     check(!sshc::local_file_size(nullptr, &size, &err) && !err.empty(), "invalid file length query reports error");
+    {
+#if defined(_WIN32)
+        std::FILE* device = sshc::open_local_file("NUL", "rb");
+#else
+        std::FILE* device = sshc::open_local_file("/dev/null", "rb");
+#endif
+        check(device && !sshc::local_file_size(device, &size, &err) && !err.empty(),
+              "device cannot be treated as an upload source with a known file length");
+        if (device) std::fclose(device);
+    }
+#if !defined(_WIN32)
+    const auto fifo = root / "upload-fifo";
+    check(::mkfifo(fifo.c_str(), 0600) == 0, "prepare FIFO upload source");
+    std::FILE* fifo_input = sshc::open_upload_file(fifo.u8string());
+    check(!fifo_input, "FIFO upload is rejected without waiting for a writer");
+    if (fifo_input) std::fclose(fifo_input);
+#endif
+    {
+        const auto target = root / "existing.bin";
+        check(sshc::atomic_write_file(target.string(), "old", &err), "prepare existing transfer destination");
+#if !defined(_WIN32)
+        check(::chmod(target.c_str(), 0640) == 0, "prepare destination permissions");
+#endif
+        std::string temporary;
+        std::FILE* pending = sshc::create_transfer_file(target.string(), &temporary);
+        check(pending && !temporary.empty() && std::filesystem::exists(target), "transfer uses exclusive adjacent staging file");
+        if (pending) {
+            check(std::fwrite("new", 1, 3, pending) == 3 && std::fclose(pending) == 0, "write staging content");
+            std::ifstream before(target, std::ios::binary);
+            const std::string old{std::istreambuf_iterator<char>(before), std::istreambuf_iterator<char>()};
+            check(old == "old", "incomplete transfer preserves destination bytes");
+            before.close();
+            check(sshc::replace_transfer_file(temporary, target.string()), "commit staging content");
+            std::ifstream after(target, std::ios::binary);
+            const std::string current{std::istreambuf_iterator<char>(after), std::istreambuf_iterator<char>()};
+            check(current == "new" && !std::filesystem::exists(temporary), "commit replaces destination and consumes staging file");
+#if !defined(_WIN32)
+            struct stat status{};
+            check(::stat(target.c_str(), &status) == 0 && (status.st_mode & 0777) == 0640,
+                  "staging commit retains destination permissions");
+#endif
+        }
+    }
     std::printf("[ssh-files] %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

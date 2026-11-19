@@ -883,6 +883,36 @@ static bool scene_x11_title() {
 #endif
 }
 
+// 只比较覆盖率与边界，不固定平台字形；发布时覆盖 GDI 的透明文字合成路径。
+static bool scene_text_alpha() {
+    aino::Window win(260, 110, "aino pixels: text alpha");
+    if (!win.ok()) { win_fail("S7"); return false; }
+    for (bool dark : {false, true}) {
+        const Color background = dark ? Color(24, 24, 24) : Color(240, 240, 240);
+        for (int alpha : {0, 128}) {
+            Shot shot;
+            if (!render_scene(win, [&](Ui& ui) {
+                ui.clear(background);
+                ui.draw_text("Alpha text", Rect(20, 20, 200, 40),
+                    dark ? Color(255, 255, 255, uint8_t(alpha)) : Color(0, 0, 0, uint8_t(alpha)), Style().font(24));
+            }, shot)) { fail("S7 text snapshot", "no pixels"); return true; }
+            int max_difference = 0, touched = 0;
+            for (int y = 0; y < shot.h; ++y) for (int x = 0; x < shot.w; ++x) {
+                const auto* pixel = &shot.px[size_t(y) * shot.stride + size_t(x) * 4];
+                const int difference = std::max({std::abs(int(pixel[CH_R]) - background.r),
+                    std::abs(int(pixel[CH_G]) - background.g), std::abs(int(pixel[CH_B]) - background.b)});
+                max_difference = std::max(max_difference, difference);
+                if (difference) ++touched;
+            }
+            if (!alpha) want_true(touched == 0, "S7 alpha zero leaves background intact", "transparent glyph changed pixels");
+            else want_true(touched > 20 && max_difference > 20 && max_difference <= 123,
+                "S7 text opacity limits pixel contrast", "missing glyph or alpha ignored");
+            want_clean(shot, Rect(0, 0, 15, 110), background, "S7 text respects left boundary");
+        }
+    }
+    return true;
+}
+
 int main() {
     std::printf("=== aino ci_pixels ===\n");
 
@@ -892,6 +922,7 @@ int main() {
     if (!scene_cjk_fallback()) return 2;
     if (!scene_mixed_literal()) return 2;
     if (!scene_x11_title())      return 2;
+    if (!scene_text_alpha())     return 2;
 
     std::printf("=== %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

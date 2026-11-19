@@ -63,6 +63,38 @@ int main() {
     check(im->edit_stack[id].undo.empty() && im->edit_stack[id].redo.empty(),
           "oversized edit clears older history instead of skipping across an unrecorded edit");
     check(!aino::detail::edit_undo(im, id, &text, &caret, &anchor) && text == "current", "no history cannot alter text");
+    for (uint64_t scope = 1; scope <= 20; ++scope) {
+        auto scoped = ui.state_scope(scope);
+        auto& entry = im->text_lines[7]; entry.src.assign(4096, 'x'); entry.used = scope;
+        im->text_lines.trim_bytes(16384, 7,
+            [](const aino::Ui::Impl::TextLines& item) { return item.bytes(); },
+            [](const aino::Ui::Impl::TextLines& item) { return item.used; });
+        check(im->text_lines.bytes([](const aino::Ui::Impl::TextLines& item) { return item.bytes(); }) <= 16384,
+              "text cache shares budget across scopes");
+    }
+    {
+        // 编辑过程中从缓存预算内跨到预算外；本帧还会继续使用行索引绘制光标。
+        aino::detail::Canvas canvas;
+        std::vector<uint8_t> pixels(640 * 480 * 4);
+        canvas.px = pixels.data(); canvas.w = 640; canvas.h = 480; canvas.stride = 640 * 4;
+        im->canvas = &canvas;
+        std::string document(64u << 10, 'a');
+        const aino::Rect box(0, 0, 400, 100);
+        ui.begin_frame(640, 480, 1.f / 60, 1);
+        const auto widget = im->widget_id("textarea", box, 0, uint64_t(reinterpret_cast<uintptr_t>(&document)));
+        aino::detail::grab_focus(im, widget);
+        ui.textarea(&document, box); ui.end_frame();
+        im->get_clipboard = [] { return std::string(128u << 10, 'b'); };
+        im->input = {};
+        im->input.key_pressed['V'] = im->input.key_ctrl['V'] = im->input.key_down[aino::KEY_CTRL] = true;
+        ui.begin_frame(640, 480, 1.f / 60, 1);
+        const bool changed = ui.textarea(&document, box);
+        check(changed && document.size() == (192u << 10), "oversized paste preserves complete document");
+        if (aino::detail::memory_budget_kib("AINO_TEXT_BUDGET", 16u << 20) == (256u << 10))
+            check(!im->text_lines.get_if(widget), "oversized active layout is discarded only after drawing");
+        ui.end_frame();
+        im->canvas = nullptr;
+    }
     std::printf("[memory-budget] %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

@@ -13,9 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <thread>
 #include <vector>
 
 using aino::Color;
@@ -116,10 +114,11 @@ const std::array<BuildRow, 5> kBuildRows = {{{"aino_demo", 128, 6.5f, "通过"},
                                              {"bench_raster", 214, 26.3f, "回退"},
                                              {"layout_probe", 77, 1.9f, "通过"}}};
 struct MaterialEditor {
-    std::mutex mutex;
     aino::Window *parent = nullptr;
     bool open = false;
     std::string created_name, created_description;
+    std::string name, description;
+    std::unique_ptr<aino::Window> window;
 };
 struct BodyMeasurements {
     aino::Theme theme;
@@ -284,8 +283,7 @@ std::string color_hex(Color color) {
 }
 aino::Theme gallery_theme(const App &a) {
     auto th = a.dark ? aino::Theme::dark() : aino::Theme::light();
-    // 见 muted_ink 的说明：label2/label3 带 alpha，Windows 的 GDI 文字会把它
-    // 画成纯黑。换成不透明灰，层次在各平台一致。
+    // 示例保留固定的次级灰阶，避免卡片和窗口底色改变文字层次。
     th.label2 = a.dark ? aino::Color(0xA0, 0xA0, 0xA6, 255) : aino::Color(0x6E, 0x6E, 0x73, 255);
     th.label3 = a.dark ? aino::Color(0x6E, 0x6E, 0x73, 255) : aino::Color(0x98, 0x98, 0x9D, 255);
     th.muted_foreground = th.label2;
@@ -342,10 +340,6 @@ void notify(Ui &, App &a, std::string message, int kind = 0) {
         a.notices.erase(a.notices.begin());
     a.notices.push_back({std::move(message), kind, false});
 }
-// 次级文字用**不透明**灰，而不是 theme.label2。
-// 原因：label2 是 rgba(0,0,0,128)，而 Windows 的 GDI 文字路径只用 RGB、把 alpha
-// 丢掉 —— 直接用它画出来是纯黑，层次就没了（macOS / X11 后端是混合的，所以那边
-// 一直是正常的）。这里取 Apple 官网上正文/次级的实际色值，两个平台一致。
 void label(Ui &ui, const std::string &text, Rect r, float size = 13, bool muted = false, int weight = 400) {
     ui.draw_text(text, r, muted ? ui.theme().label2 : ui.theme().label, Style().font(size).weight(weight));
 }
@@ -1804,58 +1798,60 @@ void dump_layout_report(Ui &ui, App &a, float width, bool narrow) {
 }
 
 void open_material_window(const std::shared_ptr<MaterialEditor>& state, aino::Theme theme) {
-    {
-        std::lock_guard<std::mutex> lock(state->mutex);
-        if (state->open) return;
-        state->open = true;
-    }
-    std::thread([state, theme] {
-        aino::WindowConfig cfg;
+    if (state->open) return;
+    state->open = true;
+    aino::WindowConfig cfg;
 #if !defined(AINO_PLATFORM_WINDOWS)
-        cfg.icon_path = aino::executable_directory() + "aino_icon.png";
+    cfg.icon_path = aino::executable_directory() + "aino_icon.png";
 #endif
-        cfg.width = cfg.min_width = 460;
-        cfg.height = cfg.min_height = 340;
-        cfg.title = "新建素材";
-        cfg.center = true;
-        aino::Window win(cfg);
-        if (win.ok()) {
-            win.set_theme(theme);
-            std::string name, description;
-            win.run([&](Ui& ui) {
-                ui.clear(ui.theme().background);
-                auto col = ui.vbox({0, 0, ui.width(), ui.height()}, 8, 24);
-                ui.heading("新建素材", col.next(28), Style().left());
-                ui.label("名称", col.next(18), Style().left());
-                ui.input(&name, col.next(26), Style().hint("素材名称"));
-                col.skip(4);
-                ui.label("说明", col.next(18), Style().left());
-                ui.textarea(&description, col.next(72), Style().hint("可选"));
-                const Rect row(24, ui.height() - 52, ui.width() - 48, 28);
-                if (ui.button("取消", {row.right() - 168, row.y, 76, row.h}, Style().outline()) ||
-                    ui.input().key_pressed[aino::KEY_ESC]) {
-                    win.close();
-                    return;
-                }
-                Style create;
-                const bool has_name = name.find_first_not_of(" \t\r\n") != std::string::npos;
-                if (!has_name) create.off();
-                if (ui.button("创建", {row.right() - 80, row.y, 80, row.h}, create)) {
-                    std::lock_guard<std::mutex> lock(state->mutex);
-                    state->created_name = name;
-                    state->created_description = description;
-                    if (state->parent) state->parent->wake();
-                    win.close();
-                }
-            });
-        }
-        std::lock_guard<std::mutex> lock(state->mutex);
-        state->open = false;
-    }).detach();
+    cfg.width = cfg.min_width = 460;
+    cfg.height = cfg.min_height = 340;
+    cfg.title = "新建素材";
+    cfg.center = true;
+    state->window = std::make_unique<aino::Window>(cfg);
+    auto& win = *state->window;
+    if (win.ok()) {
+        win.set_theme(theme);
+        state->name.clear(); state->description.clear();
+        win.set_frame_callback([editor = state.get()](Ui& ui) {
+            auto* state = editor;
+            auto& win = *state->window;
+            auto& name = state->name;
+            auto& description = state->description;
+            ui.clear(ui.theme().background);
+            auto col = ui.vbox({0, 0, ui.width(), ui.height()}, 8, 24);
+            ui.heading("新建素材", col.next(28), Style().left());
+            ui.label("名称", col.next(18), Style().left());
+            ui.input(&name, col.next(26), Style().hint("素材名称"));
+            col.skip(4);
+            ui.label("说明", col.next(18), Style().left());
+            ui.textarea(&description, col.next(72), Style().hint("可选"));
+            const Rect row(24, ui.height() - 52, ui.width() - 48, 28);
+            if (ui.button("取消", {row.right() - 168, row.y, 76, row.h}, Style().outline()) ||
+                ui.input().key_pressed[aino::KEY_ESC]) {
+                win.close();
+                if (state->parent) state->parent->wake();
+                return;
+            }
+            Style create;
+            const bool has_name = name.find_first_not_of(" \t\r\n") != std::string::npos;
+            if (!has_name) create.off();
+            if (ui.button("创建", {row.right() - 80, row.y, 80, row.h}, create)) {
+                state->created_name = name;
+                state->created_description = description;
+                if (state->parent) state->parent->wake();
+                win.close();
+            }
+        });
+    }
+    else state->open = false;
 }
 
 void collect_material(App& app) {
-    std::lock_guard<std::mutex> lock(app.material_editor->mutex);
+    if (app.material_editor->window && app.material_editor->window->should_close()) {
+        app.material_editor->window.reset();
+        app.material_editor->open = false;
+    }
     if (!app.material_editor->created_name.empty()) {
         app.material_name = std::move(app.material_editor->created_name);
         app.material_description = std::move(app.material_editor->created_description);
@@ -2090,9 +2086,6 @@ int main() {
             }
         }
     });
-    {
-        std::lock_guard<std::mutex> lock(app.material_editor->mutex);
-        app.material_editor->parent = nullptr;
-    }
+    app.material_editor->parent = nullptr;
     return 0;
 }

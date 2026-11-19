@@ -1,8 +1,8 @@
 name: Regression
 
 on:
-  push:
-  pull_request:
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -34,8 +34,42 @@ jobs:
             xvfb xfonts-base fonts-dejavu-core fonts-noto-cjk
           fc-cache -f
 
-      - name: Configure
-        run: cmake -S . -B build/ci -DCMAKE_BUILD_TYPE=Release -DAINO_BUILD_TESTS=ON
+      - name: macOS SSH development library
+        if: runner.os == 'macOS'
+        run: brew install libssh2
+
+      - name: Prepare pinned MSVC SSH dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force build/third_party | Out-Null
+          $packages = @(
+            @{url='https://www.libssh2.org/download/libssh2-1.11.1.tar.gz'; file='libssh2.tar.gz'; hash='d9ec76cbe34db98eec3539fe2c899d26b0c837cb3eb466a56b0f109cabf658f7'},
+            @{url='https://github.com/Mbed-TLS/mbedtls/archive/refs/tags/v3.6.2.tar.gz'; file='mbedtls.tar.gz'; hash='f4a876b1f6921ad0aefb445f974ef62414d33928640b2c45555c5e64a196a1a8'}
+          )
+          foreach ($package in $packages) {
+            $archive = Join-Path 'build/third_party' $package.file
+            Invoke-WebRequest $package.url -OutFile $archive
+            if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $package.hash) { throw 'SSH source checksum mismatch' }
+            tar -xzf $archive -C build/third_party
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          python tools/build_mbedtls_static.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $deps = (Resolve-Path build/third_party).Path
+          cmake -S "$deps/libssh2-1.11.1" -B "$deps/l2mbed" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF -DENABLE_ZLIB_COMPRESSION=OFF -DCRYPTO_BACKEND=mbedTLS -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded "-DMBEDTLS_INCLUDE_DIR=$deps/mbedtls-3.6.2/include" "-DMBEDCRYPTO_LIBRARY=$deps/mbedtls-3.6.2/mbedtls_all.lib"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build "$deps/l2mbed" --config Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Configure with SSH on Windows
+        if: runner.os == 'Windows'
+        run: cmake -S . -B build/ci -DAINO_BUILD_TESTS=ON -DAINO_BUILD_SSH=ON
+
+      - name: Configure with SSH on Linux and macOS
+        if: runner.os != 'Windows'
+        run: cmake -S . -B build/ci -DCMAKE_BUILD_TYPE=Release -DAINO_BUILD_TESTS=ON -DAINO_BUILD_SSH=ON
 
       - name: Build examples and probes
         run: cmake --build build/ci --config Release --parallel 2
@@ -52,7 +86,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cl /nologo /std:c++17 /EHsc /O2 /MT tools/ci_pixels.cpp user32.lib gdi32.lib /Fe:build/ci/ci_pixels_noutf8.exe
+          cl /nologo /std:c++17 /EHsc /O2 /MT tools/ci_pixels.cpp user32.lib gdi32.lib ole32.lib windowscodecs.lib /Fe:build/ci/ci_pixels_noutf8.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ./build/ci/ci_pixels_noutf8.exe
           exit $LASTEXITCODE

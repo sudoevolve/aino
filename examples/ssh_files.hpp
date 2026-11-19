@@ -59,6 +59,59 @@ inline std::string home_dir() {
     return p ? std::string(p) : std::string(".");
 }
 
+// 同目录独占创建，避免传输失败或取消时先截断最终目标。
+inline std::FILE* create_transfer_file(const std::string& target, std::string* temporary) {
+    static std::atomic<unsigned long> next{0};
+#if defined(_WIN32)
+    const auto pid = GetCurrentProcessId();
+#else
+    const auto pid = getpid();
+#endif
+    temporary->clear();
+    for (int attempt = 0; attempt < 32; ++attempt) {
+        const std::string candidate = target + ".part." + std::to_string(pid) + "." + std::to_string(next++);
+#if defined(_WIN32)
+        const int fd = _wopen(std::filesystem::u8path(candidate).c_str(),
+            _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
+#else
+        const int fd = ::open(candidate.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+#endif
+        if (fd < 0) { if (errno == EEXIST) continue; return nullptr; }
+#if defined(_WIN32)
+        std::FILE* file = _fdopen(fd, "wb");
+        if (!file) _close(fd);
+#else
+        std::FILE* file = fdopen(fd, "wb");
+        if (!file) ::close(fd);
+#endif
+        if (!file) { std::error_code ignored; std::filesystem::remove(std::filesystem::u8path(candidate), ignored); }
+        else *temporary = candidate;
+        return file;
+    }
+    return nullptr;
+}
+
+inline bool replace_transfer_file(const std::string& temporary, const std::string& target) {
+#if defined(_WIN32)
+    const auto from = std::filesystem::u8path(temporary), to = std::filesystem::u8path(target);
+    const DWORD attributes = GetFileAttributesW(to.c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES)
+        return ReplaceFileW(to.c_str(), from.c_str(), nullptr, 0, nullptr, nullptr) != 0;
+    // 没有 REPLACE_EXISTING：检查后若出现同名文件，保留它并报告冲突。
+    return MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    struct stat original{};
+    if (::stat(target.c_str(), &original) == 0) {
+        struct stat staged{};
+        if (::stat(temporary.c_str(), &staged) != 0) return false;
+        if ((staged.st_uid != original.st_uid || staged.st_gid != original.st_gid)
+            && ::chown(temporary.c_str(), original.st_uid, original.st_gid) != 0) return false;
+        if (::chmod(temporary.c_str(), original.st_mode & 07777) != 0) return false;
+    } else if (errno != ENOENT) return false;
+    return ::rename(temporary.c_str(), target.c_str()) == 0;
+#endif
+}
+
 // 临时文件与目标同目录，独占创建；写完并同步后才替换，失败保留旧文件。
 inline bool atomic_write_file(const std::string& path, const std::string& data, std::string* err) {
     if (err) err->clear();
@@ -148,8 +201,32 @@ inline bool local_file_size(std::FILE* file, uint64_t* size, std::string* err) {
         if (err) *err = "读取本地文件长度失败";
         return false;
     }
+#if defined(_WIN32)
+    const bool regular = (st.st_mode & _S_IFMT) == _S_IFREG;
+#else
+    const bool regular = S_ISREG(st.st_mode);
+#endif
+    if (!regular) {
+        if (err) *err = "上传源必须是普通文件";
+        return false;
+    }
     *size = uint64_t(st.st_size);
     return true;
+}
+
+// FIFO 的普通 fopen 会在类型检查前等待写端；先非阻塞打开，再从描述符确认类型。
+inline std::FILE* open_upload_file(const std::string& path) {
+#if defined(_WIN32)
+    std::FILE* file = open_local_file(path, "rb");
+#else
+    const int fd = ::open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return nullptr;
+    std::FILE* file = fdopen(fd, "rb");
+    if (!file) ::close(fd);
+#endif
+    uint64_t size = 0;
+    if (file && !local_file_size(file, &size, nullptr)) { std::fclose(file); return nullptr; }
+    return file;
 }
 
 struct KnownHosts {

@@ -6,6 +6,8 @@
 #include <thread>
 #include <cstdio>
 #include <filesystem>
+#include <condition_variable>
+#include <memory>
 
 int main() {
 #if defined(_WIN32)
@@ -97,6 +99,38 @@ int main() {
     closer.join();
     std::printf("[caret-timer] %d frames in 2.4 seconds\n", caret_frames);
     if (caret_frames < 5 || caret_frames > 30) return 4;
+    // 同一 UI Thread 动态创建子窗口；延迟帧、关闭通知、回收都由一个 run() 驱动。
+    {
+        aino::Window parent(320, 200, "aino scheduled parent probe");
+        if (!parent.ok()) return 9;
+        std::unique_ptr<aino::Window> child;
+        int child_frames = 0;
+        bool collected = false;
+        std::mutex completion_mutex;
+        std::condition_variable completion;
+        bool done = false;
+        std::thread watchdog([&] {
+            std::unique_lock<std::mutex> lock(completion_mutex);
+            if (!completion.wait_for(lock, std::chrono::seconds(5), [&] { return done; })) parent.close();
+        });
+        parent.run([&](aino::Ui& ui) {
+            ui.clear(ui.theme().background);
+            if (!child) {
+                child = std::make_unique<aino::Window>(320, 200, "aino scheduled child probe");
+                if (!child->ok()) { parent.close(); return; }
+                child->set_frame_callback([&](aino::Ui& child_ui) {
+                    child_ui.clear(child_ui.theme().background);
+                    if (++child_frames == 2) child->close();
+                    else child_ui.request_frame_in(.03f);
+                });
+            } else if (child->should_close()) {
+                child.reset(); collected = true; parent.close();
+            }
+        });
+        { std::lock_guard<std::mutex> lock(completion_mutex); done = true; }
+        completion.notify_one(); watchdog.join();
+        if (!collected || child_frames != 2) return 9;
+    }
 #if defined(_WIN32)
     aino::Window quit_window(320, 200, "aino explicit quit probe");
     if (!quit_window.ok()) return 8;

@@ -22,7 +22,7 @@ OUT = os.path.join(SRC, "mbedtls_all.lib")
 def main():
     srcs = sorted(glob.glob(os.path.join(SRC, "library", "*.c")))
     if not srcs or not os.path.isfile(os.path.join(SRC, "include", "mbedtls", "build_info.h")):
-        raise SystemExit("缺少 mbedTLS 3.6.2 源码，准备方法见 docs/01-quickstart.md。")
+        raise SystemExit("缺少 mbedTLS 3.6.2 源码，准备方法见 docs/wiki/01-quickstart.md。")
     env = msvc_env()
     cl = os.path.join(env.get("VCToolsInstallDir", ""), "bin", "Hostx64", "x64", "cl.exe")
     lib = os.path.join(env.get("VCToolsInstallDir", ""), "bin", "Hostx64", "x64", "lib.exe")

@@ -94,6 +94,15 @@ int main() {
         check(r0 == std::string(10, 'A') && r1 == std::string(10, 'B'), "自动换行位置正确");
     }
 
+    // 极端 CSI 数字必须保持网格不变量，不能溢出或按远端计数循环。
+    for (const char command : {'A', 'B', 'C', 'D', 'H', 'f', 'L', 'M', 'P', '@', 'X', 'S', 'T'}) {
+        Terminal t; t.resize(20, 5);
+        const std::string sequence = "\x1b[999999999999999999999999999999999;999999999999999999999999999999999" + std::string(1, command) + "Z";
+        for (char byte : sequence) t.feed(&byte, 1);
+        check(t.cursor_row() >= 0 && t.cursor_row() < t.rows && t.cursor_col() >= 0 && t.cursor_col() < t.cols,
+              "oversized split CSI preserves cursor bounds");
+    }
+
     std::printf("\n%s (%d fails)\n", fails ? "FAILED" : "ALL PASS", fails);
     return fails ? 1 : 0;
 }

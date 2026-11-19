@@ -170,10 +170,7 @@ void draw_pomodoro(aino::Ui& ui, Pomodoro& timer, bool& dark, Clock::time_point 
     ui.muted_text(status, Rect(ring.x, ring.cy() + digit * .62f, ring.w, 20), Style().center());
 }
 
-// Windows 的 GDI 文字路径只用颜色的 RGB，alpha 会被丢掉 —— 而 theme.label2 /
-// label3 是 50% / 25% 黑，直绘出来就是纯黑，次级文字和正文一样重（macOS / X11
-// 后端是逐像素混合的，那边一直正常）。这里把它们换成不透明灰：浅色板上与
-// 混合结果等价，而且各平台的层次一致。
+// 示例保留固定的次级灰阶，避免卡片和窗口底色改变文字层次。
 static aino::Theme app_theme(bool dark) {
     aino::Theme t = dark ? aino::Theme::dark() : aino::Theme::light();
     t.label2 = dark ? aino::Color(0xA0, 0xA0, 0xA6, 255) : aino::Color(0x6E, 0x6E, 0x73, 255);

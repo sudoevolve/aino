@@ -117,6 +117,31 @@ int main(int argc, char** argv) {
 #endif
     ExampleFrame f;
 #ifdef AINO_PROBE_SSH
+    {
+        std::string decoded;
+        {
+            const std::string valid = "\"\\uD83D\\uDE00\"", invalid = "\"\\uZZZZ\"";
+            JsonScan unicode(valid), broken(invalid);
+            expect(unicode.str(&decoded) && decoded == "\xF0\x9F\x98\x80" && !broken.str(&decoded),
+                   "profile migration decodes surrogate pairs and rejects invalid Unicode escapes");
+        }
+        expect(!deobf("x:0z", &decoded) && !deobf("x:123", &decoded),
+               "invalid legacy secret encoding is rejected instead of becoming an empty password");
+        const std::string damaged = "[{\"name\":\"damaged\",\"host\":\"example\",\"pass\":\"x:0z\",\"remember\":1}]";
+        std::string error;
+        expect(sshc::atomic_write_file(cfg_file(), damaged, &error), "prepare damaged legacy secret");
+        auto loaded = load_local_profiles();
+        expect(loaded.size() == 1 && loaded[0].secret_unavailable && loaded[0].stored_pass == "x:0z"
+            && read_text_file(cfg_file()) == damaged, "loading damaged legacy secret preserves its original record");
+        expect(save_local_profiles(loaded, &error) && load_local_profiles()[0].stored_pass == "x:0z",
+               "saving unrelated profile fields preserves an unavailable legacy secret");
+        const std::string truncated = "[{\"host\":\"example\",\"pass\":\"legacy\",\"remember\":1}";
+        expect(sshc::atomic_write_file(cfg_file(), truncated, &error), "prepare truncated profile array");
+        (void)load_local_profiles();
+        expect(read_text_file(cfg_file()) == truncated && !profile_store_warning.empty(),
+               "automatic migration never overwrites an incomplete profile document");
+        expect(sshc::atomic_write_file(cfg_file(), "[]", &error), "reset dedicated profile fixture");
+    }
     expect(std::string(explain_fail(FailStage::KeyExchange).title) == "SSH 密钥交换失败",
            "key exchange failure has its own accurate title");
     expect(std::string(explain_fail(FailStage::KeyExchange).advice).find("WinCNG") != std::string::npos,
@@ -161,6 +186,10 @@ int main(int argc, char** argv) {
         expect(!engine.connect("no-network.invalid", 22, "\t ", "unused", "", &error) &&
                engine.fail_stage() == FailStage::Input && error.find("用户名不能为空") != std::string::npos,
                "engine rejects empty normalized username before network access");
+        engine.request_stop(); engine.request_stop();
+        expect(!engine.connect("no-network.invalid", 22, "aino", "unused", "", &error)
+            && error.find("取消") != std::string::npos,
+            "permanent stop rejects a subsequent connection before DNS and is idempotent");
     }
     {
         App app;
@@ -472,9 +501,15 @@ int main(int argc, char** argv) {
             return !session.xfer_running;
         };
         expect(start_transfer(session, true, local, "/session-probe.bin", nullptr), "upload starts");
+        auto listing = std::async(std::launch::async, [&] {
+            std::vector<Entry> entries;
+            std::string list_error;
+            return session.engine.list("/", &entries, &list_error);
+        });
         session.engine.request_pty_resize(90, 28);
         session.engine.request_pty_resize(100, 32);
         expect(wait_transfer(), "upload completes without UI frames");
+        expect(listing.get(), "directory commands and transfer share the I/O owner");
         auto transfer = session.transfer_snapshot();
         expect(transfer.finished && transfer.error.empty() && transfer.done == body.size(),
                "upload snapshot has exact byte count");
@@ -500,8 +535,21 @@ int main(int argc, char** argv) {
         expect(wait_transfer() && !session.transfer_snapshot().error.empty(), "local open failure reports error");
         expect(session.engine.transfer().rh == nullptr, "local failure closes remote handle");
         expect(start_transfer(session, true, local, "/session-cancel.bin", nullptr), "cancel transfer starts");
+        const auto cancel_start = std::chrono::steady_clock::now();
         session.xfer_cancel = true;
+        session.engine.request_transfer_cancel();
         expect(wait_transfer() && session.transfer_snapshot().error == "已取消", "transfer cancels in background");
+        expect(std::chrono::steady_clock::now() - cancel_start < std::chrono::seconds(3),
+               "cancel wakes the I/O owner promptly on the local server");
+        // 成功提交后再取消不能改写成功结果。此段直接使用 Engine，保留 finalized 状态。
+        session.engine.start_upload(local, "/session-finalized.bin");
+        const auto finish_end = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        while (session.engine.transfer_busy() && std::chrono::steady_clock::now() < finish_end)
+            session.engine.xfer_step();
+        expect(!session.engine.transfer_busy() && session.engine.transfer().error.empty(), "direct upload commits");
+        session.engine.cancel_transfer();
+        expect(session.engine.transfer().error.empty(), "late cancel preserves committed success");
+        session.engine.clear_transfer();
         session.engine.send("unicode\r");
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         update_session(session);
@@ -751,6 +799,15 @@ int main(int argc, char** argv) {
             f.frame(render);
             expect(evaluations > before + 64, "contour toggle refreshes grid resolution");
         }
+    }
+#endif
+#if !defined(AINO_PROBE_SSH) && !defined(AINO_PROBE_POMODORO)
+    {
+        fx::Program program;
+        expect(!fx::compile(std::string(20000, '1'), program), "oversized formula rejected");
+        expect(!fx::compile(std::string(300, '-') + "x", program), "deep unary expression rejected");
+        expect(!fx::compile(std::string(300, '(') + "x" + std::string(300, ')'), program), "deep expression rejected");
+        expect(fx::compile("sin(x)+cos(x)", program), "normal expression accepted after rejected input");
     }
 #endif
     std::printf("%d passed, %d failed\n", passed, failed);

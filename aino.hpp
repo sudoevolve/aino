@@ -15,7 +15,7 @@
 //      Clang: clang++ -std=c++17 main.cpp -framework Cocoa -framework CoreText -framework CoreGraphics -framework ImageIO
 //
 //  源码为 UTF-8，MSVC 使用 /utf-8。
-//  静态运行时与平台依赖说明见 docs/01-quickstart.md。
+//  静态运行时与平台依赖说明见 docs/wiki/01-quickstart.md。
 //
 //  作者：sudoevolve <sudoevolve@gmail.com>
 //  许可：Apache-2.0（见 LICENSE）
@@ -859,6 +859,8 @@ public:
      * 每帧仅在动画仍需推进时调用；停止调用即停止续帧，不改变全局动画开关。
      */
     bool request_animation_frame();
+    /** @brief 当前帧登记一次延迟重绘；下一帧若仍需要，应重新登记。仅 UI 线程调用。 */
+    void request_frame_in(float seconds);
 
     // ---- 布局测量 ----
     // 进入后所有图元与命中测试只记账、不落地（不画、不响应、不排帧）。
@@ -1322,7 +1324,7 @@ public:
     // 跨线程叫醒主循环。
     //
     // request_repaint() 只置一个标志位 —— 主循环空闲时是阻塞在内核里的
-    // （WaitMessage / XNextEvent），光改标志叫不醒它。所以**后台线程**里有
+    // （内核事件 / 原生消息等待），光改标志叫不醒它。所以**后台线程**里有
     // 数据到达时（SSH 收字节、下载进度、日志尾部、长任务回调）要用这个：
     //
     //     std::thread([&] {
@@ -1354,6 +1356,11 @@ public:
     // 主循环：事件驱动。有事件就处理，没事件就阻塞在内核等待 —— 空闲 0% CPU。
     // frame 回调只在"需要重绘"时被调用，所以它可以放心地重建整个 UI。
     void run(const std::function<void(Ui&)>& frame);
+    /** @brief 注册同线程子窗口的绘制回调，由该线程正在运行的 run() 派发。
+     * @note 按值持有回调。窗口及回调状态必须在所属 UI 线程销毁，不能在自身回调中销毁窗口。
+     * macOS 的窗口与事件循环必须位于主线程；清空回调可停止自动绘制。
+     */
+    void set_frame_callback(std::function<void(Ui&)> frame);
 
     // 单步：给需要自己控制循环的人用
     bool poll();                       // 处理一批消息，返回是否仍存活
@@ -1362,6 +1369,8 @@ public:
 
     // 剪贴板（input 组件的复制粘贴用）
     void set_clipboard(const std::string& text);
+    /** @brief 写入系统剪贴板；失败返回 false，调用者应保留原始内容。 */
+    bool try_set_clipboard(const std::string& text);
     std::string clipboard() const;
 
     struct Impl;
@@ -1464,6 +1473,7 @@ extern char** environ;
 #  include <objc/message.h>
 #  include <objc/runtime.h>
 #  include <mach-o/dyld.h>
+#  include <pthread.h>
 #  undef Rect
 #  undef Style
 #  include <unistd.h>
@@ -1480,10 +1490,12 @@ extern char** environ;
 #include <list>
 #include <limits>
 #include <unordered_map>
+#include <type_traits>
 #include <deque>
 #include <memory>
 #include <fstream>
 #include <atomic>
+#include <mutex>
 #if !defined(AINO_PLATFORM_WINDOWS)
 #  include <poll.h>
 #  include <fcntl.h>
@@ -1492,6 +1504,14 @@ extern char** environ;
 
 namespace aino {
 namespace detail {
+
+template<class Fn> struct ScopeExit {
+    Fn fn;
+    explicit ScopeExit(Fn action) : fn(std::move(action)) {}
+    ScopeExit(const ScopeExit&) = delete;
+    ScopeExit& operator=(const ScopeExit&) = delete;
+    ~ScopeExit() { fn(); }
+};
 
 // =============================================================================
 //  8.1  基础工具
@@ -3047,6 +3067,9 @@ struct TextRenderer {
         draw(cv, utf8, cx - w * 0.5f, cy - lh * 0.5f, pixel_size, weight, c, clip);
     }
     virtual void  release() = 0;
+    virtual void reconfigure(float dpi, const std::string& family, const std::string& mono) {
+        release(); init(dpi, family, mono);
+    }
 };
 
 #ifdef AINO_PLATFORM_WINDOWS
@@ -3237,6 +3260,12 @@ public:
     void invalidate_dc_state() { cur_font_ = nullptr; cur_color_ = 0xFFFFFFFF; cur_bk_ = -1; }
 
     void release() override {
+        if (cur_dc_ && GetObjectType(cur_dc_)) SelectObject(cur_dc_, GetStockObject(SYSTEM_FONT));
+        cur_dc_ = nullptr;
+        invalidate_dc_state();
+        if (mask_dc_) { DeleteDC(mask_dc_); mask_dc_ = nullptr; }
+        if (mask_bitmap_) { DeleteObject(mask_bitmap_); mask_bitmap_ = nullptr; }
+        mask_pixels_ = nullptr; mask_w_ = mask_h_ = 0;
         for (auto& kv : fonts_) if (kv.second) DeleteObject(kv.second);
         fonts_.clear();
         measure_cache_.clear();
@@ -3266,8 +3295,8 @@ public:
         SIZE sz{0, 0};
         GetTextExtentPoint32W(metric_dc_, w.c_str(), int(w.size()), &sz);
         SelectObject(metric_dc_, old);
-        // 满了一律清空会让接下来几十段文字全部回落到 GDI 往返（周期性卡顿）。
-        // 丢一半就腾得出空间，热的一半还在。
+        if (utf8.size() > 4096) return float(sz.cx); // 限制每项字节，条目数预算才有意义。
+        // 分批腾出空间，避免整表清空；unordered_map 的遍历顺序不是 LRU。
         if (measure_cache_.size() >= 2048) {
             auto it = measure_cache_.begin();
             for (int i = 0; i < 1024 && it != measure_cache_.end(); ++i) it = measure_cache_.erase(it);
@@ -3296,6 +3325,7 @@ public:
         GetTextMetricsW(metric_dc_, &tm);
         SelectObject(metric_dc_, old);
         const float v = float(tm.tmHeight + tm.tmExternalLeading);
+        if (lh_cache_.size() >= 256) lh_cache_.erase(lh_cache_.begin());
         lh_cache_[fk] = v;
         return v;
     }
@@ -3310,7 +3340,8 @@ public:
     }
     void draw_impl(Canvas& cv, const std::string& utf8, float x, float y_top,
                    float size, int weight, const Color& c, const Rect& clip, bool mono) {
-        if (utf8.empty()) return;
+        if (utf8.empty() || c.a == 0) return;
+        if (c.a < 255) { draw_alpha(cv, utf8, x, y_top, size, weight, c, clip, mono, 0); return; }
         HDC dc = reinterpret_cast<HDC>(cv.platform_dc);
         if (!dc) return;
         HFONT f = font(size, weight, 0, mono);
@@ -3343,7 +3374,7 @@ public:
     //     所以先把中心沿旋转后的 x/y 轴各退半宽半高，得到那个角。
     void draw_rot(Canvas& cv, const std::string& utf8, float cx, float cy,
                   float size, int weight, const Color& c, const Rect& clip, float degrees) override {
-        if (utf8.empty()) return;
+        if (utf8.empty() || c.a == 0) return;
         HDC dc = reinterpret_cast<HDC>(cv.platform_dc);
         if (!dc) return;
         const float w  = measure(utf8, size, weight);
@@ -3353,6 +3384,7 @@ public:
         const float hw = w * 0.5f, hh = lh * 0.5f;
         const float ax = cx - (hw * cs - hh * sn);
         const float ay = cy - (hw * sn + hh * cs);
+        if (c.a < 255) { draw_alpha(cv, utf8, ax, ay, size, weight, c, clip, false, degrees); return; }
 
         const int esc10 = int(-degrees * 10.0f);
         HGDIOBJ old_font = SelectObject(dc, font(size, weight, esc10));
@@ -3376,6 +3408,67 @@ public:
     }
 
 private:
+    // GDI 只提供覆盖率；透明文字在 CPU 上与任意背景合成。掩膜分块且复用，
+    // 不为每段文字分配原生对象，也不把 RGB 文字直接烘焙成不透明色。
+    void draw_alpha(Canvas& cv, const std::string& utf8, float x, float y, float size,
+                    int weight, const Color& color, const Rect& clip, bool mono, float degrees) {
+        if (!cv.px) return;
+        const float width = measure_impl(utf8, size, weight, mono);
+        const float height = line_height(size, weight);
+        const float radians = degrees * 3.14159265358979f / 180.0f;
+        const float cs = std::cos(radians), sn = std::sin(radians);
+        float left = x, right = x, top = y, bottom = y;
+        for (int i = 1; i < 4; ++i) {
+            const float dx = (i & 1) ? width : 0, dy = (i & 2) ? height : 0;
+            const float px = x + dx * cs - dy * sn, py = y + dx * sn + dy * cs;
+            left = std::min(left, px); right = std::max(right, px);
+            top = std::min(top, py); bottom = std::max(bottom, py);
+        }
+        // 字形可能在行盒外有 overhang；最终裁剪始终尊重调用方与 Canvas。
+        const float margin = std::max(2.0f, size);
+        Rect visible = Rect(left - margin, top - margin, right - left + 2 * margin,
+                            bottom - top + 2 * margin).intersect(Rect(0, 0, float(cv.w), float(cv.h)));
+        if (clip.w >= 0) visible = visible.intersect(clip);
+        if (cv.clipped) visible = visible.intersect(Rect(float(cv.clip_x0), float(cv.clip_y0),
+            float(cv.clip_x1 - cv.clip_x0), float(cv.clip_y1 - cv.clip_y0)));
+        if (visible.empty()) return;
+        const int x0 = int(std::floor(visible.x)), y0 = int(std::floor(visible.y));
+        const int x1 = int(std::ceil(visible.right())), y1 = int(std::ceil(visible.bottom()));
+        const int mw = std::min(4096, x1 - x0), mh = std::min(512, y1 - y0);
+        if (!mask_dc_ || mask_w_ < mw || mask_h_ < mh) {
+            if (mask_dc_) DeleteDC(mask_dc_);
+            if (mask_bitmap_) DeleteObject(mask_bitmap_);
+            mask_bitmap_ = nullptr; mask_pixels_ = nullptr;
+            mask_dc_ = CreateCompatibleDC(nullptr);
+            mask_w_ = mw; mask_h_ = mh;
+            BITMAPINFO info{};
+            info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            info.bmiHeader.biWidth = mw; info.bmiHeader.biHeight = -mh;
+            info.bmiHeader.biPlanes = 1; info.bmiHeader.biBitCount = 32;
+            if (mask_dc_) mask_bitmap_ = CreateDIBSection(mask_dc_, &info, DIB_RGB_COLORS,
+                reinterpret_cast<void**>(&mask_pixels_), nullptr, 0);
+            if (mask_bitmap_) SelectObject(mask_dc_, mask_bitmap_);
+        }
+        if (!mask_dc_ || !mask_bitmap_ || !mask_pixels_) return;
+        const HFONT selected = font(size, weight, int(-degrees * 10.0f), mono);
+        const HGDIOBJ old_font = SelectObject(mask_dc_, selected);
+        detail::ScopeExit restore_font([&] { SelectObject(mask_dc_, old_font); });
+        SetTextColor(mask_dc_, RGB(255, 255, 255)); SetBkMode(mask_dc_, TRANSPARENT);
+        const std::wstring text = to_wide(utf8);
+        GdiFlush();
+        for (int ty = y0; ty < y1; ty += mask_h_) for (int tx = x0; tx < x1; tx += mask_w_) {
+            std::memset(mask_pixels_, 0, size_t(mask_w_) * size_t(mask_h_) * 4);
+            SetViewportOrgEx(mask_dc_, -tx, -ty, nullptr);
+            ExtTextOutW(mask_dc_, int(std::floor(x + .5f)), int(std::floor(y + .5f)), 0,
+                nullptr, text.c_str(), UINT(text.size()), nullptr);
+            GdiFlush();
+            const int rows = std::min(mask_h_, y1 - ty), cols = std::min(mask_w_, x1 - tx);
+            for (int row = 0; row < rows; ++row) for (int col = 0; col < cols; ++col) {
+                const unsigned coverage = mask_pixels_[(size_t(row) * mask_w_ + col) * 4];
+                if (coverage) cv.blend(tx + col, ty + row, color, float(coverage) / 255.0f);
+            }
+        }
+    }
     static std::wstring& wide_scratch() {
         thread_local std::wstring b;
         return b;
@@ -3397,6 +3490,14 @@ private:
         const uint64_t key = font_key(size, weight, esc10, mono);
         auto it = fonts_.find(key);
         if (it != fonts_.end()) return it->second;
+        if (fonts_.size() >= 256) {
+            for (auto old = fonts_.begin(); old != fonts_.end(); ++old) {
+                if (old->second != cur_font_ && DeleteObject(old->second)) {
+                    fonts_.erase(old);
+                    break;
+                }
+            }
+        }
         int px = int(std::floor(float(int32_t(key >> 32)) / 4.0f + 0.5f));
         HFONT hf = CreateFontW(-px, 0, esc10, esc10, weight < 0 ? FW_NORMAL : weight,
                                FALSE, FALSE, FALSE, DEFAULT_CHARSET,
@@ -3413,6 +3514,10 @@ private:
         return hf;
     }
     HDC metric_dc_ = nullptr;
+    HDC mask_dc_ = nullptr;
+    HBITMAP mask_bitmap_ = nullptr;
+    uint8_t* mask_pixels_ = nullptr;
+    int mask_w_ = 0, mask_h_ = 0;
     float dpi_ = 1.0f;
     std::string family_, mono_;
     std::unordered_map<uint64_t, HFONT> fonts_;
@@ -3708,6 +3813,26 @@ public:
     bool empty() const { return entries_.empty(); }
     size_t bucket_count() const { return entries_.bucket_count(); }
 
+    template<class Cost, class Age>
+    void trim_bytes(size_t budget, uint64_t keep, Cost cost, Age age) {
+        size_t total = 0;
+        for (const auto& entry : entries_) total += cost(entry.second);
+        while (total > budget) {
+            auto oldest = entries_.end();
+            for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+                if (it->first.scope == scope_ && it->first.id == keep) continue;
+                if (oldest == entries_.end() || age(it->second) < age(oldest->second)) oldest = it;
+            }
+            if (oldest == entries_.end()) break;
+            total -= cost(oldest->second); entries_.erase(oldest);
+        }
+    }
+    template<class Cost> size_t bytes(Cost cost) const {
+        size_t total = 0;
+        for (const auto& entry : entries_) total += cost(entry.second);
+        return total;
+    }
+
     void release_scope(uint64_t scope) {
         for (auto it = entries_.begin(); it != entries_.end();) {
             if (it->first.scope == scope) it = entries_.erase(it);
@@ -3867,7 +3992,7 @@ struct Ui::Impl {
     struct EditSnap { std::string text; int caret = 0; int anchor = -1; };
     struct EditStack {
         std::deque<EditSnap> undo, redo;
-        float last = -1e9f;       // 上次压栈时间（合并连续输入用）
+        double last = -1e9;       // steady_clock 时间，与动画步长无关。
         uint64_t kind = 0;
     };
     detail::WidgetStateTable<EditStack> edit_stack;
@@ -3889,8 +4014,16 @@ struct Ui::Impl {
         std::string src;                    // 上一帧的全文，用于校验
         std::vector<std::string> lines;
         std::vector<int> cps_n, cp_base;
+        uint64_t used = 0;
+        size_t bytes() const {
+            size_t total = sizeof(TextLines) + 64 + src.capacity() + lines.capacity() * sizeof(std::string)
+                + (cps_n.capacity() + cp_base.capacity()) * sizeof(int);
+            for (const auto& line : lines) total += line.capacity() + 1;
+            return total;
+        }
     };
     detail::WidgetStateTable<TextLines> text_lines;
+    uint64_t text_lines_serial = 0;
 
     // 本帧 interact() 的调用序号。立即模式下"调用顺序 = 绘制顺序 = 层级"，
     // 序号小的先画、在下面，所以它可以直接当 z 序用。每帧归零重数。
@@ -4112,7 +4245,14 @@ struct Ui::Impl {
     // 平台回调
     std::function<void()> request_repaint;
     std::function<void(const std::string&)> set_clipboard;
+    std::function<bool(const std::string&)> try_set_clipboard;
     std::function<std::string()> get_clipboard;
+    bool copy_to_clipboard(const std::string& value) {
+        if (try_set_clipboard) return try_set_clipboard(value);
+        if (!set_clipboard) return false;
+        set_clipboard(value); // 嵌入宿主保留旧回调契约；原生窗口使用可报告失败的回调。
+        return true;
+    }
     // 把输入法的组合窗 / 候选窗挪到光标处（参数是**物理客户区**像素：
     // caret_x, 输入框上沿, 输入框下沿）。平台后端绑定；未绑定就什么都不做。
     std::function<void(float, float, float)> ime_pos;
@@ -4222,6 +4362,20 @@ struct Ui::Impl {
         Easing e = tw.e ? tw.e : easing::out_cubic;
         const float k = tw.dur > 0.0001f ? clampf(tw.t / tw.dur, 0.0f, 1.0f) : 1.0f;
         return tw.from + (tw.to - tw.from) * e(k);
+    }
+    void abort_frame() noexcept {
+        defer.clear();
+        if (measure_on) { canvas = measure_canvas; measure_canvas = nullptr; measure_on = false; }
+        scroll_stack.clear();
+        clip_logic.clear();
+        xf_stack.clear();
+        frame_open = false;
+        active = 0;
+        gate_on = gate_next = false;
+        gate_allow_n = gate_next_allow_n = 0;
+        input.text_input.clear();
+        input.wheel = 0;
+        for (int i = 0; i < KEY_COUNT; ++i) input.key_pressed[i] = false;
     }
 };
 
@@ -4362,7 +4516,16 @@ bool Ui::pointer_available() const {
            !impl->clip_excludes(impl->input.mouse.x, impl->input.mouse.y);
 }
 const Theme& Ui::theme() const { return impl->theme; }
-void  Ui::set_theme(const Theme& t) { impl->theme = t; }
+void Ui::set_theme(const Theme& t) {
+    const bool fonts_changed = impl->theme.font_family != t.font_family
+        || impl->theme.font_family_mono != t.font_family_mono;
+    impl->theme = t;
+    if (fonts_changed) {
+        if (impl->text) impl->text->reconfigure(impl->scale, t.font_family, t.font_family_mono);
+        impl->adv_cache.clear();
+        impl->wrap_cache.clear(); impl->wrap_lru.clear(); impl->wrap_bytes = 0;
+    }
+}
 float Ui::dpi_scale() const { return impl->scale; }
 float Ui::width() const { return impl->width; }
 float Ui::height() const { return impl->height; }
@@ -4380,6 +4543,14 @@ bool Ui::request_animation_frame() {
     if (impl->measure_on || !impl->frame_open || !impl->request_repaint) return false;
     repaint();
     return true;
+}
+void Ui::request_frame_in(float seconds) {
+    if (impl->measure_on || !impl->frame_open || !std::isfinite(seconds)) return;
+    const auto delay = std::chrono::duration<double>(detail::clampf(seconds, 0.0f, 86400.0f));
+    const auto at = std::chrono::steady_clock::now()
+        + std::chrono::duration_cast<std::chrono::steady_clock::duration>(delay);
+    if (!impl->timed_repaint || at < impl->repaint_at) impl->repaint_at = at;
+    impl->timed_repaint = true;
 }
 void Ui::set_animating(bool on) {
     if (impl->measure_on) return;
@@ -5634,11 +5805,9 @@ inline Skin make_skin(const Theme& th, const Style& st, int default_variant, flo
             sk.fg   = th.label;
             break;
         case Style::Standard:
-            sk.base = th.is_dark() ? th.fill_hover.over(th.control_bg) : th.control_bg;
+            sk.base = th.fill_hover.over(th.control_bg);
             sk.hover = sk.base;
             sk.press = th.fill_press.over(sk.base);
-            sk.border = th.separator; sk.border_w = 1.0f;
-            sk.rim = Color(255, 255, 255, 40);
             break;
         case Style::Outline:
             // Outline 保留细描边，以区别于 Secondary 的半透明填充。
@@ -5906,7 +6075,7 @@ inline void trim_edit_history(Ui::Impl::EditStack& st) {
 inline void edit_snapshot(Ui::Impl* im, uint64_t id, const std::string& before,
                           int caret0, int anchor0, uint64_t kind) {
     auto& st = im->edit_stack[id];
-    const float now = im->clock;
+    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     if (before.size() > edit_history_budget() - sizeof(Ui::Impl::EditSnap) - 1) {
         st.undo.clear();
         st.redo.clear();
@@ -6622,7 +6791,9 @@ bool Ui::input(std::string* value, const Rect& box, const Style& st) {
             }
         }
 
-        const std::string before_text = *value;
+        const bool edit_event = !kin.text_input.empty() || kin.key_hit(KEY_BACKSPACE) || kin.key_hit(KEY_DELETE)
+            || kin.key_hit(KEY_ENTER) || kin.key_hit(KEY_TAB) || kin.ctrl_of('X') || kin.ctrl_of('V');
+        const std::string before_text = edit_event && !undone ? *value : std::string();
         const int caret0 = impl->caret, anchor0 = impl->sel_anchor;
         uint64_t edit_kind = detail::EDIT_OTHER;
 
@@ -6723,18 +6894,18 @@ bool Ui::input(std::string* value, const Rect& box, const Style& st) {
         //    东西清空了；
         //  · 用 ctrl_of() 而非 ctrl()：Ctrl 的 KEYUP 可能排在字母 KEYDOWN 之后。
         if (!st.password && !undone && kin.ctrl_of('C')) {
-            if (has_sel && impl->set_clipboard) {
+            if (has_sel && (impl->set_clipboard || impl->try_set_clipboard)) {
                 std::vector<uint32_t> cps = utf8_codepoints(*value);
-                impl->set_clipboard(utf8_from_codepoints(cps, size_t(sel_from), size_t(sel_to - sel_from)));
+                impl->copy_to_clipboard(utf8_from_codepoints(cps, size_t(sel_from), size_t(sel_to - sel_from)));
             }
         }
         // 剪切必须"进了剪贴板才删"。回调不可用却照样删，等于把用户选中的东西
         // 凭空丢掉了 —— 比不响应更糟。
-        if (!st.password && !undone && kin.ctrl_of('X') && has_sel && impl->set_clipboard) {
+        if (!st.password && !undone && kin.ctrl_of('X') && has_sel && (impl->set_clipboard || impl->try_set_clipboard)) {
             edit_kind = detail::EDIT_OTHER;
             std::vector<uint32_t> cps = utf8_codepoints(*value);
-            impl->set_clipboard(utf8_from_codepoints(cps, size_t(sel_from), size_t(sel_to - sel_from)));
-            delete_selection();
+            if (impl->copy_to_clipboard(utf8_from_codepoints(cps, size_t(sel_from), size_t(sel_to - sel_from))))
+                delete_selection();
         }
         if (!undone && kin.ctrl_of('V')) {
             std::string paste = impl->get_clipboard ? impl->get_clipboard() : std::string();
@@ -7694,8 +7865,13 @@ bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
     const std::vector<int>* cps_p = &cps_local;
     const std::vector<int>* base_p = &base_local;
     Impl::TextLines* tc = nullptr;
-    if (value->size() >= size_t(64u << 10)) tc = &impl->text_lines[id];
-    else impl->text_lines.erase(id);    // 缩回小文档后不再留着整篇副本
+    bool discard_text_cache = false;
+    // 本帧布局持有缓存内 vector 的引用；超预算条目只能在使用结束后释放。
+    detail::ScopeExit trim_text_cache([&] { if (discard_text_cache) impl->text_lines.erase(id); });
+    static const size_t text_budget = detail::memory_budget_kib("AINO_TEXT_BUDGET", size_t(16u << 20));
+    if (value->size() >= size_t(64u << 10) && value->size() <= text_budget / 2) {
+        tc = &impl->text_lines[id]; tc->used = ++impl->text_lines_serial;
+    } else impl->text_lines.erase(id);    // 缩回小文档后不再留着整篇副本
 
     // 重建（或重建后写回缓存）。原地赋值：下面所有 lambda 都按引用捕获
     // lines / cps_n / cp_base，重建后引用仍然有效。
@@ -7713,6 +7889,11 @@ bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
             tc->lines = std::move(nl);
             tc->cps_n = std::move(nc);
             tc->cp_base = std::move(nb);
+            if (tc->bytes() > text_budget) {
+                discard_text_cache = true;
+            } else impl->text_lines.trim_bytes(text_budget, id,
+                [](const Impl::TextLines& entry) { return entry.bytes(); },
+                [](const Impl::TextLines& entry) { return entry.used; });
             // 数据搬进缓存后局部向量是空的，指针必须跟着改过去。
             lines_p = &tc->lines; cps_p = &tc->cps_n; base_p = &tc->cp_base;
         } else {
@@ -7816,7 +7997,9 @@ bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
             }
         }
 
-        const std::string before_text = *value;
+        const bool edit_event = !kin.text_input.empty() || kin.key_hit(KEY_BACKSPACE) || kin.key_hit(KEY_DELETE)
+            || kin.key_hit(KEY_ENTER) || kin.key_hit(KEY_TAB) || kin.ctrl_of('X') || kin.ctrl_of('V');
+        const std::string before_text = edit_event && !undone ? *value : std::string();
         const int caret0 = impl->caret, anchor0 = impl->sel_anchor;
         uint64_t edit_kind = detail::EDIT_OTHER;
 
@@ -7947,16 +8130,16 @@ bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
         }
         // 与单行 input 同一条纪律：可能没绑回调 → 必须判空；无选区不动剪贴板。
         if (!undone && kin.ctrl_of('C')) {
-            if (has_sel && impl->set_clipboard) {
+            if (has_sel && (impl->set_clipboard || impl->try_set_clipboard)) {
                 const std::vector<uint32_t> cps = utf8_codepoints(*value);
-                impl->set_clipboard(utf8_from_codepoints(cps, size_t(sel_from), size_t(sel_to - sel_from)));
+                impl->copy_to_clipboard(utf8_from_codepoints(cps, size_t(sel_from), size_t(sel_to - sel_from)));
             }
         }
-        if (!undone && kin.ctrl_of('X') && has_sel && impl->set_clipboard) {
+        if (!undone && kin.ctrl_of('X') && has_sel && (impl->set_clipboard || impl->try_set_clipboard)) {
             edit_kind = detail::EDIT_OTHER;
             const std::vector<uint32_t> cps = utf8_codepoints(*value);
-            impl->set_clipboard(utf8_from_codepoints(cps, size_t(sel_from), size_t(sel_to - sel_from)));
-            delete_sel();
+            if (impl->copy_to_clipboard(utf8_from_codepoints(cps, size_t(sel_from), size_t(sel_to - sel_from))))
+                delete_sel();
         }
         if (!undone && kin.ctrl_of('V') && impl->get_clipboard) {
             const std::string paste = impl->get_clipboard();
@@ -10801,6 +10984,7 @@ public:
         return pipe_[0] >= 0;
 #endif
     }
+    bool pending() const { return pending_.load(); }
     void notify() {
         if (pending_.exchange(true)) return;
 #ifdef AINO_PLATFORM_WINDOWS
@@ -10840,6 +11024,11 @@ public:
         ::poll(fds, 2, timeout_ms);
 #endif
     }
+#if defined(AINO_PLATFORM_WINDOWS)
+    HANDLE wait_handle() const { return event_; }
+#else
+    int read_descriptor() const { return pipe_[0]; }
+#endif
 private:
     std::atomic<bool> pending_{false};
 #ifdef AINO_PLATFORM_WINDOWS
@@ -10848,6 +11037,13 @@ private:
     int pipe_[2] = {-1, -1};
 #endif
 };
+} // namespace detail
+
+namespace detail {
+inline std::vector<Window*>& scheduled_windows() {
+    thread_local std::vector<Window*> windows;
+    return windows;
+}
 } // namespace detail
 
 struct Window::Impl {
@@ -10863,6 +11059,7 @@ struct Window::Impl {
     bool need_frame = true;
     // 上一帧的时刻（毫秒）。每窗口独立 —— 见 render() 里的说明。
     uint64_t last_frame_ms = 0;
+    std::chrono::steady_clock::time_point next_frame_at{};
     // 上一帧的"再要一帧"是组件自己提的（spinner / 光标闪烁 / hover 插值），
     // 而不是用户输入触发的。主循环靠它决定要不要按 60fps 节流：
     // 区分不出来的话，只要有一个连续动画在跑，need_frame 就恒为真 →
@@ -10898,6 +11095,7 @@ struct Window::Impl {
     Cursor cursor = Cursor::Arrow;
     void* native = nullptr;
     std::function<void()> frame_cb_ptr;   // run() 期间指向用户回调，render() 用
+    bool close_reported = false;         // 子窗口关闭时只通知其它窗口一次。
     // run() 期间指向 Window::render()。窗口过程里要"同步补一帧"时用它 ——
     // 拖边框缩放时主循环被 user32 的模态循环卡住，根本轮不到 run() 出帧。
     std::function<void()> render_fn;
@@ -10973,6 +11171,7 @@ Window::Window(const WindowConfig& cfg) : impl(new Impl()) {
     // 就是"复制一下程序自己关了"）。Ctrl+V 因为调用点写了判空所以不崩，只是没反应。
     // 现在两头都补：这里绑上真实实现，调用点也一律判空（Ui 可以脱离 Window 用）。
     impl->ui.impl->set_clipboard = [this](const std::string& t) { Window::set_clipboard(t); };
+    impl->ui.impl->try_set_clipboard = [this](const std::string& t) { return Window::try_set_clipboard(t); };
     impl->ui.impl->get_clipboard = [this]() { return Window::clipboard(); };
     // 诊断开关：AINO_FRAME_LOG=1 时每 120 帧打印一次渲染耗时。
 #if defined(_MSC_VER)
@@ -11005,6 +11204,8 @@ Window::Window(const WindowConfig& cfg) : impl(new Impl()) {
 }
 
 Window::~Window() {
+    auto& windows = detail::scheduled_windows();
+    windows.erase(std::remove(windows.begin(), windows.end(), this), windows.end());
 #ifdef AINO_PLATFORM_WINDOWS
     detail::w32_destroy(this);
 #elif defined(AINO_PLATFORM_X11)
@@ -11935,16 +12136,10 @@ struct WinPreciseTimer {
         if (!h) h = CreateWaitableTimerW(nullptr, FALSE, nullptr);
     }
     ~WinPreciseTimer() { if (h) CloseHandle(h); }
-    void wait_us(uint64_t us) {
-        if (us == 0) return;
-        if (!h) { Sleep(DWORD((us + 999) / 1000)); return; }
-        LARGE_INTEGER due;
-        due.QuadPart = -LONGLONG(us * 10);        // 相对时间，单位 100ns
-        if (!SetWaitableTimer(h, &due, 0, nullptr, nullptr, FALSE)) {
-            Sleep(DWORD((us + 999) / 1000));
-            return;
-        }
-        WaitForSingleObject(h, INFINITE);
+    HANDLE arm_ms(int milliseconds) {
+        if (!h || milliseconds <= 0) return nullptr;
+        LARGE_INTEGER due{}; due.QuadPart = -LONGLONG(milliseconds) * 10000;
+        return SetWaitableTimer(h, &due, 0, nullptr, nullptr, FALSE) ? h : nullptr;
     }
 };
 
@@ -12015,10 +12210,13 @@ bool Window::poll() {
         // 线程计时器（组字期间压输入法浮动组合窗用的）。这种消息 hwnd 为空、
         // 没有窗口过程可派发，只能在这儿消费。它**故意**不置 need_frame ——
         // 否则组字时会被这个计时器拖着 50fps 重绘。
-        if (!msg.hwnd && msg.message == WM_TIMER && s->ime_timer
-            && msg.wParam == s->ime_timer) {
-            detail::win_hide_ime_comp_window(s);
-            continue;
+        if (!msg.hwnd && msg.message == WM_TIMER) {
+            detail::Win32State* target = s->ime_timer == msg.wParam ? s : nullptr;
+            if (!target) for (Window* window : detail::scheduled_windows()) {
+                auto* sibling = reinterpret_cast<detail::Win32State*>(window->impl->native);
+                if (sibling && sibling->ime_timer == msg.wParam) { target = sibling; break; }
+            }
+            if (target) { detail::win_hide_ime_comp_window(target); continue; }
         }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
@@ -12054,6 +12252,9 @@ void Window::render() {
     // 重新把它置 true，从而让下一帧继续。放到帧末清会把请求吃掉，动画就卡在第一帧。
     o->need_frame = false;
 
+    detail::ScopeExit frame_cleanup([o] {
+        if (o->ui.impl->frame_open) { o->ui.impl->abort_frame(); o->need_frame = true; }
+    });
     Ui& ui = o->ui;
     ui.begin_frame(float(s->pw) / o->scale, float(s->ph) / o->scale, dt, o->scale);
     if (o->frame_cb_ptr) o->frame_cb_ptr();
@@ -12090,44 +12291,6 @@ void Window::render() {
     }
 }
 
-void Window::run(const std::function<void(Ui&)>& frame) {
-    Window::Impl* o = impl;
-    detail::Win32State* s = reinterpret_cast<detail::Win32State*>(o->native);
-    if (!s) return;
-
-    o->frame_cb_ptr = [&frame, o]() { frame(o->ui); };
-    // 窗口过程（WM_SIZE / WM_PAINT）要能在 user32 的模态循环里自己补一帧
-    o->render_fn = [this]() { render(); };
-
-    while (o->running) {
-        // 先把消息队列抽干
-        if (!poll()) break;
-
-        const bool anim = o->ui.animating();
-        if (o->need_frame || anim || o->ui.impl->repaint_timeout_ms() == 0) {
-            o->self_repaint = false;                 // 本轮"自请求"标记清零
-            const uint64_t t0 = detail::win_ticks_us();
-            render();
-            const uint64_t el_us = detail::win_ticks_us() - t0;
-            // 帧日志覆盖所有帧，不只连续动画：鼠标驱动的那一帧往往才是大头。
-            if (o->frame_log) detail::win_frame_log(o, el_us);
-            // 指针移动触发的帧用更长的预算合并；拖动/动画仍按 60fps。
-            const uint32_t budget_ms =
-                (o->move_only && o->ui.impl->active == 0)
-                    ? std::max(o->anim_budget_ms, o->move_budget_ms)
-                    : o->anim_budget_ms;
-            o->move_only = false;      // 下一帧的触发源重新判定
-            const uint64_t budget_us = uint64_t(budget_ms) * 1000u;
-            // 用高精度等待补足预算：Sleep 的 15.6ms 粒度会把 60fps 砍到 33fps。
-            if (el_us < budget_us) detail::win_timer().wait_us(budget_us - el_us);
-        } else {
-            // 没有待办 → 阻塞在内核里等消息。这就是空闲 0% CPU 的来源。
-            o->wake_signal.wait(o->ui.impl->repaint_timeout_ms());
-        }
-    }
-    o->frame_cb_ptr = nullptr;
-    o->render_fn = nullptr;
-}
 
 void Window::set_title(const std::string& title) {
     Window::Impl* o = impl;
@@ -12149,9 +12312,9 @@ void Window::set_size(int w, int h) {
 
 // OpenClipboard 可能因其它进程占用而失败；最多重试 8 次，每次间隔 1ms。
 namespace detail {
-inline bool clipboard_open_retry() {
+inline bool clipboard_open_retry(HWND owner = nullptr) {
     for (int i = 0; i < 8; ++i) {
-        if (OpenClipboard(nullptr)) return true;
+        if (OpenClipboard(owner)) return true;
         Sleep(1);
     }
     return false;
@@ -12159,19 +12322,24 @@ inline bool clipboard_open_retry() {
 } // namespace detail
 
 void Window::set_clipboard(const std::string& text) {
-    if (!detail::clipboard_open_retry()) return;
-    EmptyClipboard();
+    (void)try_set_clipboard(text);
+}
+bool Window::try_set_clipboard(const std::string& text) {
+    auto* state = reinterpret_cast<detail::Win32State*>(impl->native);
+    if (!state || !state->hwnd) return false;
     const std::wstring w = detail::to_wide(text);
     const size_t bytes = (w.size() + 1) * sizeof(wchar_t);
-    if (HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes)) {
-        void* dst = GlobalLock(mem);
-        if (!dst) { GlobalFree(mem); CloseClipboard(); return; }
-        memcpy(dst, w.c_str(), bytes);
-        GlobalUnlock(mem);
-        // SetClipboardData 成功后所有权归系统，不能再 GlobalFree；失败则必须自己释放。
-        if (!SetClipboardData(CF_UNICODETEXT, mem)) GlobalFree(mem);
-    }
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!mem) return false;
+    void* dst = GlobalLock(mem);
+    if (!dst) { GlobalFree(mem); return false; }
+    memcpy(dst, w.c_str(), bytes);
+    GlobalUnlock(mem);
+    if (!detail::clipboard_open_retry(state->hwnd)) { GlobalFree(mem); return false; }
+    const bool stored = EmptyClipboard() && SetClipboardData(CF_UNICODETEXT, mem);
+    if (!stored) GlobalFree(mem);
     CloseClipboard();
+    return stored;
 }
 
 std::string Window::clipboard() const {
@@ -12511,6 +12679,12 @@ public:
         ft_ready_ = ft_api().lib != nullptr && fc_api().lib != nullptr;
         x11_trace("text init: family=%s mono=%s freetype=%d", family.c_str(), mono.c_str(),
                   ft_ready_ ? 1 : 0);
+    }
+    void reconfigure(float dpi, const std::string& family, const std::string& mono) override {
+        Display* dpy = dpy_;
+        const Drawable target = target_;
+        release(); init(dpi, family, mono);
+        set_drawable(dpy, target, nullptr);
     }
     void release() override {
         release_fonts();
@@ -13118,6 +13292,17 @@ struct X11State {
     Atom settings_selection = 0, settings_property = 0, resource_manager = 0, manager = 0;
     WindowConfig config;
 
+    std::string clipboard_text, clipboard_received;
+    bool clipboard_waiting = false, clipboard_done = false, clipboard_ok = false, clipboard_incr = false;
+    Atom clipboard_property = 0, clipboard_selection = 0, clipboard_utf8 = 0, clipboard_increment = 0;
+    struct ClipboardSend {
+        ::Window window; Atom property, type; std::string text; size_t offset = 0;
+        std::chrono::steady_clock::time_point updated = std::chrono::steady_clock::now();
+    };
+    std::vector<ClipboardSend> clipboard_sends;
+    ::Cursor cursors[6] = {};
+    unsigned cursor_shape = 0;
+
     float mx = -1e6f, my = -1e6f;
     bool  btn_down[3] = {false, false, false};
     bool  btn_pressed[3] = {false, false, false};
@@ -13131,6 +13316,149 @@ struct X11State {
     bool  key_shift[KEY_COUNT] = {};
     bool  key_alt[KEY_COUNT]   = {};
 };
+
+inline std::vector<X11State*>& x11_clipboard_windows() {
+    thread_local std::vector<X11State*> windows;
+    return windows;
+}
+
+// 外部选区 requestor 可以随时销毁。仅在这段同步事务中捕获其 BadWindow，
+// 其它 Display / Thread 的错误继续交回宿主处理器；退出后恢复全局 Xlib handler。
+class X11SelectionErrors {
+    Display* display_;
+    std::unique_lock<std::mutex> lock_;
+    static std::mutex& mutex() { static std::mutex value; return value; }
+    static std::atomic<XErrorHandler>& previous() { static std::atomic<XErrorHandler> value{nullptr}; return value; }
+    static X11SelectionErrors*& current() { thread_local X11SelectionErrors* value = nullptr; return value; }
+    static int handle(Display* display, XErrorEvent* error) {
+        auto* scope = current();
+        if (scope && scope->display_ == display && (error->error_code == BadWindow || error->error_code == BadAtom
+            || error->error_code == BadMatch)) return 0;
+        auto handler = previous().load(); return handler ? handler(display, error) : 0;
+    }
+public:
+    explicit X11SelectionErrors(Display* display) : display_(display), lock_(mutex()) {
+        XSync(display_, False);
+        previous().store(XSetErrorHandler(handle)); current() = this;
+    }
+    ~X11SelectionErrors() {
+        XSync(display_, False); current() = nullptr; XSetErrorHandler(previous().load());
+    }
+};
+
+inline void x11_clipboard_atoms(X11State* s) {
+    if (s->clipboard_selection) return;
+    s->clipboard_selection = XInternAtom(s->dpy, "CLIPBOARD", False);
+    s->clipboard_utf8 = XInternAtom(s->dpy, "UTF8_STRING", False);
+    s->clipboard_increment = XInternAtom(s->dpy, "INCR", False);
+    s->clipboard_property = XInternAtom(s->dpy, "AINO_CLIPBOARD", False);
+}
+inline Bool x11_clipboard_filter(Display*, XEvent* e, XPointer arg) {
+    auto* s = reinterpret_cast<X11State*>(arg);
+    if (e->type == SelectionRequest || e->type == SelectionNotify || e->type == SelectionClear) return True;
+    if (e->type != PropertyNotify) return False;
+    if (e->xproperty.window == s->win && e->xproperty.atom == s->clipboard_property) return True;
+    for (const auto& send : s->clipboard_sends)
+        if (send.window == e->xproperty.window && send.property == e->xproperty.atom) return True;
+    return False;
+}
+inline bool x11_clipboard_event(X11State* s, XEvent& event) {
+    if (event.type == DestroyNotify && event.xdestroywindow.window != s->win) {
+        const auto count = s->clipboard_sends.size();
+        s->clipboard_sends.erase(std::remove_if(s->clipboard_sends.begin(), s->clipboard_sends.end(),
+            [&](const X11State::ClipboardSend& send) { return send.window == event.xdestroywindow.window; }), s->clipboard_sends.end());
+        if (count != s->clipboard_sends.size()) return true;
+    }
+    if (event.type != SelectionRequest && event.type != SelectionNotify
+        && event.type != SelectionClear && event.type != PropertyNotify) return false;
+    x11_clipboard_atoms(s);
+    constexpr size_t limit = 32u << 20, chunk = 64u << 10;
+    const Atom selection = s->clipboard_selection, utf8 = s->clipboard_utf8, incr = s->clipboard_increment;
+    if (event.type == SelectionRequest) {
+        const auto& request = event.xselectionrequest;
+        if (request.selection != selection) return false;
+        X11SelectionErrors errors(s->dpy);
+        const auto now = std::chrono::steady_clock::now();
+        s->clipboard_sends.erase(std::remove_if(s->clipboard_sends.begin(), s->clipboard_sends.end(),
+            [&](const X11State::ClipboardSend& send) { return now - send.updated > std::chrono::seconds(30); }), s->clipboard_sends.end());
+        XEvent reply{};
+        reply.xselection.type = SelectionNotify; reply.xselection.display = request.display;
+        reply.xselection.requestor = request.requestor; reply.xselection.selection = request.selection;
+        reply.xselection.target = request.target; reply.xselection.time = request.time;
+        const Atom property = request.property ? request.property : request.target;
+        const Atom targets = XInternAtom(s->dpy, "TARGETS", False), text = XInternAtom(s->dpy, "TEXT", False);
+        if (request.target == targets) {
+            const Atom supported[] = {targets, utf8, text};
+            XChangeProperty(s->dpy, request.requestor, property, XA_ATOM, 32, PropModeReplace,
+                reinterpret_cast<const unsigned char*>(supported), 3);
+            reply.xselection.property = property;
+        } else if (request.target == utf8 || request.target == text) {
+            if (s->clipboard_text.size() <= chunk) {
+                XChangeProperty(s->dpy, request.requestor, property, utf8, 8, PropModeReplace,
+                    reinterpret_cast<const unsigned char*>(s->clipboard_text.data()), int(s->clipboard_text.size()));
+                reply.xselection.property = property;
+            } else {
+                size_t bytes = s->clipboard_text.size();
+                for (const auto& send : s->clipboard_sends) bytes += send.text.size();
+                XWindowAttributes attributes{};
+                if (bytes <= limit && s->clipboard_sends.size() < 8
+                    && XGetWindowAttributes(s->dpy, request.requestor, &attributes)) {
+                    XSelectInput(s->dpy, request.requestor, attributes.your_event_mask | PropertyChangeMask | StructureNotifyMask);
+                    s->clipboard_sends.push_back({request.requestor, property, utf8, s->clipboard_text, 0});
+                    const unsigned long length = static_cast<unsigned long>(s->clipboard_text.size());
+                    XChangeProperty(s->dpy, request.requestor, property, incr, 32, PropModeReplace,
+                        reinterpret_cast<const unsigned char*>(&length), 1);
+                    reply.xselection.property = property;
+                }
+            }
+        }
+        XSendEvent(s->dpy, request.requestor, False, 0, &reply); XFlush(s->dpy);
+        return true;
+    }
+    if (event.type == SelectionClear && event.xselectionclear.selection == selection) {
+        s->clipboard_text.clear(); return true;
+    }
+    if (event.type == PropertyNotify && event.xproperty.state == PropertyDelete) {
+        for (auto it = s->clipboard_sends.begin(); it != s->clipboard_sends.end(); ++it) {
+            if (it->window != event.xproperty.window || it->property != event.xproperty.atom) continue;
+            X11SelectionErrors errors(s->dpy);
+            it->updated = std::chrono::steady_clock::now();
+            const size_t size = std::min(chunk, it->text.size() - it->offset);
+            XChangeProperty(s->dpy, it->window, it->property, it->type, 8, PropModeReplace,
+                reinterpret_cast<const unsigned char*>(it->text.data() + it->offset), int(size));
+            it->offset += size;
+            if (!size) s->clipboard_sends.erase(it);
+            XFlush(s->dpy); return true;
+        }
+    }
+    const bool notify = event.type == SelectionNotify && s->clipboard_waiting
+        && event.xselection.requestor == s->win && event.xselection.selection == selection;
+    const bool next = event.type == PropertyNotify && s->clipboard_waiting && s->clipboard_incr
+        && event.xproperty.window == s->win && event.xproperty.atom == s->clipboard_property
+        && event.xproperty.state == PropertyNewValue;
+    if (!notify && !next) return false;
+    if (notify && !event.xselection.property) { s->clipboard_done = true; return true; }
+    Atom type = 0; int format = 0;
+    unsigned long count = 0, remaining = 0;
+    unsigned char* data = nullptr;
+    const int rc = XGetWindowProperty(s->dpy, s->win, s->clipboard_property, 0, long(limit / 4),
+        True, AnyPropertyType, &type, &format, &count, &remaining, &data);
+    ScopeExit release([&] { if (data) XFree(data); });
+    if (rc != Success || remaining || (type != incr && (format != 8 || type != utf8))) {
+        s->clipboard_done = true; return true;
+    }
+    if (type == incr) {
+        if (format != 32 || count != 1 || !data || *reinterpret_cast<unsigned long*>(data) > limit) {
+            s->clipboard_done = true; return true;
+        }
+        s->clipboard_incr = true;
+        XDeleteProperty(s->dpy, s->win, s->clipboard_property);
+    } else if (count <= limit - s->clipboard_received.size()) {
+        if (count) s->clipboard_received.append(reinterpret_cast<const char*>(data), size_t(count));
+        if (!s->clipboard_incr || !count) { s->clipboard_ok = true; s->clipboard_done = true; }
+    } else s->clipboard_done = true;
+    XFlush(s->dpy); return true;
+}
 
 // 输入法坐标始终是物理客户区坐标，随输入框滚动和 DPI 更新。
 inline void x11_set_ime_pos(X11State* s, float caret_x, float top, float bottom) {
@@ -13214,13 +13542,16 @@ inline void x11_apply_cursor(X11State* s) {
     unsigned shape = XC_left_ptr;
     switch (s->owner->cursor) {
         case Cursor::Hand:    shape = XC_hand2; break;
+        case Cursor::Text:
         case Cursor::IBeam:   shape = XC_xterm; break;
         case Cursor::ResizeH: shape = XC_sb_h_double_arrow; break;
         case Cursor::ResizeV: shape = XC_sb_v_double_arrow; break;
         default:              shape = XC_left_ptr; break;
     }
-    ::Cursor c = XCreateFontCursor(s->dpy, shape);   // Xlib 的 Cursor，不是 aino::Cursor
-    if (c) { XDefineCursor(s->dpy, s->win, c); XFreeCursor(s->dpy, c); }
+    const int index = std::max(0, std::min(5, int(s->owner->cursor)));
+    if (s->cursor_shape == shape && s->cursors[index]) return;
+    if (!s->cursors[index]) s->cursors[index] = XCreateFontCursor(s->dpy, shape);
+    if (s->cursors[index]) { XDefineCursor(s->dpy, s->win, s->cursors[index]); s->cursor_shape = shape; }
 }
 
 inline void x11_feed_input(X11State* s) {
@@ -13316,7 +13647,7 @@ inline void x11_refresh_scale(X11State* s) {
     o->scale = scale;
     // 新字号重新生成位图，释放旧 DPI 下的字体和字形缓存。
     if (o->text) {
-        o->text->release(); o->text->init(scale, o->theme.font_family, o->theme.font_family_mono);
+        o->text->release(); o->text->init(scale, o->ui.theme().font_family, o->ui.theme().font_family_mono);
         static_cast<X11TextRenderer*>(o->text)->set_drawable(s->dpy, s->win, s->gc);
     }
     x11_size_hints(s, w, h);
@@ -13325,6 +13656,7 @@ inline void x11_refresh_scale(X11State* s) {
 }
 
 inline bool x11_handle(X11State* s, XEvent& e) {
+    if (x11_clipboard_event(s, e)) return true;
     Window::Impl* o = s->owner;
     // XIM 先消费组字按键及协议事件，避免拼音同时落入正文和快捷键。
     if (XFilterEvent(&e, None)) { o->need_frame = true; return true; }
@@ -13541,7 +13873,7 @@ inline void x11_create(Window* self, const WindowConfig& cfg) {
         } else std::fprintf(stderr, "[aino] %s\n", error.c_str());
     }
     XSelectInput(s->dpy, s->win,
-                 ExposureMask | StructureNotifyMask | PointerMotionMask |
+                 PropertyChangeMask | ExposureMask | StructureNotifyMask | PointerMotionMask |
                  ButtonPressMask | ButtonReleaseMask | KeyPressMask | KeyReleaseMask |
                  EnterWindowMask | LeaveWindowMask | FocusChangeMask);
     s->wm_delete = XInternAtom(s->dpy, "WM_DELETE_WINDOW", False);
@@ -13606,12 +13938,15 @@ inline void x11_create(Window* self, const WindowConfig& cfg) {
     x11_create_backbuffer(s, w, h);
     o->ui.impl->canvas = &o->canvas;
     o->need_frame = true;
+    x11_clipboard_windows().push_back(s);
 }
 
 inline void x11_destroy(Window* self) {
     Window::Impl* o = self->impl;
     X11State* s = reinterpret_cast<X11State*>(o->native);
     if (!s) return;
+    auto& windows = x11_clipboard_windows();
+    windows.erase(std::remove(windows.begin(), windows.end(), s), windows.end());
     // 文本渲染器持有此 Display 的 XFontSet / GC / Pixmap，必须在关闭连接前释放。
     if (o->text) o->text->release();
     if (s->img) { s->img->data = nullptr; XDestroyImage(s->img); s->img = nullptr; }
@@ -13619,6 +13954,7 @@ inline void x11_destroy(Window* self) {
     if (s->im) { XCloseIM(s->im); s->im = nullptr; }
     if (s->im_font) { XFreeFontSet(s->dpy, s->im_font); s->im_font = nullptr; }
     if (s->gc) { XFreeGC(s->dpy, s->gc); s->gc = nullptr; }
+    for (auto cursor : s->cursors) if (cursor) XFreeCursor(s->dpy, cursor);
     if (s->win) XDestroyWindow(s->dpy, s->win);
     if (s->dpy) XCloseDisplay(s->dpy);
     delete s;
@@ -13651,6 +13987,7 @@ void Window::render() {
     detail::X11State* s = reinterpret_cast<detail::X11State*>(o->native);
     if (!s || !s->img) return;
 
+    if (o->ui.impl->frame_open) { o->need_frame = true; return; }
     timespec ts{};
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t now = uint64_t(ts.tv_sec) * 1000u + uint64_t(ts.tv_nsec / 1000000);
@@ -13660,6 +13997,9 @@ void Window::render() {
 
     detail::x11_feed_input(s);
     o->need_frame = false;   // 同 Windows：帧前清，帧内 repaint() 可再次置位
+    detail::ScopeExit frame_cleanup([o] {
+        if (o->ui.impl->frame_open) { o->ui.impl->abort_frame(); o->need_frame = true; }
+    });
     Ui& ui = o->ui;
     ui.begin_frame(float(s->pw) / o->scale, float(s->ph) / o->scale, dt, o->scale);
     if (o->frame_cb_ptr) o->frame_cb_ptr();
@@ -13670,29 +14010,6 @@ void Window::render() {
     detail::x11_apply_cursor(s);
 }
 
-void Window::run(const std::function<void(Ui&)>& frame) {
-    Window::Impl* o = impl;
-    detail::X11State* s = reinterpret_cast<detail::X11State*>(o->native);
-    if (!s) return;
-    o->frame_cb_ptr = [&frame, o]() { frame(o->ui); };
-
-    while (o->running) {
-        if (!poll()) break;
-        const bool anim = o->ui.animating();
-        if (o->need_frame || anim || o->ui.impl->repaint_timeout_ms() == 0) {
-            o->self_repaint = false;
-            const uint64_t t0 = detail::x11_ticks_ms();
-            render();
-            // 所有帧统一节流到 anim_fps（默认 60fps），不只连续动画：
-            // 鼠标每动一次 X 就投一个 MotionNotify，不封顶就被输入频率牵着走。
-            const uint64_t el = detail::x11_ticks_ms() - t0;
-            if (el < o->anim_budget_ms) usleep(useconds_t((o->anim_budget_ms - el) * 1000));
-        } else {
-            o->wake_signal.wait(o->ui.impl->repaint_timeout_ms(), ConnectionNumber(s->dpy));
-        }
-    }
-    o->frame_cb_ptr = nullptr;
-}
 
 void Window::set_title(const std::string& title) {
     detail::X11State* s = reinterpret_cast<detail::X11State*>(impl->native);
@@ -13703,14 +14020,55 @@ void Window::set_size(int w, int h) {
     if (s && s->dpy && s->win) XResizeWindow(s->dpy, s->win, unsigned(std::max(1, int(w * impl->scale + .5f))), unsigned(std::max(1, int(h * impl->scale + .5f))));
 }
 
-void Window::set_clipboard(const std::string& text) {
-    detail::X11State* s = reinterpret_cast<detail::X11State*>(impl->native);
-    if (!s || !s->dpy) return;
-    Atom sel = XInternAtom(s->dpy, "CLIPBOARD", False);
-    XSetSelectionOwner(s->dpy, sel, s->win, CurrentTime);
-    (void)text;   // 完整实现需要响应 SelectionRequest，这里只做形式上的所有权声明
+void Window::set_clipboard(const std::string& text) { (void)try_set_clipboard(text); }
+bool Window::try_set_clipboard(const std::string& text) {
+    auto* s = reinterpret_cast<detail::X11State*>(impl->native);
+    if (!s || !s->dpy || text.size() > (32u << 20)) return false;
+    detail::x11_clipboard_atoms(s);
+    s->clipboard_text = text;
+    XSetSelectionOwner(s->dpy, s->clipboard_selection, s->win, CurrentTime);
+    XFlush(s->dpy);
+    return XGetSelectionOwner(s->dpy, s->clipboard_selection) == s->win;
 }
-std::string Window::clipboard() const { return std::string(); }
+std::string Window::clipboard() const {
+    auto* s = reinterpret_cast<detail::X11State*>(impl->native);
+    if (!s || !s->dpy || s->clipboard_waiting) return {};
+    detail::x11_clipboard_atoms(s);
+    const auto owner = XGetSelectionOwner(s->dpy, s->clipboard_selection);
+    if (!owner) return {};
+    if (owner == s->win) return s->clipboard_text;
+    s->clipboard_received.clear(); s->clipboard_done = s->clipboard_ok = s->clipboard_incr = false;
+    s->clipboard_waiting = true;
+    detail::ScopeExit reset([&] {
+        s->clipboard_waiting = false; XDeleteProperty(s->dpy, s->win, s->clipboard_property);
+    });
+    XConvertSelection(s->dpy, s->clipboard_selection, s->clipboard_utf8,
+        s->clipboard_property, s->win, CurrentTime);
+    XFlush(s->dpy);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!s->clipboard_done && std::chrono::steady_clock::now() < deadline) {
+        // 同线程的选区 owner 可能在另一个 Display 连接上；一起服务协议以免互等超时。
+        // 帧内不派发 resize 或其它 UI 事件，避免重建正在使用的画布。
+        std::vector<pollfd> descriptors;
+        bool saturated = false;
+        for (auto* window : detail::x11_clipboard_windows()) {
+            XEvent event{};
+            int handled = 0;
+            while (handled < 64 && std::chrono::steady_clock::now() < deadline
+                && XCheckIfEvent(window->dpy, &event, detail::x11_clipboard_filter, reinterpret_cast<XPointer>(window))) {
+                detail::x11_clipboard_event(window, event);
+                ++handled;
+            }
+            saturated |= handled == 64;
+            descriptors.push_back({ConnectionNumber(window->dpy), POLLIN, 0});
+        }
+        if (s->clipboard_done) break;
+        if (saturated) continue; // 队列已读入 Xlib 时无需再等 fd，同时保留总截止时间。
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+        ::poll(descriptors.data(), descriptors.size(), int(std::max<int64_t>(0, left)));
+    }
+    return s->clipboard_ok ? s->clipboard_received : std::string();
+}
 
 #endif // AINO_PLATFORM_X11
 
@@ -13733,19 +14091,38 @@ template <class R, class Recv, class... Args>
 inline R oc_send(Recv recv, SEL op, Args... args) {
     // 接收者类型也不能写死成 id —— objc_getClass 返回的是 Class，
     // 这是纯 C++ 编译单元，Class → id 没有隐式转换，所以先 reinterpret_cast。
+#if defined(__x86_64__)
+    if constexpr (std::is_same<R, CGRect>::value) {
+        R result{};
+        reinterpret_cast<void (*)(R*, id, SEL, Args...)>(objc_msgSend_stret)(
+            &result, reinterpret_cast<id>(recv), op, args...);
+        return result;
+    }
+#endif
     return reinterpret_cast<R (*)(id, SEL, Args...)>(objc_msgSend)(
         reinterpret_cast<id>(recv), op, args...);
 }
 
 class CoreTextRenderer : public TextRenderer {
 public:
-    void init(float, const std::string& family, const std::string&) override {
+    void init(float, const std::string& family, const std::string& mono) override {
         family_ = family.empty() ? std::string("Helvetica Neue") : family;
+        mono_ = mono.empty() ? std::string("Menlo") : mono;
     }
-    void release() override { for (auto& kv : fonts_) if (kv.second) CFRelease(kv.second); fonts_.clear(); }
+    void release() override {
+        for (auto& entry : lines_) CFRelease(entry.second.line);
+        lines_.clear(); line_bytes_ = 0;
+        for (auto& kv : fonts_) if (kv.second) CFRelease(kv.second);
+        fonts_.clear();
+    }
 
-    float measure(const std::string& utf8, float size, int weight) override {
-        CTLineRef line = make_line(utf8, size, weight, Color(0, 0, 0));
+    float measure_mono(const std::string& text, float size, int weight) override { return measure_impl(text, size, weight, true); }
+    float ascent_mono(float size, int weight) override {
+        CTFontRef f = font(size, weight, true); return f ? float(CTFontGetAscent(f)) : size * .8f;
+    }
+    float measure(const std::string& text, float size, int weight) override { return measure_impl(text, size, weight, false); }
+    float measure_impl(const std::string& utf8, float size, int weight, bool mono) {
+        CTLineRef line = make_line(utf8, size, weight, Color(0, 0, 0), mono);
         if (!line) return 0.0f;
         double w = CTLineGetTypographicBounds(line, nullptr, nullptr, nullptr);
         CFRelease(line);
@@ -13763,9 +14140,17 @@ public:
     }
     void draw(Canvas& cv, const std::string& utf8, float x, float y_top,
               float size, int weight, const Color& c, const Rect& clip) override {
+        draw_impl(cv, utf8, x, y_top, size, weight, c, clip, false);
+    }
+    void draw_mono(Canvas& cv, const std::string& utf8, float x, float y_top,
+                   float size, int weight, const Color& c, const Rect& clip) override {
+        draw_impl(cv, utf8, x, y_top, size, weight, c, clip, true);
+    }
+    void draw_impl(Canvas& cv, const std::string& utf8, float x, float y_top,
+                   float size, int weight, const Color& c, const Rect& clip, bool mono) {
         CGContextRef ctx = reinterpret_cast<CGContextRef>(cv.platform_dc);
         if (!ctx) return;
-        CTLineRef line = make_line(utf8, size, weight, c);
+        CTLineRef line = make_line(utf8, size, weight, c, mono);
         if (!line) return;
 
         CGContextSaveGState(ctx);
@@ -13780,51 +14165,83 @@ public:
         CGContextSetTextMatrix(ctx, CGAffineTransformIdentity);
         CGContextTranslateCTM(ctx, 0.0, CGFloat(cv.h));
         CGContextScaleCTM(ctx, 1.0, -1.0);
-        CGContextSetTextPosition(ctx, x, y_top + ascent(size, weight));
+        CGContextSetTextPosition(ctx, x, y_top + (mono ? ascent_mono(size, weight) : ascent(size, weight)));
         CTLineDraw(line, ctx);
         CGContextRestoreGState(ctx);
         CFRelease(line);
     }
 
 private:
-    CTFontRef font(float size, int weight) {
+    CTFontRef font(float size, int weight, bool mono = false) {
         int q = int(size * 2.0f + 0.5f);
-        uint64_t key = (uint64_t(uint32_t(q)) << 32) | uint32_t(weight < 0 ? 400 : weight);
+        uint64_t key = (uint64_t(uint32_t(q)) << 32) | (mono ? (uint64_t(1) << 63) : 0) | uint32_t(weight < 0 ? 400 : weight);
         auto it = fonts_.find(key);
         if (it != fonts_.end()) return it->second;
-        CFStringRef name = CFStringCreateWithCString(kCFAllocatorDefault, family_.c_str(), kCFStringEncodingUTF8);
+        CFStringRef name = CFStringCreateWithCString(kCFAllocatorDefault, (mono ? mono_ : family_).c_str(), kCFStringEncodingUTF8);
         const CTFontSymbolicTraits traits = (weight >= 600) ? kCTFontBoldTrait : 0;
-        CTFontRef base = CTFontCreateWithName(name, CGFloat(float(q) / 2.0f), nullptr);
-        CTFontRef f = traits ? CTFontCreateCopyWithSymbolicTraits(base, 0.0, nullptr, traits, traits) : base;
-        if (f != base) CFRelease(base);
+        CTFontRef base = CTFontCreateWithName(name ? name : CFSTR("Helvetica"), CGFloat(float(q) / 2.0f), nullptr);
+        CTFontRef f = traits && base ? CTFontCreateCopyWithSymbolicTraits(base, 0.0, nullptr, traits, traits) : base;
+        if (f != base && base) CFRelease(base);
         if (!f) f = CTFontCreateWithName(CFSTR("Helvetica"), CGFloat(float(q) / 2.0f), nullptr);
-        CFRelease(name);
+        if (name) CFRelease(name);
+        if (fonts_.size() >= 128) { auto old = fonts_.begin(); if (old->second) CFRelease(old->second); fonts_.erase(old); }
         fonts_[key] = f;
         return f;
     }
-    CTLineRef make_line(const std::string& utf8, float size, int weight, const Color& c) {
-        CTFontRef f = font(size, weight);
+    CTLineRef make_line(const std::string& utf8, float size, int weight, const Color& c, bool mono) {
+        std::string key;
+        if (utf8.size() <= 4096) {
+            key = std::to_string(int(size * 2.0f + .5f)) + ":" + std::to_string(weight) + ":"
+                + (mono ? "m:" : "p:") + std::to_string(c.r) + ":" + std::to_string(c.g) + ":"
+                + std::to_string(c.b) + ":" + std::to_string(c.a) + ":" + utf8;
+            auto found = lines_.find(key);
+            if (found != lines_.end()) {
+                found->second.used = ++line_serial_;
+                CFRetain(found->second.line); return found->second.line;
+            }
+        }
+        CTFontRef f = font(size, weight, mono);
         if (!f) return nullptr;
         CFStringRef str = CFStringCreateWithBytes(kCFAllocatorDefault,
             reinterpret_cast<const UInt8*>(utf8.c_str()), CFIndex(utf8.size()),
             kCFStringEncodingUTF8, false);
         if (!str) return nullptr;
         CFMutableAttributedStringRef attr = CFAttributedStringCreateMutable(kCFAllocatorDefault, 0);
+        if (!attr) { CFRelease(str); return nullptr; }
         CFAttributedStringReplaceString(attr, CFRangeMake(0, 0), str);
         CFRange full = CFRangeMake(0, CFStringGetLength(str));
         CFAttributedStringSetAttribute(attr, full, kCTFontAttributeName, f);
         CGFloat comps[4] = { CGFloat(c.r) / 255.0, CGFloat(c.g) / 255.0, CGFloat(c.b) / 255.0, CGFloat(c.a) / 255.0 };
         CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+        if (!space) { CFRelease(str); CFRelease(attr); return nullptr; }
         CGColorRef cg = CGColorCreate(space, comps);
+        if (!cg) { CGColorSpaceRelease(space); CFRelease(str); CFRelease(attr); return nullptr; }
         CFAttributedStringSetAttribute(attr, full, kCTForegroundColorAttributeName, cg);
         CTLineRef line = CTLineCreateWithAttributedString(attr);
         CGColorRelease(cg);
         CGColorSpaceRelease(space);
         CFRelease(str);
         CFRelease(attr);
+        if (line && !key.empty()) {
+            // CFLine 的 glyph/run 分配不可直接查询，按 UTF-8 字节计保守预算并限制条目数。
+            const size_t cost = 512 + key.capacity() + utf8.size() * 128;
+            while (!lines_.empty() && (lines_.size() >= 256 || line_bytes_ + cost > (2u << 20))) {
+                auto oldest = lines_.begin();
+                for (auto it = lines_.begin(); it != lines_.end(); ++it)
+                    if (it->second.used < oldest->second.used) oldest = it;
+                line_bytes_ -= oldest->second.cost;
+                CFRelease(oldest->second.line); lines_.erase(oldest);
+            }
+            lines_.emplace(std::move(key), Line{line, cost, ++line_serial_});
+            line_bytes_ += cost; CFRetain(line);
+        }
         return line;
     }
-    std::string family_;
+    struct Line { CTLineRef line; size_t cost; uint64_t used; };
+    std::unordered_map<std::string, Line> lines_;
+    size_t line_bytes_ = 0;
+    uint64_t line_serial_ = 0;
+    std::string family_, mono_;
     std::unordered_map<uint64_t, CTFontRef> fonts_;
 };
 
@@ -13836,6 +14253,15 @@ struct CocoaState {
     std::vector<uint8_t> buffer;
     int pw = 0, ph = 0;
 
+    bool geometry_dirty = true, closed = false;
+    std::string marked_text;
+    CFIndex marked_units = 0;
+    CGRect ime_rect = CGRectMake(0, 0, 1, 18);
+    id tracking = nullptr;
+    CFFileDescriptorRef wake_descriptor = nullptr;
+    CFRunLoopSourceRef wake_source = nullptr;
+    unsigned char key_repeat[KEY_COUNT] = {};
+
     float mx = -1e6f, my = -1e6f;
     bool  btn_down[3] = {false, false, false};
     bool  btn_pressed[3] = {false, false, false};
@@ -13846,7 +14272,6 @@ struct CocoaState {
     bool  key_down[KEY_COUNT] = {};
     bool  key_pressed[KEY_COUNT] = {};
     // 修饰键锁存：和 Windows / X11 后端保持同一套语义（Input::ctrl_of 靠它）。
-    // ⚠ 目前 macOS 侧还没有代码往里写值 —— 能编译，但 ctrl_of() 恒为 false。
     bool  key_ctrl[KEY_COUNT]  = {};
     bool  key_shift[KEY_COUNT] = {};
     bool  key_alt[KEY_COUNT]   = {};
@@ -13854,16 +14279,19 @@ struct CocoaState {
     CGImageRef pending_image = nullptr;
 };
 
-inline void cocoa_create_backbuffer(CocoaState* s, int w, int h) {
-    if (w <= 0 || h <= 0) return;
-    if (s->pw == w && s->ph == h && s->ctx) return;
-    if (s->ctx) { CGContextRelease(s->ctx); s->ctx = nullptr; }
-    s->buffer.assign(size_t(w) * size_t(h) * 4u, 0);
+inline bool cocoa_create_backbuffer(CocoaState* s, int w, int h) {
+    if (w <= 0 || h <= 0) return false;
+    if (s->pw == w && s->ph == h && s->ctx) return true;
+    // 先准备新缓冲，失败时保留仍被 Canvas 引用的原始资源。
+    std::vector<uint8_t> buffer(size_t(w) * size_t(h) * 4u, 0);
     CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-    s->ctx = CGBitmapContextCreate(s->buffer.data(), size_t(w), size_t(h), 8, size_t(w) * 4u,
+    if (!space) return false;
+    CGContextRef context = CGBitmapContextCreate(buffer.data(), size_t(w), size_t(h), 8, size_t(w) * 4u,
                                    space, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
     CGColorSpaceRelease(space);
-    if (!s->ctx) return;
+    if (!context) return false;
+    if (s->ctx) CGContextRelease(s->ctx);
+    s->buffer.swap(buffer); s->ctx = context;
     s->pw = w; s->ph = h;
     Window::Impl* o = s->owner;
     o->canvas.px = s->buffer.data();
@@ -13872,6 +14300,7 @@ inline void cocoa_create_backbuffer(CocoaState* s, int w, int h) {
     o->canvas.platform_dc = s->ctx;
     o->canvas.clear_clip();
     o->client_w = w; o->client_h = h;
+    return true;
 }
 
 inline void cocoa_present(CocoaState* s) {
@@ -13889,6 +14318,7 @@ inline void cocoa_feed_input(CocoaState* s) {
     Window::Impl* o = s->owner;
     Ui::Impl* u = o->ui.impl;
     Input& in = u->input;
+    u->ime_comp = s->marked_text;
     const Vec2 prev = in.mouse;
     in.mouse = Vec2(s->mx / o->scale, s->my / o->scale);
     in.mouse_prev = prev;
@@ -13900,12 +14330,13 @@ inline void cocoa_feed_input(CocoaState* s) {
     in.text_input = s->text_in;
     for (int i = 0; i < KEY_COUNT; ++i) {
         in.key_down[i] = s->key_down[i]; in.key_pressed[i] = s->key_pressed[i];
+        in.key_repeat[i] = s->key_repeat[i];
         in.key_ctrl[i] = s->key_ctrl[i]; in.key_shift[i] = s->key_shift[i]; in.key_alt[i] = s->key_alt[i];
     }
     in.dragging = s->btn_down[0];
     for (int i = 0; i < 3; ++i) { s->btn_pressed[i] = false; s->btn_released[i] = false; }
     s->wheel = 0.0f; s->clicks = 0; s->text_in.clear();
-    for (int i = 0; i < KEY_COUNT; ++i) s->key_pressed[i] = false;
+    for (int i = 0; i < KEY_COUNT; ++i) { s->key_pressed[i] = false; s->key_repeat[i] = 0; }
 }
 
 // --- NSView 子类的事件回调（C 函数，通过 class_addMethod 注册）---
@@ -13922,17 +14353,17 @@ inline CocoaState* cocoa_state_of(id self) {
     return it == m.end() ? nullptr : it->second;
 }
 
-inline void cocoa_view_draw(id self, SEL, id) {
+inline void cocoa_view_draw(id self, SEL, CGRect) {
     CocoaState* s = cocoa_state_of(self);
     if (!s) return;
     id ctx_obj = oc_send<id>(objc_getClass("NSGraphicsContext"), sel_registerName("currentContext"));
     CGContextRef cg = oc_send<CGContextRef>(ctx_obj, sel_registerName("CGContext"));
     if (!cg || !s->pending_image) return;
     CGImageRef img = s->pending_image;
-    CGRect r = CGRectMake(0, 0, s->pw, s->ph);
+    CGRect r = CGRectMake(0, 0, s->pw / s->owner->scale, s->ph / s->owner->scale);
     // NSView 默认原点在左下，图片需要翻转
     CGContextSaveGState(cg);
-    CGContextTranslateCTM(cg, 0, CGFloat(s->ph));
+    CGContextTranslateCTM(cg, 0, CGFloat(s->ph / s->owner->scale));
     CGContextScaleCTM(cg, 1, -1);
     CGContextDrawImage(cg, r, img);
     CGContextRestoreGState(cg);
@@ -13942,8 +14373,9 @@ inline void cocoa_mouse_moved(id self, SEL, id ev) {
     CocoaState* s = cocoa_state_of(self);
     if (!s) return;
     CGPoint p = oc_send<CGPoint>(ev, sel_registerName("locationInWindow"));
-    s->mx = float(p.x);
-    s->my = float(s->ph) - float(p.y);
+    p = oc_send<CGPoint>(self, sel_registerName("convertPoint:fromView:"), p, (id)nullptr);
+    s->mx = float(p.x) * s->owner->scale;
+    s->my = float(s->ph) - float(p.y) * s->owner->scale;
     // 与 Windows / X11 同一条规则：悬停目标没变就不排帧。
     if (!s->owner->need_frame && s->owner->hover_skip &&
         !s->owner->ui.impl->hover_would_change(s->mx / s->owner->scale,
@@ -13955,7 +14387,9 @@ inline void cocoa_mouse_down(id self, SEL, id ev) {
     CocoaState* s = cocoa_state_of(self);
     if (!s) return;
     cocoa_mouse_moved(self, nullptr, ev);
-    s->btn_down[0] = true; s->btn_pressed[0] = true;
+    const int button = int(oc_send<long>(ev, sel_registerName("buttonNumber")));
+    if (button >= 0 && button < 3) { s->btn_down[button] = true; s->btn_pressed[button] = true; }
+    s->clicks = int(oc_send<long>(ev, sel_registerName("clickCount")));
     s->owner->need_frame = true;
     (void)ev;
 }
@@ -13964,36 +14398,167 @@ inline void cocoa_mouse_up(id self, SEL, id ev) {
     CocoaState* s = cocoa_state_of(self);
     if (!s) return;
     cocoa_mouse_moved(self, nullptr, ev);
-    s->btn_down[0] = false; s->btn_released[0] = true;
+    const int button = int(oc_send<long>(ev, sel_registerName("buttonNumber")));
+    if (button >= 0 && button < 3) { s->btn_down[button] = false; s->btn_released[button] = true; }
     s->owner->need_frame = true;
 }
 
-inline void cocoa_key_down(id self, SEL, id ev) {
-    CocoaState* s = cocoa_state_of(self);
+struct CocoaRange { uintptr_t location, length; };
+inline std::string cocoa_string(id value) {
+    if (!value) return {};
+    if (oc_send<BOOL>(value, sel_registerName("isKindOfClass:"), objc_getClass("NSAttributedString")))
+        value = oc_send<id>(value, sel_registerName("string"));
+    const auto str = reinterpret_cast<CFStringRef>(value);
+    const CFIndex size = CFStringGetMaximumSizeForEncoding(CFStringGetLength(str), kCFStringEncodingUTF8) + 1;
+    if (size <= 0 || size > (32 << 20)) return {};
+    std::vector<char> buffer(size_t(size), '\0');
+    return CFStringGetCString(str, buffer.data(), size, kCFStringEncodingUTF8) ? std::string(buffer.data()) : std::string();
+}
+inline void cocoa_modifiers(CocoaState* s, id event) {
+    const auto flags = oc_send<unsigned long>(event, sel_registerName("modifierFlags"));
+    s->key_down[KEY_SHIFT] = (flags & (1ul << 17)) != 0;
+    s->key_down[KEY_CTRL] = (flags & ((1ul << 18) | (1ul << 20))) != 0;
+    s->key_down[KEY_ALT] = (flags & (1ul << 19)) != 0;
+    s->key_down[KEY_SUPER] = (flags & (1ul << 20)) != 0;
+}
+inline int cocoa_key(id event) {
+    const auto code = oc_send<unsigned short>(event, sel_registerName("keyCode"));
+    switch (code) {
+    case 51: return KEY_BACKSPACE; case 48: return KEY_TAB; case 36: case 76: return KEY_ENTER;
+    case 53: return KEY_ESC; case 49: return KEY_SPACE; case 117: return KEY_DELETE;
+    case 123: return KEY_LEFT; case 124: return KEY_RIGHT; case 125: return KEY_DOWN; case 126: return KEY_UP;
+    case 115: return KEY_HOME; case 119: return KEY_END; case 116: return KEY_PAGEUP; case 121: return KEY_PAGEDOWN;
+    case 122: return KEY_F1; case 120: return KEY_F2; case 99: return KEY_F3; case 118: return KEY_F4;
+    case 96: return KEY_F5; case 97: return KEY_F6; case 98: return KEY_F7; case 100: return KEY_F8;
+    case 101: return KEY_F9; case 109: return KEY_F10; case 103: return KEY_F11; case 111: return KEY_F12;
+    default: break;
+    }
+    const auto chars = oc_send<CFStringRef>(event, sel_registerName("charactersIgnoringModifiers"));
+    if (!chars || !CFStringGetLength(chars)) return KEY_NONE;
+    const UniChar c = CFStringGetCharacterAtIndex(chars, 0);
+    return c < 128 ? ((c >= 'a' && c <= 'z') ? c - 'a' + 'A' : c) : KEY_NONE;
+}
+inline void cocoa_flags_changed(id self, SEL, id event) {
+    if (auto* s = cocoa_state_of(self)) { cocoa_modifiers(s, event); s->owner->need_frame = true; }
+}
+inline void cocoa_key_down(id self, SEL, id event) {
+    auto* s = cocoa_state_of(self);
     if (!s) return;
-    CFStringRef chars = oc_send<CFStringRef>(ev, sel_registerName("characters"));
-    if (chars) {
-        CFIndex n = CFStringGetLength(chars);
-        char buf[8];
-        for (CFIndex i = 0; i < n; ++i) {
-            UniChar u = CFStringGetCharacterAtIndex(chars, i);
-            if (u >= 32) {
-                int len = 0;
-                if (u < 0x80) { buf[0] = char(u); len = 1; }
-                else if (u < 0x800) { buf[0] = char(0xC0 | (u >> 6)); buf[1] = char(0x80 | (u & 0x3F)); len = 2; }
-                else { buf[0] = char(0xE0 | (u >> 12)); buf[1] = char(0x80 | ((u >> 6) & 0x3F)); buf[2] = char(0x80 | (u & 0x3F)); len = 3; }
-                s->text_in.append(buf, size_t(len));
-            }
-        }
+    cocoa_modifiers(s, event);
+    const int key = cocoa_key(event);
+    if (key > 0 && key < KEY_COUNT) {
+        if (oc_send<BOOL>(event, sel_registerName("isARepeat"))) {
+            s->key_repeat[key] = uint8_t(std::min(255, int(s->key_repeat[key]) + 1));
+        } else s->key_pressed[key] = true;
+        s->key_down[key] = true;
+        s->key_ctrl[key] = s->key_down[KEY_CTRL];
+        s->key_shift[key] = s->key_down[KEY_SHIFT];
+        s->key_alt[key] = s->key_down[KEY_ALT];
+    }
+    if (!s->key_down[KEY_CTRL] || s->marked_units) {
+        id events = oc_send<id>(objc_getClass("NSArray"), sel_registerName("arrayWithObject:"), event);
+        oc_send<void>(self, sel_registerName("interpretKeyEvents:"), events);
     }
     s->owner->need_frame = true;
-    (void)ev;
+}
+inline void cocoa_key_up(id self, SEL, id event) {
+    if (auto* s = cocoa_state_of(self)) {
+        const int key = cocoa_key(event);
+        if (key > 0 && key < KEY_COUNT) s->key_down[key] = false;
+        cocoa_modifiers(s, event); s->owner->need_frame = true;
+    }
+}
+inline void cocoa_insert_text(id self, SEL, id text, CocoaRange) {
+    if (auto* s = cocoa_state_of(self)) {
+        const std::string value = cocoa_string(text);
+        for (unsigned char c : value) if (c >= 32 && c != 127) s->text_in.push_back(char(c));
+        s->marked_text.clear(); s->marked_units = 0; s->owner->need_frame = true;
+    }
+}
+inline void cocoa_mark_text(id self, SEL, id text, CocoaRange, CocoaRange) {
+    if (auto* s = cocoa_state_of(self)) {
+        s->marked_text = cocoa_string(text);
+        CFStringRef str = CFStringCreateWithBytes(nullptr,
+            reinterpret_cast<const UInt8*>(s->marked_text.data()), CFIndex(s->marked_text.size()), kCFStringEncodingUTF8, false);
+        s->marked_units = str ? CFStringGetLength(str) : 0;
+        if (str) CFRelease(str);
+        s->owner->need_frame = true;
+    }
+}
+inline void cocoa_unmark_text(id self, SEL) {
+    if (auto* s = cocoa_state_of(self)) { s->marked_text.clear(); s->marked_units = 0; s->owner->need_frame = true; }
+}
+inline BOOL cocoa_has_marked(id self, SEL) { auto* s = cocoa_state_of(self); return s && s->marked_units ? YES : NO; }
+inline CocoaRange cocoa_marked_range(id self, SEL) {
+    auto* s = cocoa_state_of(self);
+    return {s && s->marked_units ? 0u : uintptr_t(-1) >> 1, s ? uintptr_t(s->marked_units) : 0u};
+}
+inline CocoaRange cocoa_selected_range(id, SEL) { return {0, 0}; }
+inline id cocoa_marked_attributes(id, SEL) { return oc_send<id>(objc_getClass("NSArray"), sel_registerName("array")); }
+inline id cocoa_substring(id, SEL, CocoaRange, CocoaRange* actual) {
+    if (actual) *actual = {uintptr_t(-1) >> 1, 0};
+    return nullptr;
+}
+inline uintptr_t cocoa_character_index(id, SEL, CGPoint) { return 0; }
+inline CGRect cocoa_first_rect(id self, SEL, CocoaRange range, CocoaRange* actual) {
+    auto* s = cocoa_state_of(self);
+    if (actual) *actual = range;
+    if (!s) return CGRectZero;
+    CGRect rect = s->ime_rect;
+    rect.origin.y = s->ph / s->owner->scale - rect.origin.y - rect.size.height;
+    rect = oc_send<CGRect>(self, sel_registerName("convertRect:toView:"), rect, (id)nullptr);
+    return oc_send<CGRect>(s->window, sel_registerName("convertRectToScreen:"), rect);
+}
+inline void cocoa_command(id, SEL, SEL) {} // 命令键由统一 Input 消费，文本提交只走 insertText。
+inline BOOL cocoa_accepts_first(id, SEL) { return YES; }
+inline void cocoa_scroll(id self, SEL, id event) {
+    if (auto* s = cocoa_state_of(self)) {
+        const bool precise = oc_send<BOOL>(event, sel_registerName("hasPreciseScrollingDeltas"));
+        s->wheel += float(oc_send<CGFloat>(event, sel_registerName("scrollingDeltaY"))) / (precise ? 10.0f : 1.0f);
+        s->owner->need_frame = true;
+    }
+}
+inline void cocoa_mouse_exited(id self, SEL, id) {
+    if (auto* s = cocoa_state_of(self)) { s->mx = s->my = -1e6f; s->owner->need_frame = true; }
+}
+inline void cocoa_window_closed(id self, SEL, id) {
+    if (auto* s = cocoa_state_of(self)) { s->closed = true; s->owner->running = false; s->owner->wake_signal.notify(); }
+}
+inline void cocoa_window_changed(id self, SEL, id) {
+    if (auto* s = cocoa_state_of(self)) { s->geometry_dirty = true; s->owner->need_frame = true; }
+}
+inline void cocoa_window_blur(id self, SEL, id) {
+    if (auto* s = cocoa_state_of(self)) {
+        for (int i = 0; i < KEY_COUNT; ++i) { s->key_down[i] = s->key_pressed[i] = false; s->key_repeat[i] = 0; }
+        for (int i = 0; i < 3; ++i) { s->btn_released[i] = s->btn_down[i]; s->btn_down[i] = false; }
+        s->marked_text.clear(); s->marked_units = 0;
+        s->owner->ui.impl->active = 0; drop_focus(s->owner->ui.impl);
+        s->owner->need_frame = true;
+    }
+}
+inline void cocoa_sync_geometry(CocoaState* s) {
+    if (!s->geometry_dirty || s->closed || s->owner->ui.impl->frame_open) return;
+    const CGRect bounds = oc_send<CGRect>(s->view, sel_registerName("bounds"));
+    const float scale = std::max(1.0f, float(oc_send<CGFloat>(s->window, sel_registerName("backingScaleFactor"))));
+    if (s->owner->scale != scale && s->owner->text)
+        s->owner->text->reconfigure(scale, s->owner->ui.theme().font_family, s->owner->ui.theme().font_family_mono);
+    s->owner->scale = scale;
+    if (cocoa_create_backbuffer(s, std::max(1, int(bounds.size.width * scale + .5)),
+        std::max(1, int(bounds.size.height * scale + .5)))) s->geometry_dirty = false;
+}
+inline void cocoa_wake(CFFileDescriptorRef descriptor, CFOptionFlags, void* context) {
+    auto* s = static_cast<CocoaState*>(context);
+    if (s->owner->wake_signal.consume()) s->owner->need_frame = true;
+    CFFileDescriptorEnableCallBacks(descriptor, kCFFileDescriptorReadCallBack);
 }
 
 inline void cocoa_create(Window* self, const WindowConfig& cfg) {
     Window::Impl* o = self->impl;
     const int w = cfg.width > 0 ? cfg.width : 880;
     const int h = cfg.height > 0 ? cfg.height : 560;
+    if (!pthread_main_np()) { std::fprintf(stderr, "[aino] AppKit windows require the main thread\n"); return; }
+    id pool = oc_send<id>(oc_send<id>(objc_getClass("NSAutoreleasePool"), sel_registerName("alloc")), sel_registerName("init"));
+    ScopeExit drain([&] { oc_send<void>(pool, sel_registerName("drain")); });
     CocoaState* s = new CocoaState();
     s->owner = o;
     o->native = s;
@@ -14018,18 +14583,45 @@ inline void cocoa_create(Window* self, const WindowConfig& cfg) {
     static Class view_cls = nullptr;
     if (!view_cls) {
         view_cls = objc_allocateClassPair(objc_getClass("NSView"), "AinoView", 0);
-        class_addMethod(view_cls, sel_registerName("drawRect:"), reinterpret_cast<IMP>(cocoa_view_draw), "v@:@");
+        class_addMethod(view_cls, sel_registerName("drawRect:"), reinterpret_cast<IMP>(cocoa_view_draw), "v@:{CGRect={CGPoint=dd}{CGSize=dd}}");
         class_addMethod(view_cls, sel_registerName("mouseMoved:"), reinterpret_cast<IMP>(cocoa_mouse_moved), "v@:@");
         class_addMethod(view_cls, sel_registerName("mouseDown:"), reinterpret_cast<IMP>(cocoa_mouse_down), "v@:@");
         class_addMethod(view_cls, sel_registerName("mouseUp:"), reinterpret_cast<IMP>(cocoa_mouse_up), "v@:@");
         class_addMethod(view_cls, sel_registerName("keyDown:"), reinterpret_cast<IMP>(cocoa_key_down), "v@:@");
+        if (auto* protocol = objc_getProtocol("NSTextInputClient")) class_addProtocol(view_cls, protocol);
+        class_addMethod(view_cls, sel_registerName("acceptsFirstResponder"), reinterpret_cast<IMP>(cocoa_accepts_first), "c@:");
+        class_addMethod(view_cls, sel_registerName("keyUp:"), reinterpret_cast<IMP>(cocoa_key_up), "v@:@");
+        class_addMethod(view_cls, sel_registerName("flagsChanged:"), reinterpret_cast<IMP>(cocoa_flags_changed), "v@:@");
+        class_addMethod(view_cls, sel_registerName("scrollWheel:"), reinterpret_cast<IMP>(cocoa_scroll), "v@:@");
+        class_addMethod(view_cls, sel_registerName("rightMouseDown:"), reinterpret_cast<IMP>(cocoa_mouse_down), "v@:@");
+        class_addMethod(view_cls, sel_registerName("rightMouseUp:"), reinterpret_cast<IMP>(cocoa_mouse_up), "v@:@");
+        class_addMethod(view_cls, sel_registerName("otherMouseDown:"), reinterpret_cast<IMP>(cocoa_mouse_down), "v@:@");
+        class_addMethod(view_cls, sel_registerName("otherMouseUp:"), reinterpret_cast<IMP>(cocoa_mouse_up), "v@:@");
+        for (const char* method : {"mouseDragged:", "rightMouseDragged:", "otherMouseDragged:"})
+            class_addMethod(view_cls, sel_registerName(method), reinterpret_cast<IMP>(cocoa_mouse_moved), "v@:@");
+        class_addMethod(view_cls, sel_registerName("mouseExited:"), reinterpret_cast<IMP>(cocoa_mouse_exited), "v@:@");
+        class_addMethod(view_cls, sel_registerName("insertText:replacementRange:"), reinterpret_cast<IMP>(cocoa_insert_text), "v@:@{_NSRange=QQ}");
+        class_addMethod(view_cls, sel_registerName("setMarkedText:selectedRange:replacementRange:"), reinterpret_cast<IMP>(cocoa_mark_text), "v@:@{_NSRange=QQ}{_NSRange=QQ}");
+        class_addMethod(view_cls, sel_registerName("unmarkText"), reinterpret_cast<IMP>(cocoa_unmark_text), "v@:");
+        class_addMethod(view_cls, sel_registerName("hasMarkedText"), reinterpret_cast<IMP>(cocoa_has_marked), "c@:");
+        class_addMethod(view_cls, sel_registerName("markedRange"), reinterpret_cast<IMP>(cocoa_marked_range), "{_NSRange=QQ}@:");
+        class_addMethod(view_cls, sel_registerName("selectedRange"), reinterpret_cast<IMP>(cocoa_selected_range), "{_NSRange=QQ}@:");
+        class_addMethod(view_cls, sel_registerName("validAttributesForMarkedText"), reinterpret_cast<IMP>(cocoa_marked_attributes), "@@:");
+        class_addMethod(view_cls, sel_registerName("attributedSubstringForProposedRange:actualRange:"), reinterpret_cast<IMP>(cocoa_substring), "@@:{_NSRange=QQ}^{_NSRange=QQ}");
+        class_addMethod(view_cls, sel_registerName("characterIndexForPoint:"), reinterpret_cast<IMP>(cocoa_character_index), "Q@:{CGPoint=dd}");
+        class_addMethod(view_cls, sel_registerName("firstRectForCharacterRange:actualRange:"), reinterpret_cast<IMP>(cocoa_first_rect), "{CGRect={CGPoint=dd}{CGSize=dd}}@:{_NSRange=QQ}^{_NSRange=QQ}");
+        class_addMethod(view_cls, sel_registerName("doCommandBySelector:"), reinterpret_cast<IMP>(cocoa_command), "v@::");
+        class_addMethod(view_cls, sel_registerName("windowWillClose:"), reinterpret_cast<IMP>(cocoa_window_closed), "v@:@");
+        class_addMethod(view_cls, sel_registerName("windowDidResize:"), reinterpret_cast<IMP>(cocoa_window_changed), "v@:@");
+        class_addMethod(view_cls, sel_registerName("windowDidChangeBackingProperties:"), reinterpret_cast<IMP>(cocoa_window_changed), "v@:@");
+        class_addMethod(view_cls, sel_registerName("windowDidResignKey:"), reinterpret_cast<IMP>(cocoa_window_blur), "v@:@");
         objc_registerClassPair(view_cls);
     }
 
     CGRect rect = CGRectMake(0, 0, CGFloat(w), CGFloat(h));
     // styleMask 15 = Titled(1) | Closable(2) | Miniaturizable(4) | Resizable(8)。
-    // 不可缩放就把 Resizable 位拿掉（13）—— 和 Win32 去掉 WS_THICKFRAME 对齐。
-    const unsigned long style_mask = cfg.resizable ? 15ul : 13ul;
+    // 不可缩放就把 Resizable 位拿掉（7）—— 和 Win32 去掉 WS_THICKFRAME 对齐。
+    const unsigned long style_mask = cfg.resizable ? 15ul : 7ul;
     id window = oc_send<id>(oc_send<id>(objc_getClass("NSWindow"), sel_registerName("alloc")),
                             sel_registerName("initWithContentRect:styleMask:backing:defer:"),
                             rect, style_mask, (unsigned long)2, (BOOL)NO);
@@ -14038,6 +14630,13 @@ inline void cocoa_create(Window* self, const WindowConfig& cfg) {
     cocoa_view_map()[reinterpret_cast<void*>(view)] = s;
     oc_send<void>(view, sel_registerName("setWantsLayer:"), (BOOL)YES);
     oc_send<void>(window, sel_registerName("setContentView:"), view);
+    oc_send<void>(window, sel_registerName("setReleasedWhenClosed:"), (BOOL)NO);
+    oc_send<void>(window, sel_registerName("setDelegate:"), view);
+    oc_send<void>(window, sel_registerName("setAcceptsMouseMovedEvents:"), (BOOL)YES);
+    oc_send<void>(window, sel_registerName("makeFirstResponder:"), view);
+    s->tracking = oc_send<id>(oc_send<id>(objc_getClass("NSTrackingArea"), sel_registerName("alloc")),
+        sel_registerName("initWithRect:options:owner:userInfo:"), CGRectZero, (unsigned long)(1 | 2 | 32 | 512), view, (id)nullptr);
+    if (s->tracking) oc_send<void>(view, sel_registerName("addTrackingArea:"), s->tracking);
 
     // 尺寸约束用 content 版本：NSWindow 的 setMinSize: 算的是**窗口**尺寸，
     // 而我们手里的 min/max 是客户区（= 逻辑像素），用 setContentMinSize: 才对齐。
@@ -14082,19 +14681,40 @@ inline void cocoa_create(Window* self, const WindowConfig& cfg) {
     o->text = tr;
     o->ui.impl->text = tr;
 
-    cocoa_create_backbuffer(s, w, h);
+    cocoa_sync_geometry(s);
+    CFFileDescriptorContext context{0, s, nullptr, nullptr, nullptr};
+    s->wake_descriptor = CFFileDescriptorCreate(nullptr, o->wake_signal.read_descriptor(), false, cocoa_wake, &context);
+    if (s->wake_descriptor) {
+        s->wake_source = CFFileDescriptorCreateRunLoopSource(nullptr, s->wake_descriptor, 0);
+        if (s->wake_source) CFRunLoopAddSource(CFRunLoopGetMain(), s->wake_source, kCFRunLoopCommonModes);
+        CFFileDescriptorEnableCallBacks(s->wake_descriptor, kCFFileDescriptorReadCallBack);
+    }
+    o->ui.impl->ime_pos = [s](float x, float top, float bottom) {
+        const float scale = s->owner->scale;
+        s->owner->ui.impl->ime_owner = true;
+        s->ime_rect = CGRectMake(x / scale, top / scale, 1, std::max(1.0f, (bottom - top) / scale));
+    };
     o->ui.impl->canvas = &o->canvas;
     o->need_frame = true;
 }
 
 inline void cocoa_destroy(Window* self) {
-    Window::Impl* o = self->impl;
-    CocoaState* s = reinterpret_cast<CocoaState*>(o->native);
+    auto* o = self->impl;
+    auto* s = reinterpret_cast<CocoaState*>(o->native);
     if (!s) return;
-    if (s->ctx) { CGContextRelease(s->ctx); s->ctx = nullptr; }
-    if (s->pending_image) { CGImageRelease(s->pending_image); s->pending_image = nullptr; }
-    if (s->view) cocoa_view_map().erase(reinterpret_cast<void*>(s->view));
-    if (s->window) oc_send<void>(s->window, sel_registerName("close"));
+    id pool = oc_send<id>(oc_send<id>(objc_getClass("NSAutoreleasePool"), sel_registerName("alloc")), sel_registerName("init"));
+    ScopeExit drain([&] { oc_send<void>(pool, sel_registerName("drain")); });
+    if (s->wake_source) { CFRunLoopRemoveSource(CFRunLoopGetMain(), s->wake_source, kCFRunLoopCommonModes); CFRelease(s->wake_source); }
+    if (s->wake_descriptor) { CFFileDescriptorInvalidate(s->wake_descriptor); CFRelease(s->wake_descriptor); }
+    if (s->ctx) CGContextRelease(s->ctx);
+    if (s->pending_image) CGImageRelease(s->pending_image);
+    if (s->window) oc_send<void>(s->window, sel_registerName("setDelegate:"), (id)nullptr);
+    if (s->view) {
+        cocoa_view_map().erase(reinterpret_cast<void*>(s->view));
+        if (s->tracking) { oc_send<void>(s->view, sel_registerName("removeTrackingArea:"), s->tracking); oc_send<void>(s->tracking, sel_registerName("release")); }
+    }
+    if (s->window) { oc_send<void>(s->window, sel_registerName("close")); oc_send<void>(s->window, sel_registerName("release")); }
+    if (s->view) oc_send<void>(s->view, sel_registerName("release"));
     delete s;
     o->native = nullptr;
 }
@@ -14106,11 +14726,12 @@ using detail::oc_send;   // 下面 Window::xxx 在 aino 命名空间里，别每
 bool Window::poll() {
     Window::Impl* o = impl;
     detail::CocoaState* s = reinterpret_cast<detail::CocoaState*>(o->native);
-    if (!s) return false;
+    if (!s || !o->running) return false;
+    id pool = oc_send<id>(oc_send<id>(objc_getClass("NSAutoreleasePool"), sel_registerName("alloc")), sel_registerName("init"));
+    detail::ScopeExit drain([&] { oc_send<void>(pool, sel_registerName("drain")); });
     if (o->wake_signal.consume()) o->need_frame = true;
     // 抽干一次 runloop
-    id distant = oc_send<id>(oc_send<id>(objc_getClass("NSDate"), sel_registerName("alloc")),
-                             sel_registerName("init"));
+    id distant = oc_send<id>(objc_getClass("NSDate"), sel_registerName("distantPast"));
     while (true) {
         id ev = oc_send<id>(oc_send<id>(objc_getClass("NSApplication"), sel_registerName("sharedApplication")),
                             sel_registerName("nextEventMatchingMask:untilDate:inMode:dequeue:"),
@@ -14124,6 +14745,7 @@ bool Window::poll() {
     }
     oc_send<void>(oc_send<id>(objc_getClass("NSApplication"), sel_registerName("sharedApplication")),
                   sel_registerName("updateWindows"));
+    detail::cocoa_sync_geometry(s);
     return o->running;
 }
 
@@ -14131,6 +14753,7 @@ void Window::render() {
     Window::Impl* o = impl;
     detail::CocoaState* s = reinterpret_cast<detail::CocoaState*>(o->native);
     if (!s || !s->ctx) return;
+    if (o->ui.impl->frame_open) { o->need_frame = true; return; }
     timespec ts{};
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t now = uint64_t(ts.tv_sec) * 1000u + uint64_t(ts.tv_nsec / 1000000);
@@ -14140,40 +14763,25 @@ void Window::render() {
 
     detail::cocoa_feed_input(s);
     o->need_frame = false;   // 同 Windows：帧前清
+    detail::ScopeExit frame_cleanup([o] {
+        if (o->ui.impl->frame_open) { o->ui.impl->abort_frame(); o->need_frame = true; }
+    });
     Ui& ui = o->ui;
     ui.begin_frame(float(s->pw) / o->scale, float(s->ph) / o->scale, dt, o->scale);
     if (o->frame_cb_ptr) o->frame_cb_ptr();
     ui.end_frame();
     o->cursor = ui.cursor();
+    if (s->view && oc_send<BOOL>(s->window, sel_registerName("isKeyWindow"))) {
+        const char* selector = "arrowCursor";
+        if (o->cursor == Cursor::Hand) selector = "pointingHandCursor";
+        else if (o->cursor == Cursor::IBeam || o->cursor == Cursor::Text) selector = "IBeamCursor";
+        else if (o->cursor == Cursor::ResizeH) selector = "resizeLeftRightCursor";
+        else if (o->cursor == Cursor::ResizeV) selector = "resizeUpDownCursor";
+        oc_send<void>(oc_send<id>(objc_getClass("NSCursor"), sel_registerName(selector)), sel_registerName("set"));
+    }
     detail::cocoa_present(s);
 }
 
-void Window::run(const std::function<void(Ui&)>& frame) {
-    Window::Impl* o = impl;
-    detail::CocoaState* s = reinterpret_cast<detail::CocoaState*>(o->native);
-    if (!s) return;
-    o->frame_cb_ptr = [&frame, o]() { frame(o->ui); };
-    while (o->running) {
-        if (!poll()) break;
-        const bool anim = o->ui.animating();
-        if (o->need_frame || anim || o->ui.impl->repaint_timeout_ms() == 0) {
-            o->self_repaint = false;
-            timespec t0{}; clock_gettime(CLOCK_MONOTONIC, &t0);
-            const uint64_t s0 = uint64_t(t0.tv_sec) * 1000000u + uint64_t(t0.tv_nsec / 1000);
-            render();
-            // 所有帧统一节流到 anim_fps（同 Windows/X11）：鼠标每动一次就是
-            // 一个事件，不封顶就被输入频率牵着走。
-            timespec t1{}; clock_gettime(CLOCK_MONOTONIC, &t1);
-            const uint64_t s1 = uint64_t(t1.tv_sec) * 1000000u + uint64_t(t1.tv_nsec / 1000);
-            const uint64_t el_us = s1 - s0;
-            const uint64_t budget_us = uint64_t(o->anim_budget_ms) * 1000u;
-            if (el_us < budget_us) usleep(useconds_t(budget_us - el_us));
-        } else {
-            usleep(2000);
-        }
-    }
-    o->frame_cb_ptr = nullptr;
-}
 
 void Window::set_title(const std::string& title) {
     detail::CocoaState* s = reinterpret_cast<detail::CocoaState*>(impl->native);
@@ -14184,13 +14792,142 @@ void Window::set_title(const std::string& title) {
 }
 void Window::set_size(int w, int h) {
     detail::CocoaState* s = reinterpret_cast<detail::CocoaState*>(impl->native);
-    if (s && s->window)
-        oc_send<void>(s->window, sel_registerName("setContentSize:"), CGSizeMake(CGFloat(w), CGFloat(h)));
+    if (s && s->window) {
+        oc_send<void>(s->window, sel_registerName("setContentSize:"), CGSizeMake(CGFloat(std::max(1, w)), CGFloat(std::max(1, h))));
+        s->geometry_dirty = true; s->owner->need_frame = true;
+        detail::cocoa_sync_geometry(s);
+    }
 }
-void Window::set_clipboard(const std::string&) {}
-std::string Window::clipboard() const { return std::string(); }
+void Window::set_clipboard(const std::string& text) { (void)try_set_clipboard(text); }
+bool Window::try_set_clipboard(const std::string& text) {
+    if (!pthread_main_np()) return false;
+    id pool = oc_send<id>(oc_send<id>(objc_getClass("NSAutoreleasePool"), sel_registerName("alloc")), sel_registerName("init"));
+    detail::ScopeExit drain([&] { oc_send<void>(pool, sel_registerName("drain")); });
+    CFStringRef value = CFStringCreateWithBytes(nullptr, reinterpret_cast<const UInt8*>(text.data()),
+        CFIndex(text.size()), kCFStringEncodingUTF8, false);
+    if (!value) return false;
+    detail::ScopeExit release([&] { CFRelease(value); });
+    id pasteboard = oc_send<id>(objc_getClass("NSPasteboard"), sel_registerName("generalPasteboard"));
+    if (!pasteboard) return false;
+    oc_send<long>(pasteboard, sel_registerName("clearContents"));
+    return oc_send<BOOL>(pasteboard, sel_registerName("setString:forType:"), value, CFSTR("public.utf8-plain-text"));
+}
+std::string Window::clipboard() const {
+    if (!pthread_main_np()) return {};
+    id pool = oc_send<id>(oc_send<id>(objc_getClass("NSAutoreleasePool"), sel_registerName("alloc")), sel_registerName("init"));
+    detail::ScopeExit drain([&] { oc_send<void>(pool, sel_registerName("drain")); });
+    id pasteboard = oc_send<id>(objc_getClass("NSPasteboard"), sel_registerName("generalPasteboard"));
+    return detail::cocoa_string(oc_send<id>(pasteboard, sel_registerName("stringForType:"), CFSTR("public.utf8-plain-text")));
+}
 
 #endif // AINO_PLATFORM_MACOS
+
+
+void Window::set_frame_callback(std::function<void(Ui&)> frame) {
+    auto& windows = detail::scheduled_windows();
+    if (frame) {
+        impl->frame_cb_ptr = [this, callback = std::move(frame)] { callback(impl->ui); };
+        impl->render_fn = [this] { render(); };
+        if (std::find(windows.begin(), windows.end(), this) == windows.end()) windows.push_back(this);
+        impl->need_frame = true;
+    } else {
+        windows.erase(std::remove(windows.begin(), windows.end(), this), windows.end());
+        impl->frame_cb_ptr = nullptr;
+        impl->render_fn = nullptr;
+    }
+}
+
+void Window::run(const std::function<void(Ui&)>& frame) {
+    if (!ok()) return;
+    auto& windows = detail::scheduled_windows();
+    const bool registered = std::find(windows.begin(), windows.end(), this) != windows.end();
+    detail::ScopeExit restore([this, registered, previous = std::move(impl->frame_cb_ptr),
+                               render_fn = std::move(impl->render_fn)]() mutable {
+        if (!registered) {
+            auto& list = detail::scheduled_windows();
+            list.erase(std::remove(list.begin(), list.end(), this), list.end());
+        }
+        impl->frame_cb_ptr = std::move(previous);
+        impl->render_fn = std::move(render_fn);
+    });
+    set_frame_callback([&frame](Ui& ui) { frame(ui); });
+    using Clock = std::chrono::steady_clock;
+    while (impl->running) {
+        // 回调可以创建或销毁其他窗口；快照只用于遍历，每次解引用前验证注册仍存在。
+        const auto snapshot = windows;
+        auto live = [&](Window* window) {
+            return std::find(windows.begin(), windows.end(), window) != windows.end();
+        };
+        auto notify_closed = [&] {
+            bool closed = false;
+            for (Window* window : snapshot) if (live(window) && !window->impl->running
+                && !window->impl->close_reported) { window->impl->close_reported = true; closed = true; }
+            if (closed) for (Window* window : windows) window->impl->need_frame = true;
+        };
+        for (Window* window : snapshot) if (live(window) && window->impl->running) {
+            window->poll();
+        }
+        notify_closed();
+        if (!impl->running) break;
+        for (Window* window : snapshot) {
+            if (!live(window)) continue;
+            auto* o = window->impl;
+            if (!o->running || !o->frame_cb_ptr) continue;
+            const auto now = Clock::now();
+            if ((o->need_frame || o->ui.animating() || o->ui.impl->repaint_timeout_ms() == 0)
+                && now >= o->next_frame_at) {
+                const auto budget = (o->move_only && !o->ui.impl->active)
+                    ? std::max(o->anim_budget_ms, o->move_budget_ms) : o->anim_budget_ms;
+                o->self_repaint = false;
+                window->render();
+#ifdef AINO_PLATFORM_WINDOWS
+                if (o->frame_log) detail::win_frame_log(o, uint64_t(
+                    std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - now).count()));
+#endif
+                o->move_only = false;
+                o->next_frame_at = now + std::chrono::milliseconds(budget);
+            }
+        }
+        if (!impl->running) break;
+        notify_closed();
+        if (snapshot != windows) continue;
+        int timeout = -1;
+        auto limit = [&](int delay) { if (delay >= 0 && (timeout < 0 || delay < timeout)) timeout = delay; };
+        for (Window* window : windows) {
+            auto* o = window->impl;
+            if (!o->running || !o->frame_cb_ptr) continue;
+            if (o->wake_signal.pending()) limit(0);
+            const int until_frame = int(std::max<int64_t>(0,
+                std::chrono::ceil<std::chrono::milliseconds>(o->next_frame_at - Clock::now()).count()));
+            const int timer = o->ui.impl->repaint_timeout_ms();
+            if (o->need_frame || o->ui.animating()) limit(until_frame);
+            else if (timer >= 0) limit(std::max(timer, until_frame));
+        }
+#ifdef AINO_PLATFORM_WINDOWS
+        // MsgWait 的句柄上限为 MAXIMUM_WAIT_OBJECTS - 1；每组之外的窗口用一个有界等待兜底。
+        std::vector<HANDLE> handles;
+        for (Window* window : windows) if (window->impl->running) {
+            HANDLE event = window->impl->wake_signal.wait_handle();
+            if (event && handles.size() < MAXIMUM_WAIT_OBJECTS - 2) handles.push_back(event);
+            else limit(16);
+        }
+        HANDLE timer = detail::win_timer().arm_ms(timeout);
+        if (timer) handles.push_back(timer);
+        MsgWaitForMultipleObjectsEx(DWORD(handles.size()), handles.data(),
+            timer || timeout < 0 ? INFINITE : DWORD(timeout), QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+#elif defined(AINO_PLATFORM_X11)
+        std::vector<pollfd> descriptors;
+        for (Window* window : windows) if (window->impl->running) {
+            auto* state = reinterpret_cast<detail::X11State*>(window->impl->native);
+            if (state) descriptors.push_back({ConnectionNumber(state->dpy), POLLIN, 0});
+            descriptors.push_back({window->impl->wake_signal.read_descriptor(), POLLIN, 0});
+        }
+        ::poll(descriptors.data(), descriptors.size(), timeout);
+#elif defined(AINO_PLATFORM_MACOS)
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, timeout < 0 ? 1e9 : double(timeout) / 1000.0, true);
+#endif
+    }
+}
 
 namespace detail {
 struct SystemIconMask {
@@ -14203,6 +14940,7 @@ struct SystemIconMask {
 struct X11IconPixels {
     void* lib = nullptr;
     void* (*load)(const char*, int, int, int, void**) = nullptr;
+    void* (*file_info)(const char*, int*, int*) = nullptr;
     int (*width)(const void*) = nullptr;
     int (*height)(const void*) = nullptr;
     int (*stride)(const void*) = nullptr;
@@ -14214,6 +14952,7 @@ struct X11IconPixels {
         lib = dlopen("libgdk_pixbuf-2.0.so.0", RTLD_LAZY | RTLD_LOCAL);
         if (!lib) return;
         load = reinterpret_cast<decltype(load)>(dlsym(lib, "gdk_pixbuf_new_from_file_at_scale"));
+        file_info = reinterpret_cast<decltype(file_info)>(dlsym(lib, "gdk_pixbuf_get_file_info"));
         width = reinterpret_cast<decltype(width)>(dlsym(lib, "gdk_pixbuf_get_width"));
         height = reinterpret_cast<decltype(height)>(dlsym(lib, "gdk_pixbuf_get_height"));
         stride = reinterpret_cast<decltype(stride)>(dlsym(lib, "gdk_pixbuf_get_rowstride"));
@@ -14221,7 +14960,7 @@ struct X11IconPixels {
         has_alpha = reinterpret_cast<decltype(has_alpha)>(dlsym(lib, "gdk_pixbuf_get_has_alpha"));
         pixels = reinterpret_cast<decltype(pixels)>(dlsym(lib, "gdk_pixbuf_get_pixels"));
         unref = reinterpret_cast<decltype(unref)>(dlsym(lib, "g_object_unref"));
-        if (!load || !width || !height || !stride || !channels || !has_alpha || !pixels || !unref) {
+        if (!load || !file_info || !width || !height || !stride || !channels || !has_alpha || !pixels || !unref) {
             dlclose(lib); lib = nullptr;
         }
     }
@@ -14635,45 +15374,77 @@ std::string executable_directory() {
     return path.substr(0, separator + 1);
 }
 
+#if defined(AINO_PLATFORM_WINDOWS)
+namespace detail {
+// 文件与资源共用解码状态机；任一步失败或分配异常都释放 COM 所有权。
+struct WicDecode {
+    HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    IWICImagingFactory* factory = nullptr;
+    IWICStream* stream = nullptr;
+    IWICBitmapDecoder* decoder = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICFormatConverter* converter = nullptr;
+    WicDecode() = default;
+    WicDecode(const WicDecode&) = delete;
+    WicDecode& operator=(const WicDecode&) = delete;
+    ~WicDecode() {
+        if (converter) converter->Release();
+        if (frame) frame->Release();
+        if (decoder) decoder->Release();
+        if (stream) stream->Release();
+        if (factory) factory->Release();
+        if (SUCCEEDED(initialized)) CoUninitialize();
+    }
+    HRESULT create() {
+        if (FAILED(initialized) && initialized != RPC_E_CHANGED_MODE) return initialized;
+        return CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+            IID_IWICImagingFactory, reinterpret_cast<void**>(&factory));
+    }
+    HRESULT pixels(Image& result) {
+        UINT w = 0, h = 0;
+        HRESULT hr = decoder ? decoder->GetFrame(0, &frame) : E_FAIL;
+        if (SUCCEEDED(hr)) hr = frame->GetSize(&w, &h);
+        if (SUCCEEDED(hr) && (!w || !h || w > 16384 || h > 16384 || uint64_t(w) * h > 67108864u)) hr = E_FAIL;
+        if (SUCCEEDED(hr)) hr = factory->CreateFormatConverter(&converter);
+        if (SUCCEEDED(hr)) hr = converter->Initialize(frame, GUID_WICPixelFormat32bppRGBA,
+            WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom);
+        if (SUCCEEDED(hr)) {
+            result.width = int(w); result.height = int(h);
+            result.pixels.resize(size_t(w) * size_t(h) * 4u);
+            hr = converter->CopyPixels(nullptr, w * 4u, UINT(result.pixels.size()), result.pixels.data());
+        }
+        if (FAILED(hr)) result = Image{};
+        return hr;
+    }
+};
+} // namespace detail
+#endif
+
 bool Image::load(const std::string& path, std::string* error) {
     Image result;
     if (error) error->clear();
 #if defined(AINO_PLATFORM_WINDOWS)
-    const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    const bool uninit = SUCCEEDED(init);
-    IWICImagingFactory* factory = nullptr;
-    IWICBitmapDecoder* decoder = nullptr;
-    IWICBitmapFrameDecode* frame = nullptr;
-    IWICFormatConverter* converter = nullptr;
-    HRESULT hr = (uninit || init == RPC_E_CHANGED_MODE)
-        ? CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                           IID_IWICImagingFactory, reinterpret_cast<void**>(&factory)) : init;
-    if (SUCCEEDED(hr)) hr = factory->CreateDecoderFromFilename(detail::to_wide(path).c_str(),
-        nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder);
-    if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
-    UINT w = 0, h = 0;
-    if (SUCCEEDED(hr)) hr = frame->GetSize(&w, &h);
-    if (SUCCEEDED(hr) && (w == 0 || h == 0 || w > 16384 || h > 16384 ||
-                          uint64_t(w) * h > 67108864u)) hr = E_FAIL;
-    if (SUCCEEDED(hr)) hr = factory->CreateFormatConverter(&converter);
-    if (SUCCEEDED(hr)) hr = converter->Initialize(frame, GUID_WICPixelFormat32bppRGBA,
-        WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom);
-    if (SUCCEEDED(hr)) {
-        result.width = int(w); result.height = int(h);
-        result.pixels.resize(size_t(w) * size_t(h) * 4u);
-        hr = converter->CopyPixels(nullptr, w * 4u, UINT(result.pixels.size()), result.pixels.data());
-    }
-    if (converter) converter->Release();
-    if (frame) frame->Release();
-    if (decoder) decoder->Release();
-    if (factory) factory->Release();
-    if (uninit) CoUninitialize();
-    if (FAILED(hr)) result = Image{};
+    detail::WicDecode decode;
+    HRESULT hr = decode.create();
+    if (SUCCEEDED(hr)) hr = decode.factory->CreateDecoderFromFilename(detail::to_wide(path).c_str(),
+        nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decode.decoder);
+    if (SUCCEEDED(hr)) hr = decode.pixels(result);
 #elif defined(AINO_PLATFORM_MACOS)
     CFURLRef url = CFURLCreateFromFileSystemRepresentation(nullptr,
         reinterpret_cast<const UInt8*>(path.data()), CFIndex(path.size()), false);
     CGImageSourceRef source = url ? CGImageSourceCreateWithURL(url, nullptr) : nullptr;
-    CGImageRef image = source ? CGImageSourceCreateImageAtIndex(source, 0, nullptr) : nullptr;
+    CFDictionaryRef properties = source ? CGImageSourceCopyPropertiesAtIndex(source, 0, nullptr) : nullptr;
+    int64_t metadata_w = 0, metadata_h = 0;
+    if (properties) {
+        auto width = static_cast<CFNumberRef>(CFDictionaryGetValue(properties, kCGImagePropertyPixelWidth));
+        auto height = static_cast<CFNumberRef>(CFDictionaryGetValue(properties, kCGImagePropertyPixelHeight));
+        if (width && CFGetTypeID(width) == CFNumberGetTypeID()) CFNumberGetValue(width, kCFNumberSInt64Type, &metadata_w);
+        if (height && CFGetTypeID(height) == CFNumberGetTypeID()) CFNumberGetValue(height, kCFNumberSInt64Type, &metadata_h);
+        CFRelease(properties);
+    }
+    const bool bounded = metadata_w > 0 && metadata_h > 0 && metadata_w <= 16384 && metadata_h <= 16384
+        && uint64_t(metadata_w) * uint64_t(metadata_h) <= 67108864u;
+    CGImageRef image = source && bounded ? CGImageSourceCreateImageAtIndex(source, 0, nullptr) : nullptr;
     const size_t w = image ? CGImageGetWidth(image) : 0, h = image ? CGImageGetHeight(image) : 0;
     if (w && h && w <= 16384 && h <= 16384 && w * h <= 67108864u) {
         result.width = int(w); result.height = int(h);
@@ -14699,7 +15470,11 @@ bool Image::load(const std::string& path, std::string* error) {
     if (url) CFRelease(url);
 #elif defined(AINO_PLATFORM_X11)
     static detail::X11IconPixels api;
-    void* image = api.lib ? api.load(path.c_str(), -1, -1, 1, nullptr) : nullptr;
+    int metadata_w = 0, metadata_h = 0;
+    const bool bounded = api.lib && api.file_info(path.c_str(), &metadata_w, &metadata_h)
+        && metadata_w > 0 && metadata_h > 0 && metadata_w <= 16384 && metadata_h <= 16384
+        && uint64_t(metadata_w) * uint64_t(metadata_h) <= 67108864u;
+    void* image = bounded ? api.load(path.c_str(), -1, -1, 1, nullptr) : nullptr;
     if (image) {
         const int w = api.width(image), h = api.height(image), n = api.channels(image);
         const int stride = api.stride(image);
@@ -14736,40 +15511,13 @@ bool Image::load_resource(int resource_id, std::string* error) {
     HGLOBAL loaded = resource ? LoadResource(module, resource) : nullptr;
     const DWORD size = resource ? SizeofResource(module, resource) : 0;
     const BYTE* bytes = loaded && size ? static_cast<const BYTE*>(LockResource(loaded)) : nullptr;
-    const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    const bool uninit = SUCCEEDED(init);
-    IWICImagingFactory* factory = nullptr;
-    IWICStream* stream = nullptr;
-    IWICBitmapDecoder* decoder = nullptr;
-    IWICBitmapFrameDecode* frame = nullptr;
-    IWICFormatConverter* converter = nullptr;
-    HRESULT hr = bytes && size && (uninit || init == RPC_E_CHANGED_MODE)
-        ? CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                           IID_IWICImagingFactory, reinterpret_cast<void**>(&factory))
-        : E_FAIL;
-    if (SUCCEEDED(hr)) hr = factory->CreateStream(&stream);
-    if (SUCCEEDED(hr)) hr = stream->InitializeFromMemory(const_cast<BYTE*>(bytes), size);
-    if (SUCCEEDED(hr)) hr = factory->CreateDecoderFromStream(stream, nullptr,
-        WICDecodeMetadataCacheOnLoad, &decoder);
-    if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
-    UINT w = 0, h = 0;
-    if (SUCCEEDED(hr)) hr = frame->GetSize(&w, &h);
-    if (SUCCEEDED(hr) && (w == 0 || h == 0 || w > 16384 || h > 16384 ||
-                          uint64_t(w) * h > 67108864u)) hr = E_FAIL;
-    if (SUCCEEDED(hr)) hr = factory->CreateFormatConverter(&converter);
-    if (SUCCEEDED(hr)) hr = converter->Initialize(frame, GUID_WICPixelFormat32bppRGBA,
-        WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom);
-    if (SUCCEEDED(hr)) {
-        result.width = int(w); result.height = int(h);
-        result.pixels.resize(size_t(w) * size_t(h) * 4u);
-        hr = converter->CopyPixels(nullptr, w * 4u, UINT(result.pixels.size()), result.pixels.data());
-    }
-    if (converter) converter->Release();
-    if (frame) frame->Release();
-    if (decoder) decoder->Release();
-    if (stream) stream->Release();
-    if (factory) factory->Release();
-    if (uninit) CoUninitialize();
+    detail::WicDecode decode;
+    HRESULT hr = bytes && size ? decode.create() : E_FAIL;
+    if (SUCCEEDED(hr)) hr = decode.factory->CreateStream(&decode.stream);
+    if (SUCCEEDED(hr)) hr = decode.stream->InitializeFromMemory(const_cast<BYTE*>(bytes), size);
+    if (SUCCEEDED(hr)) hr = decode.factory->CreateDecoderFromStream(decode.stream, nullptr,
+        WICDecodeMetadataCacheOnDemand, &decode.decoder);
+    if (SUCCEEDED(hr)) hr = decode.pixels(result);
     if (!result.valid()) {
         if (error) *error = "Unable to decode Windows image resource " + std::to_string(resource_id);
         return false;

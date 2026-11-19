@@ -168,6 +168,21 @@ int main() {
         check(v == "l1\nl2", "A6 textarea 未绑回调：V 不崩、内容不动");
     }
 
+    for (bool multiline : {false, true}) {
+        Harness h(&surf); Drv d(h.ui, 420, 220);
+        std::string value = "preserve selection";
+        auto draw = [&] {
+            if (multiline) h.ui.textarea(&value, aino::Rect(10, 10, 300, 120));
+            else h.ui.input(&value, aino::Rect(10, 10, 260, 30));
+        };
+        h.ui.impl->try_set_clipboard = [](const std::string&) { return false; };
+        d.click(60, 25, draw); d.key('A', draw); d.key('X', draw);
+        check(value == "preserve selection", "failed clipboard write preserves selected text");
+        h.ui.impl->try_set_clipboard = [](const std::string& text) { g_clip = text; return true; };
+        d.key('C', draw);
+        check(g_clip == value, "bool-only clipboard callback supports copy");
+    }
+
     // =========================================================== B 组：绑了回调
     std::printf("B. 绑定回调后的语义\n");
     {

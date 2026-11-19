@@ -1,6 +1,6 @@
-﻿cmake_minimum_required(VERSION 3.15)
+cmake_minimum_required(VERSION 3.15)
 cmake_policy(SET CMP0091 NEW)
-project(aino_demo LANGUAGES CXX)
+project(aino_demo VERSION 0.5.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,6 +14,35 @@ endif()
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
+
+find_package(Threads REQUIRED)
+add_library(aino INTERFACE)
+add_library(aino::aino ALIAS aino)
+target_compile_features(aino INTERFACE cxx_std_17)
+if(MSVC)
+    target_compile_options(aino INTERFACE /utf-8)
+endif()
+target_include_directories(aino INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>" "$<INSTALL_INTERFACE:include>")
+target_link_libraries(aino INTERFACE Threads::Threads)
+if(WIN32)
+    target_link_libraries(aino INTERFACE user32 gdi32 ole32 windowscodecs)
+elseif(APPLE)
+    target_link_libraries(aino INTERFACE "-framework Cocoa" "-framework CoreText"
+        "-framework CoreGraphics" "-framework ImageIO" "-framework ApplicationServices")
+else()
+    target_link_libraries(aino INTERFACE X11 ${CMAKE_DL_LIBS})
+endif()
+
+include(CMakePackageConfigHelpers)
+configure_package_config_file(cmake/ainoConfig.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/ainoConfig.cmake"
+    INSTALL_DESTINATION lib/cmake/aino)
+write_basic_package_version_file("${CMAKE_CURRENT_BINARY_DIR}/ainoConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION} COMPATIBILITY SameMajorVersion)
+install(TARGETS aino EXPORT ainoTargets)
+install(FILES aino.hpp DESTINATION include)
+install(EXPORT ainoTargets NAMESPACE aino:: DESTINATION lib/cmake/aino)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/ainoConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/ainoConfigVersion.cmake" DESTINATION lib/cmake/aino)
 
 function(aino_add_demo name)
     cmake_parse_arguments(DEMO "NATIVE_ENTRY" "" "" ${ARGN})
@@ -42,17 +71,7 @@ function(aino_add_demo name)
 endfunction()
 
 function(aino_configure_target name)
-    find_package(Threads REQUIRED)
-    target_link_libraries(${name} PRIVATE Threads::Threads)
-    if(WIN32)
-        target_link_libraries(${name} PRIVATE user32 gdi32 ole32 windowscodecs)
-    elseif(APPLE)
-        target_link_libraries(${name} PRIVATE
-            "-framework Cocoa" "-framework CoreText" "-framework CoreGraphics" "-framework ImageIO"
-            "-framework ApplicationServices")
-    else()
-        target_link_libraries(${name} PRIVATE X11 ${CMAKE_DL_LIBS})
-    endif()
+    target_link_libraries(${name} PRIVATE aino::aino)
 
     # 源码与字符串统一按 UTF-8 编译。
     if(MSVC)
@@ -72,10 +91,9 @@ function(aino_configure_target name)
                     AINO_STATIC_RUNTIME_LINK_OK)
                 cmake_pop_check_state()
                 if(NOT AINO_STATIC_RUNTIME_LINK_OK)
-                    message(WARNING
-                        "AINO_STATIC_EXE=ON requested but the current MinGW toolchain does not provide a complete static runtime. "
-                        "Disabling static EXE mode and continuing with the DLL-compatible build.")
-                    set(AINO_STATIC_EXE OFF CACHE BOOL "静态链接 Windows 示例及测试的编译器运行时" FORCE)
+                    message(FATAL_ERROR
+                        "AINO_STATIC_EXE=ON requires a complete MinGW static runtime. "
+                        "Install the static runtime or explicitly configure -DAINO_STATIC_EXE=OFF to package DLLs.")
                 else()
                     target_link_options(${name} PRIVATE -static)
                 endif()
@@ -104,7 +122,7 @@ function(aino_add_ssh source)
     endif()
     if(WIN32 AND MSVC)
         set(_ssh_l2_inc  "${AINO_SSH_DEPS}/libssh2-1.11.1/include")
-        # libssh2 与 mbedTLS 的 CRT 必须与 AINO_STATIC_EXE 一致，默认 /MT。
+        # 此目录由仓库脚本生成 /MT 依赖，SSH 目标显式匹配，避免默认 /MD 混链。
         set(_ssh_l2_bld  "${AINO_SSH_DEPS}/l2mbed/src")
         set(_ssh_mbed_inc "${AINO_SSH_DEPS}/mbedtls-3.6.2/include")
         set(_ssh_mbed_lib "${AINO_SSH_DEPS}/mbedtls-3.6.2/mbedtls_all.lib")
@@ -119,11 +137,12 @@ function(aino_add_ssh source)
 
         if(_ssh_missing)
             list(JOIN _ssh_missing "\n    " _ssh_msg)
-            message(WARNING
-                "跳过 aino_ssh —— 缺第三方静态依赖：\n    ${_ssh_msg}\n"
-                "  依赖构建说明见 docs/01-quickstart.md。")
+            message(FATAL_ERROR
+                "无法构建 aino_ssh —— 缺第三方静态依赖：\n    ${_ssh_msg}\n"
+                "  依赖构建说明见 docs/wiki/01-quickstart.md。")
         else()
             aino_add_demo(aino_ssh "${source}" NATIVE_ENTRY)
+            set_property(TARGET aino_ssh PROPERTY MSVC_RUNTIME_LIBRARY MultiThreaded)
             target_include_directories(aino_ssh PRIVATE
                 "${_ssh_l2_inc}" "${_ssh_l2_bld}" "${_ssh_mbed_inc}")
             target_compile_definitions(aino_ssh PRIVATE NOMINMAX)
@@ -138,8 +157,7 @@ function(aino_add_ssh source)
         find_path(AINO_LIBSSH2_INCLUDE_DIR libssh2.h)
         find_library(AINO_LIBSSH2_LIBRARY NAMES ssh2 libssh2)
         if(NOT AINO_LIBSSH2_INCLUDE_DIR OR NOT AINO_LIBSSH2_LIBRARY)
-            message(STATUS "跳过 aino_ssh：未找到 libssh2 开发库")
-            return()
+            message(FATAL_ERROR "AINO_BUILD_SSH=ON requires libssh2 development headers and library")
         endif()
         aino_add_demo(aino_ssh "${source}" NATIVE_ENTRY)
         target_include_directories(aino_ssh PRIVATE "${AINO_LIBSSH2_INCLUDE_DIR}")
@@ -147,6 +165,9 @@ function(aino_add_ssh source)
         target_link_libraries(aino_ssh PRIVATE "${AINO_LIBSSH2_LIBRARY}" Threads::Threads)
         if(WIN32)
             target_link_libraries(aino_ssh PRIVATE ws2_32 crypt32 bcrypt shell32 ole32 uuid msimg32 comdlg32)
+        endif()
+        if(APPLE)
+            target_link_libraries(aino_ssh PRIVATE "-framework Security")
         endif()
     endif()
     if(TARGET aino_ssh AND MINGW AND AINO_STATIC_EXE)

@@ -2,7 +2,7 @@
 
 # 三平台均运行：
 #   1. ci_smoke   —— 能编译、能开窗、能跑满 20 帧（冒烟）
-#   2. ci_pixels  —— 44 项像素断言，直接从后备缓冲读像素（画得对不对）
+#   2. ci_pixels  —— 跨平台像素断言，直接从后备缓冲读像素（画得对不对）
 #   3. ci_capture —— active 生命周期；Windows / X11 额外检查原生取消事件
 #   4. ci_state_lifetime —— 隐藏保留、显式销毁及跨作用域状态隔离（无窗口）
 #
@@ -34,15 +34,15 @@ jobs:
 
       - name: 编译 gallery、冒烟程序与像素断言
         run: |
-          cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT examples\gallery.cpp user32.lib gdi32.lib /Fe:gallery.exe
+          cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT examples\gallery.cpp user32.lib gdi32.lib ole32.lib windowscodecs.lib /Fe:gallery.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT tools\ci_smoke.cpp user32.lib gdi32.lib /Fe:ci_smoke.exe
+          cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT tools\ci_smoke.cpp user32.lib gdi32.lib ole32.lib windowscodecs.lib /Fe:ci_smoke.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT tools\ci_pixels.cpp user32.lib gdi32.lib /Fe:ci_pixels.exe
+          cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT tools\ci_pixels.cpp user32.lib gdi32.lib ole32.lib windowscodecs.lib /Fe:ci_pixels.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT tools\probe\capture_probe.cpp user32.lib gdi32.lib /Fe:ci_capture.exe
+          cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT tools\probe\capture_probe.cpp user32.lib gdi32.lib ole32.lib windowscodecs.lib /Fe:ci_capture.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT tools\probe\state_lifetime_probe.cpp user32.lib gdi32.lib /Fe:ci_state_lifetime.exe
+          cl /nologo /std:c++17 /utf-8 /EHsc /O2 /MT tools\probe\state_lifetime_probe.cpp user32.lib gdi32.lib ole32.lib windowscodecs.lib /Fe:ci_state_lifetime.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: 控件状态生命周期回归
@@ -54,8 +54,8 @@ jobs:
       - name: 冒烟（跑满 20 帧）
         run: .\ci_smoke.exe
 
-      # S6 那 4 项查的是 X11 的 _NET_WM_NAME，Windows 上没有可考的，这里 40 项实跑。
-      - name: 像素断言（40 项 + 4 项 X11 专有跳过）
+      # X11 专有的窗口管理器断言在 Windows 跳过，其余像素性质按探针实际输出判定。
+      - name: 像素断言（含透明文字，X11 专有项按平台跳过）
         env:
           AINO_PIX_BMP: "1"
         run: .\ci_pixels.exe
@@ -68,7 +68,7 @@ jobs:
       # 真的生效（S5 的两条断言会直接考字面量本身）。
       - name: 不带 /utf-8 编译（模拟用户手编）
         run: |
-          cl /nologo /std:c++17 /EHsc /O2 /MT tools\ci_pixels.cpp user32.lib gdi32.lib /Fe:ci_pixels_noutf8.exe
+          cl /nologo /std:c++17 /EHsc /O2 /MT tools\ci_pixels.cpp user32.lib gdi32.lib ole32.lib windowscodecs.lib /Fe:ci_pixels_noutf8.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\ci_pixels_noutf8.exe
 
@@ -124,7 +124,7 @@ jobs:
       - name: 冒烟（xvfb 虚拟屏，跑满 20 帧）
         run: xvfb-run -a ./ci_smoke
 
-      - name: 像素断言（44 项，xvfb 虚拟屏）
+      - name: 像素断言（xvfb 虚拟屏）
         env:
           AINO_PIX_BMP: "1"
           AINO_X11_TRACE: "1"
@@ -213,15 +213,15 @@ jobs:
       - name: 编译 gallery、冒烟程序与像素断言
         run: |
           clang++ -std=c++17 -O2 examples/gallery.cpp -o gallery \
-            -framework Cocoa -framework CoreText -framework CoreGraphics -framework ApplicationServices
+            -framework Cocoa -framework CoreText -framework CoreGraphics -framework ImageIO -framework ApplicationServices
           clang++ -std=c++17 -O2 tools/ci_smoke.cpp -o ci_smoke \
-            -framework Cocoa -framework CoreText -framework CoreGraphics -framework ApplicationServices
+            -framework Cocoa -framework CoreText -framework CoreGraphics -framework ImageIO -framework ApplicationServices
           clang++ -std=c++17 -O2 tools/ci_pixels.cpp -o ci_pixels \
-            -framework Cocoa -framework CoreText -framework CoreGraphics -framework ApplicationServices
+            -framework Cocoa -framework CoreText -framework CoreGraphics -framework ImageIO -framework ApplicationServices
           clang++ -std=c++17 -O2 tools/probe/capture_probe.cpp -o ci_capture \
-            -framework Cocoa -framework CoreText -framework CoreGraphics -framework ApplicationServices
+            -framework Cocoa -framework CoreText -framework CoreGraphics -framework ImageIO -framework ApplicationServices
           clang++ -std=c++17 -O2 tools/probe/state_lifetime_probe.cpp -o ci_state_lifetime \
-            -framework Cocoa -framework CoreText -framework CoreGraphics -framework ApplicationServices
+            -framework Cocoa -framework CoreText -framework CoreGraphics -framework ImageIO -framework ApplicationServices
 
       - name: 控件状态生命周期回归（无窗口）
         run: ./ci_state_lifetime
@@ -232,7 +232,7 @@ jobs:
       - name: 冒烟（runner 没有交互桌面，能开窗就算过）
         run: ./ci_smoke
 
-      - name: 像素断言（44 项）
+      - name: 像素断言
         env:
           AINO_PIX_BMP: "1"
         run: ./ci_pixels

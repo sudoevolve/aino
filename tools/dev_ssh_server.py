@@ -13,6 +13,7 @@ SFTP 的根目录是 --root 指定的临时目录，随便上传下载都不碰�
     python tools/dev_ssh_server.py --port 2222 --user demo --pass demo --root build/sshtest
 """
 import argparse
+import errno
 import logging
 import os
 import socket
@@ -115,12 +116,53 @@ class _SftpServer(paramiko.SFTPServer):
                                      sftp_si=sftp_si, **kwargs)
 
 
+class _SftpHandle(paramiko.SFTPHandle):
+    """属性操作绑定打开的描述符，与客户端的提交前校验保持一致。"""
+
+    def stat(self):
+        try:
+            return paramiko.SFTPAttributes.from_stat(os.fstat(self.readfile.fileno()))
+        except OSError as e:
+            return paramiko.SFTPServer.convert_errno(e.errno)
+
+    def chattr(self, attr):
+        try:
+            fd = self.writefile.fileno()
+            current = os.fstat(fd)
+            if attr.st_uid is not None or attr.st_gid is not None:
+                uid = current.st_uid if attr.st_uid is None else attr.st_uid
+                gid = current.st_gid if attr.st_gid is None else attr.st_gid
+                if (uid, gid) != (current.st_uid, current.st_gid):
+                    if not hasattr(os, "fchown"):
+                        return paramiko.SFTP_OP_UNSUPPORTED
+                    os.fchown(fd, uid, gid)
+            if attr.st_mode is not None:
+                if os.chmod in os.supports_fd:
+                    os.chmod(fd, attr.st_mode & 0o7777)
+                elif (attr.st_mode & 0o777) != (current.st_mode & 0o777):
+                    return paramiko.SFTP_OP_UNSUPPORTED
+            if attr.st_size is not None:
+                os.ftruncate(fd, attr.st_size)
+            if attr.st_atime is not None or attr.st_mtime is not None:
+                if os.utime not in os.supports_fd:
+                    return paramiko.SFTP_OP_UNSUPPORTED
+                os.utime(fd, (current.st_atime if attr.st_atime is None else attr.st_atime,
+                              current.st_mtime if attr.st_mtime is None else attr.st_mtime))
+            return paramiko.SFTP_OK
+        except (OSError, ValueError) as e:
+            return paramiko.SFTPServer.convert_errno(getattr(e, "errno", None) or errno.EINVAL)
+
+
 class _SftpIface(paramiko.SFTPServerInterface):
     """只允许在 ROOT 里面折腾（测试服务器也别真把整盘暴露出去）。"""
 
     def _safe(self, path):
-        p = os.path.realpath(os.path.join(ROOT, path.lstrip("/\\")))
-        if not p.startswith(os.path.realpath(ROOT)):
+        root = os.path.realpath(ROOT)
+        p = os.path.realpath(os.path.join(root, path.lstrip("/\\")))
+        try:
+            if os.path.commonpath((root, p)) != root:
+                return None
+        except ValueError:  # Windows 跨盘路径没有共同根目录。
             return None
         return p
 
@@ -156,14 +198,17 @@ class _SftpIface(paramiko.SFTPServerInterface):
         p = self._safe(path)
         if not p:
             return paramiko.SFTP_PERMISSION_DENIED
-        mode = "r+b" if os.path.exists(p) else "wb"
-        if flags & os.O_APPEND:
-            mode = "ab"
         try:
-            f = open(p, mode)
+            fd = os.open(p, flags | getattr(os, "O_BINARY", 0), 0o600)
+            try:
+                mode = "r+b" if flags & os.O_RDWR else ("wb" if flags & os.O_WRONLY else "rb")
+                f = os.fdopen(fd, mode)
+            except BaseException:
+                os.close(fd)
+                raise
         except OSError as e:
             return paramiko.SFTPServer.convert_errno(e.errno)
-        fobj = paramiko.SFTPHandle(flags)
+        fobj = _SftpHandle(flags)
         fobj.filename = p
         fobj.readfile = f
         fobj.writefile = f
@@ -171,6 +216,8 @@ class _SftpIface(paramiko.SFTPServerInterface):
 
     def remove(self, path):
         p = self._safe(path)
+        if p is None:
+            return paramiko.SFTP_PERMISSION_DENIED
         try:
             os.remove(p)
             return paramiko.SFTP_OK
@@ -179,6 +226,20 @@ class _SftpIface(paramiko.SFTPServerInterface):
 
     def rename(self, oldpath, newpath):
         a, b = self._safe(oldpath), self._safe(newpath)
+        if a is None or b is None:
+            return paramiko.SFTP_PERMISSION_DENIED
+        if os.path.lexists(b):
+            return paramiko.SFTP_FAILURE
+        try:
+            os.rename(a, b)
+            return paramiko.SFTP_OK
+        except OSError as e:
+            return paramiko.SFTPServer.convert_errno(e.errno)
+
+    def posix_rename(self, oldpath, newpath):
+        a, b = self._safe(oldpath), self._safe(newpath)
+        if a is None or b is None:
+            return paramiko.SFTP_PERMISSION_DENIED
         try:
             os.replace(a, b)
             return paramiko.SFTP_OK
@@ -187,6 +248,8 @@ class _SftpIface(paramiko.SFTPServerInterface):
 
     def mkdir(self, path, attr):
         p = self._safe(path)
+        if p is None:
+            return paramiko.SFTP_PERMISSION_DENIED
         try:
             os.mkdir(p)
             return paramiko.SFTP_OK
@@ -195,6 +258,8 @@ class _SftpIface(paramiko.SFTPServerInterface):
 
     def rmdir(self, path):
         p = self._safe(path)
+        if p is None:
+            return paramiko.SFTP_PERMISSION_DENIED
         try:
             os.rmdir(p)
             return paramiko.SFTP_OK

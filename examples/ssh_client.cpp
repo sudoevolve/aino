@@ -15,13 +15,13 @@
 //            重命名、删除；所有文件操作在后台线程，界面永不等网络
 //    · 多会话：每个标签独立连接、独立读线程、独立文件面板
 //    · 跨平台：Windows / Linux / macOS 同一份源码。SSH 用 libssh2
-//      （Windows 发布版静态链接 libssh2/WinCNG；Linux 用发行版包）
+//      （MSVC 默认依赖目录使用 libssh2/mbedTLS；Linux 用发行版包）
 //
 //  编译（Windows）：
 //    cmake --build build --config Release --target aino_ssh
 //    # 或绕过 CMake 直接调 cl：python tools/build_ssh.py app          # 见该脚本里的 libssh2 说明
 //  编译（Linux）：
-//    g++ -std=c++17 -O2 ssh_client.cpp -o ssh_client -lssh2 -lX11 -lpthread
+//    g++ -std=c++17 -O2 ssh_client.cpp -o ssh_client -lssh2 -lX11 -lpthread -ldl
 //
 //  作者：sudoevolve <sudoevolve@gmail.com>
 // =============================================================================
@@ -29,6 +29,7 @@
 #include "../aino.hpp"
 
 #include "ssh_core.hpp"
+#include "ssh_credentials.hpp"
 
 #include <chrono>
 
@@ -67,11 +68,7 @@ namespace {
 // =============================================================================
 //  一、剪贴板
 //
-//  Windows 走 aino 的 Window（OpenClipboard + 重试）；Linux 的 X11 剪贴板需要
-//  "持有选区并响应 SelectionRequest"，aino 后端没做，这里退到系统工具：
-//  wl-clipboard（Wayland）→ xclip → xsel，命中哪个用哪个。都没有就只是复制不了，
-//  不影响其他功能。
-// =============================================================================
+//  系统剪贴板由 Window 后端实现；shell_capture 只用于打开外部编辑器。
 #if !defined(_WIN32)
 std::string shell_capture(const std::string& cmd) {
     std::string out;
@@ -83,49 +80,13 @@ std::string shell_capture(const std::string& cmd) {
     ::pclose(p);
     return out;
 }
-bool cmd_exists(const char* name) {
-    return !shell_capture(std::string("command -v ") + name + " 2>/dev/null").empty();
-}
 #endif
 
 struct Clipboard {
     aino::Window* win = nullptr;
-#if !defined(_WIN32)
-    int tool = -1;                       // 0 = wl-clipboard, 1 = xclip, 2 = xsel
-#endif
-
-    void probe() {
-#if !defined(_WIN32)
-        if (std::getenv("WAYLAND_DISPLAY") && cmd_exists("wl-copy") && cmd_exists("wl-paste")) tool = 0;
-        else if (cmd_exists("xclip")) tool = 1;
-        else if (cmd_exists("xsel")) tool = 2;
-#endif
-    }
-    void set(const std::string& text) {
-#if defined(_WIN32)
-        if (win) win->set_clipboard(text);
-#else
-        const std::string tmp = "/tmp/.aino_ssh_clip";
-        if (std::FILE* f = std::fopen(tmp.c_str(), "wb")) {
-            std::fwrite(text.data(), 1, text.size(), f);
-            std::fclose(f);
-        }
-        if (tool == 0)      shell_capture("wl-copy < " + tmp);
-        else if (tool == 1) shell_capture("xclip -selection clipboard -i < " + tmp);
-        else if (tool == 2) shell_capture("xsel --clipboard --input < " + tmp);
-        std::remove(tmp.c_str());
-#endif
-    }
-    std::string get() {
-#if defined(_WIN32)
-        return win ? win->clipboard() : std::string();
-#else
-        if (tool == 0) return shell_capture("wl-paste -n 2>/dev/null");
-        if (tool == 1) return shell_capture("xclip -selection clipboard -o 2>/dev/null");
-        if (tool == 2) return shell_capture("xsel --clipboard --output 2>/dev/null");
-        return std::string();
-#endif
-    }
+    void probe() {} // 保留示例初始化入口；各后端负责系统剪贴板。
+    bool set(const std::string& text) { return win && win->try_set_clipboard(text); }
+    std::string get() { return win ? win->clipboard() : std::string(); }
 };
 
 // 强调色用于目录、选择状态、连接成功和主要操作。
@@ -136,13 +97,15 @@ const Color kOk      = Color::hex(0x4ADE80);
 const Color kBad     = Color::hex(0xF87171);
 const Color kWarn    = Color::hex(0xFBBF24);
 
-// 连接配置保存于 ~/.aino_ssh/profiles.json，密码使用异或与十六进制混淆，未加密。
+// 配置只保存 DPAPI 密文或系统凭据引用；旧格式仅用于迁移读取。
 struct Profile {
     std::string name;
     std::string host;
     int         port = 22;
     std::string user;
     std::string pass;
+    std::string stored_pass;
+    bool secret_unavailable = false;
     std::string key;
     bool        remember = false;        // 是否把密码写进文件
     int         src = 0;                 // 0 = 本机配置，1 = ~/.ssh/config，2 = VSCode 指定
@@ -269,6 +232,7 @@ struct JsonScan {
         while (i < s.size()) {
             const char c = s[i++];
             if (c == '"') return true;
+            if (static_cast<unsigned char>(c) < 0x20) return false;
             if (c != '\\') { out->push_back(c); continue; }
             if (i >= s.size()) break;
             const char e = s[i++];
@@ -276,18 +240,36 @@ struct JsonScan {
             case 'n': out->push_back('\n'); break;
             case 'r': out->push_back('\r'); break;
             case 't': out->push_back('\t'); break;
+            case 'b': out->push_back('\b'); break;
+            case 'f': out->push_back('\f'); break;
+            case '"': case '\\': case '/': out->push_back(e); break;
             case 'u': {
-                if (i + 4 > s.size()) return true;
+                auto hex4 = [&](unsigned& u) {
+                    if (i + 4 > s.size()) return false;
+                    u = 0;
+                    for (int k = 0; k < 4; ++k) {
+                        const unsigned char h = s[i++];
+                        int digit = h >= '0' && h <= '9' ? h - '0'
+                            : h >= 'a' && h <= 'f' ? h - 'a' + 10
+                            : h >= 'A' && h <= 'F' ? h - 'A' + 10 : -1;
+                        if (digit < 0) return false;
+                        u = u * 16 + unsigned(digit);
+                    }
+                    return true;
+                };
                 unsigned u = 0;
-                for (int k = 0; k < 4; ++k) {
-                    const char h = s[i + k];
-                    u = u * 16 + unsigned(h <= '9' ? h - '0' : (h | 32) - 'a' + 10);
-                }
-                i += 4;
+                if (!hex4(u)) return false;
+                if (u >= 0xD800 && u <= 0xDBFF) {
+                    if (i + 2 > s.size() || s[i] != '\\' || s[i + 1] != 'u') return false;
+                    i += 2;
+                    unsigned low = 0;
+                    if (!hex4(low) || low < 0xDC00 || low > 0xDFFF) return false;
+                    u = 0x10000 + (u - 0xD800) * 0x400 + low - 0xDC00;
+                } else if (u >= 0xDC00 && u <= 0xDFFF) return false;
                 append_utf8(*out, u);
                 break;
             }
-            default: out->push_back(e);
+            default: return false;
             }
         }
         return false;
@@ -295,11 +277,13 @@ struct JsonScan {
     bool num(long long* out) {
         ws();
         const size_t st = i;
-        if (i < s.size() && (s[i] == '-' || s[i] == '+')) ++i;
+        if (i < s.size() && s[i] == '-') ++i;
+        const size_t digits = i;
         while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) ++i;
-        if (i == st) return false;
+        if (i == digits || (s[digits] == '0' && i > digits + 1)) return false;
+        errno = 0;
         *out = std::strtoll(s.substr(st, i - st).c_str(), nullptr, 10);
-        return true;
+        return errno != ERANGE;
     }
     void skip() {
         ws();
@@ -319,70 +303,107 @@ struct JsonScan {
     }
 };
 
-// 密码存储编码使用混淆，不提供加密。
-std::string obf(const std::string& s) {
-    static const char* hex = "0123456789abcdef";
+// 旧版 XOR 记录仅供一次迁移，不再写回。
+bool deobf(const std::string& s, std::string* decoded) {
+    if (s.rfind("x:", 0) != 0) { *decoded = s; return true; }
+    std::vector<unsigned char> bytes;
+    if (!sshc::credential_unhex(s.substr(2), bytes)) return false;
     std::string o;
-    o.reserve(2 + s.size() * 2);
-    o += "x:";
-    for (size_t i = 0; i < s.size(); ++i) {
-        const unsigned char b = static_cast<unsigned char>(s[i]) ^ static_cast<unsigned char>(0x5A + i * 31);
-        o.push_back(hex[b >> 4]);
-        o.push_back(hex[b & 15]);
-    }
-    return o;
+    o.reserve(bytes.size());
+    for (size_t i = 0; i < bytes.size(); ++i)
+        o.push_back(char(bytes[i] ^ static_cast<unsigned char>(0x5A + i * 31)));
+
+    *decoded = std::move(o);
+    return true;
 }
-std::string deobf(const std::string& s) {
-    if (s.rfind("x:", 0) != 0) return s;                 // 手写的明文也认
-    auto hv = [](char c) -> unsigned {
-        return unsigned(c <= '9' ? c - '0' : (c | 32) - 'a' + 10);
-    };
-    std::string o;
-    o.reserve(s.size() / 2);
-    for (size_t i = 2; i + 1 < s.size(); i += 2) {
-        const unsigned char b = static_cast<unsigned char>(hv(s[i]) * 16 + hv(s[i + 1]));
-        o.push_back(char(b ^ static_cast<unsigned char>(0x5A + ((i - 2) / 2) * 31)));
-    }
-    return o;
-}
+
+std::string profile_store_warning;
+bool save_local_profiles(std::vector<Profile>& all, std::string* err = nullptr);
 
 std::vector<Profile> load_local_profiles() {
     std::vector<Profile> out;
-    std::FILE* f = std::fopen(cfg_file().c_str(), "rb");
+    profile_store_warning.clear();
+    std::FILE* f = sshc::open_local_file(cfg_file(), "rb");
     if (!f) return out;
     std::string txt;
     char buf[4096];
     size_t n;
     while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) txt.append(buf, n);
+    const bool read_failed = std::ferror(f) != 0;
     std::fclose(f);
+    if (read_failed) { profile_store_warning = "连接配置读取失败，未迁移密码"; return out; }
 
+    bool migrate = false;
+    bool parsed = true;
+    bool migration_safe = true;
+    profile_store_warning.clear();
     JsonScan js(txt);
     if (!js.eat('[')) return out;
     while (!js.peek(']') && js.i < txt.size()) {
-        if (!js.eat('{')) break;
+        if (!js.eat('{')) { parsed = false; break; }
         Profile p;
         while (!js.peek('}') && js.i < txt.size()) {
             std::string k;
-            if (!js.str(&k)) break;
-            js.eat(':');
-            if (k == "name") js.str(&p.name);
-            else if (k == "host") js.str(&p.host);
-            else if (k == "user") js.str(&p.user);
-            else if (k == "key") js.str(&p.key);
-            else if (k == "pass") { std::string v; if (js.str(&v)) p.pass = deobf(v); }
-            else if (k == "port") { long long v = 22; if (js.num(&v)) p.port = int(v); }
-            else if (k == "remember") { long long v = 0; if (js.num(&v)) p.remember = v != 0; }
-            else js.skip();
-            js.eat(',');
+            if (!js.str(&k) || !js.eat(':')) { parsed = false; break; }
+            if (k == "name") parsed = js.str(&p.name);
+            else if (k == "host") parsed = js.str(&p.host);
+            else if (k == "user") parsed = js.str(&p.user);
+            else if (k == "key") parsed = js.str(&p.key);
+            else if (k == "pass") parsed = js.str(&p.stored_pass);
+            else if (k == "port") { long long v = 22; parsed = js.num(&v) && v >= 1 && v <= 65535; if (parsed) p.port = int(v); }
+            else if (k == "remember") { long long v = 0; parsed = js.num(&v); if (parsed) p.remember = v != 0; }
+            else { migration_safe = false; js.skip(); }
+            if (!parsed || (!js.peek('}') && !js.eat(','))) { parsed = false; break; }
         }
-        js.eat('}');
-        js.eat(',');
+        if (!parsed || !js.eat('}')) { parsed = false; break; }
+        if (!js.peek(']') && !js.eat(',')) { parsed = false; break; }
+        if (!p.stored_pass.empty()) {
+            if (p.stored_pass.rfind("dpapi:", 0) == 0 || p.stored_pass.rfind("vault:", 0) == 0) {
+                p.secret_unavailable = !sshc::restore_password(p.stored_pass, &p.pass);
+                if (p.secret_unavailable) profile_store_warning = "部分系统凭据无法读取，请解锁系统凭据服务或重新输入密码";
+            } else {
+                p.secret_unavailable = !deobf(p.stored_pass, &p.pass);
+                if (p.secret_unavailable)
+                    profile_store_warning = "部分旧密码记录损坏，已保留原记录，请重新输入密码";
+                else migrate = true;
+            }
+        }
         if (!p.host.empty() || !p.name.empty()) out.push_back(p);
+    }
+    // 截断文件不能用已读到的部分条目覆盖；只有完整数组才允许自动迁移。
+    const bool complete = js.eat(']');
+    js.ws();
+    if (!parsed || !complete || js.i != txt.size()) {
+        profile_store_warning = "连接配置不完整，未自动迁移密码；请先修复配置文件";
+    } else if (migrate && !migration_safe) {
+        profile_store_warning = "配置含未知字段，未自动重写；请备份后重新保存连接以迁移密码";
+    } else if (migrate) {
+        std::string error;
+        if (!save_local_profiles(out, &error)) profile_store_warning = "旧密码尚未迁移：" + error;
     }
     return out;
 }
 
-bool save_local_profiles(const std::vector<Profile>& all, std::string* err = nullptr) {
+bool save_local_profiles(std::vector<Profile>& all, std::string* err) {
+    if (err) err->clear();
+    std::vector<std::string> old_secrets, new_secrets, protected_values;
+    if (std::FILE* file = sshc::open_local_file(cfg_file(), "rb")) {
+        std::string previous; char buffer[4096]; size_t count;
+        while ((count = std::fread(buffer, 1, sizeof(buffer), file))) previous.append(buffer, count);
+        std::fclose(file);
+        JsonScan scan(previous);
+        while (scan.i < previous.size()) {
+            std::string key, value;
+            if (scan.str(&key)) {
+                if (key == "pass" && scan.eat(':') && scan.str(&value) && value.rfind("vault:", 0) == 0)
+                    old_secrets.push_back(value);
+            } else ++scan.i;
+        }
+    }
+    bool committed = false;
+    aino::detail::ScopeExit rollback([&] {
+        if (!committed) for (const auto& secret : new_secrets) (void)sshc::erase_password(secret);
+    });
     std::string txt = "[\n";
     bool first = true;
     for (const Profile& p : all) {
@@ -395,11 +416,33 @@ bool save_local_profiles(const std::vector<Profile>& all, std::string* err = nul
                ", \"user\":\"" + json_esc(p.user) + "\""
                ", \"key\":\"" + json_esc(p.key) + "\""
                ", \"pass\":\"";
-        txt += (p.remember && !p.pass.empty()) ? obf(p.pass) : std::string();
+        std::string stored;
+        if (p.remember && !p.pass.empty()) {
+            const std::string identity = cfg_file() + "|" + std::to_string(p.host.size()) + ":" + p.host
+                + "|" + std::to_string(p.port) + "|" + std::to_string(p.user.size()) + ":" + p.user
+                + "|" + p.name;
+            if (!sshc::protect_password(identity, p.pass, &stored, err)) return false;
+            new_secrets.push_back(stored);
+        } else if (p.remember && p.secret_unavailable) stored = p.stored_pass;
+        protected_values.push_back(stored);
+        txt += json_esc(stored);
         txt += "\", \"remember\":" + std::string(p.remember ? "1" : "0") + "}";
     }
     txt += "\n]\n";
-    return sshc::atomic_write_file(cfg_file(), txt, err);
+    if (!sshc::atomic_write_file(cfg_file(), txt, err)) return false;
+    committed = true;
+    size_t index = 0;
+    for (auto& profile : all) if (profile.src == 0) profile.stored_pass = protected_values[index++];
+    bool cleanup_failed = false;
+    for (const auto& secret : old_secrets)
+        if (std::find(protected_values.begin(), protected_values.end(), secret) == protected_values.end()
+            && !sshc::erase_password(secret))
+            cleanup_failed = true;
+    if (cleanup_failed) {
+        profile_store_warning = "连接已保存，但部分旧凭据未能清理，请在系统凭据服务中检查 aino SSH 条目";
+        if (err) *err = profile_store_warning;
+    }
+    return true;
 }
 
 std::string expand_home(std::string p) {
@@ -889,6 +932,7 @@ struct Session {
     void shutdown() {
         if (shutdown_done.exchange(true)) return;
         xfer_cancel = true;
+        engine.request_stop();
         if (conn_thread.joinable()) conn_thread.join();
         if (xfer_thread.joinable()) xfer_thread.join();
         stop_fs_worker();
@@ -915,12 +959,14 @@ void fs_worker(Session* s, aino::Window* win) {
 
         std::vector<Entry> got;
         std::string err, tag, cwd;
-        switch (r.op) {
-        case FsOp::List:    if (s->engine.list(r.a, &got, &err)) cwd = s->engine.cwd(); break;
-        case FsOp::Mkdir:   if (s->engine.mkdir(r.a, &err)) tag = r.tag; break;
-        case FsOp::Rename:  if (s->engine.rename(r.a, r.b, &err)) tag = r.tag; break;
-        case FsOp::Remove:  if (s->engine.remove(r.a, &err)) tag = r.tag; break;
-        }
+        try {
+            switch (r.op) {
+            case FsOp::List:    if (s->engine.list(r.a, &got, &err)) cwd = s->engine.cwd_snapshot(); break;
+            case FsOp::Mkdir:   if (s->engine.mkdir(r.a, &err)) tag = r.tag; break;
+            case FsOp::Rename:  if (s->engine.rename(r.a, r.b, &err)) tag = r.tag; break;
+            case FsOp::Remove:  if (s->engine.remove(r.a, &err)) tag = r.tag; break;
+            }
+        } catch (const std::exception& e) { err = std::string("文件操作失败：") + e.what(); }
 
         {
             std::lock_guard<std::mutex> lk(s->fs_mtx);
@@ -948,6 +994,7 @@ void Session::stop_fs_worker() {
 void Session::fs_push(const FsReq& r) {
     {
         std::lock_guard<std::mutex> lk(fs_mtx);
+        if (fs_quit) return;
         fs_req = r;
         fs_has_req = true;
     }
@@ -957,7 +1004,7 @@ void Session::fs_push(const FsReq& r) {
 void set_notice(Session& s, const std::string& msg, bool bad) {
     s.notice = msg;
     s.notice_bad = bad;
-    s.notice_at = double(std::clock()) / CLOCKS_PER_SEC;
+    s.notice_at = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 bool start_transfer(Session& s, bool upload, const std::string& local,
@@ -978,31 +1025,40 @@ bool start_transfer(Session& s, bool upload, const std::string& local,
         s.xfer_view.name = Engine::base_name(upload ? local : remote);
         s.xfer_view.busy = true;
     }
-    // 网络调用只由传输线程推进；UI 读取独立快照，不等待 libssh2 的会话锁。
+    // 传输线程提交分块命令；只有 Engine 的 I/O owner 调用网络 API，UI 读取独立快照。
     s.xfer_thread = std::thread([&s, upload, local, remote, win] {
-        if (upload) s.engine.start_upload(local, remote);
-        else s.engine.start_download(remote, local, false);
-        auto next_update = std::chrono::steady_clock::now();
-        while (s.engine.transfer_busy() && !s.xfer_cancel) {
-            s.engine.xfer_step();
-            const auto now = std::chrono::steady_clock::now();
-            if (now >= next_update) {
-                const auto& t = s.engine.transfer();
-                {
-                    std::lock_guard<std::mutex> lk(s.xfer_mtx);
-                    s.xfer_view = {t.name, t.error, t.done, t.total, true, false};
+        try {
+            if (upload) s.engine.start_upload(local, remote, &s.xfer_cancel);
+            else s.engine.start_download(remote, local, false, &s.xfer_cancel);
+            auto next_update = std::chrono::steady_clock::now();
+            while (s.engine.transfer_busy() && !s.xfer_cancel) {
+                s.engine.xfer_step(16u << 10, &s.xfer_cancel);
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= next_update) {
+                    const auto& t = s.engine.transfer();
+                    {
+                        std::lock_guard<std::mutex> lk(s.xfer_mtx);
+                        s.xfer_view = {t.name, t.error, t.done, t.total, true, false};
+                    }
+                    if (win) win->wake();
+                    next_update = now + std::chrono::milliseconds(33);
                 }
-                if (win) win->wake();
-                next_update = now + std::chrono::milliseconds(33);
             }
-        }
-        if (s.xfer_cancel && s.engine.transfer_busy()) s.engine.cancel_transfer();
-        const auto& t = s.engine.transfer();
-        {
+            if (s.xfer_cancel && s.engine.transfer_busy()) s.engine.cancel_transfer();
+            const auto& t = s.engine.transfer();
+            {
+                std::lock_guard<std::mutex> lk(s.xfer_mtx);
+                s.xfer_view = {t.name, t.error, t.done, t.total, false, true};
+            }
+            s.engine.clear_transfer();
+        } catch (const std::exception& e) {
+            // 异常不能越过线程入口；先中断会话，等待 Session::shutdown 统一释放。
+            s.engine.request_stop();
             std::lock_guard<std::mutex> lk(s.xfer_mtx);
-            s.xfer_view = {t.name, t.error, t.done, t.total, false, true};
+            s.xfer_view.error = std::string("传输失败：") + e.what();
+            s.xfer_view.busy = false;
+            s.xfer_view.finished = true;
         }
-        s.engine.clear_transfer();
         s.xfer_running = false;
         if (win) win->wake();
     });
@@ -1014,8 +1070,6 @@ void begin_connect(Session& s, aino::Window& win) {
     if (s.conn_busy()) return;
     if (s.xfer_running) { set_notice(s, "请先取消当前传输", true); return; }
     if (s.conn_thread.joinable()) s.conn_thread.join();
-    s.engine.disconnect();
-    s.engine.set_wake([&win] { win.wake(); });
     s.conn_edit([](Session::ConnInfo& c) {
         c.connecting = true;
         c.err.clear();
@@ -1029,38 +1083,60 @@ void begin_connect(Session& s, aino::Window& win) {
     if (s.user.empty()) s.user = current_user();
     const std::string user = s.user;
     const int port = s.port > 0 ? s.port : 22;
+    const int cols = s.term.cols > 0 ? s.term.cols : 80;
+    const int rows = s.term.rows > 0 ? s.term.rows : 24;
     Session* sp = &s;
-    s.conn_thread = std::thread([sp, host, port, user, pass, key, &win] {
+    s.conn_thread = std::thread([sp, host, port, user, pass, key, cols, rows, &win] {
         std::string err;
-        const bool ok = sp->engine.connect(host, port, user, pass, key, &err);
-        if (ok) {
-            Engine& en = sp->engine;
-            // 优先建立 shell，避免 SFTP 不可用时延迟终端会话。
-            std::string e3;
-            const int cols = sp->term.cols > 0 ? sp->term.cols : 80;
-            const int rows = sp->term.rows > 0 ? sp->term.rows : 24;
-            if (!en.open_shell(cols, rows, &e3)) {
-                sp->conn_edit([&](Session::ConnInfo& c) {
-                    c.err = e3;
-                    c.fail_at = FailStage::Shell;
-                    c.msg = "已连上，但 shell 打不开";
-                });
+        try {
+            // 重连也遵循“先停生产者，再释放 owner/session”，且整个过程在后台完成。
+            sp->stop_fs_worker();
+            if (sp->xfer_thread.joinable()) sp->xfer_thread.join();
+            sp->engine.disconnect();
+            sp->engine.set_wake([&win] { win.wake(); });
+            {
+                std::lock_guard<std::mutex> lock(sp->fs_mtx);
+                sp->fs_quit = false;
+                sp->fs_has_req = false;
+                sp->fs_done = false;
+                sp->fs_busy = false;
+            }
+            sp->fs_thread = std::thread(fs_worker, sp, &win);
+            const bool ok = sp->engine.connect(host, port, user, pass, key, &err);
+            if (ok) {
+                Engine& en = sp->engine;
+                // 优先建立 shell，避免 SFTP 不可用时延迟终端会话。
+                std::string e3;
+                if (!en.open_shell(cols, rows, &e3)) {
+                    sp->conn_edit([&](Session::ConnInfo& c) {
+                        c.err = e3;
+                        c.fail_at = FailStage::Shell;
+                        c.msg = "已连上，但 shell 打不开";
+                    });
+                } else {
+                    en.start_reader();
+                    sp->conn_edit([&](Session::ConnInfo& c) {
+                        c.msg = "已连接  " + en.who();
+                    });
+                }
+                // SFTP 是附加能力，起不来不影响终端
+                std::string e2;
+                const bool sftp_ok = en.open_sftp(&e2) && en.fetch_home(&e2);
+                sp->conn_edit([&](Session::ConnInfo& c) { c.sftp_err = sftp_ok ? std::string() : e2; });
             } else {
-                en.start_reader();
+                const FailStage st = sp->engine.fail_stage();
                 sp->conn_edit([&](Session::ConnInfo& c) {
-                    c.msg = "已连接  " + en.who();
+                    c.err = err;
+                    c.fail_at = st;
+                    c.msg = "连接失败";
                 });
             }
-            // SFTP 是附加能力，起不来不影响终端
-            std::string e2;
-            const bool sftp_ok = en.open_sftp(&e2) && en.fetch_home(&e2);
-            sp->conn_edit([&](Session::ConnInfo& c) { c.sftp_err = sftp_ok ? std::string() : e2; });
-        } else {
-            const FailStage st = sp->engine.fail_stage();
+        } catch (const std::exception& e) {
+            sp->engine.request_stop();
             sp->conn_edit([&](Session::ConnInfo& c) {
-                c.err = err;
-                c.fail_at = st;
+                c.err = std::string("SSH 连接任务失败：") + e.what();
                 c.msg = "连接失败";
+                c.sftp_err = c.err;
             });
         }
         bool sftp_ready = false;
@@ -1070,7 +1146,7 @@ void begin_connect(Session& s, aino::Window& win) {
         });
         win.wake();
         if (sp->engine.connected() && sftp_ready)
-            sp->fs_push(FsReq{FsOp::List, sp->engine.cwd(), {}, {}});
+            sp->fs_push(FsReq{FsOp::List, sp->engine.cwd_snapshot(), {}, {}});
     });
 }
 
@@ -1362,8 +1438,8 @@ void handle_term_keys(aino::Ui& ui, Session& a) {
     if (in.ctrl_of('C') && in.shift_of('C')) {
         const std::string s = a.term.selected_text();
         if (!s.empty() && a.clip) {
-            a.clip->set(s);
-            set_notice(a, "已复制 " + std::to_string(s.size()) + " 字节", false);
+            if (a.clip->set(s)) set_notice(a, "已复制 " + std::to_string(s.size()) + " 字节", false);
+            else set_notice(a, "系统剪贴板暂不可用，请稍后重试", true);
         }
         return;
     }
@@ -1912,7 +1988,6 @@ void open_session(App& app, const Profile& p, const std::string& pass) {
     s->clip = &app.clip;
     s->term_focus = true;
     s->engine.set_wake([w = app.win] { if (w) w->wake(); });
-    s->fs_thread = std::thread(fs_worker, s.get(), app.win);
     begin_connect(*s, *app.win);
     app.tabs.push_back(std::move(s));
     app.active = int(app.tabs.size()) - 1;
@@ -2226,7 +2301,7 @@ void draw_toolbar(aino::Ui& ui, App& app, const aino::Theme& theme) {
     if (tool_button(ui, theme, "打开配置文件", {ui.width() - 286, 12, 120, 32}, false)) open_config_file(app);
     if (tool_button(ui, theme, "重新导入连接", {ui.width() - 156, 12, 104, 32}, false)) {
         app.profiles = load_all_profiles();
-        app.status = "已重新读取 SSH / VSCode 连接配置，现有会话继续运行。";
+        app.status = profile_store_warning.empty() ? "已重新读取 SSH / VSCode 连接配置，现有会话继续运行。" : profile_store_warning;
     }
     const Rect appearance(ui.width() - 42, 12, 30, 32);
     if (ui.icon_button("", appearance, style)) ui.set_theme(theme.is_dark() ? aino::Theme::light() : aino::Theme::dark());
@@ -2315,7 +2390,7 @@ void draw_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
     {
         const Rect cb(x1, y, 16.0f, 16.0f);
         ui.checkbox(&app.draft_remember, "", cb);
-        ui.draw_text("记住密码（以混淆形式存在本机 ~/.aino_ssh/profiles.json）",
+        ui.draw_text("记住密码（由当前用户的系统凭据服务保护）",
                      Rect(cb.right() + 10.0f, y - 2.0f, x2 - cb.right() - 20.0f, 20.0f),
                      th.muted_foreground, Style().font(11.5f));
     }
@@ -2332,12 +2407,13 @@ void draw_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
         if (!app.draft.host.empty()) {
             if (!save_profile(app, app.draft, app.editing)) return;
             app.editor_open = false;
-            app.status = "已保存连接";
+            if (app.status.empty()) app.status = "已保存连接";
         }
     }
     if (dlg_button(ui, th, "保存并连接", Rect(x1 + (bw + 10.0f) * 2.0f, by, bw, 34.0f), Btn::Primary)) {
         if (!app.draft.host.empty()) {
             if (!save_profile(app, app.draft, app.editing)) return;
+            const std::string save_warning = app.status;
             const Profile p = app.draft;
             app.editor_open = false;
             if (!p.pass.empty() || !p.key.empty()) open_session(app, p, p.pass);
@@ -2348,6 +2424,7 @@ void draw_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
                 app.ask_reveal = false;
                 app.draft = p;                   // 待补密码后连接
             }
+            if (!save_warning.empty()) app.status = save_warning;
         }
     }
 }
@@ -2432,6 +2509,7 @@ void draw_tabs(aino::Ui& ui, App& app, const aino::Theme& th, const Rect& area) 
 }
 
 void update_session(Session& a) {
+    if (std::string error = a.engine.take_io_error(); !error.empty()) set_notice(a, error, true);
     // 后台收字节 → 解析器
     if (std::string out = a.engine.take_output(); !out.empty()) {
         a.term.feed(out.data(), out.size());
@@ -2495,7 +2573,9 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
     const Session::ConnInfo cs = a.conn_snapshot();
     const float W = body.w, H = body.h;
     const auto transfer = a.transfer_snapshot();
-    const double now = double(std::clock()) / CLOCKS_PER_SEC;
+    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (!a.notice.empty() && now - a.notice_at < 3)
+        ui.request_frame_in(float(3 - (now - a.notice_at)));
     const std::string status = !app.status.empty() ? app.status
         : (!a.notice.empty() && now - a.notice_at < 3 ? a.notice
         : (a.engine.connected() ? "Ctrl+Shift+C/V 复制粘贴 · PgUp 回滚 · " + std::to_string(a.term.cols) + " × " +
@@ -2643,8 +2723,11 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
         const float fraction = transfer.total ? std::min(1.f, float(double(transfer.done) / double(transfer.total))) : 0;
         ui.fill_rect(progress, th.border, 3);
         ui.fill_rect({progress.x, progress.y, progress.w * fraction, progress.h}, th.tint, 3);
-        if (tool_button(ui, th, "取消", {footer.right() - 76, status_y + (transfer_h - 26) * .5f, 62, 26}, false))
+        if (tool_button(ui, th, a.xfer_cancel ? "取消中…" : "取消",
+                        {footer.right() - 76, status_y + (transfer_h - 26) * .5f, 62, 26}, false)) {
             a.xfer_cancel = true;
+            a.engine.request_transfer_cancel();
+        }
     }
 
 }
@@ -2701,6 +2784,9 @@ void draw_workspace(aino::Ui& ui, App& app, const aino::Theme& th) {
                              app.tabs.size(), int(app.show_start), int(app.editor_open),
                              int(app.ask_open), app.profiles.size(),
                              app.download_dir.c_str(), app.status.c_str());
+                std::fprintf(f, "pointer=%.1f,%.1f pressed=%d released=%d gate=%d active=%llu\n",
+                    ui.input().mouse.x, ui.input().mouse.y, int(ui.input().pressed[0]), int(ui.input().released[0]),
+                    int(ui.impl->gate_on), static_cast<unsigned long long>(ui.impl->active));
                 // 扫的是哪份 ssh config：断言"只扫当前登录用户自己的那份"就靠这行
                 std::fprintf(f, "ssh_config=%s machine_wide=%d user=%s\n",
                              ssh_config_path().c_str(), int(is_machine_wide_path(ssh_config_path())),
@@ -2803,6 +2889,7 @@ int app_main() {
     app.clip.probe();
     app.download_dir = load_download_dir();
     app.profiles = load_all_profiles();
+    app.status = profile_store_warning;
 
     // 拖拽选区要跟着指针实时更新，而库默认"同一控件内移动不重绘"
     win.set_hover_skip(false);
