@@ -291,4 +291,4 @@ Linux 文字在客户端后备缓冲内光栅化，再随窗口图像上屏。�
 与库内文本的字形渲染是不同路径。
 
 `tools/ci_pixels.cpp` 包含编码与文字覆盖断言，X11 另检查标题属性。
-当前 mac 风格仍需 Linux/macOS 真机核对，已知限制见 [平台支持](README.md#平台支持)。
+当前 mac 风格仍需 Linux/macOS 真机核对，已知限制见 [平台支持](14-platform-status.md)。

@@ -1,7 +1,7 @@
 # 12 · 组件与示例索引
 
 当前库使用 macOS 风格语义色与控件外观。尺寸、颜色和交互以当前 API 文档与
-`aino.hpp` 为准；[社区设计资料](macos27/README.md) 只作参考。背景材质使用模糊近似。
+`aino.hpp` 为准；[社区设计资料](../macos27/README.md) 只作参考。背景材质使用模糊近似。
 
 ## 公开组件
 
@@ -53,7 +53,7 @@
 - `row/column/push_padding/begin_group` 是早期布局接口；新代码优先使用 `Stack`。
 - `drawer` 的 `side` 参数保留兼容，实际面板位置由 `box` 指定，没有隐式滑入动画。
 - `image_well` 是展示占位，`color_well` 只报告点击；文件选择、拖放与系统颜色面板由应用接入。
-- Linux/macOS 后端的已知限制见 [平台支持](README.md#平台支持)。
+- Linux/macOS 后端的已知限制见 [平台支持](14-platform-status.md)。
 
 ## 检查工具
 

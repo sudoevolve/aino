@@ -1,7 +1,7 @@
 # 11 · 动画与变换
 
 动画由目标值驱动，变换只影响绘制。平移、缩放、旋转与裁剪见
-[primitives_demo.cpp](../examples/primitives_demo.cpp)。
+[primitives_demo.cpp](../../examples/primitives_demo.cpp)。
 
 ## 1. 重绘约定
 

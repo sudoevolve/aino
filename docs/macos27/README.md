@@ -24,8 +24,8 @@
 - 画廊固定侧栏 252、工具栏高 60，17 个分类、48 张卡片，连续滚动与搜索。
 - 图元示例单独展示几何、透明合成、阴影、裁剪、变换、文字、系统图标与背景模糊。
 
-完整主题字段见 [02](../02-style-and-theme.md)，组件见 [06](../06-interactive.md)，
-浮层见 [08](../08-overlays.md)，图元见 [09](../09-primitives.md)。
+完整主题字段见 [02](../wiki/02-style-and-theme.md)，组件见 [06](../wiki/06-interactive.md)，
+浮层见 [08](../wiki/08-overlays.md)，图元见 [09](../wiki/09-primitives.md)。
 
 ## 提取工具
 
@@ -211,7 +211,7 @@ node /path/to/aino/docs/macos27/tools/extract.js
 
 > ⚠ 这些数值是 Figma 的语义（`blur` = 模糊半径，高斯 σ = blur/2），**不是**"轮廓
 > 处满 alpha 再往外平方衰减"。渲染器的覆盖率曲线必须是 `α(d) = A·[1−Φ(2d/blur)]`，
-> 否则 `0 0 3 .55` 会被画成一圈 55% 黑的 3px 实心描边。实现说明见 [图元与度量](../09-primitives.md)。
+> 否则 `0 0 3 .55` 会被画成一圈 55% 黑的 3px 实心描边。实现说明见 [图元与度量](../wiki/09-primitives.md)。
 
 ---
 

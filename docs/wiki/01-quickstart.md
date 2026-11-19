@@ -59,7 +59,7 @@ Windows 回归构建入口 `python tools/build.py` 默认构建 Release 画廊�
 SSH 额外依赖 libssh2。MSVC 配置使用 `AINO_SSH_DEPS` 指向的预编译 libssh2 + mbedTLS
 目录，默认 `build/third_party`；发布构建的依赖和客户端统一使用 `/MT`。
 其它工具链通过 `find_path` / `find_library` 查找 libssh2 开发库及 Threads。
-缺少依赖时仅跳过 SSH。可以用 `-DAINO_BUILD_SSH=OFF` 禁用该目标。
+SSH 默认关闭。使用 `-DAINO_BUILD_SSH=ON` 启用；显式启用但缺少依赖时配置失败，避免发布缺失功能的产物。
 
 指定私钥路径时，密码字段用作私钥口令；未指定私钥时用于密码/键盘交互认证。
 主机和用户名会清理两端空白；内部的非法控制字符在保存及连接前拒绝，密码和私钥口令不做去空白处理。
@@ -70,9 +70,21 @@ SSH 额外依赖 libssh2。MSVC 配置使用 `AINO_SSH_DEPS` 指向的预编译 
 连接配置、下载目录和主机记录使用同目录临时文件加原子替换，
 写入、同步或替换失败会返回错误，保留旧文件及待保存的连接表单。原子替换不承诺断电恢复，
 也不合并多个进程同时修改同一配置的内容。上传从已打开文件查询 64 位长度，避免 `ftell` 的 2 GB 边界。
-记住的密码仍是可逆混淆；原子保存不改变其保密性，系统凭据存储尚未接入。
+记住的密码使用当前用户的系统凭据保护：Windows DPAPI、macOS Keychain、Linux Secret Service
+（运行时需要 libsecret）。Linux/macOS 配置仅保存凭据引用；服务不可用时保存明确失败，
+不会退回弱混淆。旧版明文或 XOR 记录在读取后尝试迁移，失败保留原文件并显示原因。
+配置不是跨用户的密码导出格式；迁移电脑应重新输入密码。删除连接或取消记住密码后，保存成功才清理旧凭据。
+上传/下载先写同目录独占临时文件，校验长度和关闭结果后替换最终目标；服务端不支持安全替换时报告失败。
+libssh2 ≥ 1.11.1 优先使用 OpenSSH 的 POSIX rename 扩展；旧库或不支持扩展的 SFTP v3 服务
+可能拒绝覆盖已有目标，客户端不会先删除旧文件来绕过限制。上传源仅支持普通文件，拒绝设备与 FIFO。
+上传新目标使用私有权限；替换已有文件时尝试保留 mode/UID/GID，失败放弃提交。Windows 本地替换使用
+ReplaceFile 保留目标 ACL；POSIX ACL/xattr 与硬链接共享 inode 语义尚未保留。替换回复丢失时报告结果不确定。
+认证完成后，终端、PTY 和 SFTP 的 libssh2 调用由单个 I/O owner 串行执行，命令通过有界队列提交。
+网络 EAGAIN 等待不持应用锁，并保留重试参数与缓冲。普通请求截止时间为 20 秒；
+传输取消停止新数据，并为协议收尾提供最多约 2 秒的网络等待，超时会断开整条会话。
+这不是本地文件同步或系统调度的严格实时保证。会话退出通过 shutdown 打断网络等待；DNS 仍依赖系统解析时限。
 
-### 构建和运行回归
+### 发布时构建和运行回归
 
 ```sh
 cmake -S . -B build/test -DCMAKE_BUILD_TYPE=Release -DAINO_BUILD_TESTS=ON -DAINO_BUILD_SSH=OFF
@@ -87,8 +99,10 @@ Linux 的完整测试使用 `xvfb-run -a ctest --test-dir build/test --output-on
 Windows GDI 夹具只在 Windows 编译，名称中出现 `macos` 不表示已验证 Cocoa 后端。
 多编译单元链接契约、线程唤醒、编辑器交互、光栅等价性和画廊基准均纳入 CTest。
 
-`.github/workflows/regression.yml` 在 push / PR 上运行三个平台的构建和 CTest；
-原有发布工作流仍保留专用字体和截图检查。CI 配置存在不等于本地已经跑过其它平台。
+日常 push / PR 由 `.github/workflows/build.yml` 仅编译示例；
+发布或手动发布验收使用 `.github/workflows/regression.yml` 与发布工作流运行回归。
+三个平台的发布验收均显式启用 SSH；Windows 工作流按固定源码摘要构建 /MT 依赖。
+CI 配置存在不等于本地已经跑过其它平台。
 
 客户端的连接、文件操作和传输都在后台执行。切换标签或返回启动页后，传输继续，
 各标签的终端输出仍会解析；连接等待不再驱动持续动画。
@@ -100,17 +114,18 @@ Windows GDI 夹具只在 Windows 编译，名称中出现 `macos` 不表示已�
 连接列表支持搜索名称、主机和用户；点击条目返回已有会话，右侧连接按钮可新开会话。
 会话标签栏复用 `ui.tabs()`，支持状态标记、逐项关闭及溢出翻页；连接管理页与会话可以随时切换。
 新开或选中会话后键盘焦点交给终端；远程路径输入框支持回车打开目录，目录条目双击进入。
-传输状态最多约每 33 ms 通知界面一次，底部“取消”在当前传输块的网络调用返回后生效。
-调整窗口尺寸只提交最新 PTY 尺寸，由后台 reader 发送。
-取消或失败可能保留已写入的部分文件；目前不提供传输队列、断点续传或递归目录下载。
+传输状态最多约每 33 ms 通知界面一次，底部“取消”立即通知 I/O 等待，并显示“取消中…”直到收尾完成。
+调整窗口尺寸只提交最新 PTY 尺寸，由 I/O owner 发送。SFTP 等待响应时可服务终端；待发半包必须先以原参数恢复。
+提交前取消保留原目标并清理临时文件；已进入原子替换时报告实际提交结果，回复丢失时结果不确定。
+断线可能遗留远端临时文件，界面显示清理路径。目前不提供传输队列、断点续传或递归目录下载。
 上传通过系统文件选择器选择单个文件，不再限制本地目录只能含一个文件；本地保存目录用于下载。
 Windows 本地文件读写支持中文路径；未连接或选择不适用时，相应文件操作按钮禁用。
 
 以下为程序原生窗口生成的离线布局预览，连接名称、远程文件和终端内容为测试样本，不代表已登录服务器。
 
-![SSH 连接管理](../screenshots/ssh-connections.png)
+![SSH 连接管理](../../screenshots/ssh-connections.png)
 
-![SSH 远程文件与终端工作区](../screenshots/ssh-workspace.png)
+![SSH 远程文件与终端工作区](../../screenshots/ssh-workspace.png)
 
 MSVC x64 的依赖准备：将 libssh2 1.11.1 和 mbedTLS 3.6.2 源码分别解压到
 `build/third_party/libssh2-1.11.1` 与 `build/third_party/mbedtls-3.6.2`，
@@ -128,7 +143,7 @@ cmake -S "$deps/libssh2-1.11.1" -B "$deps/l2mbed" -G Ninja `
   "-DMBEDTLS_INCLUDE_DIR=$deps/mbedtls-3.6.2/include" `
   "-DMBEDCRYPTO_LIBRARY=$deps/mbedtls-3.6.2/mbedtls_all.lib"
 cmake --build "$deps/l2mbed" --config Release
-cmake -S . -B build
+cmake -S . -B build -DAINO_BUILD_SSH=ON
 cmake --build build --config Release --target aino_ssh
 ```
 
@@ -260,7 +275,7 @@ int main() {
 ## 5. 窗口与主循环
 
 `win.run(frame_cb)` 处理事件、建立帧、调用绘制回调并上屏；无事件和动画时阻塞等待。
-Windows 使用 `WaitMessage`，其它后端使用对应平台事件循环。
+Windows 等待内核事件与线程消息，X11 同时等待原生连接和唤醒描述符，Cocoa 使用主线程 RunLoop。
 帧回调内不提供通用重绘请求。控件状态变化由当前输入帧处理；帧回调外的一次更新可调用
 `ui.request_next_frame()`。自定义动画在需要推进时调用 `ui.request_animation_frame()`，
 只续一帧；全局连续动画使用 `ui.set_animating(true)`，动画结束时必须关闭。
@@ -281,13 +296,13 @@ win.set_size(1280, 800);
 win.set_anim_fps(30);
 ```
 
-`cfg.icon_path`：Windows 读取 `.ico`；macOS 设置应用图标；X11 忽略。
+`cfg.icon_path`：Windows 读取 `.ico`；macOS 设置应用图标；X11 设置 `_NET_WM_ICON`。
 `cfg.font_path`：Windows/macOS 可注册字体文件；X11 按字体家族与 fontconfig 查找。
 `font_family_mono` 用于等宽文本通道。`min_*` / `max_*` 均为逻辑尺寸。
 `win.close()` 请求关闭，后台线程更新后调用 `win.wake()` 唤醒循环；跨线程共享应用状态仍需同步。
-X11 后端从后台线程调用 `wake()` 前，必须在创建任何窗口前调用 `XInitThreads()`；
-否则应由 UI 线程调用。
-多窗口示例的创建与回填目前在 Windows 实测，不能据此认定 Cocoa 支持后台线程建窗。
+`wake()` 和 `close()` 只操作原子标志及本地通知资源，不调用 Xlib，可从后台线程调用。
+其它 Window/Ui 操作在所属 UI 线程进行；Cocoa 必须使用主线程。多个线程各自调用 Xlib 时，
+宿主仍需在任何 Xlib 调用前初始化 `XInitThreads()`。Gallery 子窗口使用同一个 UI 线程。
 
 常规应用使用 `run` 管理帧生命周期；不要在帧回调里阻塞等待或执行网络操作。
 
@@ -315,3 +330,17 @@ win.set_theme(t);
 | 滚动时状态变化 | 使用库滚动作用域，让组件 ID 按内容坐标生成；自定义动画使用稳定 ID |
 | 空闲持续绘制 | 检查显式动画帧请求、`set_animating(true)`、聚焦光标、spinner 与应用计时器 |
 | 文字被截断 | 用 `text_height()` 分配高度，绘制和测量使用相同 Style |
+
+### CMake 集成和多窗口
+
+可直接复制 `aino.hpp`，也可 `add_subdirectory(aino)` 后链接 `aino::aino`。
+`cmake --install build --prefix <安装目录>` 提供 `find_package(aino CONFIG REQUIRED)`；
+目标传递 C++17、线程及系统链接库，MSVC 同时传递 `/utf-8`。
+调用方仍需在一个编译单元中定义 `AINO_IMPLEMENTATION`。
+
+同线程的子窗口使用 `child.set_frame_callback(callback)` 注册，由主窗口 `run()` 一起调度。
+窗口各自按需重绘，关闭子窗口不会结束主窗口。回调按值持有；避免捕获拥有该窗口的强引用形成循环。
+窗口及状态应在所属 UI 线程销毁，不能在自己的帧回调内销毁自身；macOS 必须使用主线程。
+跨线程业务更新调用 `wake()`，业务线程必须在窗口析构前退出。
+`try_set_clipboard()` 返回系统写入结果，失败时剪切保留原文；旧 `set_clipboard()` 接口继续可用。
+`Ui::request_frame_in(seconds)` 在当前帧登记下次重绘，适合提示到期；持续需要时每帧重新登记。

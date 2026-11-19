@@ -7,6 +7,7 @@
     <a href="#quick-start">快速开始</a> ·
     <a href="#features">特性</a> ·
     <a href="#docs">文档</a> ·
+    <a href="site/">官网与 Wiki 阅读器</a> ·
     <a href="LICENSE">Apache-2.0</a>
   </p>
 </div>
@@ -129,20 +130,20 @@ cmake --build build --config Release --target aino_primitives_demo
 ```
 
 `ssh_client.cpp` 保留兼容目标名 `aino_ssh`，需额外安装 libssh2（MSVC 使用预编译 libssh2 + mbedTLS）。
-缺依赖仅跳过此目标，`-DAINO_BUILD_SSH=OFF` 可禁用；详见 [构建说明](docs/01-quickstart.md)。
+默认关闭，`-DAINO_BUILD_SSH=ON` 显式启用并检查依赖；详见 [构建说明](docs/wiki/01-quickstart.md)。
 
 `win.run(frame_cb)` 管理主循环，窗口按需重绘；动画与后台数据更新方式见
-[快速开始](docs/01-quickstart.md)。
+[快速开始](docs/wiki/01-quickstart.md)。
 
 图片可使用 `aino::Image` 加载一次，再通过 `ui.draw_image(image, box)` 绘制；
 支持 PNG、JPEG、BMP 和 GIF 首帧。Linux 运行时需要 GdkPixbuf。
 可通过 `WindowConfig::icon_path` 自定义窗口图标；Windows 示例将默认 ICO 和 Gallery 图片嵌入可执行文件。
 macOS Finder 图标需要 `.app` 和 `.icns`；Linux 桌面图标需要 `.desktop` 入口，
-仅设置窗口图标不会改变文件管理器显示的图标。非 Windows 示例仍需旁置 PNG。详见 [图元文档](docs/09-primitives.md)。
+仅设置窗口图标不会改变文件管理器显示的图标。非 Windows 示例仍需旁置 PNG。详见 [图元文档](docs/wiki/09-primitives.md)。
 
 三个后端：Windows（GDI）、Linux（X11）和 macOS（Cocoa）。**Windows 是唯一完成实机验收的后端**；
-Linux/macOS 的绘制、像素断言与窗口路径已接通，但键盘输入、剪贴板与关闭事件仍有缺口，
-接入前请读 [平台能力矩阵](docs/14-platform-status.md)。Wayland 会话通过 XWayland 运行，
+Linux/macOS 的绘制、输入、剪贴板与窗口路径已实现，原生桌面互通和多显示器仍需验收，
+接入前请读 [平台能力矩阵](docs/wiki/14-platform-status.md)。Wayland 会话通过 XWayland 运行，
 目前没有原生 Wayland 后端。
 
 ## Project Layout
@@ -155,29 +156,34 @@ examples/pomodoro.cpp        番茄钟
 examples/primitives_demo.cpp 基础图元
 examples/function_viewer.cpp 函数可视化
 examples/ssh_client.cpp      SSH/SFTP 客户端（可选依赖）
-docs/                        使用文档
+docs/wiki/                   正式教程与 API
+docs/reviews/                工程审查与历史记录
+docs/design/                 设计研究
+site/                        官网与 Markdown Wiki 阅读器
 screenshots/                 预览截图
 tools/                       构建、测试与性能检查
 CMakeLists.txt               示例构建配置
 ```
 
-开发检查使用 `python tools/regress.py`，完整检查加 `--full`；
-工具说明见 [回归与截图](docs/README.md#回归与截图)。
+日常开发只编译受影响目标；发布验收使用 `python tools/regress.py`，完整检查加 `--full`；
+工具说明见 [开发工具](tools/README.md)。
 
 ## Docs
 
-- [01 快速开始](docs/01-quickstart.md)
-- [02 样式与主题](docs/02-style-and-theme.md)
-- [03 布局](docs/03-layout.md)
-- [04 文本类组件](docs/04-text.md)
-- [05 容器类组件](docs/05-containers.md)
-- [06 交互类组件](docs/06-interactive.md)
-- [07 展示类组件](docs/07-display.md)
-- [08 浮层类组件](docs/08-overlays.md)
-- [09 图元与度量](docs/09-primitives.md)
-- [10 逐组件性能实测（历史基准）](docs/10-performance.md)
-- [11 动画与变换](docs/11-motion.md)
-- [12 组件与示例索引](docs/12-component-index.md)
+[正式 Wiki 索引](docs/wiki/README.md) · [官网阅读器](site/) · [网站预览与发布](site/README.md) · [工程审查记录](docs/reviews/README.md)
+
+- [01 快速开始](docs/wiki/01-quickstart.md)
+- [02 样式与主题](docs/wiki/02-style-and-theme.md)
+- [03 布局](docs/wiki/03-layout.md)
+- [04 文本类组件](docs/wiki/04-text.md)
+- [05 容器类组件](docs/wiki/05-containers.md)
+- [06 交互类组件](docs/wiki/06-interactive.md)
+- [07 展示类组件](docs/wiki/07-display.md)
+- [08 浮层类组件](docs/wiki/08-overlays.md)
+- [09 图元与度量](docs/wiki/09-primitives.md)
+- [10 逐组件性能实测（历史基准）](docs/wiki/10-performance.md)
+- [11 动画与变换](docs/wiki/11-motion.md)
+- [12 组件与示例索引](docs/wiki/12-component-index.md)
 - [文档索引](docs/README.md)
 
 ## License

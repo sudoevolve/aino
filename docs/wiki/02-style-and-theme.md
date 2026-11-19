@@ -1,7 +1,7 @@
 # 02 · 样式与主题
 
 当前主题采用 macOS 风格，保留旧版主题字段供已有应用使用。
-尺寸和颜色以 `aino.hpp` 的主题工厂为准；资料来源与映射见 [设计资料](macos27/README.md)。
+尺寸和颜色以 `aino.hpp` 的主题工厂为准；资料来源与映射见 [设计资料](../macos27/README.md)。
 背景材质使用模糊近似，没有折射与色散。
 
 `Style` 是每个组件的可选最后一个参数，`Theme` 是全局配色与度量。
@@ -191,7 +191,7 @@ Style().outline()      // 2 Outline     中性填充 + 1px 描边
 Style().ghost()        // 3 Ghost       透明底无描边，只有 hover 才出现底色
 Style().destructive()  // 4 Destructive 中性底、红字（危险操作）
 Style().link()         // 5 Link        透明底，前景用 tint
-Style().standard()     // 6 Standard    中性实心表面 + 细边缘
+Style().standard()     // 6 Standard    中性实心表面
 ```
 
 变体的取色完全来自 `Theme`，对照表：
@@ -204,10 +204,10 @@ Style().standard()     // 6 Standard    中性实心表面 + 细边缘
 | `Ghost` | 透明 | `label` | — | hover = `fill3`；press = `fill2` |
 | `Destructive` | `fill2` | `destructive` | — | hover = `fill2`；press = `fill_press` |
 | `Link` | 透明 | `tint` | — | 始终无填充 |
-| `Standard` | 浅色 `control_bg`；深色 `fill_hover.over(control_bg)` | `label` | `separator` 1px + 顶部高光 | hover 保持底色；press = `fill_press.over(底色)` |
+| `Standard` | `fill_hover.over(control_bg)` 中性实心填充 | `label` | 无默认描边或顶部高光 | hover 保持底色；press = `fill_press.over(底色)` |
 
 该表对应按钮共用的 `make_skin()`；其它组件可能只支持部分变体。
-Gallery 的“标准”使用 `standard()` 的实心表面与细边缘，“次要”使用 `secondary()` 的半透明 `fill2`。
+Gallery 的“标准”使用 `standard()` 的中性实心表面，“次要”使用 `secondary()` 的半透明 `fill2`。
 `standard()` 与其它变体一样支持显式背景、前景、描边和圆角覆盖；默认按钮仍为强调色 `Default`。
 
 **自定义 `bg` 的按下色规则**（`detail::press_color`）：

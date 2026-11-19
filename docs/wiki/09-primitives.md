@@ -2,7 +2,7 @@
 
 所有坐标均为逻辑单位，内部处理 DPI。几何由 CPU 光栅化并使用覆盖率抗锯齿，
 颜色 alpha 与边缘覆盖率共同参与合成。完整交互示例见
-[primitives_demo.cpp](../examples/primitives_demo.cpp)：
+[primitives_demo.cpp](../../examples/primitives_demo.cpp)：
 
 ```sh
 cmake --build build --config Release --target aino_primitives_demo

@@ -75,4 +75,4 @@ ui.skeleton({24, 186, 180, 16}, aino::Style().animate());
 
 `ui.glass(box, radius, Style().blur(12))` 在已绘制背景上做模糊，再叠加材质与边缘。
 它是背景模糊近似，没有液态玻璃的折射和色散。绘制顺序和基础 API 见 [09](09-primitives.md)。
-完整示例：[primitives_demo.cpp](../examples/primitives_demo.cpp)。
+完整示例：[primitives_demo.cpp](../../examples/primitives_demo.cpp)。
