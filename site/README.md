@@ -3,7 +3,9 @@
 `index.html` 提供官网首页和 Wiki 阅读界面。正文直接 fetch 仓库的 `docs/wiki/*.md`，
 侧栏从 `docs/wiki/README.md` 的教程表生成。修改教程不需要另写网页正文。
 工程审查保留独立仓库入口，不列入正式教程。
-页面参考 [Aino Player 官网](https://sudoevolve.github.io/aino-player/) 的品牌栏、导航、侧栏与文档式排版，支持深浅主题和手机阅读。
+官网地址：[sudoevolve.github.io/aino](https://sudoevolve.github.io/aino/)。
+页面采用 macOS 产品官网式排版：大留白、产品截图、清晰的章节层级与轻量导航，支持深浅主题和手机阅读。
+导航使用 CSS 背景模糊，不使用液态玻璃、折射或持续动画；不支持背景模糊时使用实色表面。
 
 ## 本地预览
 
@@ -30,15 +32,16 @@ python -m http.server 8000 --directory build/site --bind 127.0.0.1
 将页面、渲染依赖、图标、截图与仓库原始 `docs/wiki/*.md` 一起打包。
 教程仍在浏览器中按 Markdown 加载，源码只维护一份；修改教程后重新打包发布即可。
 
-仓库提供手动触发的 [Website 工作流](../.github/workflows/pages.yml)：
+仓库提供 [Website 工作流](../.github/workflows/pages.yml)：
 
 1. 将网站源码提交到 GitHub 仓库。
 2. 在仓库 Settings → Pages 中将 Source 设为 GitHub Actions。
-3. 在 Actions → Website 中选择分支，执行 Run workflow。
+3. 推送网站相关修改到 `main` 自动发布，或在 Actions → Website 执行 Run workflow。
 
-工作流上传 `build/site/` 并部署到 GitHub Pages，不随普通 push 自动发布。
+工作流上传 `build/site/` 并部署到 GitHub Pages。网站、正式 Wiki、截图、图标、打包脚本或发布工作流
+在 `main` 上变更时自动发布，其他源码变更不触发网站部署。
 默认项目页地址为 `https://sudoevolve.github.io/aino/`，实际地址以部署输出为准。
-工作流文件本身不会启用 Pages；首次发布需要完成上述仓库设置。
+Pages 使用 GitHub Actions 构建方式；部署状态和实际地址见 Actions → Website。
 
 ## 其他静态托管方式
 

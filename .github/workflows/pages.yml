@@ -1,6 +1,15 @@
 name: Website
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'docs/wiki/**'
+      - 'screenshots/**'
+      - 'assets/aino_icon.png'
+      - 'tools/build_site.py'
+      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 permissions:
@@ -14,10 +23,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
+      - uses: actions/configure-pages@v5
       - name: Assemble website and original Wiki Markdown
         run: python tools/build_site.py
       - uses: actions/upload-pages-artifact@v3

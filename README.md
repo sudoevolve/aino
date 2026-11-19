@@ -7,7 +7,7 @@
     <a href="#quick-start">快速开始</a> ·
     <a href="#features">特性</a> ·
     <a href="#docs">文档</a> ·
-    <a href="site/">官网与 Wiki 阅读器</a> ·
+    <a href="https://sudoevolve.github.io/aino/">官网与 Wiki</a> ·
     <a href="LICENSE">Apache-2.0</a>
   </p>
 </div>
@@ -170,7 +170,7 @@ CMakeLists.txt               示例构建配置
 
 ## Docs
 
-[正式 Wiki 索引](docs/wiki/README.md) · [官网阅读器](site/) · [网站预览与发布](site/README.md) · [工程审查记录](docs/reviews/README.md)
+[正式 Wiki 索引](docs/wiki/README.md) · [在线 Wiki](https://sudoevolve.github.io/aino/?page=README.md) · [网站预览与发布](site/README.md) · [工程审查记录](docs/reviews/README.md)
 
 - [01 快速开始](docs/wiki/01-quickstart.md)
 - [02 样式与主题](docs/wiki/02-style-and-theme.md)

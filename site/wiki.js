@@ -23,6 +23,11 @@
     document.documentElement.dataset.theme = value;
     $('theme').textContent = value === 'dark' ? '浅色' : '深色';
     $('theme').setAttribute('aria-label', value === 'dark' ? '切换为浅色主题' : '切换为深色主题');
+    const preview = document.querySelector('.app-preview');
+    if (preview) {
+      preview.dataset.repoLink = `screenshots/gallery-${value === 'dark' ? 'dark' : 'overview'}.png`;
+      preview.href = new URL(preview.dataset.repoLink, repo).href;
+    }
   };
   let storedTheme;
   try { storedTheme = localStorage.getItem('aino-theme'); } catch (_) { /* 隐私模式仍可切换本页 */ }
@@ -137,7 +142,10 @@
     try {
       const heading = document.getElementById(decodeURIComponent(location.hash.slice(1)));
       const active = $('home').hidden ? $('content') : $('home');
-      if (heading && active.contains(heading)) heading.scrollIntoView();
+      if (heading && (active.contains(heading) || heading === $('main'))) {
+        heading.scrollIntoView();
+        if (heading === $('main')) heading.focus({preventScroll: true});
+      }
     } catch (_) { /* 不合法的 URL fragment 不影响文档读取 */ }
   }
 
