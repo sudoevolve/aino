@@ -5,4 +5,11 @@ BreakBeforeBraces: Attach
 PointerAlignment: Left
 DerivePointerAlignment: true
 SortIncludes: false
-AllowShortFunctionsOnASingleLine: Inline
+BreakStringLiterals: false
+ReflowComments: false
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortLambdasOnASingleLine: Empty
+AllowShortBlocksOnASingleLine: Never
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false

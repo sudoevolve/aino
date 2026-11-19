@@ -31,20 +31,20 @@ constexpr float kNavTop = 80;
 constexpr float kNavStep = 36;
 constexpr float kFooterH = 112;
 constexpr float kFooterBottom = 22;
-constexpr float kCardBodyY = 46;   // 卡片顶 → 内容：标题带 30 + 内边距 16
+constexpr float kCardBodyY = 46; // 卡片顶 → 内容：标题带 30 + 内边距 16
 constexpr float kCardBottom = 16;
 // 日历浮层的内容尺寸（不含 popover 自身 20 的内边距）。
 // 探针要用它反推格子坐标，所以做成常量而不是字面量。
 constexpr float kDatePanelW = 252, kDatePanelH = 240;
 // 间距标尺（8pt 网格）。参照 App Store 的分组节奏：组标题贴着说明走，
 // 卡片与下一组之间留最大的那一段，卡片标题与卡片底之间只留一口气。
-constexpr float kSectionGap  = 40;   // 上一组卡片底 → 下一组标题
-constexpr float kHeadingGap  = 6;    // 组标题 → 说明
-constexpr float kHeaderGap   = 24;   // 说明 → 第一张卡片标题
-constexpr float kCardTitleGap = 8;   // 卡片标题 → 卡片底
+constexpr float kSectionGap = 40;       // 上一组卡片底 → 下一组标题
+constexpr float kHeadingGap = 6;        // 组标题 → 说明
+constexpr float kHeaderGap = 24;        // 说明 → 第一张卡片标题
+constexpr float kCardTitleGap = 8;      // 卡片标题 → 卡片底
 constexpr float kContentBottomPad = 40; // 最后一组卡片 → 内容末尾（滚到底留的余量）
 constexpr int kPageCount = 17;
-constexpr int kAboutPage = kPageCount - 1;   // 关于页固定在末尾
+constexpr int kAboutPage = kPageCount - 1; // 关于页固定在末尾
 enum CardId {
     ButtonVariants,
     ButtonSizes,
@@ -250,7 +250,8 @@ const Page kPages[] = {
     {SystemIcon::Card, "容器", "卡片与列表", "cards", "Containers · 内容 / 设置 / 磨砂材质", 32, 5},
     {SystemIcon::Navigation, "容器", "导航", "navigation", "Navigation · 工具栏与路径", 37, 3},
     {SystemIcon::List, "容器", "高级列表", "advanced", "Advanced · 大数据 / Markdown / 空状态", 40, 4},
-    {SystemIcon::Text, "规范", "风格", "style", "Style · 字号阶梯 / 颜色令牌 / macOS 与 iOS 布局度量", 44, 3, 380},
+    {SystemIcon::Text, "规范", "风格", "style", "Style · 字号阶梯 / 颜色令牌 / macOS 与 iOS 布局度量", 44, 3,
+     380},
     {SystemIcon::Info, "关于", "关于", "about", "About · 版本、许可证与第三方组件", 47, 1, 380, true},
 };
 static_assert(sizeof(kCards) / sizeof(kCards[0]) == CardCount, "card manifest mismatch");
@@ -357,7 +358,7 @@ bool icon(Ui &ui, SystemIcon type, const char *hint, Rect r, Style style = Style
     // 命中、焦点和表面复用按钮，符号由系统绘制。
     const bool clicked = ui.icon_button("", r, style);
     ui.system_icon(type, r.inset(6),
-          style.disabled ? ui.theme().label3 : (!style.fg.is_none() ? style.fg : ui.theme().label));
+                   style.disabled ? ui.theme().label3 : (!style.fg.is_none() ? style.fg : ui.theme().label));
     if (!ui.measuring())
         ui.tooltip(r, hint);
     return clicked;
@@ -378,14 +379,18 @@ struct Flow {
         row_h = std::max(row_h, h);
         return r;
     }
-    float bottom() const { return y + row_h; }
+    float bottom() const {
+        return y + row_h;
+    }
     void line() {
         x = area.x;
         y += row_h + gap;
         row_h = 0;
     }
 };
-void well(Ui &ui, Rect r) { ui.panel(r, Style().muted_text()); }
+void well(Ui &ui, Rect r) {
+    ui.panel(r, Style().muted_text());
+}
 void swatches(Ui &ui, App &a, Rect area, float size = 24, float gap = 10) {
     Flow flow(area);
     flow.gap = gap;
@@ -458,66 +463,63 @@ void draw_buttons(Ui &ui, App &a, CardId id, Rect b) {
     }
 }
 void draw_frosted_panel(Ui &ui, App &a, Rect b) {
-        const Rect preview{b.x, b.y, b.w, 148};
-        ui.fill_rect_grad(preview, Color::hex(0xE98D9E), Color::hex(0x344D9A));
-        ui.push_clip(preview);
-        ui.fill_circle(preview.x + preview.w * .18f, preview.y + 35, 44, Color::hex(0xFFB454));
-        ui.fill_circle(preview.right() - 38, preview.y + 48, 52, Color::hex(0x43C6C8));
-        ui.fill_circle(preview.x + preview.w * .7f, preview.bottom() - 10, 48, Color::hex(0xD85FB7));
-        const float panel_w = std::min(220.f, preview.w - 48);
-        const float panel_h = 78;
-        const float travel_x = preview.w - panel_w;
-        const float travel_y = preview.h - panel_h;
-        Rect panel{preview.x + travel_x * a.glass_x, preview.y + travel_y * a.glass_y,
-                   panel_w, panel_h};
-        const auto &input = ui.raw_input();
-        if (!ui.measuring()) {
-            const bool hovered = ui.hovered(panel);
-            if (input.pressed[0] && hovered) {
-                a.glass_dragging = true;
-                a.glass_grab_x = input.mouse.x - panel.x;
-                a.glass_grab_y = input.mouse.y - panel.y;
-                ui.set_focus(nullptr);
-            }
-            if (!input.down[0])
-                a.glass_dragging = false;
-            if (a.glass_dragging) {
-                a.glass_x = std::max(0.f, std::min(1.f, (input.mouse.x - a.glass_grab_x - preview.x) / travel_x));
-                a.glass_y = std::max(0.f, std::min(1.f, (input.mouse.y - a.glass_grab_y - preview.y) / travel_y));
-                panel.x = preview.x + travel_x * a.glass_x;
-                panel.y = preview.y + travel_y * a.glass_y;
-            }
-            if (hovered || a.glass_dragging)
-                ui.set_cursor(aino::Cursor::Hand);
+    const Rect preview{b.x, b.y, b.w, 148};
+    ui.fill_rect_grad(preview, Color::hex(0xE98D9E), Color::hex(0x344D9A));
+    ui.push_clip(preview);
+    ui.fill_circle(preview.x + preview.w * .18f, preview.y + 35, 44, Color::hex(0xFFB454));
+    ui.fill_circle(preview.right() - 38, preview.y + 48, 52, Color::hex(0x43C6C8));
+    ui.fill_circle(preview.x + preview.w * .7f, preview.bottom() - 10, 48, Color::hex(0xD85FB7));
+    const float panel_w = std::min(220.f, preview.w - 48);
+    const float panel_h = 78;
+    const float travel_x = preview.w - panel_w;
+    const float travel_y = preview.h - panel_h;
+    Rect panel{preview.x + travel_x * a.glass_x, preview.y + travel_y * a.glass_y, panel_w, panel_h};
+    const auto &input = ui.raw_input();
+    if (!ui.measuring()) {
+        const bool hovered = ui.hovered(panel);
+        if (input.pressed[0] && hovered) {
+            a.glass_dragging = true;
+            a.glass_grab_x = input.mouse.x - panel.x;
+            a.glass_grab_y = input.mouse.y - panel.y;
+            ui.set_focus(nullptr);
         }
-        const bool dark = ui.theme().is_dark();
-        const Color material = dark
-            ? Color(25, 28, 42, static_cast<uint8_t>(a.glass_opacity * 255))
-            : Color(255, 255, 255, static_cast<uint8_t>(a.glass_opacity * 255));
-        const Style glass_style = Style().blur(a.glass_blur).background(material);
-        if (ui.measuring() || (panel.y >= 0 && panel.bottom() <= ui.height()))
-            panel = a.glass_panel.draw(ui, panel, a.glass_corner, glass_style);
+        if (!input.down[0])
+            a.glass_dragging = false;
+        if (a.glass_dragging) {
+            a.glass_x = std::max(0.f, std::min(1.f, (input.mouse.x - a.glass_grab_x - preview.x) / travel_x));
+            a.glass_y = std::max(0.f, std::min(1.f, (input.mouse.y - a.glass_grab_y - preview.y) / travel_y));
+            panel.x = preview.x + travel_x * a.glass_x;
+            panel.y = preview.y + travel_y * a.glass_y;
+        }
+        if (hovered || a.glass_dragging)
+            ui.set_cursor(aino::Cursor::Hand);
+    }
+    const bool dark = ui.theme().is_dark();
+    const Color material = dark ? Color(25, 28, 42, static_cast<uint8_t>(a.glass_opacity * 255))
+                                : Color(255, 255, 255, static_cast<uint8_t>(a.glass_opacity * 255));
+    const Style glass_style = Style().blur(a.glass_blur).background(material);
+    if (ui.measuring() || (panel.y >= 0 && panel.bottom() <= ui.height()))
+        panel = a.glass_panel.draw(ui, panel, a.glass_corner, glass_style);
+    else
+        ui.glass(panel, a.glass_corner, glass_style);
+    label(ui, "磨砂面板", {panel.x + 16, panel.y + 12, panel.w - 32, 22}, 13, false, 600);
+    label(ui, "拖动面板移动", {panel.x + 16, panel.y + 38, panel.w - 32, 20}, 11);
+    ui.pop_clip();
+    const char *titles[] = {"模糊半径", "材质浓度", "圆角半径"};
+    float *values[] = {&a.glass_blur, &a.glass_opacity, &a.glass_corner};
+    const float minimum[] = {1, .12f, 8};
+    const float maximum[] = {30, .72f, 32};
+    for (int i = 0; i < 3; ++i) {
+        const float y = preview.bottom() + 16 + i * 48;
+        char value[24];
+        if (i == 1)
+            std::snprintf(value, sizeof(value), "%.0f%%", *values[i] * 100);
         else
-            ui.glass(panel, a.glass_corner, glass_style);
-        label(ui, "磨砂面板", {panel.x + 16, panel.y + 12, panel.w - 32, 22}, 13, false, 600);
-        label(ui, "拖动面板移动", {panel.x + 16, panel.y + 38, panel.w - 32, 20}, 11);
-        ui.pop_clip();
-        const char *titles[] = {"模糊半径", "材质浓度", "圆角半径"};
-        float *values[] = {&a.glass_blur, &a.glass_opacity, &a.glass_corner};
-        const float minimum[] = {1, .12f, 8};
-        const float maximum[] = {30, .72f, 32};
-        for (int i = 0; i < 3; ++i) {
-            const float y = preview.bottom() + 16 + i * 48;
-            char value[24];
-            if (i == 1)
-                std::snprintf(value, sizeof(value), "%.0f%%", *values[i] * 100);
-            else
-                std::snprintf(value, sizeof(value), "%.0f", *values[i]);
-            label(ui, titles[i], {b.x, y, b.w - 54, 18}, 12);
-            ui.draw_text(value, {b.right() - 50, y, 50, 18}, ui.theme().label2,
-                         Style().font(11).right());
-            ui.slider(values[i], minimum[i], maximum[i], {b.x, y + 22, b.w, 20});
-        }
+            std::snprintf(value, sizeof(value), "%.0f", *values[i]);
+        label(ui, titles[i], {b.x, y, b.w - 54, 18}, 12);
+        ui.draw_text(value, {b.right() - 50, y, 50, 18}, ui.theme().label2, Style().font(11).right());
+        ui.slider(values[i], minimum[i], maximum[i], {b.x, y + 22, b.w, 20});
+    }
 }
 void draw_inputs(Ui &ui, App &a, CardId id, Rect b) {
     const Style field = Style().font(13);
@@ -530,8 +532,8 @@ void draw_inputs(Ui &ui, App &a, CardId id, Rect b) {
     } else if (id == InputSearch) {
         ui.search_field(&a.search, {b.x, b.y, b.w, 24}, Style(field).hint("搜索文件、命令…"));
         ui.input(&a.password, {b.x, b.y + 44, b.w - 32, 24}, Style(field).secret(!a.password_visible));
-        if (icon(ui, SystemIcon::Eye, a.password_visible ? "隐藏密码" : "显示密码", {b.right() - 24, b.y + 44, 24, 24},
-                 Style().ghost()))
+        if (icon(ui, SystemIcon::Eye, a.password_visible ? "隐藏密码" : "显示密码",
+                 {b.right() - 24, b.y + 44, 24, 24}, Style().ghost()))
             a.password_visible = !a.password_visible;
         ui.input(&a.invalid_email, {b.x, b.y + 88, b.w, 24}, Style(field).stroke(1, ui.theme().red));
         label(ui, "请输入有效的电子邮箱地址", {b.x, b.y + 124, b.w, 18}, 11, true);
@@ -558,24 +560,29 @@ void draw_selection(Ui &ui, App &a, CardId id, Rect b) {
         const char *labels[] = {"允许分析数据", "iCloud 自动同步", "紧凑尺寸"};
         for (int i = 0; i < 3; ++i) {
             const float y = b.y + row_h * float(i);
-            if (i) ui.separator({b.x, y - 1, b.w, 1});
+            if (i)
+                ui.separator({b.x, y - 1, b.w, 1});
             // 行的整高都交给文字盒：这样文字是精确垂直居中的（不用 +9 这类魔数），
             // 卡片高度也正好由 3×44 决定 —— 否则开关卡会比复选框卡矮一截。
             ui.draw_text(labels[i], {b.x, y, b.w - 76, row_h}, ui.theme().label,
                          Style().font(13).left().middle());
             // 第三行是"紧凑尺寸"的样例，仍然用小的那个开关（44×20）。
             const bool compact = i == 2;
-            ui.toggle(values[i], Rect::centered(b.right() - 27, y + row_h * .5f,
-                                                compact ? 44.f : 54.f, compact ? 20.f : 24.f));
+            ui.toggle(values[i], Rect::centered(b.right() - 27, y + row_h * .5f, compact ? 44.f : 54.f,
+                                                compact ? 20.f : 24.f));
         }
     } else if (id == Checkboxes) {
         for (int i = 0; i < 3; ++i) {
             const float y = b.y + row_h * float(i);
-            if (i) ui.separator({b.x, y - 1, b.w, 1});
+            if (i)
+                ui.separator({b.x, y - 1, b.w, 1});
             const Rect row(b.x, y, b.w, row_h);
-            if (i == 0) ui.checkbox(&a.remember, "记住选项", row);
-            else if (i == 1) ui.checkbox(&a.follow_tint, "跟随强调色", row);
-            else ui.checkbox(&a.readonly, "禁用只读", row, Style().off());
+            if (i == 0)
+                ui.checkbox(&a.remember, "记住选项", row);
+            else if (i == 1)
+                ui.checkbox(&a.follow_tint, "跟随强调色", row);
+            else
+                ui.checkbox(&a.readonly, "禁用只读", row, Style().off());
         }
     } else {
         ui.radio_group({"原始分辨率", "高效 HEVC", "低带宽"}, &a.radio, {b.x, b.y, b.w, row_h * 3});
@@ -656,7 +663,8 @@ void draw_menus(Ui &ui, App &a, CardId id, Rect b) {
     } else {
         Flow flow(b);
         const char *names[] = {"上传", "下载", "编辑", "删除"};
-        const SystemIcon types[] = {SystemIcon::Upload, SystemIcon::Download, SystemIcon::Edit, SystemIcon::Trash};
+        const SystemIcon types[] = {SystemIcon::Upload, SystemIcon::Download, SystemIcon::Edit,
+                                    SystemIcon::Trash};
         for (int i = 0; i < 4; ++i)
             if (icon(ui, types[i], names[i], flow.next(24, 24)))
                 notify(ui, a, names[i]);
@@ -727,7 +735,8 @@ void draw_colors(Ui &ui, App &a, CardId id, Rect b) {
         Flow flow({b.x + 4, b.y + 4, b.w - 8, 80});
         for (int i = 0; i < 8; ++i)
             flow.next(24, 24);
-        const std::string name = a.custom_accent ? "自定义 " + color_hex(a.custom_color) : kAccentNames[a.well];
+        const std::string name =
+            a.custom_accent ? "自定义 " + color_hex(a.custom_color) : kAccentNames[a.well];
         label(ui, "当前：" + name, {b.x, flow.bottom() + 16, b.w, 20}, 12, true);
     }
 }
@@ -949,16 +958,15 @@ void draw_cards(Ui &ui, App &a, CardId id, Rect b) {
         const char *subs[] = {"语言、外观和默认行为", "连接状态与代理", "保护数据与活动记录"};
         for (int i = 0; i < 3; ++i) {
             float y = b.y + i * 64;
-            ui.system_icon(
-                  i == 0   ? SystemIcon::Settings
-                  : i == 1 ? SystemIcon::Network
-                           : SystemIcon::Eye,
-                  {b.x, y + 10, 22, 22}, ui.theme().tint);
+            ui.system_icon(i == 0   ? SystemIcon::Settings
+                           : i == 1 ? SystemIcon::Network
+                                    : SystemIcon::Eye,
+                           {b.x, y + 10, 22, 22}, ui.theme().tint);
             label(ui, titles[i], {b.x + 34, y, b.w - 100, 23}, 13);
             label(ui, subs[i], {b.x + 34, y + 25, b.w - 100, 20}, 11, true);
             if (i < 2) {
-                if (icon(ui, SystemIcon::Next, i == 0 ? "通用设置" : "网络设置", {b.right() - 28, y + 10, 28, 28},
-                         Style().ghost()))
+                if (icon(ui, SystemIcon::Next, i == 0 ? "通用设置" : "网络设置",
+                         {b.right() - 28, y + 10, 28, 28}, Style().ghost()))
                     notify(ui, a, std::string(titles[i]) + "设置已打开");
             } else
                 ui.toggle(&a.privacy, {b.right() - 54, y + 10, 54, 24});
@@ -1046,11 +1054,10 @@ void draw_navigation(Ui &ui, App &a, CardId id, Rect b) {
                         .background(a.side_sel == i ? ui.theme().tint.scaled_alpha(.16f) : Color::none())
                         .color(a.side_sel == i ? ui.theme().tint : ui.theme().label2)))
                 a.side_sel = i;
-            ui.system_icon(
-                  i == 0   ? SystemIcon::Card
-                  : i == 1 ? SystemIcon::Folder
-                           : SystemIcon::People,
-                  {r.x + 8, r.y + 9, 15, 15}, a.side_sel == i ? ui.theme().tint : ui.theme().label3);
+            ui.system_icon(i == 0   ? SystemIcon::Card
+                           : i == 1 ? SystemIcon::Folder
+                                    : SystemIcon::People,
+                           {r.x + 8, r.y + 9, 15, 15}, a.side_sel == i ? ui.theme().tint : ui.theme().label3);
             if (i == 0)
                 label(ui, "6", {r.right() - 24, r.y, 20, r.h}, 11, true);
         }
@@ -1079,12 +1086,10 @@ void draw_advanced(Ui &ui, App &a, CardId id, Rect b) {
         ui.draw_mono_text("ui.button(\"Hello\", rect);", b.x + 10, b.y + 154, ui.theme().tint, 11);
     } else if (id == Empty) {
         ui.system_icon(SystemIcon::Folder, {b.cx() - 18, b.y + 2, 36, 36}, ui.theme().label3);
-        ui.draw_text(a.material_name.empty() ? "暂无素材" : a.material_name,
-                     {b.x, b.y + 53, b.w, 24}, ui.theme().label,
-                     Style().font(14).semi_bold().center());
+        ui.draw_text(a.material_name.empty() ? "暂无素材" : a.material_name, {b.x, b.y + 53, b.w, 24},
+                     ui.theme().label, Style().font(14).semi_bold().center());
         ui.draw_text(a.material_name.empty() ? "创建素材以开始整理项目" : a.material_description,
-                     {b.x, b.y + 86, b.w, 24}, ui.theme().label3,
-                     Style().font(11).center());
+                     {b.x, b.y + 86, b.w, 24}, ui.theme().label3, Style().font(11).center());
         if (ui.button("新建素材", {b.cx() - 50, b.y + 130, 100, 32}, Style().primary()))
             a.open_material = true;
     } else {
@@ -1112,7 +1117,12 @@ void draw_style(Ui &ui, App &a, CardId id, Rect b) {
     const Color sub = th.label2;
 
     if (id == TypeScale) {
-        struct Row { const char *sample; float size; int weight; const char *meta; };
+        struct Row {
+            const char *sample;
+            float size;
+            int weight;
+            const char *meta;
+        };
         const Row rows[] = {
             {"大标题", 26, 700, "26 / 700 · 页面标题"},
             {"二级标题", 22, 600, "22 / 600 · 分组标题"},
@@ -1129,9 +1139,9 @@ void draw_style(Ui &ui, App &a, CardId id, Rect b) {
             const float row_h = std::max(36.f, r.size + 20.f);
             ui.draw_text(r.sample, {b.x, y, b.w - 176, row_h}, ink,
                          Style().font(r.size).weight(r.weight).left());
-            ui.draw_text(r.meta, {b.right() - 176, y + row_h - 22, 176, 20}, sub,
-                         Style().font(11).right());
-            if (i < 5) ui.separator({b.x, y + row_h - 1, b.w, 1});
+            ui.draw_text(r.meta, {b.right() - 176, y + row_h - 22, 176, 20}, sub, Style().font(11).right());
+            if (i < 5)
+                ui.separator({b.x, y + row_h - 1, b.w, 1});
             y += row_h;
         }
         ui.draw_text("macOS 的同名字号比 iOS 小 25–50%：iOS 正文 17pt，macOS 正文 13pt。",
@@ -1140,11 +1150,13 @@ void draw_style(Ui &ui, App &a, CardId id, Rect b) {
     }
 
     if (id == ColorTokens) {
-        struct Tok { const char *name; Color c; };
+        struct Tok {
+            const char *name;
+            Color c;
+        };
         const Tok toks[] = {
-            {"label", th.label}, {"label2", th.label2}, {"label3", th.label3},
-            {"fill", th.fill}, {"tint", th.tint}, {"green", th.green},
-            {"orange", th.orange}, {"red", th.red},
+            {"label", th.label}, {"label2", th.label2}, {"label3", th.label3}, {"fill", th.fill},
+            {"tint", th.tint},   {"green", th.green},   {"orange", th.orange}, {"red", th.red},
         };
         // 色块是画在卡片上的，hex 也按同一底色合成后再显示 —— 否则
         // label（85% 黑）和 separator（10% 黑）都会印成 #000000，和肉眼看到的方块对不上。
@@ -1167,7 +1179,12 @@ void draw_style(Ui &ui, App &a, CardId id, Rect b) {
     }
 
     // LayoutMetrics
-    struct Metric { const char *name; const char *mac; const char *ios; const char *note; };
+    struct Metric {
+        const char *name;
+        const char *mac;
+        const char *ios;
+        const char *note;
+    };
     const Metric rows[] = {
         {"内容边距", "20", "16", "窗口或页面的左右留白"},
         {"分组间距", "20", "24", "上一组卡片到下一组标题"},
@@ -1190,9 +1207,9 @@ void draw_style(Ui &ui, App &a, CardId id, Rect b) {
                      Style().font(12).weight(600).left());
         ui.draw_text(rows[i].ios, {b.x + b.w * c3, y, b.w * (c4 - c3), 20}, ink,
                      Style().font(12).weight(600).left());
-        ui.draw_text(rows[i].note, {b.x + b.w * c4, y, b.w * (1.f - c4), 20}, sub,
-                     Style().font(11).left());
-        if (i < 7) ui.separator({b.x, y + 25, b.w, 1});
+        ui.draw_text(rows[i].note, {b.x + b.w * c4, y, b.w * (1.f - c4), 20}, sub, Style().font(11).left());
+        if (i < 7)
+            ui.separator({b.x, y + 25, b.w, 1});
         y += 26;
     }
     ui.draw_text("粗略换算：1pt = 1 逻辑像素。触屏按 44 走，指针按 22–28 走，是两套度量最大的分界。",
@@ -1218,11 +1235,9 @@ void draw_about(Ui &ui, App &a, Rect b) {
     float y = b.y + icon + 18;
     ui.draw_text("Aino", {x, y, w, 36}, th.label, Style().font(26).weight(700).center());
     y += 40;
-    ui.draw_text(std::string("版本 ") + AINO_VERSION, {x, y, w, 18}, sub,
-                 Style().font(12).center());
+    ui.draw_text(std::string("版本 ") + AINO_VERSION, {x, y, w, 18}, sub, Style().font(12).center());
     y += 22;
-    ui.draw_text("零依赖 · 单头文件 · C++17 原生 UI 库", {x, y, w, 20}, sub,
-                 Style().font(13).center());
+    ui.draw_text("零依赖 · 单头文件 · C++17 原生 UI 库", {x, y, w, 20}, sub, Style().font(13).center());
     y += 34;
 
     // 信息卡：标题在卡外，卡内按行分隔、分隔线左右各缩进 16（与文字对齐）。
@@ -1230,20 +1245,21 @@ void draw_about(Ui &ui, App &a, Rect b) {
     y += 26;
     const float row_h = 46.f;
     const Rect card(x, y, w, row_h * 3);
-    ui.panel(card, Style()
-                       .background(th.window_bg.luminance() < .5f ? th.card : th.control_bg)
-                       .corner(12));
-    struct InfoRow { const char *key; const char *value; };
-    const InfoRow rows[] = {{"作者", "sudoevolve"},
-                            {"开源协议", "Apache-2.0"},
-                            {"GitHub", "sudoevolve/aino"}};
+    ui.panel(card, Style().background(th.window_bg.luminance() < .5f ? th.card : th.control_bg).corner(12));
+    struct InfoRow {
+        const char *key;
+        const char *value;
+    };
+    const InfoRow rows[] = {
+        {"作者", "sudoevolve"}, {"开源协议", "Apache-2.0"}, {"GitHub", "sudoevolve/aino"}};
     for (int i = 0; i < 3; ++i) {
         const float ry = card.y + row_h * float(i);
         ui.draw_text(rows[i].key, {card.x + 16, ry + 13, card.w * .5f, 20}, th.label,
                      Style().font(13).left());
         ui.draw_text(rows[i].value, {card.x + card.w * .5f, ry + 13, card.w * .5f - 16, 20}, sub,
                      Style().font(13).right());
-        if (i < 2) ui.separator({card.x + 16, ry + row_h, card.w - 32, 1});
+        if (i < 2)
+            ui.separator({card.x + 16, ry + row_h, card.w - 32, 1});
     }
     y = card.bottom() + 18;
 
@@ -1260,8 +1276,7 @@ void draw_about(Ui &ui, App &a, Rect b) {
 
     // 许可证清单：居中、11 号三级灰，和 macOS About 面板底部的致谢同一个调子。
     const char *licenses[] = {"aino · Apache-2.0", "FreeType · FreeType License / GPLv2",
-                              "fontconfig · MIT 风格许可", "libssh2 · BSD-3-Clause",
-                              "mbedTLS · Apache-2.0"};
+                              "fontconfig · MIT 风格许可", "libssh2 · BSD-3-Clause", "mbedTLS · Apache-2.0"};
     for (const char *line : licenses) {
         ui.draw_text(line, {x, y, w, 18}, sub, Style().font(11).center());
         y += 18;
@@ -1346,8 +1361,9 @@ GalleryFrame gallery_frame(Ui &ui) {
     return frame;
 }
 float section_heading_height(Ui &ui, const Page &page, float width) {
-    return 28 + kHeadingGap + std::max(18.f, ui.text_height(page.desc, std::max(1.f, width - 4),
-                                              Style().font(12).wrap_text())) + kHeaderGap;
+    return 28 + kHeadingGap +
+           std::max(18.f, ui.text_height(page.desc, std::max(1.f, width - 4), Style().font(12).wrap_text())) +
+           kHeaderGap;
 }
 Rect card_body(Rect card) {
     return {card.x + 16, card.y + kCardBodyY, card.w - 32, card.h - kCardBodyY - kCardBottom};
@@ -1501,12 +1517,13 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
                     a.nav_open = false;
                 ui.request_animation_frame();
             }
-            ui.system_icon(kPages[i].icon,
-                  {22, y + (kNavStep - 16) / 2, 16, 16}, icon_tint);
+            ui.system_icon(kPages[i].icon, {22, y + (kNavStep - 16) / 2, 16, 16}, icon_tint);
             char count[12];
             // 关于页不是组件列表，右侧那栏给破折号，别写「01」。
-            if (i == kAboutPage) std::snprintf(count, sizeof(count), "—");
-            else std::snprintf(count, sizeof(count), "%02d", layout.counts[i]);
+            if (i == kAboutPage)
+                std::snprintf(count, sizeof(count), "—");
+            else
+                std::snprintf(count, sizeof(count), "%02d", layout.counts[i]);
             ui.draw_text(count, {204, y, 22, kNavStep}, fg.scaled_alpha(.65f), Style().font(10.5f).right());
             y += kNavStep;
         }
@@ -1544,12 +1561,12 @@ void draw_toolbar(Ui &ui, App &a, const GalleryFrame &frame) {
     }
     label(ui, "组件", frame.title, 26, false, 700);
     ui.draw_text(kGalleryCaption, frame.caption, ui.theme().label2, Style().font(13).wrap_text());
-    const auto search_id = ui.impl->widget_id("input", frame.search, 0,
-        uint64_t(reinterpret_cast<uintptr_t>(&a.query)));
+    const auto search_id =
+        ui.impl->widget_id("input", frame.search, 0, uint64_t(reinterpret_cast<uintptr_t>(&a.query)));
     const auto search_focus = reinterpret_cast<void *>(uintptr_t(search_id));
-    const bool overlay_open = (frame.narrow && a.nav_open) || a.date_open || a.color_open || a.dlg || a.confirm;
-    if (!overlay_open && (ui.input().ctrl_of('F') ||
-                          (ui.input().key_pressed['F'] && ui.input().super())))
+    const bool overlay_open =
+        (frame.narrow && a.nav_open) || a.date_open || a.color_open || a.dlg || a.confirm;
+    if (!overlay_open && (ui.input().ctrl_of('F') || (ui.input().key_pressed['F'] && ui.input().super())))
         ui.set_focus(search_focus);
     if (!overlay_open && ui.focused_id() == search_focus && ui.input().key_pressed[aino::KEY_ESC]) {
         a.query.clear();
@@ -1569,7 +1586,10 @@ void draw_card(Ui &ui, App &a, const Card &card, Rect r) {
     // 分组标题用次级文字色：macOS 设置里卡片上方的组名是灰的，和行标题拉开层次。
     // 用正文色会和卡片里的标题抢注意力（截图比对时最明显的一处）。
     label(ui, card.name, {r.x + 2, r.y + 2, r.w - 4, 22}, 13, true, 600);
-    ui.panel({r.x, r.y + 22 + kCardTitleGap, r.w, r.h - 22 - kCardTitleGap}, Style().background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg).corner(12));
+    ui.panel({r.x, r.y + 22 + kCardTitleGap, r.w, r.h - 22 - kCardTitleGap},
+             Style()
+                 .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg)
+                 .corner(12));
     draw_body(ui, a, card.id, card_body(r));
 }
 void draw_content(Ui &ui, App &a, const GalleryLayout &layout, const GalleryFrame &frame) {
@@ -1605,8 +1625,8 @@ void draw_content(Ui &ui, App &a, const GalleryLayout &layout, const GalleryFram
         const float y = view.y + std::max(40.f, view.h * .3f);
         ui.draw_text("没有匹配的组件", {column.x, y, column.w, 32}, ui.theme().label,
                      Style().font(18).center());
-        ui.draw_text("试试 button、颜色、日历或其他名称", {column.x, y + 40, column.w, 26},
-                     ui.theme().label3, Style().font(12).center());
+        ui.draw_text("试试 button、颜色、日历或其他名称", {column.x, y + 40, column.w, 26}, ui.theme().label3,
+                     Style().font(12).center());
         if (ui.button("清除搜索", {column.cx() - 48, y + 82, 96, 30}, Style().secondary())) {
             a.query.clear();
             a.pending_anchor = -1;
@@ -1622,12 +1642,12 @@ void draw_content(Ui &ui, App &a, const GalleryLayout &layout, const GalleryFram
         if (y + section_heading_height(ui, p, column.w) < view.y || y > view.bottom())
             continue;
         // 关于页的右上是版本号而不是「1 个组件」—— 那一栏本来就不该有组件计数。
-        const std::string count = section == kAboutPage
-                                      ? std::string("v") + AINO_VERSION
-                                      : std::to_string(layout.counts[section]) + " 个组件";
+        const std::string count = section == kAboutPage ? std::string("v") + AINO_VERSION
+                                                        : std::to_string(layout.counts[section]) + " 个组件";
         const float count_width = ui.text_width(count, 12);
         label(ui, p.name, {column.x + 2, y, column.w - count_width - 16, 28}, 22, false, 600);
-        const float description_height = section_heading_height(ui, p, column.w) - 28 - kHeadingGap - kHeaderGap;
+        const float description_height =
+            section_heading_height(ui, p, column.w) - 28 - kHeadingGap - kHeaderGap;
         ui.draw_text(p.desc, {column.x + 2, y + 28 + kHeadingGap, column.w - 4, description_height},
                      ui.theme().label2, Style().font(12).wrap_text().top());
         ui.draw_text(count, {column.right() - count_width - 2, y + 4, count_width, 24}, ui.theme().label2,
@@ -1666,8 +1686,7 @@ void draw_overlays(Ui &ui, App &a, float y) {
                             danger ? "此操作无法撤销，请确认需要删除的内容。"
                                    : "你的设置已准备好，可以保存并继续。",
                             danger ? "删除" : "保存", "取消", open, r,
-                            danger ? Style().destructive()
-                                   : Style().background(ui.theme().popover)))
+                            danger ? Style().destructive() : Style().background(ui.theme().popover)))
             notify(ui, a, danger ? "项目已删除" : "设置已保存", danger ? 2 : 0);
     }
 }
@@ -1682,9 +1701,11 @@ void build_ui(Ui &ui, App &a) {
     if (a.nav_open && ui.input().key_pressed[aino::KEY_ESC]) {
         a.nav_open = false;
     }
-    a.notices.erase(
-        std::remove_if(a.notices.begin(), a.notices.end(), [](const Notification &n) { return n.dismissed; }),
-        a.notices.end());
+    a.notices.erase(std::remove_if(a.notices.begin(), a.notices.end(),
+                                   [](const Notification &n) {
+                                       return n.dismissed;
+                                   }),
+                    a.notices.end());
     const GalleryFrame frame = gallery_frame(ui);
     a.nav_w = frame.viewport.x;
     GalleryLayout layout = layout_gallery(ui, a, frame.column.w, frame.narrow);
@@ -1713,10 +1734,10 @@ int write_layout_report(Ui &ui, const App &a, const GalleryLayout &layout, float
         const auto &c = layout.cards[i];
         const Rect body = card_body({0, 0, c.rect.w, c.rect.h});
         Rect used;
-        bool overflow = !std::isfinite(c.rect.x) || !std::isfinite(c.rect.y) ||
-                        !std::isfinite(c.rect.w) || !std::isfinite(c.rect.h) ||
-                        c.rect.x < -1 || c.rect.y < 0 || c.rect.right() > width + 1 ||
-                        c.rect.bottom() > layout.height + 1 || body.w <= 0 || body.h <= 0;
+        bool overflow = !std::isfinite(c.rect.x) || !std::isfinite(c.rect.y) || !std::isfinite(c.rect.w) ||
+                        !std::isfinite(c.rect.h) || c.rect.x < -1 || c.rect.y < 0 ||
+                        c.rect.right() > width + 1 || c.rect.bottom() > layout.height + 1 || body.w <= 0 ||
+                        body.h <= 0;
         if (!overflow) {
             App measured = a;
             measured.date_open = measured.color_open = false;
@@ -1724,9 +1745,8 @@ int write_layout_report(Ui &ui, const App &a, const GalleryLayout &layout, float
             draw_body(ui, measured, kCards[c.index].id, body);
             used = ui.end_measure();
             // 轴标签可进入内边距，但不能覆盖标题（y=16..38）或越出卡片。
-            overflow = !std::isfinite(used.x) || !std::isfinite(used.y) ||
-                       !std::isfinite(used.w) || !std::isfinite(used.h) ||
-                       used.x < 0 || used.y < 38 || used.right() > c.rect.w ||
+            overflow = !std::isfinite(used.x) || !std::isfinite(used.y) || !std::isfinite(used.w) ||
+                       !std::isfinite(used.h) || used.x < 0 || used.y < 38 || used.right() > c.rect.w ||
                        used.bottom() > c.rect.h;
         }
         for (size_t j = 0; j < i; ++j) {
@@ -1735,12 +1755,13 @@ int write_layout_report(Ui &ui, const App &a, const GalleryLayout &layout, float
                 c.rect.y < other.bottom() - .1f && c.rect.bottom() > other.y + .1f)
                 overflow = true;
         }
-        if (overflow) ++over;
+        if (overflow)
+            ++over;
         std::fprintf(f, "%s / %s: x=%.1f y=%.1f w=%.1f h=%.1f\n", kPages[c.section].name,
                      kCards[c.index].name, c.rect.x, c.rect.y, c.rect.w, c.rect.h);
         if (overflow)
-            std::fprintf(f, "  OVERFLOW body=%.1fx%.1f used=(%.1f,%.1f)-(%.1f,%.1f)\n",
-                         body.w, body.h, used.x, used.y, used.right(), used.bottom());
+            std::fprintf(f, "  OVERFLOW body=%.1fx%.1f used=(%.1f,%.1f)-(%.1f,%.1f)\n", body.w, body.h,
+                         used.x, used.y, used.right(), used.bottom());
     }
     std::fprintf(f, "# over=%d total=%d\n", over, int(layout.cards.size()));
     return over;
@@ -1757,8 +1778,9 @@ void dump_layout_report(Ui &ui, App &a, float width, bool narrow) {
     std::fclose(f);
 }
 
-void open_material_window(const std::shared_ptr<MaterialEditor>& state, aino::Theme theme) {
-    if (state->open) return;
+void open_material_window(const std::shared_ptr<MaterialEditor> &state, aino::Theme theme) {
+    if (state->open)
+        return;
     state->open = true;
     aino::WindowConfig cfg;
 #if !defined(AINO_PLATFORM_WINDOWS)
@@ -1769,15 +1791,16 @@ void open_material_window(const std::shared_ptr<MaterialEditor>& state, aino::Th
     cfg.title = "新建素材";
     cfg.center = true;
     state->window = std::make_unique<aino::Window>(cfg);
-    auto& win = *state->window;
+    auto &win = *state->window;
     if (win.ok()) {
         win.set_theme(theme);
-        state->name.clear(); state->description.clear();
-        win.set_frame_callback([editor = state.get()](Ui& ui) {
-            auto* state = editor;
-            auto& win = *state->window;
-            auto& name = state->name;
-            auto& description = state->description;
+        state->name.clear();
+        state->description.clear();
+        win.set_frame_callback([editor = state.get()](Ui &ui) {
+            auto *state = editor;
+            auto &win = *state->window;
+            auto &name = state->name;
+            auto &description = state->description;
             ui.clear(ui.theme().background);
             auto col = ui.vbox({0, 0, ui.width(), ui.height()}, 8, 24);
             ui.heading("新建素材", col.next(28), Style().left());
@@ -1790,24 +1813,27 @@ void open_material_window(const std::shared_ptr<MaterialEditor>& state, aino::Th
             if (ui.button("取消", {row.right() - 168, row.y, 76, row.h}, Style().outline()) ||
                 ui.input().key_pressed[aino::KEY_ESC]) {
                 win.close();
-                if (state->parent) state->parent->wake();
+                if (state->parent)
+                    state->parent->wake();
                 return;
             }
             Style create;
             const bool has_name = name.find_first_not_of(" \t\r\n") != std::string::npos;
-            if (!has_name) create.off();
+            if (!has_name)
+                create.off();
             if (ui.button("创建", {row.right() - 80, row.y, 80, row.h}, create)) {
                 state->created_name = name;
                 state->created_description = description;
-                if (state->parent) state->parent->wake();
+                if (state->parent)
+                    state->parent->wake();
                 win.close();
             }
         });
-    }
-    else state->open = false;
+    } else
+        state->open = false;
 }
 
-void collect_material(App& app) {
+void collect_material(App &app) {
     if (app.material_editor->window && app.material_editor->window->should_close()) {
         app.material_editor->window.reset();
         app.material_editor->open = false;
@@ -1940,16 +1966,29 @@ int main() {
         int draws = 0;
         // 前 3 帧丢掉：首帧要建字形缓存、量布局，不代表稳态
         for (int i = 0; i < n + 3; ++i) {
-            if (!win.poll()) { if (out) std::fclose(out); return 2; }
+            if (!win.poll()) {
+                if (out)
+                    std::fclose(out);
+                return 2;
+            }
             const auto t0 = std::chrono::steady_clock::now();
-            win.render([&](Ui &ui) { draw_gallery(ui); ++draws; });
+            win.render([&](Ui &ui) {
+                draw_gallery(ui);
+                ++draws;
+            });
             const auto t1 = std::chrono::steady_clock::now();
             if (i >= 3)
                 us.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
         }
-        if (draws != n + 3) { if (out) std::fclose(out); return 3; }
+        if (draws != n + 3) {
+            if (out)
+                std::fclose(out);
+            return 3;
+        }
         std::sort(us.begin(), us.end());
-        auto pct = [&](double p) { return us[size_t(p * double(us.size() - 1))] / 1000.0; };
+        auto pct = [&](double p) {
+            return us[size_t(p * double(us.size() - 1))] / 1000.0;
+        };
         double sum = 0.0;
         for (double v : us)
             sum += v;
