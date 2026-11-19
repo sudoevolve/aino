@@ -46,3 +46,8 @@ SSH 的 `example_ui_probe.cpp --local-transfer <端口>` 是显式网络验收�
 
 官网/Wiki 使用 `python tools/build_site.py` 打包到 `build/site/`，只依赖 Python 标准库。
 本地预览直接启动静态服务器，不使用回归工具；打包与 GitHub Pages 发布方法见 [网站说明](../site/README.md)。
+
+品牌资源使用 `python tools/build_icons.py` 从 `assets/aino_icon.svg` 内嵌原图生成 PNG 与多尺寸 ICO。
+仅这个资源生成步骤需要 Pillow（`python -m pip install Pillow`），普通构建使用已提交资源。
+PNG 与 ICO 使用一致的可见轮廓和留白；ICO 包含 16、20、24、32、40、48、64、96、128、256 像素图层。
+Windows CMake 示例和 `build_ssh.py app` 都嵌入该 ICO；替换资源后需重新构建可执行文件。

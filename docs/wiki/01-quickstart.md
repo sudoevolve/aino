@@ -297,6 +297,9 @@ win.set_anim_fps(30);
 ```
 
 `cfg.icon_path`：Windows 读取 `.ico`；macOS 设置应用图标；X11 设置 `_NET_WM_ICON`。
+Windows 大小图标按窗口 DPI 加载，跨显示器缩放变化时重载；自定义 ICO 建议包含
+16、20、24、32、40、48、64、96、128、256 像素图层，避免用单一尺寸放大。
+仓库示例的内嵌图标由 `assets/aino_icon.rc` 提供，修改图标后需要重新构建 exe。
 `cfg.font_path`：Windows/macOS 可注册字体文件；X11 按字体家族与 fontconfig 查找。
 `font_family_mono` 用于等宽文本通道。`min_*` / `max_*` 均为逻辑尺寸。
 `win.close()` 请求关闭，后台线程更新后调用 `win.wake()` 唤醒循环；跨线程共享应用状态仍需同步。

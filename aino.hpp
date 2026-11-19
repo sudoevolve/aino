@@ -11306,6 +11306,7 @@ struct Win32State {
     Window::Impl* owner = nullptr;
     HWND hwnd = nullptr;
     HICON icon_big = nullptr, icon_small = nullptr;
+    std::wstring icon_path;
     HDC mem_dc = nullptr;
     HBITMAP hbmp = nullptr;
     void* bits = nullptr;
@@ -11376,6 +11377,36 @@ inline UINT win_dpi_of(HWND hwnd) {
     UINT d = UINT(GetDeviceCaps(dc, LOGPIXELSX));
     ReleaseDC(nullptr, dc);
     return d ? d : 96;
+}
+
+inline void win_update_icons(Win32State* state, UINT dpi) {
+    using MetricsForDpi = int (WINAPI*)(int, UINT);
+    static const auto metrics = dll_proc<MetricsForDpi>(GetModuleHandleW(L"user32.dll"), "GetSystemMetricsForDpi");
+    const auto size = [&](int index) {
+        return metrics ? metrics(index, dpi)
+                       : MulDiv(GetSystemMetrics(index), int(dpi), int(win_dpi_of(nullptr)));
+    };
+    const bool from_file = !state->icon_path.empty();
+    const auto instance = from_file ? nullptr : GetModuleHandleW(nullptr);
+    const auto source = from_file ? state->icon_path.c_str() : MAKEINTRESOURCEW(1);
+    const UINT flags = from_file ? LR_LOADFROMFILE : 0;
+    // 每个窗口拥有匹配自身 DPI 的图标；不使用共享类图标的尺寸与所有权。
+    HICON big_icon = reinterpret_cast<HICON>(LoadImageW(instance, source, IMAGE_ICON,
+        size(SM_CXICON), size(SM_CYICON), flags));
+    HICON small_icon = reinterpret_cast<HICON>(LoadImageW(instance, source, IMAGE_ICON,
+        size(SM_CXSMICON), size(SM_CYSMICON), flags));
+    if (big_icon) {
+        SendMessageW(state->hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(big_icon));
+        if (state->icon_big) DestroyIcon(state->icon_big);
+        state->icon_big = big_icon;
+    }
+    if (small_icon) {
+        SendMessageW(state->hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(small_icon));
+        if (state->icon_small) DestroyIcon(state->icon_small);
+        state->icon_small = small_icon;
+    }
+    if (from_file && (!big_icon || !small_icon))
+        std::fprintf(stderr, "[aino] Cannot load icon at %u DPI\n", dpi);
 }
 
 inline void win_enable_dpi_awareness() {
@@ -11899,6 +11930,7 @@ inline LRESULT CALLBACK win_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
     case WM_DPICHANGED: {
         s->owner->scale = float(HIWORD(w)) / 96.0f;
+        win_update_icons(s, HIWORD(w));
         RECT* r = reinterpret_cast<RECT*>(l);
         SetWindowPos(h, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top,
                      SWP_NOZORDER | SWP_NOACTIVATE);
@@ -11934,6 +11966,7 @@ inline void w32_create(Window* self, const WindowConfig& cfg) {
 
     Win32State* s = new Win32State();
     s->owner = o;
+    s->icon_path = to_wide(cfg.icon_path);
     o->native = s;
 
     // 字体文件：先注册进本进程（FR_PRIVATE，不污染别的程序），再按解析出的
@@ -11954,7 +11987,7 @@ inline void w32_create(Window* self, const WindowConfig& cfg) {
         wc.hCursor       = LoadCursorW(nullptr, AINO_IDC_ARROW);
         wc.hIcon         = LoadIconW(wc.hInstance, MAKEINTRESOURCEW(1));
         wc.hIconSm       = reinterpret_cast<HICON>(LoadImageW(wc.hInstance, MAKEINTRESOURCEW(1),
-                              IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED));
+                              IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
         wc.lpszClassName = L"AinoWindowClass";
         wc.hbrBackground = nullptr;
         RegisterClassExW(&wc);
@@ -12008,24 +12041,8 @@ inline void w32_create(Window* self, const WindowConfig& cfg) {
 
     o->scale = float(win_dpi_of(hwnd)) / 96.0f;
 
-    // 图标：.ico 用 LoadImageW 直接读文件，按大/小两个尺寸各设一次
-    // （只设 ICON_BIG 的话标题栏和 Alt+Tab 里还会是默认图标）。
-    if (!cfg.icon_path.empty()) {
-        const std::wstring wi = to_wide(cfg.icon_path);
-        HICON ib = reinterpret_cast<HICON>(LoadImageW(nullptr, wi.c_str(), IMAGE_ICON,
-                                                      GetSystemMetrics(SM_CXICON),
-                                                      GetSystemMetrics(SM_CYICON),
-                                                      LR_LOADFROMFILE));
-        HICON is = reinterpret_cast<HICON>(LoadImageW(nullptr, wi.c_str(), IMAGE_ICON,
-                                                      GetSystemMetrics(SM_CXSMICON),
-                                                      GetSystemMetrics(SM_CYSMICON),
-                                                      LR_LOADFROMFILE));
-        if (ib) SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(ib));
-        if (is) SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(is));
-        if (!ib || !is) std::fprintf(stderr, "[aino] Cannot load icon: %s\n", cfg.icon_path.c_str());
-        s->icon_big = ib;
-        s->icon_small = is;
-    }
+    // 内嵌资源与显式 .ico 都按当前窗口 DPI 分别设置大小图标。
+    win_update_icons(s, win_dpi_of(hwnd));
 
     GdiTextRenderer* tr = new GdiTextRenderer();
     tr->init(o->scale, o->theme.font_family, o->theme.font_family_mono);

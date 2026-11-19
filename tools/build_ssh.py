@@ -53,6 +53,16 @@ def build(src, out, extra_flags=(), asan=False, gui=False):
     cl = os.path.join(env.get("VCToolsInstallDir", ""), "bin", "Hostx64", "x64", "cl.exe")
     if not os.path.isfile(cl):
         raise SystemExit("找不到 cl.exe（VCToolsInstallDir 没导出来）")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    resource = None
+    if gui:
+        # 直接编译入口也嵌入多尺寸图标，与 CMake 生成的 GUI 产物保持一致。
+        rc = shutil.which("rc.exe", path=env.get("PATH"))
+        if not rc:
+            raise SystemExit("Windows SDK 缺少 rc.exe，无法嵌入应用图标")
+        resource = os.path.splitext(out)[0] + ".res"
+        subprocess.run([rc, "/nologo", "/fo", resource, "aino_icon.rc"],
+                       env=env, cwd=os.path.join(ROOT, "assets"), check=True)
     cmd = [cl, "/nologo", "/std:c++17", "/utf-8", "/EHsc", "/W3",
            "/DNDEBUG", "/DNOMINMAX", "/MT"]
     if asan:
@@ -61,6 +71,8 @@ def build(src, out, extra_flags=(), asan=False, gui=False):
         cmd += ["/O2"]
     cmd += ["/I" + L2_SRC, "/I" + L2_BUILD, "/I" + MBED_INC, "/Fe:" + out, src]
     cmd += list(extra_flags)
+    if resource:
+        cmd.append(resource)
     cmd += [L2_LIB, MBED_LIB, "user32.lib", "gdi32.lib", "msimg32.lib", "ws2_32.lib", "crypt32.lib",
             "bcrypt.lib",     # mbedTLS 的熵源用 BCryptGenRandom
             "shell32.lib", "ole32.lib", "windowscodecs.lib", "uuid.lib", "comdlg32.lib"]     # 系统文件/目录选择及 KnownFolder ID
@@ -69,7 +81,6 @@ def build(src, out, extra_flags=(), asan=False, gui=False):
         # （就是"启动还开着个终端"）。入口是 WinMain 转发，见 ssh_client.cpp。
         # 自检（AINO_SSH_SELFTEST）时自己 AttachConsole，输出仍能在 shell 里看到。
         cmd += ["/link", "/SUBSYSTEM:WINDOWS"]
-    os.makedirs(os.path.dirname(out), exist_ok=True)
     print("[cl]", os.path.basename(src), "->", os.path.relpath(out, ROOT), "(asan)" if asan else "")
     # cwd 固定成仓库根：探针里有 "build/sshtest_probe.txt" 这种相对路径
     r = subprocess.run(cmd, env=env, capture_output=True, text=True,
