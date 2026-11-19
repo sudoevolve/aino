@@ -288,13 +288,11 @@ static void test_undo() {
     int caret = 2, anchor = -1;
 
     // 连续打 3 个字（同一组）
-    im->clock = 0.0f;
     for (int i = 0; i < 3; ++i) {
         const std::string before = text;
         const int c0 = caret, a0 = anchor;
         text.push_back(char('x' + i));
         caret = int(text.size());
-        im->clock += 0.1f;
         aino::detail::edit_snapshot(im, id, before, c0, a0, aino::detail::EDIT_TYPE);
     }
     char d[128];
@@ -302,7 +300,7 @@ static void test_undo() {
     check(im->edit_stack[id].undo.size() == 1, "0.7s 内的连续输入合并成一步", d);
 
     // 停顿后再打一个字 → 新的一步
-    im->clock += 1.2f;
+    im->edit_stack[id].last -= 1.2;
     {
         const std::string before = text;
         text.push_back('!');

@@ -3824,9 +3824,18 @@ struct Ui::Impl {
     bool measure_any = false;
     Rect measure_acc{};
     Canvas* measure_canvas = nullptr;   // begin_measure 期间暂存的画布
+    size_t measure_clip_depth = 0;
 
     void measure_add(const Rect& r) {
         Rect q = r;
+        // 只应用测量期间新增的裁剪，外层视口不能裁掉待测的屏幕外内容。
+        for (size_t i = measure_clip_depth; i < clip_logic.size(); ++i) {
+            const Rect& clip = clip_logic[i];
+            const float x0 = std::max(q.x, clip.x), y0 = std::max(q.y, clip.y);
+            const float x1 = std::min(q.right(), clip.right()), y1 = std::min(q.bottom(), clip.bottom());
+            if (x1 <= x0 || y1 <= y0) return;
+            q = Rect(x0, y0, x1 - x0, y1 - y0);
+        }
         // 滚动区里的内容只算**视口内**的部分：内层列表画了 20 行、视口只有 164px，
         // 全算进来会把卡片撑成 600px（滚动区的内容天生超出，这正是它存在的理由）。
         if (!scroll_stack.empty()) {
@@ -4507,6 +4516,7 @@ void  Ui::set_focus(void* id) {
 
 void Ui::begin_measure() {
     impl->measure_on = true;
+    impl->measure_clip_depth = impl->clip_logic.size();
     impl->each_widget_state([](auto& table) { table.set_measuring(true); });
     impl->measure_any = false;
     impl->measure_acc = Rect{};

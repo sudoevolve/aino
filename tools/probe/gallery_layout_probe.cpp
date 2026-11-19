@@ -35,7 +35,7 @@ int main(int argc, char **argv) {
                 const int over = report(layout, width, text);
                 if (over > 0) std::printf("%s", text.c_str());
                 expect(over == 0, "all card bodies fit at responsive widths in both themes");
-                expect(text.find("# over=0 total=43\n") != std::string::npos,
+                expect(text.find("# over=0 total=" + std::to_string(CardCount) + "\n") != std::string::npos,
                        "summary reports every card and is accepted by CI");
             }
         }

@@ -304,7 +304,7 @@ int main() {
     }
     f.frame([] {});
     f.frame([] {});
-    expect(CardCount == 47 && kPageCount == 17, "reference inventory contains 17 sections and 47 cards");
+    expect(CardCount == 48 && kPageCount == 17, "reference inventory contains 17 sections and 48 cards");
     int total = 0;
     for (const auto &page : kPages) {
         expect(page.first == total, "sections own a continuous, nonduplicated card range");
@@ -413,8 +413,8 @@ int main() {
             f.ui.set_theme(th);
             const auto skin = aino::detail::make_skin(th, Style().standard(), Style::Default, th.radius);
             const auto primary = aino::detail::make_skin(th, Style(), Style::Default, th.radius);
-            expect(skin.base.a == 255 && equal(skin.fg, th.label) && skin.border_w == 1,
-                   "standard is an opaque neutral bordered button");
+            expect(skin.base.a == 255 && equal(skin.fg, th.label) && skin.border_w == 0,
+                   "standard is an opaque neutral button without a border");
             expect(equal(primary.base, th.tint) && equal(primary.fg, th.tint_foreground),
                    "default button keeps its accent semantics");
             for (Color backdrop : {th.window_bg, th.card}) {
@@ -433,8 +433,9 @@ int main() {
                        "secondary retains its translucent theme fill");
                 const Color standard_edge = f.pixel(int(standard.cx()), int(standard.bottom() - 1));
                 const Color secondary_edge = f.pixel(int(secondary.cx()), int(secondary.bottom() - 1));
-                expect(std::fabs(standard_edge.luminance() - standard_idle.luminance()) * 255 >= 4,
-                       "standard has a visible lower edge");
+                expect(equal(standard_edge, standard_idle), "standard retains its flat lower edge");
+                expect(equal(f.pixel(int(standard.cx()), int(standard.y)), standard_idle),
+                       "standard has no top outline or highlight");
                 expect(equal(secondary_edge, secondary_idle), "secondary retains its flat edge");
                 for (int i = 0; i < 24; ++i) f.frame(draw, standard.x + 8, standard.cy());
                 expect(equal(surface(standard), standard_idle) && variants.hits == 0,

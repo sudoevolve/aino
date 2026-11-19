@@ -1271,7 +1271,7 @@ void draw_about(Ui &ui, App &a, Rect b) {
     if (ui.button("反馈问题", help, Style().ghost()))
         notify(ui, a, "反馈地址：github.com/sudoevolve/aino/issues");
     if (ui.button("第三方许可", {help.right() + link_gap, y, link_w, 30}, Style().ghost()))
-        notify(ui, a, "许可证见仓库 LICENSE 与 docs/README.md", 1);
+        notify(ui, a, "许可证见仓库 LICENSE 与 docs/wiki/README.md", 1);
     y += 30 + 20;
 
     // 许可证清单：居中、11 号三级灰，和 macOS About 面板底部的致谢同一个调子。
@@ -1732,7 +1732,9 @@ int write_layout_report(Ui &ui, const App &a, const GalleryLayout &layout, float
                  layout.height);
     for (size_t i = 0; i < layout.cards.size(); ++i) {
         const auto &c = layout.cards[i];
-        const Rect body = card_body({0, 0, c.rect.w, c.rect.h});
+        const bool about = kCards[c.index].id == About;
+        const Rect local{0, 0, c.rect.w, c.rect.h};
+        const Rect body = about ? local : card_body(local);
         Rect used;
         bool overflow = !std::isfinite(c.rect.x) || !std::isfinite(c.rect.y) || !std::isfinite(c.rect.w) ||
                         !std::isfinite(c.rect.h) || c.rect.x < -1 || c.rect.y < 0 ||
@@ -1746,8 +1748,8 @@ int write_layout_report(Ui &ui, const App &a, const GalleryLayout &layout, float
             used = ui.end_measure();
             // 轴标签可进入内边距，但不能覆盖标题（y=16..38）或越出卡片。
             overflow = !std::isfinite(used.x) || !std::isfinite(used.y) || !std::isfinite(used.w) ||
-                       !std::isfinite(used.h) || used.x < 0 || used.y < 38 || used.right() > c.rect.w ||
-                       used.bottom() > c.rect.h;
+                       !std::isfinite(used.h) || used.x < 0 || used.y < (about ? 0 : 38) ||
+                       used.right() > c.rect.w || used.bottom() > c.rect.h;
         }
         for (size_t j = 0; j < i; ++j) {
             const Rect &other = layout.cards[j].rect;

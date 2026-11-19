@@ -249,11 +249,56 @@ static void test_nested_wheel() {
           "outer=" + std::to_string(outer_off));
 }
 
+static void test_measure_clips() {
+    Surface sf(200, 160);
+    Harness h(&sf);
+    aino::Ui& ui = h.ui;
+    const aino::Rect visible(30, 20, 60, 40);
+    aino::Rect measured;
+    auto draw = [&] {
+        ui.push_clip(visible);
+        ui.push_clip({0, 0, 180, 140});
+        ui.fill_rect({0, 0, 180, 140}, aino::Color::white());
+        ui.pop_clip();
+        ui.pop_clip();
+    };
+    h.frame(0, 0, [&] {
+        ui.clear(aino::Color::black());
+        ui.push_clip({0, 0, 10, 10});
+        ui.begin_measure();
+        draw();
+        measured = ui.end_measure();
+        check(ui.impl->clip_logic.size() == 1, "测量保留调用者的裁剪栈");
+        ui.pop_clip();
+        draw();
+    });
+    check(measured.x == visible.x && measured.y == visible.y &&
+              measured.w == visible.w && measured.h == visible.h,
+          "测量应用内部嵌套裁剪，但不受外层视口限制");
+    GdiFlush();
+    bool pixels_match = true;
+    for (int y = 0; y < sf.h; ++y) {
+        for (int x = 0; x < sf.w; ++x) {
+            const bool ink = sf.cv.px[y * sf.cv.stride + x * 4 + aino::detail::CH_R] != 0;
+            const bool inside = x >= measured.x && x < measured.right() &&
+                                y >= measured.y && y < measured.bottom();
+            pixels_match &= ink == inside;
+        }
+    }
+    check(pixels_match, "裁剪测量边界与实际绘制像素一致");
+    ui.begin_measure();
+    ui.push_clip({0, 0, 10, 10});
+    ui.fill_rect({50, 50, 10, 10}, aino::Color::white());
+    ui.pop_clip();
+    check(ui.end_measure().empty(), "完全裁剪的图元不增加测量边界");
+}
+
 int main() {
     std::printf("=== 测量模式 / 滚轮归属 ===\n");
     test_measure_no_pixels();
     test_measure_no_side_effects();
     test_nested_wheel();
+    test_measure_clips();
     std::printf("\n=== 通过 %d 项，失败 %d 项 ===\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
