@@ -885,11 +885,12 @@ static bool scene_x11_title() {
 
 // 只比较覆盖率与边界，不固定平台字形；发布时覆盖 GDI 的透明文字合成路径。
 static bool scene_text_alpha() {
-    aino::Window win(260, 110, "aino pixels: text alpha");
-    if (!win.ok()) { win_fail("S7"); return false; }
     for (bool dark : {false, true}) {
         const Color background = dark ? Color(24, 24, 24) : Color(240, 240, 240);
         for (int alpha : {0, 128}) {
+            // render_scene 会关闭窗口，每个样本使用独立窗口，避免读取前一帧。
+            aino::Window win(260, 110, "aino pixels: text alpha");
+            if (!win.ok()) { win_fail("S7"); return false; }
             Shot shot;
             if (!render_scene(win, [&](Ui& ui) {
                 ui.clear(background);

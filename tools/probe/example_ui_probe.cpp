@@ -273,7 +273,7 @@ int main(int argc, char** argv) {
     expect(clipboard.empty(), "secret input does not copy password");
     int clicks = 0;
     auto button = [&] {
-        if (dlg_button(f.ui, f.ui.theme(), "连接", Rect(40, 120, 100, 28), Btn::Primary)) ++clicks;
+        if (dlg_button(f.ui, "连接", Rect(40, 120, 100, 28), Btn::Primary)) ++clicks;
     };
     g_block_input = true;
     f.click(button, 80, 134);
@@ -282,7 +282,7 @@ int main(int argc, char** argv) {
     f.click(button, 80, 134);
     expect(clicks == 1, "native dialog button activates after unblock");
     auto tool = [&] {
-        if (tool_button(f.ui, f.ui.theme(), "删除", Rect(40, 180, 100, 28), true)) ++clicks;
+        if (tool_button(f.ui, "删除", Rect(40, 180, 100, 28), true)) ++clicks;
     };
     g_block_input = true;
     f.click(tool, 80, 194);

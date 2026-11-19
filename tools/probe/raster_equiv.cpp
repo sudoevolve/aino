@@ -20,8 +20,17 @@ using namespace aino::detail;
 static int g_pass = 0, g_fail = 0, g_worst = 0;
 
 // ---------------------------------------------------------------------------
-// 朴素参考实现：算法与"优化前"逐字一致
+// 逐像素参考实现：独立计算圆角扫描线，避免复用被测的几何快路径。
 // ---------------------------------------------------------------------------
+static Span ref_rrect_span(float y, const Rect& r, float rad) {
+    if (r.w <= 0 || r.h <= 0 || y < r.y || y > r.bottom())
+        return {1.0f, 0.0f};
+    rad = std::max(0.0f, std::min(rad, std::min(r.w, r.h) * 0.5f));
+    const float dy = std::max({r.y + rad - y, y - (r.bottom() - rad), 0.0f});
+    const float inset = rad - std::sqrt(std::max(0.0f, rad * rad - dy * dy));
+    return {r.x + inset, r.right() - inset};
+}
+
 static void ref_rrect(Canvas& cv, const Rect& r, const Color& c, float rad) {
     int y0 = (int)std::floor(r.y), y1 = (int)std::ceil(r.bottom());
     for (int py = y0; py < y1; ++py) {
@@ -29,7 +38,7 @@ static void ref_rrect(Canvas& cv, const Rect& r, const Color& c, float rad) {
         float mn = 1e9f, mx = -1e9f;
         for (int s = 0; s < AINO_SS; ++s) {
             float sy = float(py) + (float(s) + 0.5f) / float(AINO_SS);
-            Span sp = rrect_span(sy, r, rad);
+            Span sp = ref_rrect_span(sy, r, rad);
             xls[s] = sp.xl; xrs[s] = sp.xr;
             mn = std::min(mn, sp.xl); mx = std::max(mx, sp.xr);
         }
@@ -52,15 +61,16 @@ static void ref_rrect(Canvas& cv, const Rect& r, const Color& c, float rad) {
 static void ref_stroke(Canvas& cv, const Rect& r, const Color& c, float rad, float width) {
     float w = std::max(width, 0.5f);
     Rect inner = r.inset(w);
-    float inner_rad = std::max(0.0f, rad - w);
+    const float outer_rad = std::max(0.0f, std::min(rad, std::min(r.w, r.h) * 0.5f));
+    float inner_rad = std::max(0.0f, outer_rad - w);
     int y0 = (int)std::floor(r.y), y1 = (int)std::ceil(r.bottom());
     for (int py = y0; py < y1; ++py) {
         float ol[AINO_SS], orr[AINO_SS], il[AINO_SS], irr[AINO_SS];
         float mn = 1e9f, mx = -1e9f;
         for (int s = 0; s < AINO_SS; ++s) {
             float sy = float(py) + (float(s) + 0.5f) / float(AINO_SS);
-            Span so = rrect_span(sy, r, rad);
-            Span si = inner.w > 0 ? rrect_span(sy, inner, inner_rad) : Span{1.0f, 0.0f};
+            Span so = ref_rrect_span(sy, r, outer_rad);
+            Span si = ref_rrect_span(sy, inner, inner_rad);
             ol[s] = so.xl; orr[s] = so.xr; il[s] = si.xl; irr[s] = si.xr;
             mn = std::min(mn, so.xl); mx = std::max(mx, so.xr);
         }

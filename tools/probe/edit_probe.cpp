@@ -3,6 +3,9 @@
 // 为什么要开窗口：bigfeat_probe 只测了 detail::edit_undo 这些函数，测不到
 // 「WM_CHAR 进来之后控件到底有没有调它、有没有被 !undone 之类的守卫挡掉」。
 // 打开一个 520×300 的窗口，用 PostMessage 投递真实按键，逐项回读字符串。
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <atomic>
 #include <cstdio>

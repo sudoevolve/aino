@@ -97,8 +97,8 @@ int main() {
     } isolated;
     const char* directory = std::getenv("AINO_SSH_LAYOUT_DIR");
     if (directory) std::filesystem::create_directories(std::filesystem::u8path(directory));
-    for (int dpi : {96, 144}) for (bool small : {false, true}) for (bool dark : {false, true}) {
-        const int width = small ? 980 : 1320, height = small ? 600 : 820;
+    for (int dpi : {96, 144}) for (bool compact : {false, true}) for (bool dark : {false, true}) {
+        const int width = compact ? 980 : 1320, height = compact ? 600 : 820;
         aino::WindowConfig config;
         config.width = width;
         config.height = height;
@@ -140,7 +140,7 @@ int main() {
                 });
             }
             if (directory) {
-                const std::string name = std::string(dark ? "dark" : "light") + (small ? "-min-" : "-default-") +
+                const std::string name = std::string(dark ? "dark" : "light") + (compact ? "-min-" : "-default-") +
                     std::to_string(dpi) + "-" + std::to_string(mode) + ".bmp";
                 expect(save_bitmap(window.impl->canvas, std::filesystem::u8path(directory) / name), "native screenshot saved");
             }

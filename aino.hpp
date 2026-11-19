@@ -1334,17 +1334,18 @@ public:
 //  八、内置图标（用 Unicode 符号，免依赖；也可换成你自己的字体图标）
 // =============================================================================
 namespace icons {
-    extern const char* check;
-    extern const char* chevron_down;
-    extern const char* chevron_right;
-    extern const char* close;
-    extern const char* plus;
-    extern const char* minus;
-    extern const char* search;
-    extern const char* settings;
-    extern const char* sun;
-    extern const char* moon;
-    extern const char* dot;
+    // C++17 inline 定义对所有调用单元可见，不依赖实现单元是否使用这些符号。
+    inline const char* check = "\xE2\x9C\x93";         // ✓
+    inline const char* chevron_down = "\xE2\x8C\x84";  // ⌄
+    inline const char* chevron_right = "\xE2\x80\xBA"; // ›
+    inline const char* close = "\xE2\x9C\x95";         // ✕
+    inline const char* plus = "+";
+    inline const char* minus = "\xE2\x88\x92";         // −
+    inline const char* search = "\xE2\x8C\x95";        // ⌕
+    inline const char* settings = "\xE2\x9A\x99";      // ⚙
+    inline const char* sun = "\xE2\x98\x80";           // ☀
+    inline const char* moon = "\xE2\x98\xBE";          // ☾
+    inline const char* dot = "\xE2\x80\xA2";           // •
 }
 
 /**
@@ -3655,22 +3656,6 @@ Theme Theme::dark() {
     t.ring                  = Color::rgba(10, 149, 255, 140);
     return t;
 }
-
-namespace icons {
-// inline：这些是**定义**而不是声明，两个编译单元都定义 AINO_IMPLEMENTATION 时
-// 原来的写法会重定义（链接期 duplicate symbol）。inline 变量要 C++17，本项目正好是。
-inline const char* check         = "\xE2\x9C\x93";              // ✓
-inline const char* chevron_down  = "\xE2\x8C\x84";              // ⌄
-inline const char* chevron_right = "\xE2\x80\xBA";              // ›
-inline const char* close         = "\xE2\x9C\x95";              // ✕
-inline const char* plus          = "+";
-inline const char* minus         = "\xE2\x88\x92";              // −
-inline const char* search        = "\xE2\x8C\x95";              // ⌕
-inline const char* settings      = "\xE2\x9A\x99";              // ⚙
-inline const char* sun           = "\xE2\x98\x80";              // ☀
-inline const char* moon          = "\xE2\x98\xBE";              // ☾
-inline const char* dot           = "\xE2\x80\xA2";              // •
-} // namespace icons
 
 namespace detail {
 // 交互态配色：亮底压暗、暗底提亮 —— 两条路径都保证对比度单调变化
