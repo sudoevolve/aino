@@ -4,8 +4,7 @@
 //  展示侧栏导航与通知设置。
 //
 //  作者：sudoevolve <sudoevolve@gmail.com>
-//  编译：g++ -std=c++17 -O2 -static -s sidebar_demo.cpp -o sidebar_demo.exe
-//              -mwindows -luser32 -lgdi32 -lmsimg32
+//  构建：cmake --build build --config Release --target aino_sidebar_demo
 // =============================================================================
 #define AINO_IMPLEMENTATION
 #include "../aino.hpp"

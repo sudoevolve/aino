@@ -33,6 +33,11 @@ CMake 自动扫描 `examples/*.cpp`，每个文件生成 `aino_<文件名>` 目�
 | `function_viewer.cpp` | `aino_function_viewer` | 函数曲线、自定义表达式、采样缓存 |
 | `ssh_client.cpp` | `aino_ssh` | 可选 SSH/SFTP 客户端 |
 
+建议按 `sidebar_demo` → `primitives_demo` → `pomodoro` → `gallery` 的顺序阅读。
+前两个示例适合复制起步；Gallery 是组件参考，函数显示器和 SSH 是完整应用示例。
+应用持有业务状态，文件内的 `draw_*` 函数组织页面，`main` 只负责建窗与事件循环；
+布局和样式保留在各示例内。常规应用使用公开 API，`impl`、`detail` 属于实现细节。
+
 Visual Studio 多配置生成器的程序在 `build/Release/`，Ninja/Makefiles 通常在 `build/`。
 可只构建一个目标：
 

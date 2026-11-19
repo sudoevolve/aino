@@ -14,9 +14,7 @@
 //  这个文件里没有任何绘图库：曲线就是 ui.draw_line() 画的一堆短线段，
 //  热力图就是 ui.fill_rect() 画的色块。aino 只提供笔画，几何全在这里算。
 //
-//  编译：
-//    g++ -std=c++17 -O2 -static -s function_viewer.cpp -o function_viewer.exe
-//        -mwindows -luser32 -lgdi32
+//  构建：cmake --build build --config Release --target aino_function_viewer
 //  表达式自测（不开窗口，结果写文件）：
 //    AINO_FN_SELFTEST=out.txt ./function_viewer.exe
 //

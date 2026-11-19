@@ -65,8 +65,7 @@ int main() {
         const float low[] = {0, 1, .1f}, high[] = {28, 8, 1};
         for (int i = 0; i < 3; ++i) {
             const Rect row(settings.x, settings.y + i * 48.f, settings.w, 48);
-            // 数值贴行右端、滑块占满中间：原来是「标签 … 数值 [滑块]」，滑块左侧
-            // 空出 300px 而数值和滑块挨着，读起来像两组不相干的东西。
+            // 先预留右侧数值宽度，滑块使用标题与数值之间的空间。
             const Rect value_box(row.right() - 60, row.cy() - 12, 44, 24);
             const Rect control(row.x + 108, row.cy() - 12, value_box.x - 16 - (row.x + 108), 24);
             ui.label(labels[i], {row.x + 16, row.cy() - 12, 88, 24}, Style().font(13));

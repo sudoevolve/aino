@@ -40,6 +40,8 @@
 #include <cstring>
 #include <cstdlib>
 #include <cmath>
+#include <algorithm>
+#include <utility>
 #include <string>
 #include <vector>
 #include <map>
@@ -120,12 +122,7 @@ struct Color {
                      uint8_t(g * (1.0f - amount) + 0.5f),
                      uint8_t(b * (1.0f - amount) + 0.5f), a);
     }
-    // 把本层（可能是半透明）**压到** base 上，得到"实际看到的颜色"。
-    //
-    // 判断"该配深色还是浅色前景"之前必须先压平：`th.muted`（rgba(0,0,0,13)）、
-    // `th.label2`（rgba(0,0,0,128)）这些 token 都带 alpha，直接 luminance() 量到的
-    // 是它们自己 RGB 的亮度 —— 一个 5% 黑的填充在浅色主题下会被判成"黑底"，
-    // 于是配上白字，实际看到的是"白字 + 近乎白的圆"，什么也读不出来。
+    // 将本色合成到不透明 base 上；半透明颜色判断前景对比度前应先合成。
     Color over(const Color& base) const {
         if (a == 255) return *this;
         const float t = float(a) / 255.0f;
@@ -146,7 +143,7 @@ struct Color {
     bool operator!=(const Color& o) const { return !(*this == o); }
 };
 
-// Decoded, straight-alpha RGBA pixels. Load once and reuse across frames.
+// 解码后的 RGBA 像素（非预乘 alpha）；加载一次，跨帧复用。
 struct Image {
     int width = 0, height = 0;
     std::vector<uint8_t> pixels;
@@ -159,8 +156,7 @@ struct Image {
     }
 };
 
-/** @brief Directory of the current executable in UTF-8, including its trailing separator.
- * Returns an empty string if the platform cannot determine it.
+/** @brief 当前可执行文件的 UTF-8 目录，含末尾分隔符；无法取得时返回空字符串。
  */
 std::string executable_directory();
 
@@ -545,7 +541,7 @@ struct Style {
 
     // 语义变体
     Style& primary()     { variant = Default;     return *this; }
-    /** @brief 中性实心按钮，带细边缘；Secondary 使用半透明填充。 */
+    /** @brief 中性实心按钮；Secondary 使用半透明填充。 */
     Style& standard()    { variant = Standard;    return *this; }
     Style& secondary()   { variant = Secondary;   return *this; }
     Style& outline()     { variant = Outline;     return *this; }
@@ -639,26 +635,15 @@ struct Input {
 // =============================================================================
 //  五、Stack —— 顺序布局器
 //
-//  立即模式没有控件树，"画完再排版"这条路走不通，只能边画边切。所以这里的
-//  做法是：给一个矩形和一条主方向，让调用方按顺序把它切开。
+//  从指定矩形沿主方向依次切分空间，调用方负责元素尺寸。
 //
 //      Stack col = ui.vbox({x, y, w, h}, 10);   // 纵向，元素间距 10
 //      ui.heading("标题", col.next(32));
 //      ui.button("确定",  col.next(36));
 //      ui.button("更多",  col.fill());          // 吃掉剩余
 //
-//  和手写 yy 游标相比，这里多出四件事：
-//    · gap 只在两个元素之间生效（同 CSS 的 gap 语义），所以 fill() 拿到的是
-//      精确的剩余空间，不会白少一个间距；
-//    · next_frac / part 做比例与等分，不用自己算 (pw - 12) * 0.5；
-//    · next_text 按文字真实像素宽度定宽 —— 系统字体引擎可以直接量，这是
-//      "宽度自适应"能做而"高度自适应"不能做的原因；
-//    · 子布局可以嵌套，父子之间继承 gap。
-//
-//  刻意不做：内容自适应高度、自动换行、网格、约束求解。它们要么需要两趟
-//  遍历，要么需要尺寸缓存依赖图，与"单头文件、最小示例 exe 约 380 KiB"的目标直接冲突。
-//  布局器本身是纯值语义（一个 Rect + 一个方向 + 一个间距），不注册任何
-//  状态，所以嵌套/丢弃/复制都没有代价。
+//  gap 只加在元素之间；next_frac / part 提供比例与等分，子布局可继承 gap。
+//  Stack 可按值复制，不拥有控件状态；不自动换行或计算内容高度。
 // =============================================================================
 class Ui;
 
@@ -679,16 +664,9 @@ private:
     uint64_t previous_ = 0;
 };
 
-// -----------------------------------------------------------------------------
-//  ScrollScope —— 一个滚动视口的句柄（`ui.scroll()` 的返回值）
-//
-//  滚动只有一件事：**一个视口 + 一段内容高度**。虚拟列表不是另一套东西，
-//  只是"内容高度 = 行数 × 行高"的特例。所以这里只有一种句柄，通用与虚拟
-//  共用：同一份偏移记忆（按 box 记忆）、同一根滚动条、同一套裁剪。
-//
-//  句柄析构时自动收尾（弹裁剪、还原布局偏移、画滚动条）—— 于是不需要
-//  begin/end 手工配对；提前想收尾就调 close()（可重复调用）。
-// -----------------------------------------------------------------------------
+/** @brief 滚动视口的作用域句柄；析构或 close() 时恢复裁剪与布局并绘制滚动条。
+ * 在所属 Ui 存活期间、同一帧内按嵌套顺序关闭；不要覆盖仍活跃的句柄。
+ */
 struct ScrollScope {
     Ui*      ui         = nullptr;
     uint64_t id         = 0;
@@ -759,16 +737,8 @@ private:
 // =============================================================================
 //  五之二、动画与变换
 //
-//  动画：本库**没有**常驻动画系统（那会让空闲 CPU 从 0% 变 100%），只有两种
-//  明确的东西：
-//    · tween()  —— 目标驱动的补间。目标一变就从当前显示值重新起跑，跑完自动
-//                   停止要帧；停下来的那一刻起 CPU 回到 0。
-//    · smooth() —— 指数平滑的纯函数，适合跟随鼠标这类"没有终点"的量。
-//  两者都不注册任何东西、不依赖控件树 —— 立即模式的本分。
-//
-//  变换：push_transform / pop_transform 叠加一个仿射变换（平移 → 旋转 → 缩放
-//  作用于局部坐标）。它只影响**绘制**，不影响布局与命中判定：布局仍然算逻辑
-//  坐标，"看起来变了"和"点得到"是两件事（CSS transform 也是这个语义）。
+//  tween 按目标推进并在完成后停止续帧；smooth 是不申请帧的指数平滑函数。
+//  push_transform / pop_transform 只影响绘制，不影响布局与命中坐标。
 // =============================================================================
 using Easing = float (*)(float);
 
@@ -809,6 +779,7 @@ struct MenuPick {
 // =============================================================================
 //  六、Ui —— 每帧的绘制与组件入口
 // =============================================================================
+/** @brief 绘制、布局与交互入口；在所属 UI 线程使用。 */
 class Ui {
 public:
     Ui();
@@ -907,7 +878,7 @@ public:
     void fill_crescent(float cx, float cy, float radius,
                        float cut_cx, float cut_cy, float cut_radius, const Color& c);
     void draw_line(float x0, float y0, float x1, float y1, const Color& c, float width = 1.0f);
-    /** @brief Draw an already decoded image stretched to box, respecting clip and transform. */
+    /** @brief 将已解码图像拉伸到 box，遵守当前裁剪与变换。 */
     void draw_image(const Image& image, const Rect& box);
     // 画文本；Style 支持字号、字重、斜体、对齐、折行与行距。
     void draw_text(const std::string& text, const Rect& box, const Color& c, const Style& st = Style());
@@ -1116,11 +1087,11 @@ public:
     // 轻提示条（通常自己摆在右下角；生命周期由调用方用 bool 控制）
     void toast(const std::string& text, const Rect& box, const Style& st = Style());
 
-    // Popover：点触发器弹任意内容。draw 在**帧末**被调用一次，拿到内容区矩形。
-    // 返回"本帧是否处于打开态"。
+    // Popover：返回调用时的打开状态；draw 在帧末执行，收到内容区矩形。
+    // open 及回调引用的数据须存活至本帧结束；回调关闭面板不改变已返回的值。
     bool popover(const std::string& label, bool* open, const Rect& box, Vec2 content,
                  const std::function<void(const Rect&)>& draw, const Style& st = Style());
-    // Hover Card：悬停 anchor 弹任意内容（不点击、不抢焦点）
+    // Hover Card：悬停时在帧末绘制只读内容；回调引用的数据须存活至本帧结束。
     void hover_card(const Rect& anchor, Vec2 content, const std::function<void(const Rect&)>& draw,
                     const Style& st = Style());
     // Alert Dialog：带确认/取消的模态框。返回 true 表示本帧点了确认。
@@ -1142,7 +1113,7 @@ public:
     bool split_pane(float* ratio, const Rect& box, Rect* first, Rect* second,
                     bool vertical = true, float min_ratio = 0.15f, const Style& st = Style());
 
-    // 把绘制推迟到帧末（弹出层用 —— 保证它盖在其它组件之上）
+    // 将回调推迟到 end_frame()；按值捕获临时值，引用的数据须存活至帧末。
     void deferred(std::function<void()> fn);
 
     // 布局辅助（立即模式下的轻量自动布局）
@@ -1245,17 +1216,7 @@ private:
 //  七、Window —— 窗口与主循环
 // =============================================================================
 
-// 窗口配置。默认值就是"能直接跑"：1180×760 之外都留空。
-//
-// 为什么用结构体而不是一串重载：窗口可配的东西会一直长（图标、字体、
-// 尺寸约束、是否可缩放、居中），每加一项就多一个构造函数重载不是办法。
-// 结构体 + 指定初始化还能只写想改的那几项：
-//
-//     aino::Window win({ .width = 1180, .height = 760, .title = "aino",
-//                        .icon_path = "app.ico", .min_width = 900 });
-//
-// 指定初始化要 C++20；C++17 下老老实实逐字段赋值，或者用 builder 式的
-// `WindowConfig cfg; cfg.width = ...;`
+// 窗口配置。C++17 用 WindowConfig cfg; cfg.width = ...; 按需覆盖默认值。
 struct WindowConfig {
     int         width  = 1180;
     int         height = 760;
@@ -1270,8 +1231,7 @@ struct WindowConfig {
     // 再按文件里 `name` 表写着的家族名排版 —— 所以不用手工填家族名。
     // 只填 font_family 则使用系统已安装的家族名。两个都填时：先注册文件，
     // 家族名以文件为准；注册失败才退回 font_family。
-    // X11 忽略 font_path（核心 X 字体没有"加载字体文件"这条路，只能按
-    // 家族名挑已装的 XLFD），此时行为等同只填 font_family。
+    // X11 不注册字体文件；解析出的家族名仍通过 fontconfig 或系统字体匹配。
     std::string font_path;
     std::string font_family;            // 空 = 平台默认无衬线
     std::string font_family_mono;       // 空 = Consolas / 平台等宽
@@ -1294,6 +1254,9 @@ struct WindowConfig {
     bool high_dpi = true;
 };
 
+/** @brief 原生窗口与事件循环；除 wake()/close() 外，在所属 UI 线程操作。
+ * macOS 必须使用主线程；后台调用者须在窗口析构前结束。
+ */
 class Window {
 public:
     explicit Window(const WindowConfig& cfg);
@@ -1321,18 +1284,8 @@ public:
     // 跨线程叫醒主循环请使用 wake()。
     void request_repaint();
 
-    // 跨线程叫醒主循环。
-    //
-    // request_repaint() 只置一个标志位 —— 主循环空闲时是阻塞在内核里的
-    // （内核事件 / 原生消息等待），光改标志叫不醒它。所以**后台线程**里有
-    // 数据到达时（SSH 收字节、下载进度、日志尾部、长任务回调）要用这个：
-    //
-    //     std::thread([&] {
-    //         while (running) { if (recv_new_bytes()) win.wake(); }
-    //     }).detach();
-    //
-    // 通知内核事件/管道，由 UI 线程消费后请求一帧；不会从后台调用 Xlib/AppKit。
-    // 主线程也可调用。调用方保证窗口存活，后台线程须在窗口析构前结束。
+    // 唤醒阻塞的主循环并请求一帧，可跨线程调用；应用数据仍须自行同步。
+    // 不调用 Xlib/AppKit；后台线程须在窗口析构前结束，不要分离捕获窗口引用的线程。
     void wake();
 
     // 常驻动画（spinner / 光标闪烁 / hover 插值）的重绘帧率上限，默认 60fps。

@@ -89,7 +89,6 @@ std::string shell_capture(const std::string& cmd) {
 
 struct Clipboard {
     aino::Window* win = nullptr;
-    void probe() {} // 保留示例初始化入口；各后端负责系统剪贴板。
     bool set(const std::string& text) { return win && win->try_set_clipboard(text); }
     std::string get() { return win ? win->clipboard() : std::string(); }
 };
@@ -1521,7 +1520,7 @@ void handle_term_keys(aino::Ui& ui, Session& a) {
 // 有弹窗时，底下的页面只画不接受输入。
 bool g_block_input = false;
 
-bool tool_button(aino::Ui& ui, const aino::Theme&, const std::string& label, const Rect& r, bool danger) {
+bool tool_button(aino::Ui& ui, const std::string& label, const Rect& r, bool danger) {
     Style style;
     if (danger) style.destructive();
     else style.outline();
@@ -1531,7 +1530,7 @@ bool tool_button(aino::Ui& ui, const aino::Theme&, const std::string& label, con
 
 enum class Btn { Normal, Primary, Danger };
 
-bool dlg_button(aino::Ui& ui, const aino::Theme&, const std::string& label, const Rect& r, Btn k) {
+bool dlg_button(aino::Ui& ui, const std::string& label, const Rect& r, Btn k) {
     Style style;
     if (k == Btn::Normal) style.outline();
     else if (k == Btn::Danger) style.destructive();
@@ -1695,8 +1694,8 @@ void draw_sftp(aino::Ui& ui, Session& session, const aino::Theme& theme, const R
     ui.fill_rect(area, theme.sidebar_bg);
     const float x = area.x + 12, width = area.w - 24;
     ui.label("SFTP", {x + 4, area.y + 6, width - 112, 28}, Style().font(13).semi_bold());
-    if (tool_button(ui, theme, "上级", {area.right() - 118, area.y + 6, 50, 28}, false)) go_up(session);
-    if (tool_button(ui, theme, "刷新", {area.right() - 62, area.y + 6, 50, 28}, false)) refresh_list(session);
+    if (tool_button(ui, "上级", {area.right() - 118, area.y + 6, 50, 28}, false)) go_up(session);
+    if (tool_button(ui, "刷新", {area.right() - 62, area.y + 6, 50, 28}, false)) refresh_list(session);
     const Rect path(x, area.y + 44, width, 30);
     Style path_style = Style().hint("远程目录，回车打开");
     path_style.disabled = g_block_input;
@@ -1760,7 +1759,7 @@ void draw_sftp(aino::Ui& ui, Session& session, const aino::Theme& theme, const R
     Style input_style;
     input_style.disabled = g_block_input;
     ui.input(download_dir, {inner_x, footer.y + 34, inner_w - 50, 28}, input_style);
-    if (tool_button(ui, theme, "浏览", {footer.right() - 60, footer.y + 34, 44, 28}, false)) {
+    if (tool_button(ui, "浏览", {footer.right() - 60, footer.y + 34, 44, 28}, false)) {
         const std::string picked = pick_folder(*download_dir);
         if (!picked.empty()) {
             std::string error;
@@ -1830,10 +1829,10 @@ void draw_prompt(aino::Ui& ui, Session& a, const aino::Theme& th) {
                      th.foreground, Style().font(14.0f).bold());
         ui.draw_text("删除后无法恢复：" + (cur ? cur->name : std::string()),
                      Rect(bx1, box.y + 48.0f, bx2 - bx1, 18.0f), th.muted_foreground, Style().font(12.0f));
-        if (dlg_button(ui, th, "取消", Rect(bx1, box.bottom() - 48.0f, bw, 30.0f), Btn::Normal) ||
+        if (dlg_button(ui, "取消", Rect(bx1, box.bottom() - 48.0f, bw, 30.0f), Btn::Normal) ||
             in.key_pressed[aino::KEY_ESC])
             a.confirm_delete = false;
-        if (dlg_button(ui, th, "删除", Rect(bx2 - bw, box.bottom() - 48.0f, bw, 30.0f), Btn::Danger)) {
+        if (dlg_button(ui, "删除", Rect(bx2 - bw, box.bottom() - 48.0f, bw, 30.0f), Btn::Danger)) {
             if (cur) a.fs_push(FsReq{FsOp::Remove, join_remote(a.sftp_path, cur->name), {}, "已删除 " + cur->name});
             a.confirm_delete = false;
         }
@@ -1848,10 +1847,10 @@ void draw_prompt(aino::Ui& ui, Session& a, const aino::Theme& th) {
     ui.input(&a.prompt_text, Rect(bx1, box.y + 68.0f, bx2 - bx1, 30.0f));
 
     const bool enter = in.key_pressed[aino::KEY_ENTER];
-    if (dlg_button(ui, th, "取消", Rect(bx1, box.bottom() - 48.0f, bw, 30.0f), Btn::Normal) ||
+    if (dlg_button(ui, "取消", Rect(bx1, box.bottom() - 48.0f, bw, 30.0f), Btn::Normal) ||
         in.key_pressed[aino::KEY_ESC])
         a.prompt = Prompt::None;
-    if (dlg_button(ui, th, "确定", Rect(bx2 - bw, box.bottom() - 48.0f, bw, 30.0f), Btn::Primary) || enter) {
+    if (dlg_button(ui, "确定", Rect(bx2 - bw, box.bottom() - 48.0f, bw, 30.0f), Btn::Primary) || enter) {
         if (!a.prompt_text.empty()) {
             if (mk) a.fs_push(FsReq{FsOp::Mkdir, join_remote(a.sftp_path, a.prompt_text), {}, "已创建目录"});
             else a.fs_push(FsReq{FsOp::Rename, join_remote(a.sftp_path, a.prompt_src),
@@ -2076,10 +2075,10 @@ void draw_fail_panel(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, 
     const float bw = 92.0f, bh = 30.0f;
     const Rect r_retry(panel.x + pad, y, bw, bh);
     const Rect r_edit(panel.x + pad + bw + 10.0f, y, bw + 12.0f, bh);
-    if (dlg_button(ui, th, "重试", r_retry, Btn::Primary)) {
+    if (dlg_button(ui, "重试", r_retry, Btn::Primary)) {
         if (app.win) begin_connect(a, *app.win);
     }
-    if (dlg_button(ui, th, "编辑连接", r_edit, Btn::Normal)) {
+    if (dlg_button(ui, "编辑连接", r_edit, Btn::Normal)) {
         const int idx = find_profile_index(app, a);
         if (idx >= 0 && app.profiles[size_t(idx)].src == 0) {
             app.editor_open = true;
@@ -2222,12 +2221,12 @@ void draw_connections(aino::Ui& ui, App& app, const aino::Theme& theme, const Re
                     ui.tooltip(connect, "新建此服务器的会话");
                 } else {
                     const float action = row.right() - 226;
-                    if (dlg_button(ui, theme, "连接", {action, row.cy() - 15, 64, 30}, Btn::Normal)) {
+                    if (dlg_button(ui, "连接", {action, row.cy() - 15, 64, 30}, Btn::Normal)) {
                         request_connection(app, layout.index);
                         return;
                     }
                     if (profile.src == 0) {
-                        if (tool_button(ui, theme, "编辑", {action + 76, row.cy() - 15, 60, 30}, false)) {
+                        if (tool_button(ui, "编辑", {action + 76, row.cy() - 15, 60, 30}, false)) {
                             app.editor_open = true;
                             app.editing = layout.index;
                             app.draft = profile;
@@ -2235,13 +2234,13 @@ void draw_connections(aino::Ui& ui, App& app, const aino::Theme& theme, const Re
                             app.draft_reveal = false;
                             return;
                         }
-                        if (tool_button(ui, theme, "删除", {action + 148, row.cy() - 15, 60, 30}, true)) {
+                        if (tool_button(ui, "删除", {action + 148, row.cy() - 15, 60, 30}, true)) {
                             auto next = app.profiles;
                             next.erase(next.begin() + layout.index);
                             if (save_local_profiles(next, &app.status)) app.profiles = std::move(next);
                             return;
                         }
-                    } else if (tool_button(ui, theme, "打开配置", {action + 76, row.cy() - 15, 132, 30}, false)) {
+                    } else if (tool_button(ui, "打开配置", {action + 76, row.cy() - 15, 132, 30}, false)) {
                         open_config_file(app, profile_config_path(profile));
                         return;
                     }
@@ -2257,8 +2256,8 @@ void draw_connections(aino::Ui& ui, App& app, const aino::Theme& theme, const Re
         ui.label(app.profile_filter.empty() ? "还没有连接" : "没有匹配的连接",
             {x + 12, y + 28, width - 24, 24}, Style().font(14).semi_bold().center());
         if (!app.profile_filter.empty()) {
-            if (tool_button(ui, theme, "清除搜索", {x + width * .5f - 52, y + 76, 104, 30}, false)) app.profile_filter.clear();
-        } else if (dlg_button(ui, theme, "新建连接", {x + width * .5f - 52, y + 76, 104, 30}, Btn::Primary)) new_profile(app);
+            if (tool_button(ui, "清除搜索", {x + width * .5f - 52, y + 76, 104, 30}, false)) app.profile_filter.clear();
+        } else if (dlg_button(ui, "新建连接", {x + width * .5f - 52, y + 76, 104, 30}, Btn::Primary)) new_profile(app);
     }
 }
 
@@ -2301,10 +2300,10 @@ void draw_toolbar(aino::Ui& ui, App& app, const aino::Theme& theme) {
     ui.system_icon(aino::SystemIcon::Navigation, toggle.inset(7), theme.label2);
     ui.tooltip(toggle, app.sidebar_open ? "收起侧栏" : "展开侧栏");
     ui.label("aino SSH", {56, 14, 94, 28}, Style().font(16).semi_bold());
-    if (dlg_button(ui, theme, "新建连接", {164, 12, 104, 32}, Btn::Primary)) new_profile(app);
-    if (tool_button(ui, theme, "连接管理", {280, 12, 96, 32}, false)) app.show_start = true;
-    if (tool_button(ui, theme, "打开配置文件", {ui.width() - 286, 12, 120, 32}, false)) open_config_file(app);
-    if (tool_button(ui, theme, "重新导入连接", {ui.width() - 156, 12, 104, 32}, false)) {
+    if (dlg_button(ui, "新建连接", {164, 12, 104, 32}, Btn::Primary)) new_profile(app);
+    if (tool_button(ui, "连接管理", {280, 12, 96, 32}, false)) app.show_start = true;
+    if (tool_button(ui, "打开配置文件", {ui.width() - 286, 12, 120, 32}, false)) open_config_file(app);
+    if (tool_button(ui, "重新导入连接", {ui.width() - 156, 12, 104, 32}, false)) {
         app.profiles = load_all_profiles();
         app.status = profile_store_warning.empty() ? "已重新读取 SSH / VSCode 连接配置，现有会话继续运行。" : profile_store_warning;
     }
@@ -2329,7 +2328,7 @@ void draw_workspace_sidebar(aino::Ui& ui, App& app, const aino::Theme& theme, co
             ui.label("尚无活动会话", {area.x + 16, area.y + 88, area.w - 32, 24}, Style().font(14).semi_bold().center());
             ui.draw_text("连接服务器后在这里浏览远程文件。", {area.x + 16, area.y + 124, area.w - 32, 20},
                 theme.label2, Style().font(11));
-            if (tool_button(ui, theme, "查看所有连接", {area.cx() - 64, area.y + 166, 128, 32}, false)) {
+            if (tool_button(ui, "查看所有连接", {area.cx() - 64, area.y + 166, 128, 32}, false)) {
                 app.sidebar_page = 0;
                 app.show_start = true;
             }
@@ -2403,19 +2402,19 @@ void draw_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
     // 按钮
     const float by = box.bottom() - 52.0f;
     const float bw = (x2 - x1 - 20.0f) / 3.0f;
-    if (dlg_button(ui, th, "取消", Rect(x1, by, bw, 34.0f), Btn::Normal) || in.key_pressed[aino::KEY_ESC]) {
+    if (dlg_button(ui, "取消", Rect(x1, by, bw, 34.0f), Btn::Normal) || in.key_pressed[aino::KEY_ESC]) {
         app.editor_open = false;
         return;
     }
     app.draft.remember = app.draft_remember;
-    if (dlg_button(ui, th, "仅保存", Rect(x1 + bw + 10.0f, by, bw, 34.0f), Btn::Normal)) {
+    if (dlg_button(ui, "仅保存", Rect(x1 + bw + 10.0f, by, bw, 34.0f), Btn::Normal)) {
         if (!app.draft.host.empty()) {
             if (!save_profile(app, app.draft, app.editing)) return;
             app.editor_open = false;
             if (app.status.empty()) app.status = "已保存连接";
         }
     }
-    if (dlg_button(ui, th, "保存并连接", Rect(x1 + (bw + 10.0f) * 2.0f, by, bw, 34.0f), Btn::Primary)) {
+    if (dlg_button(ui, "保存并连接", Rect(x1 + (bw + 10.0f) * 2.0f, by, bw, 34.0f), Btn::Primary)) {
         if (!app.draft.host.empty()) {
             if (!save_profile(app, app.draft, app.editing)) return;
             const std::string save_warning = app.status;
@@ -2456,11 +2455,11 @@ void draw_ask_password(aino::Ui& ui, App& app, const aino::Theme& th) {
 
     const float by = box.bottom() - 50.0f;
     const float bw = (x2 - x1 - 10.0f) * 0.5f;
-    if (dlg_button(ui, th, "取消", Rect(x1, by, bw, 32.0f), Btn::Normal) || in.key_pressed[aino::KEY_ESC]) {
+    if (dlg_button(ui, "取消", Rect(x1, by, bw, 32.0f), Btn::Normal) || in.key_pressed[aino::KEY_ESC]) {
         app.ask_open = false;
         return;
     }
-    const bool go = dlg_button(ui, th, "连接", Rect(x2 - bw, by, bw, 32.0f), Btn::Primary) ||
+    const bool go = dlg_button(ui, "连接", Rect(x2 - bw, by, bw, 32.0f), Btn::Primary) ||
                     in.key_pressed[aino::KEY_ENTER];
     if (go && !app.ask_pass.empty()) {
         Profile p;
@@ -2604,7 +2603,7 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
     const char* state = cs.connecting ? "连接中…" : connected ? "已连接" : "已断开";
     ui.fill_circle(r_frame.right() - 184, r_frame.y + strip_h * .5f, 3, cs.connecting ? kWarn : connected ? kOk : th.label3);
     ui.draw_text(state, {r_frame.right() - 174, r_frame.y, 86, strip_h}, th.label2, Style().font(11));
-    if (tool_button(ui, th, "关闭", {r_frame.right() - 82, r_frame.y + (strip_h - 28) * .5f, 70, 28}, false)) {
+    if (tool_button(ui, "关闭", {r_frame.right() - 82, r_frame.y + (strip_h - 28) * .5f, 70, 28}, false)) {
         app.retire(app.active);
         return;
     }
@@ -2728,7 +2727,7 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
         const float fraction = transfer.total ? std::min(1.f, float(double(transfer.done) / double(transfer.total))) : 0;
         ui.fill_rect(progress, th.border, 3);
         ui.fill_rect({progress.x, progress.y, progress.w * fraction, progress.h}, th.tint, 3);
-        if (tool_button(ui, th, a.xfer_cancel ? "取消中…" : "取消",
+        if (tool_button(ui, a.xfer_cancel ? "取消中…" : "取消",
                         {footer.right() - 76, status_y + (transfer_h - 26) * .5f, 62, 26}, false)) {
             a.xfer_cancel = true;
             a.engine.request_transfer_cancel();
@@ -2806,7 +2805,7 @@ void draw_workspace(aino::Ui& ui, App& app, const aino::Theme& th) {
     }
 }
 
-void frame(aino::Ui& ui, App& app, aino::Window&, const aino::Theme& theme) {
+void frame(aino::Ui& ui, App& app, const aino::Theme& theme) {
     ui.clear(theme.background);
     ui.set_animating(false);
     app.reap();
@@ -2891,7 +2890,6 @@ int app_main() {
     App app;
     app.win = &win;
     app.clip.win = &win;
-    app.clip.probe();
     app.download_dir = load_download_dir();
     app.profiles = load_all_profiles();
     app.status = profile_store_warning;
@@ -2914,7 +2912,7 @@ int app_main() {
         for (auto& t : app.tabs) t->font = float(std::atof(f));
     }
 
-    win.run([&](aino::Ui& ui) { frame(ui, app, win, ui.theme()); });
+    win.run([&](aino::Ui& ui) { frame(ui, app, ui.theme()); });
 
     // 顺序很重要：先停后台线程，再让 Window 析构
     app.shutdown_all();

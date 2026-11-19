@@ -156,7 +156,7 @@ void draw_pomodoro(aino::Ui& ui, Pomodoro& timer, bool& dark, Clock::time_point 
                         : timer.remaining < timer.duration() ? "继续" : "开始";
     if (ui.button(action, Rect(content.cx(), buttons_y, 100, 28))) timer.toggle(now);
 
-    // 环粗随半径走：291 的环用 4px 像根发丝，Apple 的计时器环大约是半径的 3%。
+    // 环宽随尺寸缩放，并保留最小可见宽度。
     ui.progress_ring(float(timer.remaining / timer.duration()), ring,
                      Style().stroke(std::max(4.0f, ring_size * .022f), theme.track));
     const int seconds = int(std::ceil(timer.remaining));

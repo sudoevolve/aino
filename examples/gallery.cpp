@@ -19,12 +19,12 @@
 using aino::Color;
 using aino::Rect;
 using aino::Style;
+using aino::SystemIcon;
 using aino::Ui;
 using aino::Vec2;
 
 namespace {
 constexpr float kNavW = 252;
-constexpr float kTitleH = 92;
 constexpr float kGridGap = 16;
 constexpr float kContentMaxW = 820;
 constexpr float kNavTop = 80;
@@ -44,7 +44,6 @@ constexpr float kHeaderGap   = 24;   // 说明 → 第一张卡片标题
 constexpr float kCardTitleGap = 8;   // 卡片标题 → 卡片底
 constexpr float kContentBottomPad = 40; // 最后一组卡片 → 内容末尾（滚到底留的余量）
 constexpr int kPageCount = 17;
-constexpr int kStylePage = kPageCount - 2;   // 风格页
 constexpr int kAboutPage = kPageCount - 1;   // 关于页固定在末尾
 enum CardId {
     ButtonVariants,
@@ -175,6 +174,7 @@ struct Card {
     bool wide = false;
 };
 struct Page {
+    SystemIcon icon;
     const char *group;
     const char *name;
     const char *anchor;
@@ -235,23 +235,23 @@ const Card kCards[] = {
     {About, "关于", "about", "about 关于 版本 作者 license 许可证 github 致谢", true},
 };
 const Page kPages[] = {
-    {"基础", "按钮", "buttons", "Button · 按钮样式 / 3 种尺寸 / 图标 / 加载态", 0, 3},
-    {"基础", "输入框", "inputs", "Text Field · 搜索 / 密码 / 多行", 3, 3},
-    {"基础", "开关与选择", "selection", "Selection · 开关 / 复选 / 单选", 6, 3},
-    {"基础", "滑块与步进", "sliders", "Value · 连续与离散数值", 9, 2},
-    {"基础", "分段与标签", "segmented", "Segmented · Tabs · Chip", 11, 3},
-    {"浮层", "菜单", "menus", "Menu · 下拉 / 右键 / 悬浮提示", 14, 3},
-    {"浮层", "日期与时间", "datetime", "Date & Time · 原生日历与滚轮", 17, 2},
-    {"浮层", "颜色", "color", "Color · 全局强调色联动", 19, 2},
-    {"浮层", "反馈", "feedback", "Feedback · 通知 / 对话框 / 状态", 21, 4},
-    {"数据", "表格", "table", "Table · 点击表头排序", 25, 1, 300, true},
-    {"数据", "图表", "charts", "Charts · 柱状 / 折线 / 环形 / 指标", 26, 4, 380},
-    {"数据", "进度", "progress", "Progress · 线性与环形", 30, 2},
-    {"容器", "卡片与列表", "cards", "Containers · 内容 / 设置 / 磨砂材质", 32, 5},
-    {"容器", "导航", "navigation", "Navigation · 工具栏与路径", 37, 3},
-    {"容器", "高级列表", "advanced", "Advanced · 大数据 / Markdown / 空状态", 40, 4},
-    {"规范", "风格", "style", "Style · 字号阶梯 / 颜色令牌 / macOS 与 iOS 布局度量", 44, 3, 380},
-    {"关于", "关于", "about", "About · 版本、许可证与第三方组件", 47, 1, 380, true},
+    {SystemIcon::Pointer, "基础", "按钮", "buttons", "Button · 按钮样式 / 3 种尺寸 / 图标 / 加载态", 0, 3},
+    {SystemIcon::Text, "基础", "输入框", "inputs", "Text Field · 搜索 / 密码 / 多行", 3, 3},
+    {SystemIcon::Toggle, "基础", "开关与选择", "selection", "Selection · 开关 / 复选 / 单选", 6, 3},
+    {SystemIcon::Slider, "基础", "滑块与步进", "sliders", "Value · 连续与离散数值", 9, 2},
+    {SystemIcon::Segment, "基础", "分段与标签", "segmented", "Segmented · Tabs · Chip", 11, 3},
+    {SystemIcon::Menu, "浮层", "菜单", "menus", "Menu · 下拉 / 右键 / 悬浮提示", 14, 3},
+    {SystemIcon::Calendar, "浮层", "日期与时间", "datetime", "Date & Time · 原生日历与滚轮", 17, 2},
+    {SystemIcon::Palette, "浮层", "颜色", "color", "Color · 全局强调色联动", 19, 2},
+    {SystemIcon::Bell, "浮层", "反馈", "feedback", "Feedback · 通知 / 对话框 / 状态", 21, 4},
+    {SystemIcon::Table, "数据", "表格", "table", "Table · 点击表头排序", 25, 1, 300, true},
+    {SystemIcon::Chart, "数据", "图表", "charts", "Charts · 柱状 / 折线 / 环形 / 指标", 26, 4, 380},
+    {SystemIcon::Loader, "数据", "进度", "progress", "Progress · 线性与环形", 30, 2},
+    {SystemIcon::Card, "容器", "卡片与列表", "cards", "Containers · 内容 / 设置 / 磨砂材质", 32, 5},
+    {SystemIcon::Navigation, "容器", "导航", "navigation", "Navigation · 工具栏与路径", 37, 3},
+    {SystemIcon::List, "容器", "高级列表", "advanced", "Advanced · 大数据 / Markdown / 空状态", 40, 4},
+    {SystemIcon::Text, "规范", "风格", "style", "Style · 字号阶梯 / 颜色令牌 / macOS 与 iOS 布局度量", 44, 3, 380},
+    {SystemIcon::Info, "关于", "关于", "about", "About · 版本、许可证与第三方组件", 47, 1, 380, true},
 };
 static_assert(sizeof(kCards) / sizeof(kCards[0]) == CardCount, "card manifest mismatch");
 static_assert(sizeof(kPages) / sizeof(kPages[0]) == kPageCount, "section manifest mismatch");
@@ -353,49 +353,10 @@ void ring(Ui &ui, float cx, float cy, float radius, float fraction, Color color,
                      cy + radius * std::sin(q), color, thickness);
     }
 }
-// 索引与 SystemIcon 对应，图形由当前平台的系统符号库提供。
-enum Glyph {
-    Pointer,
-    Text,
-    Toggle,
-    Slider,
-    Segment,
-    Menu,
-    Calendar,
-    PaletteIcon,
-    Bell,
-    TableIcon,
-    Chart,
-    Loader,
-    CardIcon,
-    Navigation,
-    List,
-    Copy,
-    Star,
-    More,
-    Upload,
-    Download,
-    Edit,
-    Trash,
-    Prev,
-    Next,
-    Moon,
-    Sun,
-    Auto,
-    Close,
-    Eye,
-    Plus,
-    Folder,
-    SettingsIcon = int(aino::SystemIcon::Settings),
-    NetworkIcon = int(aino::SystemIcon::Network),
-    PeopleIcon = int(aino::SystemIcon::People),
-    InfoIcon = int(aino::SystemIcon::Info)
-};
-void glyph(Ui &ui, int type, Rect r, Color c) { ui.system_icon(static_cast<aino::SystemIcon>(type), r, c); }
-bool icon(Ui &ui, int type, const char *hint, Rect r, Style style = Style().secondary()) {
+bool icon(Ui &ui, SystemIcon type, const char *hint, Rect r, Style style = Style().secondary()) {
     // 命中、焦点和表面复用按钮，符号由系统绘制。
     const bool clicked = ui.icon_button("", r, style);
-    glyph(ui, type, r.inset(6),
+    ui.system_icon(type, r.inset(6),
           style.disabled ? ui.theme().label3 : (!style.fg.is_none() ? style.fg : ui.theme().label));
     if (!ui.measuring())
         ui.tooltip(r, hint);
@@ -468,7 +429,7 @@ void draw_buttons(Ui &ui, App &a, CardId id, Rect b) {
                 notify(ui, a, names[i]);
         flow.line();
         const char *hints[] = {"复制", "收藏", "更多"};
-        const int types[] = {Copy, Star, More};
+        const SystemIcon types[] = {SystemIcon::Copy, SystemIcon::Star, SystemIcon::More};
         for (int i = 0; i < 3; ++i)
             if (icon(ui, types[i], hints[i], flow.next(24, 24)))
                 notify(ui, a, hints[i]);
@@ -569,7 +530,7 @@ void draw_inputs(Ui &ui, App &a, CardId id, Rect b) {
     } else if (id == InputSearch) {
         ui.search_field(&a.search, {b.x, b.y, b.w, 24}, Style(field).hint("搜索文件、命令…"));
         ui.input(&a.password, {b.x, b.y + 44, b.w - 32, 24}, Style(field).secret(!a.password_visible));
-        if (icon(ui, Eye, a.password_visible ? "隐藏密码" : "显示密码", {b.right() - 24, b.y + 44, 24, 24},
+        if (icon(ui, SystemIcon::Eye, a.password_visible ? "隐藏密码" : "显示密码", {b.right() - 24, b.y + 44, 24, 24},
                  Style().ghost()))
             a.password_visible = !a.password_visible;
         ui.input(&a.invalid_email, {b.x, b.y + 88, b.w, 24}, Style(field).stroke(1, ui.theme().red));
@@ -695,8 +656,9 @@ void draw_menus(Ui &ui, App &a, CardId id, Rect b) {
     } else {
         Flow flow(b);
         const char *names[] = {"上传", "下载", "编辑", "删除"};
+        const SystemIcon types[] = {SystemIcon::Upload, SystemIcon::Download, SystemIcon::Edit, SystemIcon::Trash};
         for (int i = 0; i < 4; ++i)
-            if (icon(ui, Upload + i, names[i], flow.next(24, 24)))
+            if (icon(ui, types[i], names[i], flow.next(24, 24)))
                 notify(ui, a, names[i]);
         label(ui, "悬停查看提示", {b.x, flow.bottom() + 14, b.w, 20}, 11, true);
     }
@@ -705,8 +667,8 @@ void time_wheel(Ui &ui, int *value, int count, Rect area, const char *name) {
     well(ui, area);
     ui.fill_rect({area.x + 4, area.y + 52, area.w - 8, 26}, ui.theme().fill_hover, 7);
     auto sc = ui.scroll(area, float(area.h));
-    if (!ui.measuring() && area.contains(ui.input().mouse.x, ui.input().mouse.y) &&
-        !ui.impl->gate_blocked_pointer() && std::fabs(ui.input().wheel) > .01f) {
+    if (ui.pointer_available() && area.contains(ui.input().mouse.x, ui.input().mouse.y) &&
+        std::fabs(ui.input().wheel) > .01f) {
         int delta = ui.input().wheel > 0 ? -1 : 1;
         *value = (*value + delta + count) % count;
     }
@@ -987,15 +949,15 @@ void draw_cards(Ui &ui, App &a, CardId id, Rect b) {
         const char *subs[] = {"语言、外观和默认行为", "连接状态与代理", "保护数据与活动记录"};
         for (int i = 0; i < 3; ++i) {
             float y = b.y + i * 64;
-            glyph(ui,
-                  i == 0   ? SettingsIcon
-                  : i == 1 ? NetworkIcon
-                           : Eye,
+            ui.system_icon(
+                  i == 0   ? SystemIcon::Settings
+                  : i == 1 ? SystemIcon::Network
+                           : SystemIcon::Eye,
                   {b.x, y + 10, 22, 22}, ui.theme().tint);
             label(ui, titles[i], {b.x + 34, y, b.w - 100, 23}, 13);
             label(ui, subs[i], {b.x + 34, y + 25, b.w - 100, 20}, 11, true);
             if (i < 2) {
-                if (icon(ui, Next, i == 0 ? "通用设置" : "网络设置", {b.right() - 28, y + 10, 28, 28},
+                if (icon(ui, SystemIcon::Next, i == 0 ? "通用设置" : "网络设置", {b.right() - 28, y + 10, 28, 28},
                          Style().ghost()))
                     notify(ui, a, std::string(titles[i]) + "设置已打开");
             } else
@@ -1032,9 +994,9 @@ void draw_cards(Ui &ui, App &a, CardId id, Rect b) {
         ui.panel(r);
         label(ui, names[a.slide], {r.x + 22, r.y + 18, r.w - 44, 22}, 12, true);
         label(ui, titles[a.slide], {r.x + 22, r.y + 50, r.w - 44, 32}, 20, false, 600);
-        if (icon(ui, Prev, "上一张", {r.x + 18, r.bottom() - 42, 28, 28}, Style().ghost()))
+        if (icon(ui, SystemIcon::Prev, "上一张", {r.x + 18, r.bottom() - 42, 28, 28}, Style().ghost()))
             a.slide = (a.slide + 2) % 3;
-        if (icon(ui, Next, "下一张", {r.right() - 46, r.bottom() - 42, 28, 28}, Style().ghost()))
+        if (icon(ui, SystemIcon::Next, "下一张", {r.right() - 46, r.bottom() - 42, 28, 28}, Style().ghost()))
             a.slide = (a.slide + 1) % 3;
         for (int i = 0; i < 3; ++i) {
             Rect dot{r.cx() - 27 + i * 20.f, r.bottom() - 34, 16, 16};
@@ -1043,18 +1005,18 @@ void draw_cards(Ui &ui, App &a, CardId id, Rect b) {
                 a.slide = i;
             ui.fill_circle(dot.cx(), dot.cy(), 3.5f, i == a.slide ? ui.theme().tint : ui.theme().label3);
         }
-        if (!ui.measuring() && r.contains(ui.input().mouse.x, ui.input().mouse.y) &&
-            !ui.impl->gate_blocked_pointer() && ui.input().key_pressed[aino::KEY_RIGHT])
+        if (ui.pointer_available() && r.contains(ui.input().mouse.x, ui.input().mouse.y) &&
+            ui.input().key_pressed[aino::KEY_RIGHT])
             a.slide = (a.slide + 1) % 3;
     }
 }
 void draw_navigation(Ui &ui, App &a, CardId id, Rect b) {
     if (id == Toolbar) {
         well(ui, {b.x, b.y, b.w, 46});
-        if (icon(ui, Prev, "上一页", {b.x + 6, b.y + 7, 32, 32},
+        if (icon(ui, SystemIcon::Prev, "上一页", {b.x + 6, b.y + 7, 32, 32},
                  Style().ghost().color(a.page_no == 1 ? ui.theme().label3 : ui.theme().label)))
             a.page_no = std::max(1, a.page_no - 1);
-        if (icon(ui, Next, "下一页", {b.x + 42, b.y + 7, 32, 32}, Style().ghost()))
+        if (icon(ui, SystemIcon::Next, "下一页", {b.x + 42, b.y + 7, 32, 32}, Style().ghost()))
             a.page_no = std::min(12, a.page_no + 1);
         label(ui, std::to_string(a.page_no) + " / 12", {b.x + 88, b.y + 7, b.w - 100, 32}, 12, true);
         ui.segmented({"全部", "进行中", "已完成"}, &a.filter, {b.x, b.y + 64, b.w, 32});
@@ -1067,7 +1029,7 @@ void draw_navigation(Ui &ui, App &a, CardId id, Rect b) {
                           Style().ghost().font(12).color(i < 2 ? ui.theme().tint : ui.theme().label)))
                 notify(ui, a, std::string("已打开 ") + names[i]);
             if (i < 2)
-                glyph(ui, Next, f.next(12, 24), ui.theme().label3);
+                ui.system_icon(SystemIcon::Next, f.next(12, 24), ui.theme().label3);
         }
         label(ui, "最后编辑于 2 小时前", {b.x, f.bottom() + 20, b.w, 20}, 11, true);
     } else {
@@ -1084,10 +1046,10 @@ void draw_navigation(Ui &ui, App &a, CardId id, Rect b) {
                         .background(a.side_sel == i ? ui.theme().tint.scaled_alpha(.16f) : Color::none())
                         .color(a.side_sel == i ? ui.theme().tint : ui.theme().label2)))
                 a.side_sel = i;
-            glyph(ui,
-                  i == 0   ? CardIcon
-                  : i == 1 ? Folder
-                           : PeopleIcon,
+            ui.system_icon(
+                  i == 0   ? SystemIcon::Card
+                  : i == 1 ? SystemIcon::Folder
+                           : SystemIcon::People,
                   {r.x + 8, r.y + 9, 15, 15}, a.side_sel == i ? ui.theme().tint : ui.theme().label3);
             if (i == 0)
                 label(ui, "6", {r.right() - 24, r.y, 20, r.h}, 11, true);
@@ -1116,7 +1078,7 @@ void draw_advanced(Ui &ui, App &a, CardId id, Rect b) {
         well(ui, {b.x, b.y + 144, b.w, 34});
         ui.draw_mono_text("ui.button(\"Hello\", rect);", b.x + 10, b.y + 154, ui.theme().tint, 11);
     } else if (id == Empty) {
-        glyph(ui, Folder, {b.cx() - 18, b.y + 2, 36, 36}, ui.theme().label3);
+        ui.system_icon(SystemIcon::Folder, {b.cx() - 18, b.y + 2, 36, 36}, ui.theme().label3);
         ui.draw_text(a.material_name.empty() ? "暂无素材" : a.material_name,
                      {b.x, b.y + 53, b.w, 24}, ui.theme().label,
                      Style().font(14).semi_bold().center());
@@ -1376,9 +1338,6 @@ GalleryFrame gallery_frame(Ui &ui) {
     frame.menu = {x - 4, 18, 32, 32};
     frame.title = {x + menu_width, 16, title_width, 40};
     frame.search = {x + width - search_width, 18, search_width, 32};
-    // 说明固定在标题下方一行：原来「标题 + 并排说明」会让 26 号标题和 13 号说明
-    // 挤在同一条基线上，读起来像两个不相干的元素并排站着。App Store 的大标题
-    // 永远是标题一行、说明另起一行。
     const float caption_h = ui.text_height(kGalleryCaption, width, Style().font(13).wrap_text());
     frame.caption = {x, frame.title.bottom() + 4, width, std::max(18.f, caption_h)};
     const float height = frame.caption.bottom() + 16;
@@ -1499,10 +1458,10 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
     ui.fill_rect(nav, ui.theme().sidebar_bg);
     ui.separator({kNavW - 1, 0, 1, ui.height()});
     const Color icon_tint = sidebar_icon_tint(a);
-    glyph(ui, Navigation, {22, 27, 22, 22}, icon_tint);
+    ui.system_icon(SystemIcon::Navigation, {22, 27, 22, 22}, icon_tint);
     label(ui, "aino", {58, 21, 142, 23}, 15, false, 600);
     label(ui, "组件总览 · 48 项", {58, 44, 142, 18}, 11, true);
-    if (ui.width() <= 900 && icon(ui, Close, "关闭侧边栏", {212, 20, 28, 28}, Style().ghost())) {
+    if (ui.width() <= 900 && icon(ui, SystemIcon::Close, "关闭侧边栏", {212, 20, 28, 28}, Style().ghost())) {
         a.nav_open = false;
         ui.request_animation_frame();
     }
@@ -1542,7 +1501,7 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
                     a.nav_open = false;
                 ui.request_animation_frame();
             }
-            glyph(ui, i == kStylePage ? Text : (i == kAboutPage ? InfoIcon : i),
+            ui.system_icon(kPages[i].icon,
                   {22, y + (kNavStep - 16) / 2, 16, 16}, icon_tint);
             char count[12];
             // 关于页不是组件列表，右侧那栏给破折号，别写「01」。
@@ -1556,12 +1515,13 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
     label(ui, "外观", {footer.x + 16, footer.y + 8, 34, 28}, 11, true);
     Rect modes{70, footer.y + 8, 152, 28};
     well(ui, modes);
+    const SystemIcon appearance_icons[] = {SystemIcon::Moon, SystemIcon::Sun, SystemIcon::Auto};
     for (int i = 0; i < 3; ++i) {
         Rect r{modes.x + 2 + i * 50.f, modes.y + 2, 48, 24};
         if (a.appearance == i)
             ui.fill_rect(r, ui.theme().fill_hover, 6);
         const char *hint = i == 0 ? "深色" : i == 1 ? "浅色" : "跟随系统";
-        if (icon(ui, Moon + i, hint, r, Style().ghost()))
+        if (icon(ui, appearance_icons[i], hint, r, Style().ghost()))
             set_appearance(ui, a, i);
     }
     label(ui, "强调色", {footer.x + 16, footer.y + 44, footer.w - 32, 20}, 11, true);
@@ -1578,7 +1538,7 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
 }
 void draw_toolbar(Ui &ui, App &a, const GalleryFrame &frame) {
     if (frame.narrow) {
-        if (icon(ui, List, "显示侧边栏", frame.menu, Style().ghost())) {
+        if (icon(ui, SystemIcon::List, "显示侧边栏", frame.menu, Style().ghost())) {
             a.nav_open = !a.nav_open;
         }
     }
@@ -1692,7 +1652,7 @@ void draw_overlays(Ui &ui, App &a, float y) {
         Color c = n.kind == 0 ? ui.theme().green : n.kind == 1 ? ui.theme().tint : ui.theme().red;
         ui.fill_circle(r.x + 18, r.cy(), 4, c);
         label(ui, n.message, {r.x + 34, r.y + 7, r.w - 68, 40}, 12);
-        if (icon(ui, Close, "关闭通知", {r.right() - 30, r.y + 13, 26, 26}, Style().ghost()))
+        if (icon(ui, SystemIcon::Close, "关闭通知", {r.right() - 30, r.y + 13, 26, 26}, Style().ghost()))
             n.dismissed = true;
         y += 64;
     }
