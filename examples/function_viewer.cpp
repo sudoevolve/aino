@@ -1768,6 +1768,9 @@ int main() {
     if (const char* e = std::getenv("AINO_FN_DARK")) st.app.dark = std::atoi(e) != 0;
     if (const char* e = std::getenv("AINO_FN_DERIV")) st.app.deriv = std::atoi(e) != 0;
     if (const char* e = std::getenv("AINO_FN_CONTOUR")) st.app.contour = std::atoi(e) != 0;
+    // 外部配置在入口收敛到合法范围，后续绘制可直接使用分类和模式索引。
+    st.app.cat = std::clamp(st.app.cat, 0, kCustomCat);
+    st.app.custom_mode = std::clamp(st.app.custom_mode, 0, 4);
     if (st.app.dark) win.set_theme(aino::Theme::dark());
     st.refresh();
     st.reset_params();
