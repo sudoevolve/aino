@@ -7316,13 +7316,6 @@ bool Ui::tabs_impl(const std::vector<std::string>& labels, int* index, const Rec
         Color container_bg = !st.bg.is_none() ? st.bg : th.track_well();
         if (st.disabled) container_bg.a = uint8_t(float(container_bg.a) * 0.45f);
         fill_rect_s(container, container_bg, rad, 0.35f);
-        // 段间细缝：1×14 的 25% 标签色，选中段随后会盖住对应分隔线。
-        const float separator_h = box.h <= 16.0f ? 10.0f : box.h <= 20.0f ? 12.0f
-                                 : box.h <= 24.0f ? 14.0f : box.h <= 28.0f ? 18.0f : 20.0f;
-        const float ph = std::min(separator_h, std::max(inner.h - 4.0f, 1.0f));
-        for (size_t i = 1; i < labels.size(); ++i)
-            fill_rect(Rect(inner.x + equal_w * float(i), inner.y + (inner.h - ph) * 0.5f, 1.0f, ph),
-                      th.label3, 0.0f);
     }
 
     push_clip(viewport);
