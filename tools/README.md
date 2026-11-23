@@ -56,6 +56,7 @@ python tools/ssh_release_check.py --engine build/test/aino_test_ssh_protocol
 Windows 的路径按生成器加入 `Release/` 或使用 Ninja 的输出目录，附加
 `--ui <aino_test_ssh_ui.exe 路径>` 验证客户端工作线程。脚本为子进程设置隔离目录，
 结束后关闭服务器并回收临时文件，不读取用户连接配置。POSIX 还会在高于 FD_SETSIZE 的 socket 上连接。
+Windows 测试服务器需要 Python 3.13+ 的文件描述符 chmod 支持；发布 CI 固定使用 Python 3.14。
 
 官网/Wiki 使用 `python tools/build_site.py` 打包到 `build/site/`，只依赖 Python 标准库。
 本地预览直接启动静态服务器，不使用回归工具；打包与 GitHub Pages 发布方法见 [网站说明](../site/README.md)。

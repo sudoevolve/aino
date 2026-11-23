@@ -16966,7 +16966,7 @@ inline void service_clipboard(Window::Impl* o) {
     size_t budget = 256u << 10;
     while (budget && o->clipboard_fd >= 0) {
         char bytes[65536];
-        const auto n = ::read(o->clipboard_fd, bytes, sizeof bytes);
+        const auto n = ::read(o->clipboard_fd, bytes, std::min(sizeof bytes, budget));
         if (n > 0) {
             if (o->clipboard_data.size() + size_t(n) > (32u << 20)) { o->finish_clipboard({}); return; }
             o->clipboard_data.append(bytes, size_t(n)); budget -= size_t(n);

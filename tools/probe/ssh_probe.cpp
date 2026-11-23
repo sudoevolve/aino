@@ -45,7 +45,7 @@ static void check(bool ok, const char* what, const std::string& detail = "") {
     }
 }
 
-int main() {
+int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 #ifndef _WIN32
     struct OpenFiles {
@@ -68,6 +68,25 @@ int main() {
         std::printf("High descriptor connection check: next fd > %d\n", int(target));
     }
 #endif
+    if (argc == 3 && std::string(argv[1]) == "--cancel-handshake") {
+        sshc::Engine engine;
+        std::string error;
+        auto connecting = std::async(std::launch::async, [&] {
+            return engine.connect("127.0.0.1", std::atoi(argv[2]), "demo", "demo", "", &error);
+        });
+        const auto ready_by = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (engine.fail_stage() != sshc::FailStage::Handshake &&
+               connecting.wait_for(std::chrono::milliseconds(10)) != std::future_status::ready &&
+               std::chrono::steady_clock::now() < ready_by) {}
+        const auto started = std::chrono::steady_clock::now();
+        engine.request_stop();
+        const bool connected = connecting.get();
+        check(!connected && engine.fail_stage() == sshc::FailStage::Handshake && error.find("取消") != std::string::npos,
+              "silent peer handshake cancels without libssh2 blocking wait", error);
+        check(std::chrono::steady_clock::now() - started < std::chrono::seconds(2),
+              "handshake cancellation finishes within two seconds");
+        return g_fail ? 1 : 0;
+    }
     const char* host = std::getenv("SSH_PROBE_HOST") ? std::getenv("SSH_PROBE_HOST") : "127.0.0.1";
     const int port = std::getenv("SSH_PROBE_PORT") ? std::atoi(std::getenv("SSH_PROBE_PORT")) : 2222;
 

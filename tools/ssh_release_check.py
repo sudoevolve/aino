@@ -3,9 +3,11 @@ import argparse
 import os
 from pathlib import Path
 import re
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 
@@ -43,6 +45,29 @@ def main():
                     raise TimeoutError("SSH test server did not become ready")
                 env["SSH_PROBE_PORT"] = port
                 env["SSH_PROBE_HIGH_FD"] = "1"
+                # 接受 TCP 但不发送 SSH banner，验证取消能结束握手等待。
+                with socket.socket() as silent:
+                    silent.bind(("127.0.0.1", 0))
+                    silent.listen(1)
+                    silent.settimeout(5)
+                    def hold_banner():
+                        try:
+                            peer, _ = silent.accept()
+                            with peer:
+                                peer.settimeout(5)
+                                while peer.recv(1024):
+                                    pass
+                        except (OSError, TimeoutError):
+                            pass
+                    stalled = threading.Thread(target=hold_banner)
+                    stalled.start()
+                    try:
+                        subprocess.run([str(engine), "--cancel-handshake", str(silent.getsockname()[1])],
+                            cwd=root, env=env, check=True, timeout=30)
+                    finally:
+                        stalled.join(timeout=6)
+                        if stalled.is_alive():
+                            raise TimeoutError("silent test peer did not exit")
                 subprocess.run([str(engine)], cwd=root, env=env, check=True, timeout=90)
                 if ui:
                     subprocess.run([str(ui), "--local-transfer", port], cwd=root, env=env, check=True, timeout=90)

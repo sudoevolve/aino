@@ -374,7 +374,7 @@ class Engine {
                 continue;
             }
             if (rc != 0) {
-                const bool ready = wait_sock(fd, true, kTcpTimeoutMs);
+                const bool ready = wait_sock(fd, false, true, kTcpTimeoutMs);
                 // 先看 socket 上挂的错误，再判定超时。
                 // 被 RST 的连接（端口没开、防火墙 reject）会立刻把错误放进
                 // SO_ERROR，此时如果只信 select 的返回值，就会把"拒绝连接"
@@ -414,7 +414,7 @@ class Engine {
         }
         if (fd == SSHC_BADSOCK)
             return fail(err, tcp_trouble_text(last_so, tried_any, host, port));
-        // libssh2 的阻塞模式通过内部 select 实现超时；OS socket 必须保持非阻塞。
+        // 从 TCP 到认证都保持非阻塞；不能让依赖内部的 select 重新限制描述符范围。
         set_nodelay(fd);
 
         // 握手
@@ -425,7 +425,26 @@ class Engine {
             close_transport(fd);
             return fail(err, "libssh2_session_init 失败");
         }
-        libssh2_session_set_timeout(sess, 20000);
+        libssh2_session_set_blocking(sess, 0);
+        auto connect_step = [&](auto operation) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            for (;;) {
+                if (stop_requested_ || std::chrono::steady_clock::now() >= deadline)
+                    return LIBSSH2_ERROR_TIMEOUT;
+                const int result = operation();
+                if (result != LIBSSH2_ERROR_EAGAIN) return result;
+                const int directions = libssh2_session_block_directions(sess);
+                const bool writing = (directions & LIBSSH2_SESSION_BLOCK_OUTBOUND) != 0;
+                const bool reading = !writing || (directions & LIBSSH2_SESSION_BLOCK_INBOUND) != 0;
+                const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+                wait_sock(fd, reading, writing, int(std::min<int64_t>(100, std::max<int64_t>(0, left))));
+            }
+        };
+        auto connection_error = [&](int code) {
+            if (code == LIBSSH2_ERROR_TIMEOUT)
+                return std::string(stop_requested_ ? "连接已取消" : "SSH 操作超过 20 秒期限");
+            return err_text(sess, code);
+        };
         // WinCNG 后端下 group16/18-sha512 走的是 GEX 代码路径：和 paramiko 协商
         // group16-sha512 之后它发的是 GEX_REPLY，对端直接报 MessageOrderError。
         // 优先 Curve25519/ECDH，同时保留 DH 选项；是否兼容取决于双方的实际配置。
@@ -448,8 +467,8 @@ class Engine {
                 return fail(err, "设置客户端 SSH 算法失败：" + m);
             }
         }
-        if (const int rc = libssh2_session_handshake(sess, fd); rc != 0) {
-            const std::string m = err_text(sess, rc);
+        if (const int rc = connect_step([&] { return libssh2_session_handshake(sess, fd); }); rc != 0) {
+            const std::string m = connection_error(rc);
             const char* kname = libssh2_session_methods(sess, LIBSSH2_METHOD_KEX);
             const std::string our_kex = kname ? kname : "(未协商)";
             libssh2_session_free(sess);
@@ -495,20 +514,23 @@ class Engine {
         fail_stage_ = int(FailStage::Auth);
         int auth = LIBSSH2_ERROR_AUTHENTICATION_FAILED;
         if (!key_path.empty()) {
-            auth = libssh2_userauth_publickey_fromfile_ex(sess, user.c_str(), unsigned(user.size()), nullptr,
-                                                          key_path.c_str(),
-                                                          pass.empty() ? nullptr : pass.c_str());
+            auth = connect_step([&] {
+                return libssh2_userauth_publickey_fromfile_ex(sess, user.c_str(), unsigned(user.size()),
+                    nullptr, key_path.c_str(), pass.empty() ? nullptr : pass.c_str());
+            });
         } else if (!pass.empty()) {
-            auth = libssh2_userauth_password_ex(sess, user.c_str(), unsigned(user.size()), pass.c_str(),
-                                                unsigned(pass.size()), nullptr);
-            if (auth != 0)
-                auth = userauth_keyboard(sess, user, pass);
+            auth = connect_step([&] {
+                return libssh2_userauth_password_ex(sess, user.c_str(), unsigned(user.size()),
+                    pass.c_str(), unsigned(pass.size()), nullptr);
+            });
+            if (auth != 0 && auth != LIBSSH2_ERROR_TIMEOUT && !stop_requested_)
+                auth = connect_step([&] { return userauth_keyboard(sess, user, pass); });
         } else {
             // 没有密码也没有密钥：如果服务端允许 "none"（少见），这一步就过了
             auth = libssh2_userauth_authenticated(sess) ? 0 : LIBSSH2_ERROR_AUTHENTICATION_FAILED;
         }
         if (auth != 0) {
-            const std::string m = err_text(sess, auth);
+            const std::string m = connection_error(auth);
             libssh2_session_disconnect(sess, "auth failed");
             libssh2_session_free(sess);
             close_transport(fd);
@@ -2109,7 +2131,7 @@ class Engine {
         int one = 1;
         ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof one);
     }
-    bool wait_sock(SSHC_SOCK fd, bool writing, int ms) {
+    bool wait_sock(SSHC_SOCK fd, bool reading, bool writing, int ms) {
         const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
         while (!stop_requested_) {
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -2119,18 +2141,19 @@ class Engine {
                 return false;
             const long slice = long(std::min<int64_t>(remaining, 100));
 #if defined(_WIN32)
-            fd_set set, errors;
+            fd_set set, read_set, errors;
             FD_ZERO(&set);
             FD_ZERO(&errors);
             FD_SET(fd, &set);
             FD_SET(fd, &errors);
+            read_set = set;
             timeval tv{};
             // slice 最多 100 ms；macOS 的 tv_usec 为 int，按成员类型显式转换。
             tv.tv_usec = static_cast<decltype(tv.tv_usec)>(slice * 1000);
             const int r =
-                ::select(int(fd) + 1, writing ? nullptr : &set, writing ? &set : nullptr, &errors, &tv);
+                ::select(int(fd) + 1, reading ? &read_set : nullptr, writing ? &set : nullptr, &errors, &tv);
 #else
-            pollfd descriptor{fd, short(writing ? POLLOUT : POLLIN), 0};
+            pollfd descriptor{fd, short((reading ? POLLIN : 0) | (writing ? POLLOUT : 0)), 0};
             const int r = ::poll(&descriptor, 1, int(slice));
             if (r < 0 && errno == EINTR) continue;
             if (descriptor.revents & POLLNVAL) return false;
