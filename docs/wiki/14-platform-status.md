@@ -37,7 +37,7 @@ Windows 离屏夹具直接构造输入，不能替代系统输入法、剪贴板
 | 键盘与指针 | xkb keymap、Compose、修饰键快照、按键重复、按钮、双击、拖动、垂直滚动与主题光标 |
 | 输入法 | 可选 text-input-v3，光标矩形、用途、预编辑与提交；未实现 surrounding-text、上下文删除和预编辑选区 |
 | 剪贴板 | wl_data_device UTF-8，2 秒截止时间、32 MiB 上限、非阻塞发送；写入须有焦点和有效 serial |
-| 桌面集成 | `WindowConfig::app_id` 匹配 .desktop；不自动安装桌面图标；尚无拖放、触屏与无障碍桥接 |
+| 桌面集成 | `WindowConfig::app_id` 匹配 .desktop。SSH 示例接收本地文件拖放，尚无公开拖放 API、触屏与无障碍桥接 |
 
 源码入口是 `WaylandState`、`wayland_registry/create/present/dispatch` 与 Wayland 的 `Window` 方法。
 协议表内嵌于头文件，系统库动态加载；普通构建不需要协议生成工具或第三方开发头文件。
@@ -54,7 +54,7 @@ Windows 离屏夹具直接构造输入，不能替代系统输入法、剪贴板
 | 凭据存储 | Windows DPAPI；macOS Keychain / Linux libsecret 适配已实现；旧明文/XOR 尝试迁移 | 三平台安全服务、迁移失败与撤销记住密码需发布验收；不可用时不退回弱混淆 |
 | 大文件 | 使用 64 位文件长度，3 GiB 稀疏文件检查通过 | 真实超过 2 GiB 上传/下载，校验内容和进度；本地长度检查不等于完成网络传输 |
 | 传输与取消 | 单 I/O owner、非阻塞 EAGAIN 等待、取消唤醒与约 2 秒收尾截止时间已实现；暂存提交、长度与关闭检查、基本权限/属主保留 | 慢网下终端与传输交错、各阶段取消、断线及真实清理仍需实传验收；POSIX ACL/xattr/硬链接语义仍需设计 |
-| 文件选择、目录及队列 | 上传使用系统单文件选择器，Windows 本地读写支持中文路径；尚无递归目录传输、传输队列和断点续传 | 按独立功能批次实现并补充服务端测试；Linux/macOS 选择器需原生验证 |
+| 文件选择、目录及队列 | 远程文件可筛选、右键操作。Windows 支持多选上传，Windows 与原生 Wayland 支持拖入本地文件，上传按会话排队 | 递归目录传输和断点续传尚未提供。Wayland 需按文件管理器验证 URI 拖放互通 |
 
 本地服务端测试入口和独立测试目录的设置方法见 [01 的 SSH 部分](01-quickstart.md)。
 普通 CTest 中的 `ssh_ui` 是离线界面测试；只有显式运行 `--local-transfer <端口>` 才会连接本地服务器。

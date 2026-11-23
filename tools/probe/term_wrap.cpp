@@ -103,6 +103,24 @@ int main() {
               "oversized split CSI preserves cursor bounds");
     }
 
+    {
+        Terminal terminal;
+        terminal.resize(20, 2);
+        const std::string output = "历史\r\n屏幕\r\n当前";
+        terminal.feed(output.data(), output.size());
+        terminal.select_all();
+        check(terminal.selected_text() == "历史\n屏幕\n当前", "select all includes scrollback and Unicode");
+
+        const std::string alternate = "\x1b[?1049h\x1b[?2004h临时";
+        terminal.feed(alternate.data(), alternate.size());
+        terminal.select_all();
+        check(terminal.selected_text() == "临时", "alternate screen selection excludes scrollback");
+        check(terminal.bracketed_paste(), "DECSET enables bracketed paste");
+        const std::string restore = "\x1b[?2004l\x1b[?1049l";
+        terminal.feed(restore.data(), restore.size());
+        check(!terminal.bracketed_paste() && !terminal.has_selection(), "mode and selection clear on exit");
+    }
+
     std::printf("\n%s (%d fails)\n", fails ? "FAILED" : "ALL PASS", fails);
     return fails ? 1 : 0;
 }

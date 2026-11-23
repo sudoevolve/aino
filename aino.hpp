@@ -14982,8 +14982,24 @@ struct WaylandState {
     };
     std::vector<std::unique_ptr<Buffer>> buffers;
     std::vector<uint8_t> pixels;
-    struct Offer { wl::Proxy* proxy; std::string mime; };
+    struct Offer {
+        wl::Proxy* proxy;
+        std::string mime;
+        bool uri_list = false;
+        uint32_t action = 0;
+    };
     std::list<Offer> offers;
+    std::function<bool(float, float)> file_drag;
+    std::function<std::function<void(std::string)>(float, float)> file_drop;
+    wl::Proxy* drag_offer = nullptr;
+    wl::Proxy* drop_offer = nullptr;
+    uint32_t drag_serial = 0;
+    float drag_x = 0, drag_y = 0;
+    bool drag_accepted = false;
+    int drop_fd = -1;
+    std::string drop_data;
+    std::function<void(std::string)> drop_complete;
+    std::chrono::steady_clock::time_point drop_deadline;
     struct Source { wl::Proxy* proxy; std::shared_ptr<const std::string> text; };
     std::list<Source> sources;
     struct Send {
@@ -15634,9 +15650,81 @@ inline void wayland_send_clipboard(WaylandState* s) {
 }
 inline void wayland_trim_offers(WaylandState* s) {
     for (auto it = s->offers.begin(); it != s->offers.end();) {
-        if (it->proxy == s->selection) ++it;
+        if (it->proxy == s->selection || it->proxy == s->drag_offer || it->proxy == s->drop_offer) ++it;
         else { wl::destroy(it->proxy, 2); it = s->offers.erase(it); }
     }
+}
+
+inline void wayland_drag_update(WaylandState* s, int32_t x, int32_t y, bool enter) {
+    if (!s->drag_offer) return;
+    s->drag_x = x / 256.f;
+    s->drag_y = y / 256.f - s->title_height;
+    const auto offer = std::find_if(s->offers.begin(), s->offers.end(), [&](const WaylandState::Offer& item) {
+        return item.proxy == s->drag_offer;
+    });
+    const bool accept = offer != s->offers.end() && offer->uri_list && s->file_drag &&
+                        s->drop_fd < 0 && s->file_drag(s->drag_x, s->drag_y);
+    if (enter || accept != s->drag_accepted) {
+        wl::request(s->drag_offer, 0, s->drag_serial, accept ? "text/uri-list" : nullptr);
+        wl::request(s->drag_offer, 4, accept ? 1u : 0u, accept ? 1u : 0u);
+        s->drag_accepted = accept;
+    }
+}
+
+inline void wayland_drag_leave(WaylandState* s) {
+    if (s->file_drag) s->file_drag(-1, -1);
+    s->drag_offer = nullptr;
+    s->drag_accepted = false;
+    wayland_trim_offers(s);
+}
+
+inline void wayland_receive_drop(WaylandState* s) {
+    const auto offer = std::find_if(s->offers.begin(), s->offers.end(), [&](const WaylandState::Offer& item) {
+        return item.proxy == s->drag_offer;
+    });
+    if (!s->drag_accepted || !s->file_drop || offer == s->offers.end() || offer->action != 1) return;
+    auto complete = s->file_drop(s->drag_x, s->drag_y);
+    if (!complete) return;
+    int transfer[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, transfer) < 0) return;
+    if (fcntl(transfer[0], F_SETFL, O_NONBLOCK) < 0) {
+        ::close(transfer[0]);
+        ::close(transfer[1]);
+        return;
+    }
+    s->drop_offer = s->drag_offer;
+    s->drop_fd = transfer[0];
+    s->drop_complete = std::move(complete);
+    s->drop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    wl::request(s->drop_offer, 1, "text/uri-list", transfer[1]);
+    ::close(transfer[1]);
+}
+
+inline void wayland_read_drop(WaylandState* s) {
+    if (s->drop_fd < 0) return;
+    bool received = false;
+    while (std::chrono::steady_clock::now() < s->drop_deadline) {
+        char chunk[8192];
+        const auto count = ::read(s->drop_fd, chunk, sizeof chunk);
+        if (count == 0) { received = true; break; }
+        if (count < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+            break;
+        }
+        if (s->drop_data.size() + size_t(count) > (1u << 20)) break;
+        s->drop_data.append(chunk, size_t(count));
+    }
+    ::close(s->drop_fd);
+    s->drop_fd = -1;
+    if (received) wl::request(s->drop_offer, 3);
+    s->drop_offer = nullptr;
+    wayland_trim_offers(s);
+    auto complete = std::move(s->drop_complete);
+    std::string payload;
+    if (received) payload.swap(s->drop_data);
+    s->drop_data.clear();
+    complete(std::move(payload));
 }
 inline void wayland_attach_data(WaylandState* s) {
     if (!s->data_manager || !s->seat || s->data_device) return;
@@ -15663,19 +15751,33 @@ inline void wayland_attach_data(WaylandState* s) {
                     for (auto& item : s->offers) if (item.proxy == offer) {
                         if (std::strcmp(mime, "text/plain;charset=utf-8") == 0 ||
                             (item.mime.empty() && std::strcmp(mime, "text/plain") == 0)) item.mime = mime;
+                        else if (std::strcmp(mime, "text/uri-list") == 0) item.uri_list = true;
                     }
                 },
-                [](void*, wl::Proxy*, uint32_t) {}, [](void*, wl::Proxy*, uint32_t) {}
+                [](void*, wl::Proxy*, uint32_t) {},
+                [](void* data, wl::Proxy* proxy, uint32_t action) {
+                    auto* s = static_cast<WaylandState*>(data);
+                    for (auto& item : s->offers) if (item.proxy == proxy) item.action = action;
+                }
             };
             wl::listen(offer, offer_listener, s);
         },
-        [](void* data, wl::Proxy*, uint32_t serial, wl::Proxy*, int32_t, int32_t, wl::Proxy* offer) {
-            // 未提供拖放 API；明确拒绝，不能把拖放 offer 当作剪贴板。
-            if (offer) wl::request(offer, 0, serial, static_cast<const char*>(nullptr));
-            wayland_trim_offers(static_cast<WaylandState*>(data));
+        [](void* data, wl::Proxy*, uint32_t serial, wl::Proxy*, int32_t x, int32_t y, wl::Proxy* offer) {
+            auto* s = static_cast<WaylandState*>(data);
+            s->drag_offer = offer;
+            s->drag_serial = serial;
+            wayland_drag_update(s, x, y, true);
+            wayland_trim_offers(s);
         },
-        [](void*, wl::Proxy*) {}, [](void*, wl::Proxy*, uint32_t, int32_t, int32_t) {},
-        [](void*, wl::Proxy*) {},
+        [](void* data, wl::Proxy*) { wayland_drag_leave(static_cast<WaylandState*>(data)); },
+        [](void* data, wl::Proxy*, uint32_t, int32_t x, int32_t y) {
+            wayland_drag_update(static_cast<WaylandState*>(data), x, y, false);
+        },
+        [](void* data, wl::Proxy*) {
+            auto* s = static_cast<WaylandState*>(data);
+            wayland_receive_drop(s);
+            wayland_drag_leave(s);
+        },
         [](void* data, wl::Proxy*, wl::Proxy* offer) {
             auto* s = static_cast<WaylandState*>(data);
             s->selection = offer;
@@ -15892,8 +15994,10 @@ inline void wayland_destroy(Window* self) {
     auto& windows = wayland_windows();
     windows.erase(std::remove(windows.begin(), windows.end(), s), windows.end());
     for (const auto& send : s->sends) ::close(send.fd);
+    if (s->drop_fd >= 0) ::close(s->drop_fd);
     for (auto& source : s->sources) wl::destroy(source.proxy, 1);
     s->selection = nullptr;
+    s->drag_offer = s->drop_offer = nullptr;
     wayland_trim_offers(s);
     wl::local_destroy(s->frame);
     wl::destroy(s->text_input);
@@ -16103,6 +16207,7 @@ inline void wayland_wait_fds(WaylandState* s, std::vector<pollfd>& fds, int& tim
     fds.push_back({wl::api().get_fd(s->display), short(POLLIN | (s->flush_blocked ? POLLOUT : 0)), 0});
     if (input) fds.push_back({s->owner->wake_signal.read_descriptor(), POLLIN, 0});
     for (const auto& send : s->sends) { fds.push_back({send.fd, POLLOUT, 0}); deadline(send.deadline); }
+    if (input && s->drop_fd >= 0) { fds.push_back({s->drop_fd, POLLIN, 0}); deadline(s->drop_deadline); }
 }
 } // namespace detail
 
@@ -16120,6 +16225,7 @@ bool Window::poll() {
     if (impl->wake_signal.consume()) impl->need_frame = true;
     detail::wayland_dispatch(s);
     detail::wayland_send_clipboard(s);
+    detail::wayland_read_drop(s);
     detail::wayland_repeat(s);
     if (s->completed_frame && s->resize_pending && !impl->ui.impl->frame_open) {
         const int width = impl->client_w;

@@ -103,15 +103,24 @@ inline std::FILE* create_transfer_file(const std::string& target, std::string* t
     return nullptr;
 }
 
-inline bool replace_transfer_file(const std::string& temporary, const std::string& target) {
+inline bool replace_transfer_file(const std::string& temporary, const std::string& target,
+                                  bool replace_existing = true) {
 #if defined(_WIN32)
     const auto from = std::filesystem::u8path(temporary), to = std::filesystem::u8path(target);
+    if (!replace_existing)
+        return MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH) != 0;
     const DWORD attributes = GetFileAttributesW(to.c_str());
     if (attributes != INVALID_FILE_ATTRIBUTES)
         return ReplaceFileW(to.c_str(), from.c_str(), nullptr, 0, nullptr, nullptr) != 0;
     // 没有 REPLACE_EXISTING：检查后若出现同名文件，保留它并报告冲突。
     return MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH) != 0;
 #else
+    if (!replace_existing) {
+        if (::link(temporary.c_str(), target.c_str()) != 0)
+            return false;
+        ::unlink(temporary.c_str());
+        return true;
+    }
     struct stat original{};
     if (::stat(target.c_str(), &original) == 0) {
         struct stat staged{};

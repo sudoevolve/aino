@@ -9,10 +9,8 @@
 //            以及 VSCode 设置里 remote.SSH.configFile 指定的那份
 //    · 终端：自带 VT100/xterm 解析器（vim、top、less 都能跑），256 色 + 真彩色、
 //            备用屏、区域滚动、CJK 全角对齐、制表符按线绘制、回滚 4000 行
-//    · 复制粘贴：拖拽选中 → Ctrl+Shift+C；Ctrl+Shift+V 粘贴
-//                （用 Ctrl+Shift 而不是 Ctrl，因为 Ctrl+C 必须留给远端当 SIGINT）
-//    · 文件：浏览/进入/返回、上传、下载（保存目录可用系统对话框选）、新建目录、
-//            重命名、删除；所有文件操作在后台线程，界面永不等网络
+//    · 终端右键菜单：复制、粘贴、全选；快捷键 Ctrl+Shift+C / V / A
+//    · 远程文件：搜索、右键操作、上传队列、下载和目录管理
 //    · 多会话：每个标签独立连接、独立读线程、独立文件面板
 //    · 跨平台：Windows / Linux / macOS 同一份源码。SSH 用 libssh2
 //      （MSVC 默认依赖目录使用 libssh2/mbedTLS；Linux 用发行版包）
@@ -44,19 +42,23 @@
 #include <cctype>
 #include <cmath>
 #include <condition_variable>
+#include <deque>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <cwchar>
 #include <filesystem>
 #include <functional>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #if defined(_WIN32)
 #include <shlobj.h>
 #include <shellapi.h>
 #include <commdlg.h>
+#include <ole2.h>
 #endif
 
 using aino::Color;
@@ -1002,7 +1004,7 @@ std::string pick_folder(const std::string& initial) {
 #endif
 }
 
-std::string pick_upload_file(const std::string& initial) {
+std::vector<std::string> pick_upload_files(const std::string& initial) {
 #if defined(_WIN32)
     std::vector<wchar_t> file(32768, L'\0');
     const std::wstring directory = to_wide(initial);
@@ -1014,8 +1016,19 @@ std::string pick_upload_file(const std::string& initial) {
     dialog.lpstrFilter = L"All files\0*.*\0\0";
     dialog.lpstrTitle = L"选择要上传的文件";
     dialog.lpstrInitialDir = directory.empty() ? nullptr : directory.c_str();
-    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
-    return GetOpenFileNameW(&dialog) ? from_wide(file.data()) : std::string();
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER | OFN_ALLOWMULTISELECT;
+    if (!GetOpenFileNameW(&dialog))
+        return {};
+    const wchar_t* next = file.data() + std::wcslen(file.data()) + 1;
+    if (!*next)
+        return {from_wide(file.data())};
+    const std::filesystem::path folder(file.data());
+    std::vector<std::string> files;
+    while (*next) {
+        files.push_back((folder / next).u8string());
+        next += std::wcslen(next) + 1;
+    }
+    return files;
 #else
     (void)initial;
     const char* commands[] = {"zenity --file-selection --title='选择要上传的文件' 2>/dev/null",
@@ -1026,7 +1039,7 @@ std::string pick_upload_file(const std::string& initial) {
         while (!result.empty() && (result.back() == '\n' || result.back() == '\r'))
             result.pop_back();
         if (!result.empty())
-            return result;
+            return {result};
     }
     return {};
 #endif
@@ -1049,7 +1062,17 @@ struct FsReq {
     std::string tag; // 成功后给用户看的提示（空=不说）
 };
 
-enum class Prompt { None, Mkdir, Rename };
+enum class Prompt { None, Mkdir, Rename, Paste };
+
+struct MenuState {
+    bool open = false;
+    aino::Vec2 anchor;
+    int pressed = -1;
+};
+
+struct UploadJob {
+    std::string local, remote;
+};
 
 // 一个会话 = 一条 SSH 连接 + 一个终端 + 一块文件面板
 struct Session {
@@ -1108,6 +1131,10 @@ struct Session {
     TransferView xfer_view;
     std::atomic<bool> xfer_running{false}, xfer_cancel{false};
     std::thread xfer_thread;
+    std::deque<UploadJob> uploads;
+    size_t upload_errors = 0;
+    std::string last_transfer_error;
+    bool refresh_after_transfer = false;
 
     TransferView transfer_snapshot() const {
         std::lock_guard<std::mutex> lk(xfer_mtx);
@@ -1116,19 +1143,24 @@ struct Session {
 
     // ---- 终端 ----
     bool term_focus = false;
-    bool path_focus = false;
+    bool selecting = false;
+    MenuState term_menu;
     float font = 13.0f;
     int view_offset = 0;
     bool follow = true;
     Rect r_term{};
 
     // ---- 文件 ----
-    std::string sftp_path; // 只有 UI 线程读写
+    std::string sftp_path, path_edit, file_filter;
+    bool path_focus = false;
+    bool file_focus = false;
+    bool file_drag_over = false;
+    MenuState file_menu;
     bool reset_file_scroll = true;
     std::vector<Entry> entries;
     int sel = -1;
     Prompt prompt = Prompt::None;
-    std::string prompt_text, prompt_src;
+    std::string prompt_text, prompt_src, prompt_dir;
     bool confirm_delete = false;
     std::string notice;
     bool notice_bad = false;
@@ -1177,7 +1209,7 @@ struct Session {
     }
 
     void stop_fs_worker();
-    void fs_push(const FsReq& r);
+    bool fs_push(const FsReq& r);
 };
 
 void fs_worker(Session* s, aino::Window* win) {
@@ -1245,15 +1277,16 @@ void Session::stop_fs_worker() {
         fs_thread.join();
 }
 
-void Session::fs_push(const FsReq& r) {
+bool Session::fs_push(const FsReq& r) {
     {
         std::lock_guard<std::mutex> lk(fs_mtx);
-        if (fs_quit)
-            return;
+        if (fs_quit || fs_has_req || fs_busy || fs_done)
+            return false;
         fs_req = r;
         fs_has_req = true;
     }
     fs_cv.notify_one();
+    return true;
 }
 
 void set_notice(Session& s, const std::string& msg, bool bad) {
@@ -1262,8 +1295,13 @@ void set_notice(Session& s, const std::string& msg, bool bad) {
     s.notice_at = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+bool file_work_pending(Session& session) {
+    std::lock_guard<std::mutex> lock(session.fs_mtx);
+    return session.fs_has_req || session.fs_busy || session.fs_done;
+}
+
 bool start_transfer(Session& s, bool upload, const std::string& local, const std::string& remote,
-                    aino::Window* win) {
+                    aino::Window* win, bool replace_existing = true) {
     if (s.conn_busy() || !s.engine.connected() || !s.engine.sftp_ready()) {
         set_notice(s, "SFTP 尚未就绪", true);
         return false;
@@ -1282,47 +1320,57 @@ bool start_transfer(Session& s, bool upload, const std::string& local, const std
         s.xfer_view.busy = true;
     }
     // 传输线程提交分块命令；只有 Engine 的 I/O owner 调用网络 API，UI 读取独立快照。
-    s.xfer_thread = std::thread([&s, upload, local, remote, win] {
-        try {
-            if (upload)
-                s.engine.start_upload(local, remote, &s.xfer_cancel);
-            else
-                s.engine.start_download(remote, local, false, &s.xfer_cancel);
-            auto next_update = std::chrono::steady_clock::now();
-            while (s.engine.transfer_busy() && !s.xfer_cancel) {
-                s.engine.xfer_step(16u << 10, &s.xfer_cancel);
-                const auto now = std::chrono::steady_clock::now();
-                if (now >= next_update) {
-                    const auto& t = s.engine.transfer();
-                    {
-                        std::lock_guard<std::mutex> lk(s.xfer_mtx);
-                        s.xfer_view = {t.name, t.error, t.done, t.total, true, false};
+    try {
+        s.xfer_thread = std::thread([&s, upload, local, remote, win, replace_existing] {
+            try {
+                if (upload)
+                    s.engine.start_upload(local, remote, &s.xfer_cancel, replace_existing);
+                else
+                    s.engine.start_download(remote, local, false, &s.xfer_cancel, replace_existing);
+                auto next_update = std::chrono::steady_clock::now();
+                while (s.engine.transfer_busy() && !s.xfer_cancel) {
+                    s.engine.xfer_step(16u << 10, &s.xfer_cancel);
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now >= next_update) {
+                        const auto& t = s.engine.transfer();
+                        {
+                            std::lock_guard<std::mutex> lk(s.xfer_mtx);
+                            s.xfer_view = {t.name, t.error, t.done, t.total, true, false};
+                        }
+                        if (win)
+                            win->wake();
+                        next_update = now + std::chrono::milliseconds(33);
                     }
-                    if (win)
-                        win->wake();
-                    next_update = now + std::chrono::milliseconds(33);
                 }
-            }
-            if (s.xfer_cancel && s.engine.transfer_busy())
-                s.engine.cancel_transfer();
-            const auto& t = s.engine.transfer();
-            {
+                if (s.xfer_cancel && s.engine.transfer_busy())
+                    s.engine.cancel_transfer();
+                const auto& t = s.engine.transfer();
+                {
+                    std::lock_guard<std::mutex> lk(s.xfer_mtx);
+                    s.xfer_view = {t.name, t.error, t.done, t.total, false, true};
+                }
+                s.engine.clear_transfer();
+            } catch (const std::exception& e) {
+                // 异常不能越过线程入口；先中断会话，等待 Session::shutdown 统一释放。
+                s.engine.request_stop();
                 std::lock_guard<std::mutex> lk(s.xfer_mtx);
-                s.xfer_view = {t.name, t.error, t.done, t.total, false, true};
+                s.xfer_view.error = std::string("传输失败：") + e.what();
+                s.xfer_view.busy = false;
+                s.xfer_view.finished = true;
             }
-            s.engine.clear_transfer();
-        } catch (const std::exception& e) {
-            // 异常不能越过线程入口；先中断会话，等待 Session::shutdown 统一释放。
-            s.engine.request_stop();
-            std::lock_guard<std::mutex> lk(s.xfer_mtx);
-            s.xfer_view.error = std::string("传输失败：") + e.what();
-            s.xfer_view.busy = false;
-            s.xfer_view.finished = true;
-        }
+            s.xfer_running = false;
+            if (win)
+                win->wake();
+        });
+    } catch (const std::system_error& error) {
         s.xfer_running = false;
-        if (win)
-            win->wake();
-    });
+        {
+            std::lock_guard<std::mutex> lock(s.xfer_mtx);
+            s.xfer_view = {};
+        }
+        set_notice(s, std::string("无法启动传输：") + error.what(), true);
+        return false;
+    }
     return true;
 }
 
@@ -1330,12 +1378,18 @@ bool start_transfer(Session& s, bool upload, const std::string& local, const std
 void begin_connect(Session& s, aino::Window& win) {
     if (s.conn_busy())
         return;
-    if (s.xfer_running) {
+    if (s.xfer_running || !s.uploads.empty()) {
         set_notice(s, "请先取消当前传输", true);
         return;
     }
     if (s.conn_thread.joinable())
         s.conn_thread.join();
+    s.sftp_path.clear();
+    s.path_edit.clear();
+    s.entries.clear();
+    s.sel = -1;
+    s.reset_file_scroll = true;
+    s.file_menu.open = false;
     s.conn_edit([](Session::ConnInfo& c) {
         c.connecting = true;
         c.err.clear();
@@ -1788,58 +1842,88 @@ void draw_terminal(aino::Ui& ui, Session& a, const Rect& area, const TermMetrics
 // =============================================================================
 //  七、终端输入
 // =============================================================================
-void send_key(Session& a, const std::string& bytes) {
-    if (!a.engine.shell_open())
+void send_key(Session& session, const std::string& bytes) {
+    if (!session.engine.shell_open() || !session.engine.send(bytes))
         return;
-    a.engine.send(bytes);
-    a.follow = true;
-    a.view_offset = 0;
+    session.follow = true;
+    session.view_offset = 0;
 }
 
-// 终端导航与编辑键使用 key_hit 接收按键重复；key_pressed 仅表示首次按下。
+void copy_terminal(Session& session) {
+    const auto text = session.term.selected_text();
+    if (text.empty() || !session.clip)
+        return;
+    const bool copied = session.clip->set(text);
+    set_notice(session, copied ? "已复制终端选区" : "系统剪贴板暂不可用", !copied);
+}
+
+void paste_terminal(Session& session) {
+    if (!session.engine.shell_open() || !session.clip)
+        return;
+    const auto text = session.clip->get();
+    std::string payload;
+    payload.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ++i) {
+        const auto byte = static_cast<unsigned char>(text[i]);
+        if (byte == '\r' || byte == '\n') {
+            if (byte == '\r' && i + 1 < text.size() && text[i + 1] == '\n')
+                ++i;
+            payload.push_back('\r');
+        } else if (byte == '\t' || (byte >= 32 && byte != 127)) {
+            payload.push_back(text[i]);
+        }
+    }
+    if (payload.empty()) {
+        set_notice(session, "剪贴板没有可粘贴的文字", true);
+        return;
+    }
+    if (session.term.bracketed_paste()) {
+        send_key(session, "\x1b[200~" + payload + "\x1b[201~");
+    } else if (payload.find('\r') != std::string::npos) {
+        session.prompt_text = std::move(payload);
+        session.prompt = Prompt::Paste;
+    } else {
+        send_key(session, payload);
+    }
+}
+
+bool terminal_shortcut(const aino::Input& input, int key) {
+    if (!input.key_pressed[key])
+        return false;
+#if defined(AINO_PLATFORM_MACOS)
+    if (input.super())
+        return true;
+#endif
+    return input.ctrl_of(key) && input.shift_of(key);
+}
+
 void handle_term_keys(aino::Ui& ui, Session& a) {
-    const aino::Input& in = ui.input();
-
-    // 先发送本帧文本，再处理可能提前返回的 Enter 或退格，避免遗漏同帧字符。文本重复由平台字符事件提供。
-    if (!in.text_input.empty()) {
-        std::string s;
-        if (in.alt() && !in.ctrl())
-            s.push_back('\x1b');
-        s += in.text_input;
-        send_key(a, s);
-    }
-
-    // 终端自己的快捷键（Ctrl+C 必须留给远端当 SIGINT）
-    if (in.ctrl_of('C') && in.shift_of('C')) {
-        const std::string s = a.term.selected_text();
-        if (!s.empty() && a.clip) {
-            if (a.clip->set(s))
-                set_notice(a, "已复制 " + std::to_string(s.size()) + " 字节", false);
-            else
-                set_notice(a, "系统剪贴板暂不可用，请稍后重试", true);
-        }
+    const auto& in = ui.input();
+    if (terminal_shortcut(in, 'C')) {
+        copy_terminal(a);
         return;
     }
-    if (in.ctrl_of('V') && in.shift_of('V')) {
-        const std::string s = a.clip ? a.clip->get() : std::string();
-        if (!s.empty()) {
-            std::string fixed;
-            fixed.reserve(s.size());
-            for (size_t i = 0; i < s.size(); ++i) {
-                if (s[i] == '\r') {
-                    if (i + 1 < s.size() && s[i + 1] == '\n')
-                        continue;
-                    fixed.push_back('\r');
-                } else
-                    fixed.push_back(s[i]);
-            }
-            send_key(a, fixed);
-        }
+    if (terminal_shortcut(in, 'V')) {
+        paste_terminal(a);
         return;
     }
-    if (in.ctrl_of('L') && in.shift_of('L')) {
+    if (terminal_shortcut(in, 'A')) {
+        a.term.select_all();
+        return;
+    }
+    if (terminal_shortcut(in, 'L')) {
         a.term.reset();
+        a.view_offset = 0;
+        a.follow = true;
         return;
+    }
+
+    if (!in.text_input.empty()) {
+        std::string text;
+        if (in.alt() && !in.ctrl())
+            text.push_back('\x1b');
+        text += in.text_input;
+        send_key(a, text);
     }
 
     // 下面这些键按"这一帧应该生效几次"发：长按退格/方向键时，一帧里可能挤进
@@ -1994,27 +2078,91 @@ std::string human_time(int64_t t) {
     return b;
 }
 
-void refresh_list(Session& a) {
-    if (!a.engine.connected()) {
-        a.entries.clear();
-        a.sel = -1;
+void enter_dir(Session& session, const std::string& path) {
+    if (!session.engine.sftp_ready() || session.conn_busy())
+        return;
+    if (path.empty()) {
+        session.path_edit = session.sftp_path;
         return;
     }
-    a.fs_push(FsReq{FsOp::List, a.sftp_path, {}, {}});
+    if (!session.fs_push({FsOp::List, path, {}, {}}))
+        set_notice(session, "正在处理远程文件，请稍候", true);
 }
 
-void enter_dir(Session& a, const std::string& path) {
-    a.sftp_path = path;
-    a.reset_file_scroll = true;
-    refresh_list(a);
+void refresh_list(Session& session) {
+    if (!session.sftp_path.empty() && !file_work_pending(session))
+        enter_dir(session, session.sftp_path);
 }
 
-void go_up(Session& a) {
-    std::string p = a.sftp_path;
-    if (p.size() > 1 && p.back() == '/')
-        p.pop_back();
-    const size_t i = p.find_last_of('/');
-    enter_dir(a, (i == std::string::npos || i == 0) ? "/" : p.substr(0, i));
+void go_up(Session& session) {
+    const auto& path = session.sftp_path;
+    const auto pos = path.find_last_of('/');
+    if (!path.empty() && path != "/")
+        enter_dir(session, pos == std::string::npos || pos == 0 ? "/" : path.substr(0, pos));
+}
+
+struct MenuItem {
+    const char* text;
+    bool enabled = true;
+    bool destructive = false;
+};
+
+void open_menu(MenuState& menu, aino::Ui& ui) {
+    menu.open = true;
+    menu.anchor = ui.input().mouse;
+    menu.pressed = -1;
+    ui.request_animation_frame();
+}
+
+int draw_action_menu(aino::Ui& ui, MenuState& menu, std::vector<MenuItem> items) {
+    if (!menu.open)
+        return -1;
+    static constexpr float width = 208, row_h = 28, pad = 5;
+    const float height = float(items.size()) * row_h + pad * 2;
+    const Rect box(std::clamp(menu.anchor.x, 4.f, std::max(4.f, ui.width() - width - 4)),
+                   std::clamp(menu.anchor.y, 4.f, std::max(4.f, ui.height() - height - 4)), width, height);
+    const auto& input = ui.raw_input();
+    if (input.key_pressed[aino::KEY_ESC] ||
+        ((input.pressed[0] || input.pressed[1]) && !box.contains(input.mouse))) {
+        menu.open = false;
+        ui.request_animation_frame();
+        return -1;
+    }
+
+    int hover = -1;
+    for (size_t i = 0; i < items.size(); ++i) {
+        const Rect row(box.x + pad, box.y + pad + float(i) * row_h, width - pad * 2, row_h);
+        if (items[i].enabled && row.contains(input.mouse))
+            hover = int(i);
+    }
+    if (input.pressed[0]) {
+        menu.pressed = hover;
+        ui.impl->press_taken = true;
+    }
+    if (input.released[0]) {
+        const int picked = menu.pressed == hover ? hover : -1;
+        menu.pressed = -1;
+        if (picked >= 0) {
+            menu.open = false;
+            ui.request_animation_frame();
+            return picked;
+        }
+    }
+    ui.impl->gate_claim(box, aino::Ui::Impl::Z_FRAME_END);
+    ui.deferred([&ui, items = std::move(items), box, hover] {
+        const auto& theme = ui.theme();
+        ui.fill_rect(box, theme.popover, 9);
+        ui.stroke_rect(box, theme.border, 9, 1);
+        for (size_t i = 0; i < items.size(); ++i) {
+            const Rect row(box.x + pad, box.y + pad + float(i) * row_h, width - pad * 2, row_h);
+            if (hover == int(i))
+                ui.fill_rect(row, theme.tint.scaled_alpha(.16f), 5);
+            const auto& item = items[i];
+            const Color color = !item.enabled ? theme.label3 : item.destructive ? kBad : theme.label;
+            ui.draw_text(item.text, row.inset(8, 0), color, Style().font(12));
+        }
+    });
+    return -1;
 }
 
 // 文件面板。download_dir 由 App 持有（跨会话共用），所以传指针。
@@ -2090,115 +2238,279 @@ std::vector<std::string> wrap_text(aino::Ui& ui, const std::string& text, float 
     return lines;
 }
 
+bool remote_leaf(const std::string& name) {
+    return !name.empty() && name != "." && name != ".." &&
+           name.find('/') == std::string::npos && name.find('\0') == std::string::npos;
+}
+
+void queue_uploads(Session& session, const std::vector<std::string>& files, const std::string& directory) {
+    constexpr size_t queue_limit = 128;
+    size_t added = 0;
+    for (const auto& file : files) {
+        if (session.uploads.size() >= queue_limit)
+            break;
+        const auto path = std::filesystem::u8path(file);
+        const auto name = path.filename().u8string();
+        if (!path.is_absolute() || !remote_leaf(name))
+            continue;
+        session.uploads.push_back({file, join_remote(directory, name)});
+        ++added;
+    }
+    const size_t skipped = files.size() - added;
+    std::string notice = added ? "已加入上传队列 " + std::to_string(added) + " 个文件" : "没有文件加入上传";
+    if (skipped)
+        notice += "，跳过 " + std::to_string(skipped) + " 项（路径无效或超出队列上限）";
+    set_notice(session, notice, skipped != 0);
+}
+
+void download_entry(Session& session, const Entry& entry, const std::string& directory, aino::Window* window) {
+    const auto name = std::filesystem::u8path(entry.name);
+    if (!remote_leaf(entry.name) || name.has_root_path() || name.has_parent_path()
+#if defined(_WIN32)
+        || entry.name.find_first_of("\\:") != std::string::npos
+#endif
+    ) {
+        set_notice(session, "远程文件名不能直接用于本地保存", true);
+        return;
+    }
+    if (directory.empty()) {
+        set_notice(session, "请先设置本地保存目录", true);
+        return;
+    }
+    const auto target = std::filesystem::u8path(directory) / name;
+    start_transfer(session, false, target.u8string(), join_remote(session.sftp_path, entry.name), window, false);
+}
+
 struct SftpRow {
-    int index = 0;
+    int index;
     std::vector<std::string> lines;
-    float height = 48;
+    float height;
 };
 
 std::vector<SftpRow> sftp_rows(aino::Ui& ui, const Session& session, float width) {
     std::vector<SftpRow> rows;
-    rows.push_back({0, {".."}, 36});
+    if (!session.sftp_path.empty() && session.sftp_path != "/" && session.file_filter.empty())
+        rows.push_back({0, {"上级目录"}, 38});
+    auto fold = [](std::string text) {
+        for (char& c : text) {
+            if (c >= 'A' && c <= 'Z')
+                c = char(c + 'a' - 'A');
+        }
+        return text;
+    };
+    const auto query = fold(session.file_filter);
     for (size_t i = 0; i < session.entries.size(); ++i) {
-        SftpRow row;
-        row.index = int(i + 1);
-        row.lines = wrap_text(ui, session.entries[i].name, 12.f, std::max(40.f, width - 48));
-        row.height = 28 + float(row.lines.size()) * 18;
-        rows.push_back(std::move(row));
+        const auto& entry = session.entries[i];
+        if (!query.empty() && fold(entry.name).find(query) == std::string::npos)
+            continue;
+        auto lines = wrap_text(ui, entry.name, 12, std::max(40.f, width - 48));
+        const float height = 28 + float(lines.size()) * 18;
+        rows.push_back({int(i + 1), std::move(lines), height});
     }
     return rows;
 }
 
 void draw_sftp(aino::Ui& ui, Session& session, const aino::Theme& theme, const Rect& area,
-               std::string* download_dir, aino::Window* window = nullptr) {
+               std::string* download_dir, aino::Window* window, bool native_file_drop) {
     const auto connection = session.conn_snapshot();
     const auto& input = ui.input();
-    ui.fill_rect(area, theme.sidebar_bg);
-    const float x = area.x + 12, width = area.w - 24;
-    ui.label("SFTP", {x + 4, area.y + 6, width - 112, 28}, Style().font(13).semi_bold());
-    if (tool_button(ui, "上级", {area.right() - 118, area.y + 6, 50, 28}, false))
-        go_up(session);
-    if (tool_button(ui, "刷新", {area.right() - 62, area.y + 6, 50, 28}, false))
-        refresh_list(session);
-    const Rect path(x, area.y + 44, width, 30);
-    Style path_style = Style().hint("远程目录，回车打开");
-    path_style.disabled = g_block_input;
-    if (input.pressed[0] && !g_block_input)
-        session.path_focus = path.contains(input.mouse);
-    ui.input(&session.sftp_path, path, path_style);
-    if (!g_block_input && session.path_focus && input.key_pressed[aino::KEY_ENTER])
-        refresh_list(session);
-    ui.draw_text("名称 / 大小 · 修改时间", {x + 4, path.bottom() + 10, width - 8, 18}, theme.label2,
-                 Style().font(10.5f));
+    const bool pending = file_work_pending(session);
+    const bool ready = session.engine.sftp_ready() && session.engine.connected() && !connection.connecting;
+    const bool can_browse = ready && !pending;
+    const bool can_transfer = can_browse && !session.sftp_path.empty();
+    const bool busy = session.xfer_running || !session.uploads.empty();
+    const float x = area.x + 12;
+    const float width = area.w - 24;
+    const Rect path(x, area.y + 42, width, 30);
+    const Rect filter(x, path.bottom() + 8, width, 28);
+    const Rect footer(x, area.bottom() - 22 - 116, width, 116);
+    const Rect list(x, filter.bottom() + 29, width, std::max(0.f, footer.y - filter.bottom() - 41));
+    session.r_list = list;
 
-    const Rect footer(x, area.bottom() - 22 - 152, width, 152);
-    session.r_list = {x, path.bottom() + 34, width, std::max(0.f, footer.y - path.bottom() - 46)};
+    if (g_block_input) {
+        session.file_menu.open = false;
+    } else if (input.pressed[0] && !session.file_menu.open && !ui.impl->gate_blocked_pointer()) {
+        session.path_focus = path.contains(input.mouse);
+        session.file_focus = list.contains(input.mouse);
+    }
+
+    auto action = [&](const char* title, const Rect& box, bool enabled, bool primary = false) {
+        Style style = primary ? Style().primary() : Style().outline();
+        style.disabled = g_block_input || session.file_menu.open || !enabled;
+        return ui.button(title, box, style);
+    };
+
+    ui.label("远程文件", {x + 4, area.y + 4, width - 116, 28}, Style().font(13).semi_bold());
+    if (action("上级", {area.right() - 118, area.y + 4, 50, 28},
+               can_browse && !session.sftp_path.empty() && session.sftp_path != "/"))
+        go_up(session);
+    if (action("刷新", {area.right() - 62, area.y + 4, 50, 28}, can_transfer))
+        refresh_list(session);
+
+    if (!session.path_focus && !pending)
+        session.path_edit = session.sftp_path;
+    Style path_style = Style().hint("输入远程路径后按回车");
+    path_style.disabled = g_block_input || session.file_menu.open || !ready;
+    ui.input(&session.path_edit, path, path_style);
+    if (!g_block_input && !session.file_menu.open && session.path_focus && input.key_pressed[aino::KEY_ENTER] && can_browse) {
+        enter_dir(session, session.path_edit);
+        session.path_focus = false;
+        aino::detail::drop_focus(ui.impl);
+    }
+
+    Style filter_style = Style().hint("在当前目录中查找");
+    filter_style.disabled = g_block_input || session.file_menu.open;
+    if (ui.search_field(&session.file_filter, filter, filter_style))
+        session.reset_file_scroll = true;
     const auto rows = sftp_rows(ui, session, width - 10);
-    float height = 0;
+    std::string summary = pending ? "正在读取远程目录…" :
+        std::to_string(rows.size() - (!rows.empty() && rows.front().index == 0 ? 1 : 0)) + " 项";
+    if (can_transfer && native_file_drop)
+        summary += " · 可拖入上传";
+    ui.draw_text(summary, {x + 4, filter.bottom() + 5, width - 8, 19}, theme.label2, Style().font(11));
+
+    const std::string note = !connection.sftp_err.empty() ? connection.sftp_err :
+        pending && session.entries.empty() ? "正在加载…" :
+        rows.empty() ? (session.entries.empty() ? (ready ? "此目录为空" : "连接后可浏览远程文件") : "没有匹配的文件") : "";
+    const auto note_lines = wrap_text(ui, note, 11, width - 20);
+    float height = note_lines.empty() ? 0.f : 16.f + float(note_lines.size()) * 17;
     for (const auto& row : rows)
         height += row.height;
-    const std::string note =
-        !connection.sftp_err.empty()
-            ? connection.sftp_err
-            : (session.entries.empty() ? (session.engine.connected() ? "此目录为空" : "连接后显示远程文件")
-                                       : "");
-    const auto note_lines = wrap_text(ui, note, 11.f, width - 20);
-    const float note_height = note.empty() ? 0.f : 16 + float(note_lines.size()) * 17;
+    ui.panel(list, Style().background(theme.is_dark() ? theme.card : theme.control_bg).corner(12));
     if (session.reset_file_scroll) {
-        ui.scroll_to_index(session.r_list, 0, 1, int(height + note_height));
+        ui.scroll_to_index(list, 0, 1, int(height + 8));
         session.reset_file_scroll = false;
     }
+
+    int activated = -1;
+    if (input.pressed[1] && list.contains(input.mouse) && !g_block_input && !ui.impl->gate_blocked_pointer()) {
+        session.sel = -1;
+        session.term_menu.open = false;
+        session.term_focus = false;
+        session.file_focus = true;
+        session.path_focus = false;
+        aino::detail::drop_focus(ui.impl);
+        open_menu(session.file_menu, ui);
+    }
     {
-        auto scroll = ui.scroll(session.r_list, height + note_height + 8);
-        float y = session.r_list.y - scroll.offset;
+        auto scroll = ui.scroll(list, height + 8);
+        float y = list.y + 4 - scroll.offset;
         for (const auto& line : note_lines) {
             ui.draw_text(line, {x + 10, y + 8, width - 20, 17}, theme.label2, Style().font(11));
             y += 17;
         }
-        if (!note.empty())
+        if (!note_lines.empty())
             y += 16;
         for (const auto& layout : rows) {
-            const Rect row(x, y, width - 10, layout.height);
+            const Rect row(x + 4, y, width - 14, layout.height);
             y += layout.height;
-            if (row.bottom() < session.r_list.y || row.y >= session.r_list.bottom())
+            if (row.bottom() <= list.y || row.y >= list.bottom())
                 continue;
             const bool up = layout.index == 0;
             const Entry* entry = up ? nullptr : &session.entries[size_t(layout.index - 1)];
-            if (session.sel == layout.index)
-                ui.fill_rect(row, theme.tint.scaled_alpha(.13f), 6);
-            Style row_style = Style().ghost().id(0x5346545000ull + uint64_t(layout.index));
-            row_style.disabled = g_block_input;
-            if (ui.button("", row, row_style))
-                session.sel = layout.index;
             const bool directory = up || entry->dir;
+            const bool over = list.contains(input.mouse) && row.contains(input.mouse) &&
+                              !g_block_input && !ui.impl->gate_blocked_pointer();
+            if (over && input.pressed[1] && session.file_menu.open)
+                session.sel = layout.index;
+            if (over && input.pressed[0] && !session.file_menu.open) {
+                session.sel = layout.index;
+                if (input.double_click)
+                    activated = layout.index;
+                ui.request_animation_frame();
+            }
+            if (session.sel == layout.index)
+                ui.fill_rect(row, theme.tint.scaled_alpha(.17f), 6);
+            else if (over && !session.file_menu.open)
+                ui.fill_rect(row, theme.label.scaled_alpha(.06f), 6);
+            ui.impl->hover_region(row);
             ui.system_icon(directory ? aino::SystemIcon::Folder : aino::SystemIcon::Text,
                            {row.x + 8, row.y + 10, 16, 16}, directory ? theme.tint : theme.label2);
             float text_y = row.y + 8;
             for (const auto& line : layout.lines) {
-                ui.draw_text(line, {row.x + 34, text_y, row.w - 48, 18}, theme.foreground, Style().font(12));
+                ui.draw_text(line, {row.x + 34, text_y, row.w - 44, 18}, theme.foreground, Style().font(12));
                 text_y += 18;
             }
-            if (entry)
-                ui.draw_text((entry->dir ? std::string("文件夹") : human_size(entry->size)) + " · " +
-                                 human_time(entry->mtime),
-                             {row.x + 34, text_y + 2, row.w - 48, 16}, theme.label2, Style().font(10.5f));
-            if (!g_block_input && session.r_list.contains(input.mouse) && row.contains(input.mouse) &&
-                input.pressed[0] && input.double_click && directory) {
-                if (up)
-                    go_up(session);
-                else
-                    enter_dir(session, join_remote(session.sftp_path, entry->name));
+            if (entry) {
+                const auto kind = entry->dir ? std::string("文件夹") : human_size(entry->size);
+                ui.draw_text(kind + " · " + human_time(entry->mtime),
+                             {row.x + 34, text_y + 2, row.w - 44, 16}, theme.label2, Style().font(10.5f));
             }
         }
     }
 
+    const Entry* selected = session.sel >= 1 && session.sel <= int(session.entries.size())
+                                ? &session.entries[size_t(session.sel - 1)] : nullptr;
+    const bool visible_selection = std::any_of(rows.begin(), rows.end(), [&](const SftpRow& row) {
+        return row.index == session.sel;
+    });
+    if (!visible_selection)
+        selected = nullptr;
+    const bool list_keys = session.file_focus && !session.file_menu.open && !g_block_input;
+    if (list_keys && (input.key_pressed[aino::KEY_UP] || input.key_pressed[aino::KEY_DOWN]) && !rows.empty()) {
+        const auto current = std::find_if(rows.begin(), rows.end(), [&](const SftpRow& row) {
+            return row.index == session.sel;
+        });
+        const int direction = input.key_pressed[aino::KEY_UP] ? -1 : 1;
+        const size_t at = current == rows.end() ? 0 :
+            size_t(std::clamp(int(current - rows.begin()) + direction, 0, int(rows.size()) - 1));
+        session.sel = rows[at].index;
+        float row_top = note_lines.empty() ? 0.f : 16.f + float(note_lines.size()) * 17;
+        for (size_t i = 0; i < at; ++i)
+            row_top += rows[i].height;
+        ui.scroll_to_index(list, int(row_top), 1, int(height + 8));
+        ui.request_animation_frame();
+    }
+    if (list_keys && input.key_pressed[aino::KEY_ENTER] && visible_selection)
+        activated = session.sel;
+
+    enum Action { Open, Download, Upload, Mkdir, Rename, Remove, CopyPath, Refresh };
+    int command = -1;
+    if (session.file_menu.open) {
+        command = draw_action_menu(ui, session.file_menu,
+            {{"打开文件夹", can_transfer && (session.sel == 0 || (selected && selected->dir))},
+             {"下载文件", can_transfer && selected && !selected->dir && !busy},
+             {"上传文件…", can_transfer}, {"新建文件夹…", can_transfer},
+             {"重命名…", can_transfer && selected}, {"删除…", can_transfer && selected, true},
+             {"复制远程路径", selected || !session.sftp_path.empty()}, {"刷新", can_transfer}});
+    }
+    if (list_keys) {
+        if (input.key_pressed[aino::KEY_F2] && selected)
+            command = Rename;
+        if (input.key_pressed[aino::KEY_DELETE] && selected)
+            command = Remove;
+        if (input.key_pressed[aino::KEY_F5])
+            command = Refresh;
+        if (input.key_pressed[aino::KEY_BACKSPACE] && can_browse)
+            go_up(session);
+    }
+    if (activated >= 0) {
+        command = selected && !selected->dir ? Download : Open;
+    }
+
     ui.panel(footer, Style().background(theme.is_dark() ? theme.card : theme.control_bg).corner(12));
-    const float inner_x = footer.x + 16, inner_w = footer.w - 32;
-    ui.label("本地保存目录", {inner_x, footer.y + 12, inner_w, 16}, Style().font(11).semi_bold());
-    Style input_style;
-    input_style.disabled = g_block_input;
-    ui.input(download_dir, {inner_x, footer.y + 34, inner_w - 50, 28}, input_style);
-    if (tool_button(ui, "浏览", {footer.right() - 60, footer.y + 34, 44, 28}, false)) {
+    const float inner_x = footer.x + 12;
+    const float inner_w = footer.w - 24;
+    const float two = (inner_w - 6) * .5f;
+    const float three = (inner_w - 12) / 3;
+    if (action("上传…", {inner_x, footer.y + 10, two, 26}, can_transfer, true))
+        command = Upload;
+    if (action("下载", {inner_x + two + 6, footer.y + 10, two, 26},
+               can_transfer && selected && !selected->dir && !busy))
+        command = Download;
+    if (action("新建", {inner_x, footer.y + 40, three, 25}, can_transfer))
+        command = Mkdir;
+    if (action("改名", {inner_x + three + 6, footer.y + 40, three, 25}, can_transfer && selected))
+        command = Rename;
+    if (action("删除", {inner_x + (three + 6) * 2, footer.y + 40, three, 25}, can_transfer && selected))
+        command = Remove;
+
+    const Rect local_path(inner_x, footer.y + 74, inner_w - 53, 26);
+    Style local_style = Style().hint("本地保存目录");
+    local_style.disabled = g_block_input || session.file_menu.open;
+    ui.input(download_dir, local_path, local_style);
+    ui.tooltip(local_path, "下载文件保存到此目录");
+    if (action("浏览", {footer.right() - 59, footer.y + 74, 47, 26}, true)) {
         const std::string picked = pick_folder(*download_dir);
         if (!picked.empty()) {
             std::string error;
@@ -2208,54 +2520,58 @@ void draw_sftp(aino::Ui& ui, Session& session, const aino::Theme& theme, const R
                 set_notice(session, error, true);
         }
     }
-    const Entry* selected = session.sel >= 1 && session.sel <= int(session.entries.size())
-                                ? &session.entries[size_t(session.sel - 1)]
-                                : nullptr;
-    const bool connected = session.engine.connected();
-    const bool busy = session.xfer_running.load();
-    auto action = [&](const char* title, const Rect& box, bool enabled, bool danger = false) {
-        Style style;
-        if (danger)
-            style.destructive();
-        else
-            style.outline();
-        style.disabled = g_block_input || !enabled;
-        return ui.button(title, box, style);
-    };
-    const float two = (inner_w - 6) / 2;
-    if (action("上传文件", {inner_x, footer.y + 72, two, 28}, connected && !busy)) {
-        const std::string file = pick_upload_file(*download_dir);
-        if (!file.empty()) {
-            const std::string name = std::filesystem::u8path(file).filename().u8string();
-            if (start_transfer(session, true, file, join_remote(session.sftp_path, name), window))
-                set_notice(session, "开始上传 " + name, false);
+
+    if (session.file_drag_over && can_transfer) {
+        ui.fill_rect(list, theme.tint.scaled_alpha(.13f), 12);
+        ui.stroke_rect(list, theme.tint, 12, 2);
+        ui.draw_text("松开以上传到当前目录", list.inset(8), theme.label, Style().font(12).center());
+    }
+    if (command == CopyPath && session.clip) {
+        const auto target = selected ? join_remote(session.sftp_path, selected->name) : session.sftp_path;
+        const bool copied = session.clip->set(target);
+        set_notice(session, copied ? "已复制远程路径" : "系统剪贴板暂不可用", !copied);
+    } else if (command == Refresh && can_browse) {
+        refresh_list(session);
+    } else if (can_transfer) {
+        switch (command) {
+        case Open:
+            if (session.sel == 0)
+                go_up(session);
+            else if (selected && selected->dir)
+                enter_dir(session, join_remote(session.sftp_path, selected->name));
+            break;
+        case Download:
+            if (selected && !selected->dir && !busy)
+                download_entry(session, *selected, *download_dir, window);
+            break;
+        case Upload: {
+            const auto files = pick_upload_files(*download_dir);
+            if (!files.empty()) {
+                queue_uploads(session, files, session.sftp_path);
+                if (window)
+                    window->wake();
+            }
+            break;
+        }
+        case Mkdir:
+            session.prompt = Prompt::Mkdir;
+            session.prompt_dir = session.sftp_path;
+            session.prompt_text.clear();
+            break;
+        case Rename:
+        case Remove:
+            if (selected) {
+                session.prompt_dir = session.sftp_path;
+                session.prompt_src = selected->name;
+                session.prompt_text = selected->name;
+                session.confirm_delete = command == Remove;
+                session.prompt = command == Rename ? Prompt::Rename : Prompt::None;
+            }
+            break;
+        default:
+            break;
         }
     }
-    if (action("下载文件", {inner_x + two + 6, footer.y + 72, two, 28},
-               connected && !busy && selected && !selected->dir)) {
-        const std::string target =
-            (std::filesystem::u8path(*download_dir) / std::filesystem::u8path(selected->name)).u8string();
-        std::error_code error;
-        std::filesystem::create_directories(std::filesystem::u8path(*download_dir), error);
-        if (error)
-            set_notice(session, "无法创建本地目录：" + error.message(), true);
-        else if (start_transfer(session, false, target, join_remote(session.sftp_path, selected->name),
-                                window))
-            set_notice(session, "开始下载 " + selected->name, false);
-    }
-    const float three = (inner_w - 12) / 3;
-    if (action("新建", {inner_x, footer.y + 108, three, 28}, connected)) {
-        session.prompt = Prompt::Mkdir;
-        session.prompt_text.clear();
-        session.prompt_src = session.sftp_path;
-    }
-    if (action("改名", {inner_x + three + 6, footer.y + 108, three, 28}, connected && selected)) {
-        session.prompt = Prompt::Rename;
-        session.prompt_text = selected->name;
-        session.prompt_src = selected->name;
-    }
-    if (action("删除", {inner_x + (three + 6) * 2, footer.y + 108, three, 28}, connected && selected, true))
-        session.confirm_delete = true;
 }
 
 // 确认 / 新建 / 重命名的浮层
@@ -2264,54 +2580,62 @@ void draw_prompt(aino::Ui& ui, Session& a, const aino::Theme& th) {
         return;
     const aino::Input& in = ui.input();
     const float W = ui.width(), H = ui.height();
-    const Rect box(W * 0.5f - 180.0f, H * 0.5f - 80.0f, 360.0f, 160.0f);
-    ui.fill_rect(Rect(0, 0, W, H), Color(0, 0, 0, 130));
-    ui.fill_rect(box, th.popover, 10.0f);
-    ui.stroke_rect(box, th.border, 10.0f, 1.0f);
+    const bool deleting = a.confirm_delete;
+    const bool pasting = a.prompt == Prompt::Paste;
+    const bool mkdir = a.prompt == Prompt::Mkdir;
+    const char* title = deleting ? "确认删除" : pasting ? "粘贴到终端" : mkdir ? "新建文件夹" : "重命名";
+    const std::string description = deleting ? "删除后无法恢复：" + a.prompt_src :
+        pasting ? "剪贴板含换行，粘贴后可能执行命令。" : mkdir ? "文件夹名称" : "新名称";
+    const auto lines = wrap_text(ui, description, 12, 320);
+    const bool editing = !deleting && !pasting;
+    const float detail_h = 20 * float(lines.size());
+    const float height = 106 + detail_h + (editing ? 36 : 0);
+    const Rect box = Rect::centered(W * .5f, H * .5f, 360, height);
+    const float bx1 = box.x + 20, bx2 = box.right() - 20;
+    const float bw = (bx2 - bx1 - 10) * .5f;
+    ui.fill_rect({0, 0, W, H}, Color(0, 0, 0, 130));
+    ui.fill_rect(box, th.popover, 10);
+    ui.stroke_rect(box, th.border, 10, 1);
+    ui.draw_text(title, {bx1, box.y + 14, bx2 - bx1, 22}, th.foreground, Style().font(14).bold());
+    float detail_y = box.y + 42;
+    for (const auto& line : lines) {
+        ui.draw_text(line, {bx1, detail_y, bx2 - bx1, 20}, th.label2, Style().font(12));
+        detail_y += 20;
+    }
+    if (editing)
+        ui.input(&a.prompt_text, {bx1, detail_y + 4, bx2 - bx1, 28}, Style().hint("输入名称"));
 
-    const Entry* cur =
-        (a.sel >= 1 && a.sel - 1 < int(a.entries.size())) ? &a.entries[size_t(a.sel - 1)] : nullptr;
-    const float bx1 = box.x + 20.0f, bx2 = box.right() - 20.0f;
-    const float bw = (bx2 - bx1 - 10.0f) * 0.5f;
-
-    if (a.confirm_delete) {
-        ui.draw_text("确认删除", Rect(bx1, box.y + 18.0f, bx2 - bx1, 22.0f), th.foreground,
-                     Style().font(14.0f).bold());
-        ui.draw_text("删除后无法恢复：" + (cur ? cur->name : std::string()),
-                     Rect(bx1, box.y + 48.0f, bx2 - bx1, 18.0f), th.muted_foreground, Style().font(12.0f));
-        if (dlg_button(ui, "取消", Rect(bx1, box.bottom() - 48.0f, bw, 30.0f), Btn::Normal) ||
-            in.key_pressed[aino::KEY_ESC])
-            a.confirm_delete = false;
-        if (dlg_button(ui, "删除", Rect(bx2 - bw, box.bottom() - 48.0f, bw, 30.0f), Btn::Danger)) {
-            if (cur)
-                a.fs_push(
-                    FsReq{FsOp::Remove, join_remote(a.sftp_path, cur->name), {}, "已删除 " + cur->name});
-            a.confirm_delete = false;
-        }
+    const bool cancel = dlg_button(ui, "取消", {bx1, box.bottom() - 46, bw, 30}, Btn::Normal) ||
+                        in.key_pressed[aino::KEY_ESC];
+    const bool confirm = dlg_button(ui, deleting ? "删除" : pasting ? "粘贴" : "确定",
+                                    {bx2 - bw, box.bottom() - 46, bw, 30},
+                                    deleting ? Btn::Danger : Btn::Primary) ||
+                         (editing && in.key_pressed[aino::KEY_ENTER]);
+    if (!cancel && !confirm)
         return;
-    }
-
-    const bool mk = a.prompt == Prompt::Mkdir;
-    ui.draw_text(mk ? "新建目录" : "重命名", Rect(bx1, box.y + 18.0f, bx2 - bx1, 22.0f), th.foreground,
-                 Style().font(14.0f).bold());
-    ui.draw_text(mk ? "在当前目录下创建：" : "新名称：", Rect(bx1, box.y + 46.0f, bx2 - bx1, 18.0f),
-                 th.muted_foreground, Style().font(12.0f));
-    ui.input(&a.prompt_text, Rect(bx1, box.y + 68.0f, bx2 - bx1, 30.0f));
-
-    const bool enter = in.key_pressed[aino::KEY_ENTER];
-    if (dlg_button(ui, "取消", Rect(bx1, box.bottom() - 48.0f, bw, 30.0f), Btn::Normal) ||
-        in.key_pressed[aino::KEY_ESC])
-        a.prompt = Prompt::None;
-    if (dlg_button(ui, "确定", Rect(bx2 - bw, box.bottom() - 48.0f, bw, 30.0f), Btn::Primary) || enter) {
-        if (!a.prompt_text.empty()) {
-            if (mk)
-                a.fs_push(FsReq{FsOp::Mkdir, join_remote(a.sftp_path, a.prompt_text), {}, "已创建目录"});
-            else
-                a.fs_push(FsReq{FsOp::Rename, join_remote(a.sftp_path, a.prompt_src),
-                                join_remote(a.sftp_path, a.prompt_text), "已重命名"});
+    if (confirm && !cancel) {
+        bool accepted = true;
+        if (pasting) {
+            send_key(a, a.prompt_text);
+        } else if (deleting) {
+            accepted = a.fs_push({FsOp::Remove, join_remote(a.prompt_dir, a.prompt_src), {}, "已删除 " + a.prompt_src});
+        } else if (!remote_leaf(a.prompt_text)) {
+            set_notice(a, "请输入单个文件名，不能使用斜杠、. 或 ..", true);
+            return;
+        } else if (mkdir) {
+            accepted = a.fs_push({FsOp::Mkdir, join_remote(a.prompt_dir, a.prompt_text), {}, "已创建目录"});
+        } else if (a.prompt_text != a.prompt_src) {
+            accepted = a.fs_push({FsOp::Rename, join_remote(a.prompt_dir, a.prompt_src),
+                                  join_remote(a.prompt_dir, a.prompt_text), "已重命名"});
         }
-        a.prompt = Prompt::None;
+        if (!accepted)
+            set_notice(a, "远程文件正在处理其他操作，请稍候重试", true);
     }
+    a.confirm_delete = false;
+    a.prompt = Prompt::None;
+    a.prompt_text.clear();
+    aino::detail::drop_focus(ui.impl);
+    ui.request_animation_frame();
 }
 
 // =============================================================================
@@ -2349,6 +2673,7 @@ struct App {
     bool ask_reveal = false;
 
     std::string download_dir;
+    bool native_file_drop = false;
     aino::Window* win = nullptr;
     uint64_t next_session_scope = 1;
 
@@ -2839,7 +3164,7 @@ void draw_workspace_sidebar(aino::Ui& ui, App& app, const aino::Theme& theme, co
             auto& session = *app.tabs[size_t(app.active)];
             auto scope = ui.state_scope(session.ui_scope);
             draw_sftp(ui, session, theme, {area.x, area.y + 52, area.w, area.h - 52}, &app.download_dir,
-                      app.win);
+                      app.win, app.native_file_drop);
         } else {
             ui.label("尚无活动会话", {area.x + 16, area.y + 88, area.w - 32, 24},
                      Style().font(14).semi_bold().center());
@@ -3044,7 +3369,7 @@ void draw_tabs(aino::Ui& ui, App& app, const aino::Theme& th, const Rect& area) 
         close_tab(app, closed);
 }
 
-void update_session(Session& a) {
+void update_session(Session& a, aino::Window* window = nullptr) {
     if (std::string error = a.engine.take_io_error(); !error.empty())
         set_notice(a, error, true);
     // 后台收字节 → 解析器
@@ -3067,7 +3392,11 @@ void update_session(Session& a) {
         }
         if (t.finished) {
             set_notice(a, t.error.empty() ? ("完成：" + t.name) : t.error, !t.error.empty());
-            refresh_list(a);
+            if (!a.xfer_cancel && !t.error.empty()) {
+                ++a.upload_errors;
+                a.last_transfer_error = t.error;
+            }
+            a.refresh_after_transfer = true;
         }
     }
 
@@ -3092,10 +3421,28 @@ void update_session(Session& a) {
         if (has) {
             if (req.op == FsOp::List) {
                 if (err.empty()) {
+                    const bool changed = !cwd.empty() && cwd != a.sftp_path;
+                    std::string selected_name;
+                    if (!changed && a.sel > 0 && a.sel <= int(a.entries.size()))
+                        selected_name = a.entries[size_t(a.sel - 1)].name;
                     a.entries.swap(got);
                     if (!cwd.empty())
                         a.sftp_path = cwd;
+                    if (changed) {
+                        a.reset_file_scroll = true;
+                        a.file_filter.clear();
+                        a.file_menu.open = false;
+                    }
                     a.sel = -1;
+                    if (!selected_name.empty()) {
+                        const auto selected = std::find_if(a.entries.begin(), a.entries.end(), [&](const Entry& entry) {
+                            return entry.name == selected_name;
+                        });
+                        if (selected != a.entries.end())
+                            a.sel = int(selected - a.entries.begin()) + 1;
+                        else
+                            a.file_menu.open = false;
+                    }
                 } else {
                     set_notice(a, err, true);
                 }
@@ -3103,6 +3450,31 @@ void update_session(Session& a) {
                 set_notice(a, err.empty() ? tag : err, !err.empty());
                 refresh_list(a);
             }
+        }
+    }
+    if (!a.xfer_running && !a.conn_busy()) {
+        if (!a.engine.connected() && !a.uploads.empty()) {
+            a.uploads.clear();
+            set_notice(a, "连接已断开，待上传文件已移出队列", true);
+        }
+        if (!a.uploads.empty() && !file_work_pending(a)) {
+            auto job = std::move(a.uploads.front());
+            a.uploads.pop_front();
+            if (!start_transfer(a, true, job.local, job.remote, window, false)) {
+                ++a.upload_errors;
+                a.last_transfer_error = a.notice;
+                a.refresh_after_transfer = true;
+                if (window)
+                    window->wake();
+            }
+        } else if (a.uploads.empty() && a.refresh_after_transfer && !file_work_pending(a)) {
+            a.refresh_after_transfer = false;
+            if (a.upload_errors) {
+                set_notice(a, "传输结束，" + std::to_string(a.upload_errors) + " 项失败。" + a.last_transfer_error, true);
+                a.upload_errors = 0;
+                a.last_transfer_error.clear();
+            }
+            refresh_list(a);
         }
     }
 }
@@ -3117,17 +3489,14 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
         std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     if (!a.notice.empty() && now - a.notice_at < 3)
         ui.request_frame_in(float(3 - (now - a.notice_at)));
-    const std::string status = !app.status.empty()
-                                   ? app.status
-                                   : (!a.notice.empty() && now - a.notice_at < 3
-                                          ? a.notice
-                                          : (a.engine.connected() ? "Ctrl+Shift+C/V 复制粘贴 · PgUp 回滚 · " +
-                                                                        std::to_string(a.term.cols) + " × " +
-                                                                        std::to_string(a.term.rows)
-                                                                  : "尚未连接"));
+    const bool has_notice = !a.notice.empty() && now - a.notice_at < 3;
+    const std::string status = has_notice ? a.notice : !app.status.empty() ? app.status :
+        a.engine.connected() ? "右键菜单 · Ctrl+Shift+C/V/A · " + std::to_string(a.term.cols) + " × " +
+                               std::to_string(a.term.rows) : "尚未连接";
     const auto status_lines = wrap_text(ui, status, 11.f, W - 28);
     const auto transfer_lines =
-        wrap_text(ui, transfer.name + " · " + human_size(transfer.done) + " / " + human_size(transfer.total),
+        wrap_text(ui, transfer.name + " · " + human_size(transfer.done) + " / " + human_size(transfer.total) +
+                      (a.uploads.empty() ? "" : " · 待上传 " + std::to_string(a.uploads.size()) + " 项"),
                   11.f, W - 224);
     const float transfer_h = transfer.busy ? std::max(30.f, float(transfer_lines.size()) * 16 + 8) : 0;
     const float status_h = 12 + float(status_lines.size()) * 16 + transfer_h;
@@ -3211,6 +3580,9 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
                 "connecting=%d stage=%d conn_msg=%s conn_err=%s notice=%s bad=%d prompt=%d prompt_text=%s\n",
                 int(cs.connecting), int(cs.fail_at), cs.msg.c_str(), cs.err.c_str(), a.notice.c_str(),
                 int(a.notice_bad), int(a.prompt), a.prompt_text.c_str());
+            std::fprintf(f, "selection=%d term_menu=%d file_menu=%d file_selection=%d queued_uploads=%zu\n",
+                         int(a.term.has_selection()), int(a.term_menu.open), int(a.file_menu.open),
+                         a.sel, a.uploads.size());
             for (const Entry& e : a.entries)
                 std::fprintf(f, "  file %s%s size=%lld\n", e.name.c_str(), e.dir ? "/" : "",
                              (long long)e.size);
@@ -3221,53 +3593,82 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
         }
     }
 
-    // 终端交互
-    const aino::Input& in = ui.input();
-    // 失败卡片盖在终端上时必须挡住底层交互，否则点「重试」会顺带在终端里起选区
-    const bool over_term = !g_block_input && r_ter.contains(in.mouse) && !fail_shown;
-    if (in.pressed[0]) {
+    const auto& in = ui.input();
+    const bool terminal_enabled = !g_block_input && !fail_shown && !a.confirm_delete && a.prompt == Prompt::None;
+    const bool over_term = terminal_enabled && r_ter.contains(in.mouse) && !ui.impl->gate_blocked_pointer();
+    if (!terminal_enabled)
+        a.term_menu.open = false;
+    if (over_term && in.pressed[1]) {
+        a.term_focus = true;
+        a.file_focus = a.path_focus = false;
+        a.file_menu.open = false;
+        aino::detail::drop_focus(ui.impl);
+        open_menu(a.term_menu, ui);
+    }
+    const bool menu_was_open = a.term_menu.open || a.file_menu.open;
+    if (a.term_menu.open) {
+        const int command = draw_action_menu(ui, a.term_menu,
+            {{"复制", a.term.has_selection()}, {"粘贴", a.engine.shell_open()}, {"全选"}});
+        if (command == 0)
+            copy_terminal(a);
+        else if (command == 1)
+            paste_terminal(a);
+        else if (command == 2)
+            a.term.select_all();
+    }
+
+    const auto pointer_cell = [&] {
+        const int first = std::max(0, a.term.history_size() - a.view_offset);
+        const int row = int((in.mouse.y - r_ter.y) / tm.cell_h);
+        const int column = int((in.mouse.x - r_ter.x - 10) / tm.adv);
+        return std::pair<int, int>{first + std::clamp(row, 0, a.term.rows - 1), column};
+    };
+    if (in.pressed[0] && !menu_was_open) {
         a.term_focus = over_term;
+        a.selecting = over_term;
         if (over_term) {
-            const int col = int((in.mouse.x - r_ter.x - 10.0f) / tm.adv);
-            const int hist = a.term.history_size();
-            int first = hist - a.view_offset;
-            first = std::max(0, std::min(first, std::max(0, a.term.total_lines() - a.term.rows)));
-            const int line = first + int((in.mouse.y - r_ter.y) / tm.cell_h);
-            a.term.sel_begin(line, col);
-        } else if (a.term.has_selection()) {
-            int l0 = 0, c0 = 0, l1 = 0, c1 = 0;
-            a.term.sel_range(&l0, &c0, &l1, &c1);
-            if (l0 == l1 && c0 == c1)
-                a.term.clear_selection(); // 点空白不留下一条灰带
+            const auto [line, column] = pointer_cell();
+            aino::detail::drop_focus(ui.impl);
+            if (in.shift() && a.term.has_selection())
+                a.term.sel_extend(line, column);
+            else
+                a.term.sel_begin(line, column);
+            ui.request_animation_frame();
         }
     }
-    if (in.down[0] && a.term_focus && over_term) {
-        const int col = int((in.mouse.x - r_ter.x - 10.0f) / tm.adv);
-        const int hist = a.term.history_size();
-        int first = hist - a.view_offset;
-        first = std::max(0, std::min(first, std::max(0, a.term.total_lines() - a.term.rows)));
-        a.term.sel_extend(first + int((in.mouse.y - r_ter.y) / tm.cell_h), col);
-    }
-    if (in.released[0] && a.term.has_selection()) {
-        int l0 = 0, c0 = 0, l1 = 0, c1 = 0;
+    if (a.selecting && terminal_enabled && (in.down[0] || in.released[0])) {
+        const auto [line, column] = pointer_cell();
+        int l0, c0, l1, c1;
         a.term.sel_range(&l0, &c0, &l1, &c1);
-        if (l0 == l1 && c0 == c1)
+        a.term.sel_extend(line, column);
+        int next_l0, next_c0, next_l1, next_c1;
+        a.term.sel_range(&next_l0, &next_c0, &next_l1, &next_c1);
+        if (in.released[0] && next_l0 == next_l1 && next_c0 == next_c1)
             a.term.clear_selection();
+        if (in.released[0] || l0 != next_l0 || c0 != next_c0 || l1 != next_l1 || c1 != next_c1)
+            ui.request_animation_frame();
     }
-    if (in.wheel != 0.0f && over_term) {
-        const int maxoff = a.term.history_size();
-        a.view_offset = std::max(0, std::min(maxoff, a.view_offset + int(in.wheel * 3.0f)));
+    if (!in.down[0] || !terminal_enabled)
+        a.selecting = false;
+    if (in.wheel != 0 && over_term && !menu_was_open) {
+        a.view_offset = std::clamp(a.view_offset + int(in.wheel * 3), 0, a.term.history_size());
         a.follow = a.view_offset == 0;
+        ui.request_animation_frame();
     }
-    if (!g_block_input && a.term_focus && !fail_shown && !a.confirm_delete && a.prompt == Prompt::None)
+    if (terminal_enabled && a.term_focus && !menu_was_open) {
         handle_term_keys(ui, a);
+        if (a.prompt != Prompt::None || in.key_pressed['A'] || in.key_pressed[aino::KEY_PAGEUP] ||
+            in.key_pressed[aino::KEY_PAGEDOWN])
+            ui.request_animation_frame();
+    }
 
     const Rect footer(body.x, body.bottom() - status_h, W, status_h);
     ui.fill_rect(footer, th.card);
     ui.separator({footer.x, footer.y, footer.w, 1});
     float status_y = footer.y + 6;
     for (const auto& line : status_lines) {
-        ui.draw_text(line, {footer.x + 14, status_y, W - 28, 16}, th.label2, Style().font(11));
+        ui.draw_text(line, {footer.x + 14, status_y, W - 28, 16}, has_notice && a.notice_bad ? kBad : th.label2,
+                     Style().font(11));
         status_y += 16;
     }
     if (transfer.busy) {
@@ -3283,6 +3684,7 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
         ui.fill_rect({progress.x, progress.y, progress.w * fraction, progress.h}, th.tint, 3);
         if (tool_button(ui, a.xfer_cancel ? "取消中…" : "取消",
                         {footer.right() - 76, status_y + (transfer_h - 26) * .5f, 62, 26}, false)) {
+            a.uploads.clear();
             a.xfer_cancel = true;
             a.engine.request_transfer_cancel();
         }
@@ -3362,13 +3764,195 @@ void draw_workspace(aino::Ui& ui, App& app, const aino::Theme& th) {
     }
 }
 
+#if defined(AINO_PLATFORM_WINDOWS) || defined(AINO_PLATFORM_WAYLAND)
+std::shared_ptr<Session> drop_session(App& app, aino::Vec2 point) {
+    if (!app.sidebar_open || app.sidebar_page != 1 || app.modal_open() ||
+        app.active < 0 || app.active >= int(app.tabs.size()))
+        return {};
+    auto session = app.tabs[size_t(app.active)];
+    if (!session->r_list.contains(point) || session->confirm_delete || session->prompt != Prompt::None ||
+        session->file_menu.open || session->term_menu.open || session->sftp_path.empty() ||
+        !session->engine.connected() || !session->engine.sftp_ready() || session->conn_busy() ||
+        file_work_pending(*session))
+        return {};
+    return session;
+}
+
+void show_drop_target(App& app, const Session* target) {
+    bool changed = false;
+    for (const auto& session : app.tabs) {
+        const bool hover = session.get() == target;
+        if (session->file_drag_over != hover) {
+            session->file_drag_over = hover;
+            changed = true;
+        }
+    }
+    if (changed)
+        app.win->wake();
+}
+#endif
+
+#if defined(AINO_PLATFORM_WINDOWS)
+class ExplorerDropTarget final : public IDropTarget {
+public:
+    ExplorerDropTarget(HWND hwnd, App& app) : hwnd_(hwnd), app_(app) {}
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** result) override {
+        if (!result)
+            return E_POINTER;
+        *result = nullptr;
+        if (iid != IID_IUnknown && iid != IID_IDropTarget)
+            return E_NOINTERFACE;
+        *result = static_cast<IDropTarget*>(this);
+        AddRef();
+        return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++refs_; }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const auto remaining = --refs_;
+        if (!remaining)
+            delete this;
+        return remaining;
+    }
+
+    HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* data, DWORD, POINTL point, DWORD* effect) override {
+        auto format = file_format();
+        has_files_ = data && data->QueryGetData(&format) == S_OK;
+        return DragOver(0, point, effect);
+    }
+    HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL point, DWORD* effect) override {
+        const auto session = target_at(point, effect);
+        *effect = session ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+        show_drop_target(app_, session.get());
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DragLeave() override {
+        has_files_ = false;
+        show_drop_target(app_, nullptr);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE Drop(IDataObject* data, DWORD, POINTL point, DWORD* effect) override {
+        const auto session = target_at(point, effect);
+        *effect = DROPEFFECT_NONE;
+        DragLeave();
+        if (!session || !data)
+            return S_OK;
+        const auto directory = session->sftp_path;
+        auto format = file_format();
+        STGMEDIUM medium{};
+        if (data->GetData(&format, &medium) != S_OK)
+            return S_OK;
+        aino::detail::ScopeExit release([&] { ReleaseStgMedium(&medium); });
+
+        try {
+            if (medium.tymed != TYMED_HGLOBAL || !medium.hGlobal)
+                return S_OK;
+            const auto drop = reinterpret_cast<HDROP>(medium.hGlobal);
+            const UINT count = DragQueryFileW(drop, 0xffffffff, nullptr, 0);
+            std::vector<std::string> files;
+            for (UINT i = 0; i < std::min(count, UINT(128)); ++i) {
+                const UINT length = DragQueryFileW(drop, i, nullptr, 0);
+                if (!length)
+                    continue;
+                std::wstring path(size_t(length) + 1, L'\0');
+                if (DragQueryFileW(drop, i, path.data(), UINT(path.size())) == length)
+                    files.push_back(from_wide(path.c_str()));
+            }
+            if (drop_session(app_, client_point(point)) != session || session->sftp_path != directory)
+                return S_OK;
+            const size_t previous = session->uploads.size();
+            queue_uploads(*session, files, directory);
+            if (session->uploads.size() > previous)
+                *effect = DROPEFFECT_COPY;
+            if (count > 128)
+                set_notice(*session, session->notice + "，单次拖入最多处理 128 项", true);
+        } catch (const std::exception&) {
+            set_notice(*session, "无法读取拖入的文件", true);
+        }
+        app_.win->wake();
+        return S_OK;
+    }
+
+private:
+    static FORMATETC file_format() { return {CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL}; }
+
+    aino::Vec2 client_point(POINTL point) const {
+        POINT client{point.x, point.y};
+        ScreenToClient(hwnd_, &client);
+        const float scale = app_.win->dpi_scale();
+        return {client.x / scale, client.y / scale};
+    }
+    std::shared_ptr<Session> target_at(POINTL point, const DWORD* effect) const {
+        if (!has_files_ || !(*effect & DROPEFFECT_COPY))
+            return {};
+        return drop_session(app_, client_point(point));
+    }
+
+    HWND hwnd_;
+    App& app_;
+    ULONG refs_ = 1;
+    bool has_files_ = false;
+};
+#elif defined(AINO_PLATFORM_WAYLAND)
+std::vector<std::string> local_file_uris(std::string_view payload) {
+    constexpr std::string_view scheme = "file://";
+    std::vector<std::string> files;
+    auto hex = [](char ch) {
+        if (ch >= '0' && ch <= '9')
+            return ch - '0';
+        if (ch >= 'a' && ch <= 'f')
+            return ch - 'a' + 10;
+        if (ch >= 'A' && ch <= 'F')
+            return ch - 'A' + 10;
+        return -1;
+    };
+    while (!payload.empty() && files.size() < 128) {
+        const size_t end = payload.find('\n');
+        auto line = payload.substr(0, end);
+        payload.remove_prefix(end == std::string_view::npos ? payload.size() : end + 1);
+        if (!line.empty() && line.back() == '\r')
+            line.remove_suffix(1);
+        if (line.substr(0, scheme.size()) != scheme)
+            continue;
+        line.remove_prefix(scheme.size());
+        if (line.substr(0, 10) == "localhost/")
+            line.remove_prefix(9);
+        if (line.empty() || line.front() != '/')
+            continue;
+        std::string path;
+        for (size_t i = 0; i < line.size(); ++i) {
+            char ch = line[i];
+            if (ch == '%') {
+                const int high = i + 2 < line.size() ? hex(line[i + 1]) : -1;
+                const int low = i + 2 < line.size() ? hex(line[i + 2]) : -1;
+                if (high < 0 || low < 0) {
+                    path.clear();
+                    break;
+                }
+                ch = char(high * 16 + low);
+                i += 2;
+            }
+            if (ch == '\0') {
+                path.clear();
+                break;
+            }
+            path.push_back(ch);
+        }
+        if (!path.empty())
+            files.push_back(std::move(path));
+    }
+    return files;
+}
+
+#endif
+
 void frame(aino::Ui& ui, App& app, const aino::Theme& theme) {
     ui.clear(theme.background);
     ui.set_animating(false);
     app.reap();
     for (auto& session : app.tabs)
         if (session)
-            update_session(*session);
+            update_session(*session, app.win);
     draw_workspace(ui, app, theme);
 }
 
@@ -3481,6 +4065,53 @@ int app_main() {
         for (auto& t : app.tabs)
             t->font = float(std::atof(f));
     }
+
+#if defined(AINO_PLATFORM_WINDOWS)
+    const auto hwnd = static_cast<aino::detail::Win32State*>(win.impl->native)->hwnd;
+    const HRESULT ole = OleInitialize(nullptr);
+    if (SUCCEEDED(ole)) {
+        auto* target = new ExplorerDropTarget(hwnd, app);
+        app.native_file_drop = RegisterDragDrop(hwnd, target) == S_OK;
+        target->Release();
+    }
+    aino::detail::ScopeExit unregister_drop([&] {
+        if (app.native_file_drop)
+            RevokeDragDrop(hwnd);
+        if (SUCCEEDED(ole))
+            OleUninitialize();
+    });
+#elif defined(AINO_PLATFORM_WAYLAND)
+    auto* native = static_cast<aino::detail::WaylandState*>(win.impl->native);
+    app.native_file_drop = native->data_manager != nullptr;
+    native->file_drag = [&app](float x, float y) {
+        const auto session = drop_session(app, {x, y});
+        show_drop_target(app, session.get());
+        return bool(session);
+    };
+    native->file_drop = [&app](float x, float y) -> std::function<void(std::string)> {
+        const auto session = drop_session(app, {x, y});
+        if (!session)
+            return {};
+        const auto directory = session->sftp_path;
+        return [target = std::weak_ptr<Session>(session), directory, window = app.win](std::string payload) {
+            const auto current = target.lock();
+            if (!current || current->retired || current->shutdown_done || current->conn_busy() ||
+                !current->engine.connected())
+                return;
+            auto files = local_file_uris(payload);
+            if (files.empty())
+                set_notice(*current, "没有收到可上传的本地文件", true);
+            else
+                queue_uploads(*current, files, directory);
+            window->wake();
+        };
+    };
+    aino::detail::ScopeExit unregister_drop([&] {
+        native->file_drag = {};
+        native->file_drop = {};
+    });
+
+#endif
 
     win.run([&](aino::Ui& ui) {
         frame(ui, app, ui.theme());

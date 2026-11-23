@@ -1013,15 +1013,16 @@ class Engine {
         bool dir_mode = false;
         bool total_known = false;
         bool finalized = false;
+        bool replace_existing = true;
         std::string temporary;
         LIBSSH2_SFTP_ATTRIBUTES destination_attributes{};
     };
 
     void start_download(const std::string& remote, const std::string& local, bool is_dir,
-                        const std::atomic<bool>* cancel = nullptr) {
+                        const std::atomic<bool>* cancel = nullptr, bool replace_existing = true) {
         if (!on_io_thread() && io_running_)
             return run_io([&] {
-                start_download(remote, local, is_dir, cancel);
+                start_download(remote, local, is_dir, cancel, replace_existing);
             });
         TransferOperation operation(*this, cancel);
         if (xfer_.kind != Transfer::None)
@@ -1029,10 +1030,33 @@ class Engine {
         cancel_deadline_ = IoClock::time_point::max();
         xfer_ = Transfer{};
         xfer_.kind = Transfer::Download;
+        xfer_.replace_existing = replace_existing;
         xfer_.remote = remote;
         xfer_.local = local;
         xfer_.name = base_name(remote);
         xfer_.dir_mode = is_dir;
+        if (!replace_existing) {
+            std::error_code path_error;
+            const auto destination = std::filesystem::u8path(local);
+            if (destination.has_parent_path())
+                std::filesystem::create_directories(destination.parent_path(), path_error);
+            if (path_error) {
+                xfer_.error = "无法创建本地目录：" + path_error.message();
+                xfer_.finished = true;
+                return;
+            }
+            const auto status = std::filesystem::symlink_status(destination, path_error);
+            if (std::filesystem::exists(status)) {
+                xfer_.error = "本地已有同名文件，请换一个保存目录";
+                xfer_.finished = true;
+                return;
+            }
+            if (path_error && path_error != std::errc::no_such_file_or_directory) {
+                xfer_.error = "无法检查下载目标：" + path_error.message();
+                xfer_.finished = true;
+                return;
+            }
+        }
         if (!sftp_) {
             xfer_.error = "SFTP 尚未就绪";
             xfer_.finished = true;
@@ -1068,6 +1092,12 @@ class Engine {
                     return;
                 }
                 if (std::filesystem::is_symlink(status)) {
+                    if (!replace_existing) {
+                        xfer_.error = "本地目标已存在：" + local;
+                        xfer_.finished = true;
+                        finish_transfer();
+                        return;
+                    }
                     const auto resolved = std::filesystem::canonical(destination, path_error);
                     if (path_error) {
                         xfer_.error = "无法解析下载目标符号链接";
@@ -1092,10 +1122,10 @@ class Engine {
     }
 
     void start_upload(const std::string& local, const std::string& remote,
-                      const std::atomic<bool>* cancel = nullptr) {
+                      const std::atomic<bool>* cancel = nullptr, bool replace_existing = true) {
         if (!on_io_thread() && io_running_)
             return run_io([&] {
-                start_upload(local, remote, cancel);
+                start_upload(local, remote, cancel, replace_existing);
             });
         TransferOperation operation(*this, cancel);
         if (xfer_.kind != Transfer::None)
@@ -1103,6 +1133,7 @@ class Engine {
         cancel_deadline_ = IoClock::time_point::max();
         xfer_ = Transfer{};
         xfer_.kind = Transfer::Upload;
+        xfer_.replace_existing = replace_existing;
         xfer_.local = local;
         xfer_.remote = remote;
         xfer_.name = base_name(local);
@@ -1128,6 +1159,12 @@ class Engine {
         const int inspected = await_io([&] {
             return libssh2_sftp_lstat(sftp_, remote.c_str(), &attributes);
         });
+        if (inspected == 0 && !replace_existing) {
+            xfer_.error = "远程目标已存在：" + remote;
+            xfer_.finished = true;
+            finish_transfer();
+            return;
+        }
         if (inspected == 0 && (attributes.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) &&
             (attributes.permissions & LIBSSH2_SFTP_S_IFMT) == LIBSSH2_SFTP_S_IFLNK) {
             char resolved[32768];
@@ -1765,6 +1802,13 @@ class Engine {
     bool commit_upload() {
         if (!sftp_)
             return false;
+        if (!xfer_.replace_existing) {
+            return await_io([&] {
+                return libssh2_sftp_rename_ex(sftp_, xfer_.temporary.c_str(),
+                                             unsigned(xfer_.temporary.size()), xfer_.remote.c_str(),
+                                             unsigned(xfer_.remote.size()), 0);
+            }) == 0;
+        }
 #if LIBSSH2_VERSION_NUM >= 0x010B01
         // SFTP v3 的标准 RENAME 不携带覆盖标志；OpenSSH 另提供原子替换扩展。
         const int rc = await_io([&] {
@@ -1846,7 +1890,7 @@ class Engine {
         }
         if (xfer_.error.empty()) {
             const bool committed = xfer_.kind == Transfer::Download
-                                       ? replace_transfer_file(xfer_.temporary, xfer_.local)
+                                       ? replace_transfer_file(xfer_.temporary, xfer_.local, xfer_.replace_existing)
                                        : commit_upload();
             if (!committed)
                 xfer_.error = "无法确认目标文件替换结果，请核对目标文件；未继续覆盖";
@@ -2081,10 +2125,14 @@ class Terminal {
     bool alt_screen() const {
         return alt_mode_;
     }
+    bool bracketed_paste() const {
+        return bracketed_paste_;
+    }
 
     // 选区（绝对行坐标：0..history_size()+rows-1）
     void sel_begin(int abs_line, int col);
     void sel_extend(int abs_line, int col);
+    void select_all();
     void sel_clear() {
         sel_active_ = false;
     }
@@ -2127,6 +2175,7 @@ class Terminal {
     uint8_t attr_ = 0;
     bool autowrap_ = true, show_cursor_ = true, app_cursor_ = false, alt_mode_ = false;
     bool origin_ = false, insert_ = false, wrap_pending_ = false;
+    bool bracketed_paste_ = false;
 
     int saved_x_ = 0, saved_y_ = 0;
     uint32_t saved_fg_ = kDefaultFg, saved_bg_ = kDefaultBg;
@@ -2192,6 +2241,7 @@ inline void Terminal::reset() {
     origin_ = false;
     insert_ = false;
     wrap_pending_ = false;
+    bracketed_paste_ = false;
     st_ = S_GROUND;
     csi_.clear();
     utf8_need_ = 0;
@@ -2651,11 +2701,16 @@ inline void Terminal::csi_dispatch(char final, const std::vector<int>& p, char p
             case 4:
                 insert_ = on;
                 break;
+            case 2004:
+                if (priv == '?')
+                    bracketed_paste_ = on;
+                break;
             case 1049:
             case 1047:
             case 47:
                 if (on && !alt_mode_) {
                     alt_mode_ = true;
+                    clear_selection();
                     grid_.swap(alt_);
                     for (auto& r : grid_)
                         blank_row(&r);
@@ -2663,6 +2718,7 @@ inline void Terminal::csi_dispatch(char final, const std::vector<int>& p, char p
                     move_to(0, 0);
                 } else if (!on && alt_mode_) {
                     alt_mode_ = false;
+                    clear_selection();
                     grid_.swap(alt_);
                     restore_cursor();
                 }
@@ -2923,6 +2979,8 @@ inline std::string Terminal::line_text(int abs_line) const {
 }
 
 inline void Terminal::sel_begin(int abs_line, int col) {
+    abs_line = std::clamp(abs_line, 0, total_lines() - 1);
+    col = std::clamp(col, 0, cols - 1);
     sel_active_ = true;
     sel_a_line_ = abs_line;
     sel_a_col_ = col;
@@ -2935,8 +2993,20 @@ inline void Terminal::sel_extend(int abs_line, int col) {
         sel_begin(abs_line, col);
         return;
     }
-    sel_b_line_ = abs_line;
-    sel_b_col_ = col;
+    sel_b_line_ = std::clamp(abs_line, 0, total_lines() - 1);
+    sel_b_col_ = std::clamp(col, 0, cols - 1);
+}
+
+inline void Terminal::select_all() {
+    const int first = alt_mode_ ? history_size() : 0;
+    for (int line = total_lines() - 1; line >= first; --line) {
+        if (!line_text(line).empty()) {
+            sel_begin(first, 0);
+            sel_extend(line, cols - 1);
+            return;
+        }
+    }
+    clear_selection();
 }
 
 inline std::string Terminal::selected_text() const {
@@ -2963,7 +3033,10 @@ inline std::string Terminal::selected_text() const {
             if (!r)
                 return std::string();
             std::string o;
-            const int x0 = std::max(0, from_col);
+            int x0 = std::max(0, from_col);
+            if (x0 > 0 && x0 < int(r->size()) && (*r)[size_t(x0)].ch == 0 &&
+                wc_width((*r)[size_t(x0 - 1)].ch) == 2)
+                --x0;
             const int x1 = std::min(int(r->size()) - 1, to_col < 0 ? int(r->size()) - 1 : to_col);
             for (int x = x0; x <= x1; ++x) {
                 const Cell& c = (*r)[size_t(x)];
