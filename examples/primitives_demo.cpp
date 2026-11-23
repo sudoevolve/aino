@@ -15,7 +15,7 @@ static Rect sample(aino::Ui& ui, const Rect& card, const char* title, const char
              Style().font(13).semi_bold().color(ui.theme().label2));
     ui.panel({card.x, card.y + 32, card.w, card.h - 32},
              Style()
-                 .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg)
+                 .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card_bg : ui.theme().control_bg)
                  .corner(12));
     ui.muted_text(caption, {card.x + 16, card.bottom() - 30, card.w - 32, 18}, Style().font(11));
     return {card.x + 16, card.y + 48, card.w - 32, card.h - 96};
@@ -26,7 +26,6 @@ static aino::Theme app_theme(bool dark) {
     aino::Theme t = dark ? aino::Theme::dark() : aino::Theme::light();
     t.label2 = dark ? aino::Color(0xA0, 0xA0, 0xA6, 255) : aino::Color(0x6E, 0x6E, 0x73, 255);
     t.label3 = dark ? aino::Color(0x6E, 0x6E, 0x73, 255) : aino::Color(0x98, 0x98, 0x9D, 255);
-    t.muted_foreground = t.label2;
     return t;
 }
 
@@ -63,13 +62,13 @@ int main() {
         const int rows = (8 + columns - 1) / columns;
         const float card_w = (ui.width() - margin * 2 - gap * (columns - 1)) / columns;
         const Rect viewport(0, 64, ui.width(), ui.height() - 64);
-        ui.begin_scroll(viewport, 208 + rows * 212.f + 24);
-        const float y = viewport.y - ui.scroll_y();
+        auto scroll = ui.scroll(viewport, 208 + rows * 212.f + 24);
+        const float y = viewport.y - scroll.y();
         ui.label("绘制参数", {margin + 2, y + 8, ui.width() - margin * 2, 24},
                  Style().font(13).semi_bold().left());
         const Rect settings(margin, y + 42, ui.width() - margin * 2, 144);
         ui.panel(settings, Style()
-                               .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card
+                               .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card_bg
                                                                                   : ui.theme().control_bg)
                                .corner(12));
         const char* labels[] = {"圆角", "线宽", "不透明度"};
@@ -144,7 +143,7 @@ int main() {
             ui.fill_circle(r.x + 22 + i * 51.f, r.cy(), 30, i % 2 ? th.pink : th.tint);
         ui.glass({r.x + 24, r.y + 8, r.w - 48, r.h - 16}, radius, Style().blur(12));
         ui.pop_clip();
-        ui.end_scroll();
+        scroll.close();
     });
     return 0;
 }

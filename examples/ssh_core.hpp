@@ -20,10 +20,12 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -75,6 +77,20 @@
 #include "ssh_files.hpp"
 
 namespace sshc {
+
+inline void append_utf8(std::string& out, uint32_t cp) {
+    if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) cp = 0xfffd;
+    if (cp < 0x80) out.push_back(char(cp));
+    else if (cp < 0x800) {
+        out.push_back(char(0xc0 | (cp >> 6))); out.push_back(char(0x80 | (cp & 63)));
+    } else if (cp < 0x10000) {
+        out.push_back(char(0xe0 | (cp >> 12))); out.push_back(char(0x80 | ((cp >> 6) & 63)));
+        out.push_back(char(0x80 | (cp & 63)));
+    } else {
+        out.push_back(char(0xf0 | (cp >> 18))); out.push_back(char(0x80 | ((cp >> 12) & 63)));
+        out.push_back(char(0x80 | ((cp >> 6) & 63))); out.push_back(char(0x80 | (cp & 63)));
+    }
+}
 
 // =============================================================================
 //  0. 小工具
@@ -280,7 +296,40 @@ class Engine {
         hints.ai_socktype = SOCK_STREAM;
         addrinfo* res = nullptr;
         const std::string port_s = std::to_string(port);
-        if (getaddrinfo(host.c_str(), port_s.c_str(), &hints, &res) != 0 || !res) {
+        // 系统解析不可移植地取消；任务只拥有解析参数和结果，不持有 Engine/窗口。
+        // 最多八个未完成任务，取消后可安全回收会话而不等待系统 DNS 超时。
+        struct Resolution {
+            std::mutex mutex;
+            std::condition_variable ready;
+            bool done = false;
+            addrinfo* result = nullptr;
+            ~Resolution() { if (result) freeaddrinfo(result); }
+        };
+        auto resolution = std::make_shared<Resolution>();
+        static std::atomic<unsigned> resolving{0};
+        if (resolving.fetch_add(1) >= 8) {
+            --resolving;
+            return fail(err, "域名解析任务过多，请稍后重试");
+        }
+        try {
+            std::thread([resolution, host, port_s, hints] {
+                addrinfo* result = nullptr;
+                getaddrinfo(host.c_str(), port_s.c_str(), &hints, &result);
+                { std::lock_guard<std::mutex> lock(resolution->mutex);
+                  resolution->result = result; resolution->done = true; }
+                resolution->ready.notify_one(); --resolving;
+            }).detach();
+        } catch (...) { --resolving; throw; }
+        {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            std::unique_lock<std::mutex> lock(resolution->mutex);
+            while (!resolution->done && !stop_requested_ && std::chrono::steady_clock::now() < deadline)
+                resolution->ready.wait_for(lock, std::chrono::milliseconds(50));
+            if (!resolution->done || stop_requested_)
+                return fail(err, stop_requested_ ? "域名解析已取消" : "域名解析超时");
+            res = resolution->result; resolution->result = nullptr;
+        }
+        if (!res) {
             return fail(err, "域名解析失败：解析不到 " + host + "（机器名拼错了？或需要连 VPN / 改 hosts）");
         }
         fail_stage_ = int(FailStage::Tcp);
@@ -587,11 +636,9 @@ class Engine {
             });
         return cwd_;
     }
-    // 兼容引用接口仅限无并发目录修改的调用者；后台客户端使用 cwd_snapshot()。
-    const std::string& cwd() const {
-        return cwd_;
-    }
-    const std::string& fingerprint() const {
+    std::string fingerprint_snapshot() {
+        if (!on_io_thread() && io_running_)
+            return run_io([this] { return fingerprint_; });
         return fingerprint_;
     }
     std::string who() const {
@@ -1000,14 +1047,17 @@ class Engine {
     }
 
     // ---- 分块传输（业务后台分块提交，I/O owner 执行） ----
-    struct Transfer {
+    struct TransferSnapshot {
         enum Kind { None, Download, Upload };
         Kind kind = None;
         std::string remote, local, name;
         uint64_t done = 0, total = 0;
         std::string error;
         bool finished = false;
-        // 内部状态
+        bool resources_open = false;
+    };
+  private:
+    struct Transfer : TransferSnapshot {
         LIBSSH2_SFTP_HANDLE* rh = nullptr;
         std::FILE* fh = nullptr;
         bool dir_mode = false;
@@ -1017,7 +1067,7 @@ class Engine {
         std::string temporary;
         LIBSSH2_SFTP_ATTRIBUTES destination_attributes{};
     };
-
+  public:
     void start_download(const std::string& remote, const std::string& local, bool is_dir,
                         const std::atomic<bool>* cancel = nullptr, bool replace_existing = true) {
         if (!on_io_thread() && io_running_)
@@ -1223,11 +1273,16 @@ class Engine {
         }
     }
 
-    // 兼容旧调用：只允许同一传输生产者在同步命令返回后读取；UI 使用 Session 快照。
-    Transfer& transfer() {
-        return xfer_;
+    TransferSnapshot transfer_snapshot() {
+        if (!on_io_thread() && io_running_)
+            return run_io([this] { return transfer_snapshot(); });
+        auto snapshot = static_cast<const TransferSnapshot&>(xfer_);
+        snapshot.resources_open = xfer_.rh || xfer_.fh;
+        return snapshot;
     }
-    bool transfer_busy() const {
+    bool transfer_busy() {
+        if (!on_io_thread() && io_running_)
+            return run_io([this] { return transfer_busy(); });
         return xfer_.kind != Transfer::None && !xfer_.finished;
     }
 
@@ -1241,9 +1296,8 @@ class Engine {
         if (xfer_.kind == Transfer::None || xfer_.finished)
             return false;
         budget = std::min<uint64_t>(budget, 16u << 10);
-        static thread_local std::vector<char> buf;
-        if (buf.size() < budget)
-            buf.resize(size_t(budget));
+        // 缓冲属于当前操作；磁盘任务等待完成后才离开栈帧，不能跨线程查 TLS 容器。
+        std::array<char, 16u << 10> buf;
         uint64_t moved = 0;
         auto cancelled = [&] {
             if (!wire_failed_ && !transfer_cancel_ && (!cancel || !cancel->load()))
@@ -1271,7 +1325,9 @@ class Engine {
                     xfer_.finished = true;
                     break;
                 }
-                const size_t written = xfer_.fh ? std::fwrite(buf.data(), 1, size_t(n), xfer_.fh) : 0;
+                const size_t written = run_disk([&] {
+                    return xfer_.fh ? std::fwrite(buf.data(), 1, size_t(n), xfer_.fh) : size_t(0);
+                });
                 xfer_.done += written;
                 moved += written;
                 if (written != size_t(n)) {
@@ -1283,7 +1339,7 @@ class Engine {
                     xfer_.finished = true;
                     break;
                 }
-                const size_t got = std::fread(buf.data(), 1, want, xfer_.fh);
+                const size_t got = run_disk([&] { return std::fread(buf.data(), 1, want, xfer_.fh); });
                 if (got == 0) {
                     if (std::ferror(xfer_.fh))
                         xfer_.error = "本地读取失败：" + xfer_.local;
@@ -1378,6 +1434,48 @@ class Engine {
     }
 
   private:
+    // 每个 Engine 最多一个磁盘操作和一个复用线程；协议句柄始终留在 I/O owner。
+    struct DiskWorker {
+        std::mutex mutex;
+        std::condition_variable ready;
+        std::function<void()> pending;
+        bool stopping = false;
+        std::thread thread;
+        ~DiskWorker() {
+            { std::lock_guard<std::mutex> lock(mutex); stopping = true; }
+            ready.notify_one();
+            if (thread.joinable()) thread.join();
+        }
+        void submit(std::function<void()> task) {
+            if (!thread.joinable()) thread = std::thread([this] {
+                for (;;) {
+                    std::function<void()> work;
+                    {
+                        std::unique_lock<std::mutex> lock(mutex);
+                        ready.wait(lock, [&] { return stopping || pending; });
+                        if (!pending) return;
+                        work = std::move(pending); pending = {};
+                    }
+                    work();
+                }
+            });
+            { std::lock_guard<std::mutex> lock(mutex); pending = std::move(task); }
+            ready.notify_one();
+        }
+    } disk_;
+
+    template<class Fn> auto run_disk(Fn fn) -> decltype(fn()) {
+        using Result = decltype(fn());
+        auto task = std::make_shared<std::packaged_task<Result()>>(std::move(fn));
+        auto result = task->get_future();
+        disk_.submit([task] { (*task)(); });
+        // 即使终端处理抛异常，也先等磁盘操作完成，防止其继续访问栈上缓冲或已关闭 FILE。
+        struct Wait { std::future<Result>& result; ~Wait() { if (result.valid()) result.wait(); } } wait{result};
+        while (result.wait_for(std::chrono::milliseconds(2)) != std::future_status::ready)
+            if (on_io_thread()) pump_terminal();
+        return result.get();
+    }
+
     static Engine*& current_io_engine() {
         static thread_local Engine* owner = nullptr;
         return owner;
@@ -1586,7 +1684,7 @@ class Engine {
             if (service_terminal && !(directions & LIBSSH2_SESSION_BLOCK_OUTBOUND) && pump_terminal(true))
                 continue; // 终端读取也可能把当前 SFTP 回复读入 libssh2。
             const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - IoClock::now()).count();
-            // 兼容旧调用者直接写 cancel token；UI 入口另会主动 wake，无常态轮询。
+            // 传输期间至多每 50ms 检查取消令牌；UI 还会主动唤醒网络等待。
             const int delay =
                 int(std::max<int64_t>(0, std::min<int64_t>(left, transfer_token_ ? 50 : 20000)));
             wait_transport(directions, delay, !wire_failed_);
@@ -1862,6 +1960,7 @@ class Engine {
         }
         if (xfer_.fh) {
             if (xfer_.kind == Transfer::Download && xfer_.error.empty()) {
+                const bool synced = run_disk([&] {
                 bool synced = std::fflush(xfer_.fh) == 0;
 #if defined(_WIN32)
                 if (synced)
@@ -1870,11 +1969,14 @@ class Engine {
                 if (synced)
                     synced = fsync(fileno(xfer_.fh)) == 0;
 #endif
+                return synced;
+                });
                 if (!synced)
                     xfer_.error = "本地文件同步失败：" + xfer_.local;
             }
-            const int rc = std::fclose(xfer_.fh);
+            auto* file = xfer_.fh;
             xfer_.fh = nullptr;
+            const int rc = run_disk([file] { return std::fclose(file); });
             if (rc != 0 && xfer_.error.empty())
                 xfer_.error = "本地文件关闭失败：" + xfer_.local;
         }
@@ -1890,7 +1992,7 @@ class Engine {
         }
         if (xfer_.error.empty()) {
             const bool committed = xfer_.kind == Transfer::Download
-                                       ? replace_transfer_file(xfer_.temporary, xfer_.local, xfer_.replace_existing)
+                                       ? run_disk([&] { return replace_transfer_file(xfer_.temporary, xfer_.local, xfer_.replace_existing); })
                                        : commit_upload();
             if (!committed)
                 xfer_.error = "无法确认目标文件替换结果，请核对目标文件；未继续覆盖";
@@ -2015,17 +2117,24 @@ class Engine {
                                        .count();
             if (remaining <= 0)
                 return false;
+            const long slice = long(std::min<int64_t>(remaining, 100));
+#if defined(_WIN32)
             fd_set set, errors;
             FD_ZERO(&set);
             FD_ZERO(&errors);
             FD_SET(fd, &set);
             FD_SET(fd, &errors);
-            const long slice = long(std::min<int64_t>(remaining, 100));
             timeval tv{};
             // slice 最多 100 ms；macOS 的 tv_usec 为 int，按成员类型显式转换。
             tv.tv_usec = static_cast<decltype(tv.tv_usec)>(slice * 1000);
             const int r =
                 ::select(int(fd) + 1, writing ? nullptr : &set, writing ? &set : nullptr, &errors, &tv);
+#else
+            pollfd descriptor{fd, short(writing ? POLLOUT : POLLIN), 0};
+            const int r = ::poll(&descriptor, 1, int(slice));
+            if (r < 0 && errno == EINTR) continue;
+            if (descriptor.revents & POLLNVAL) return false;
+#endif
             if (r != 0)
                 return r > 0;
         }
@@ -2048,7 +2157,16 @@ struct Cell {
     uint32_t fg = 0xFFFFFFFFu; // 0..255 = 调色板下标，否则 = 0x1000000|rgb
     uint32_t bg = 0xFFFFFFFEu; // 0xFFFFFFFE = 默认底色
     uint8_t attr = 0;
+    uint8_t combining_count = 0;
+    // 常规格子不分配；每格最多四个附加码点，限制不可信终端输出的内存。
+    std::array<uint32_t, 4> combining{};
 };
+
+inline void append_cell_text(std::string& out, const Cell& cell) {
+    if (!cell.ch) return;
+    append_utf8(out, cell.ch);
+    for (size_t i = 0; i < cell.combining_count; ++i) append_utf8(out, cell.combining[i]);
+}
 
 enum : uint8_t {
     A_BOLD = 1,
@@ -2125,6 +2243,7 @@ class Terminal {
     bool alt_screen() const {
         return alt_mode_;
     }
+    bool application_cursor() const { return app_cursor_; }
     bool bracketed_paste() const {
         return bracketed_paste_;
     }
@@ -2236,6 +2355,7 @@ inline void Terminal::reset() {
     bg_ = kDefaultBg;
     attr_ = 0;
     autowrap_ = true;
+    app_cursor_ = false;
     show_cursor_ = true;
     alt_mode_ = false;
     origin_ = false;
@@ -2314,8 +2434,7 @@ inline void Terminal::scroll_up(int n) {
         const bool full = (top_ == 0 && bot_ == rows - 1);
         if (full)
             push_history();
-        for (int y = top_; y < bot_; ++y)
-            grid_[size_t(y)] = grid_[size_t(y + 1)];
+        std::rotate(grid_.begin() + top_, grid_.begin() + top_ + 1, grid_.begin() + bot_ + 1);
         blank_row(&grid_[size_t(bot_)]);
         for (auto& c : grid_[size_t(bot_)])
             if (bg_ != kDefaultBg)
@@ -2326,8 +2445,7 @@ inline void Terminal::scroll_up(int n) {
 inline void Terminal::scroll_down(int n) {
     n = std::max(0, std::min(n, bot_ - top_ + 1));
     for (int i = 0; i < n; ++i) {
-        for (int y = bot_; y > top_; --y)
-            grid_[size_t(y)] = grid_[size_t(y - 1)];
+        std::rotate(grid_.begin() + top_, grid_.begin() + bot_, grid_.begin() + bot_ + 1);
         blank_row(&grid_[size_t(top_)]);
         for (auto& c : grid_[size_t(top_)])
             if (bg_ != kDefaultBg)
@@ -2413,33 +2531,13 @@ inline void Terminal::put_cp(uint32_t cp) {
         cy_ = rows - 1;
     const int w = wc_width(cp);
     if (w == 0) {
-        // 组合符：并到上一个格子（存成 base + combining 的 UTF-8 串）
-        if (last_cp_ && cx_ > 0) {
-            std::vector<Cell>& r = row_ref(cy_);
-            const int at = (cx_ > 0) ? (cx_ - 1) : 0;
-            Cell& c = r[size_t(at)];
-            if (c.ch < 0x110000 && c.ch != ' ' && c.ch >= 0x20) {
-                // 追加到该格的字符序列（UTF-8 编码，渲染时 GDI 会正确处理）
-                auto enc = [](uint32_t u, std::string& out) {
-                    if (u < 0x80)
-                        out.push_back(char(u));
-                    else if (u < 0x800) {
-                        out.push_back(char(0xC0 | (u >> 6)));
-                        out.push_back(char(0x80 | (u & 0x3F)));
-                    } else if (u < 0x10000) {
-                        out.push_back(char(0xE0 | (u >> 12)));
-                        out.push_back(char(0x80 | ((u >> 6) & 0x3F)));
-                        out.push_back(char(0x80 | (u & 0x3F)));
-                    } else {
-                        out.push_back(char(0xF0 | (u >> 18)));
-                        out.push_back(char(0x80 | ((u >> 12) & 0x3F)));
-                        out.push_back(char(0x80 | ((u >> 6) & 0x3F)));
-                        out.push_back(char(0x80 | (u & 0x3F)));
-                    }
-                };
-                (void)enc;
-                c.attr |= 0x80; // 标记"带组合符"，渲染时单独处理
-            }
+        if (last_cp_ && (cx_ > 0 || wrap_pending_)) {
+            auto& row = row_ref(cy_);
+            int at = wrap_pending_ ? cx_ : cx_ - 1;
+            if (at > 0 && row[size_t(at)].ch == 0) --at;
+            auto& cell = row[size_t(at)];
+            if (cell.ch && cell.combining_count < cell.combining.size())
+                cell.combining[cell.combining_count++] = cp;
         }
         return;
     }
@@ -2619,8 +2717,7 @@ inline void Terminal::csi_dispatch(char final, const std::vector<int>& p, char p
             break;
         const int n = std::min(arg(0, 1), bot_ - cy_ + 1);
         for (int i = 0; i < n; ++i) {
-            for (int y = bot_; y > cy_; --y)
-                grid_[size_t(y)] = grid_[size_t(y - 1)];
+            std::rotate(grid_.begin() + cy_, grid_.begin() + bot_, grid_.begin() + bot_ + 1);
             blank_row(&grid_[size_t(cy_)]);
         }
         break;
@@ -2630,8 +2727,7 @@ inline void Terminal::csi_dispatch(char final, const std::vector<int>& p, char p
             break;
         const int n = std::min(arg(0, 1), bot_ - cy_ + 1);
         for (int i = 0; i < n; ++i) {
-            for (int y = cy_; y < bot_; ++y)
-                grid_[size_t(y)] = grid_[size_t(y + 1)];
+            std::rotate(grid_.begin() + cy_, grid_.begin() + cy_ + 1, grid_.begin() + bot_ + 1);
             blank_row(&grid_[size_t(bot_)]);
         }
         break;
@@ -2956,22 +3052,8 @@ inline std::string Terminal::line_text(int abs_line) const {
         const Cell& c = (*r)[size_t(x)];
         if (c.ch == 0)
             continue; // 全角右半格
-        if (c.ch < 0x80)
-            out.push_back(char(c.ch));
-        else if (c.ch < 0x800) {
-            out.push_back(char(0xC0 | (c.ch >> 6)));
-            out.push_back(char(0x80 | (c.ch & 0x3F)));
-        } else if (c.ch < 0x10000) {
-            out.push_back(char(0xE0 | (c.ch >> 12)));
-            out.push_back(char(0x80 | ((c.ch >> 6) & 0x3F)));
-            out.push_back(char(0x80 | (c.ch & 0x3F)));
-        } else {
-            out.push_back(char(0xF0 | (c.ch >> 18)));
-            out.push_back(char(0x80 | ((c.ch >> 12) & 0x3F)));
-            out.push_back(char(0x80 | ((c.ch >> 6) & 0x3F)));
-            out.push_back(char(0x80 | (c.ch & 0x3F)));
-        }
-        if (c.ch != ' ')
+        append_cell_text(out, c);
+        if (c.ch != ' ' || c.combining_count)
             keep = out.size();
     }
     out.resize(keep);
@@ -3042,21 +3124,7 @@ inline std::string Terminal::selected_text() const {
                 const Cell& c = (*r)[size_t(x)];
                 if (c.ch == 0)
                     continue;
-                if (c.ch < 0x80)
-                    o.push_back(char(c.ch));
-                else if (c.ch < 0x800) {
-                    o.push_back(char(0xC0 | (c.ch >> 6)));
-                    o.push_back(char(0x80 | (c.ch & 0x3F)));
-                } else if (c.ch < 0x10000) {
-                    o.push_back(char(0xE0 | (c.ch >> 12)));
-                    o.push_back(char(0x80 | ((c.ch >> 6) & 0x3F)));
-                    o.push_back(char(0x80 | (c.ch & 0x3F)));
-                } else {
-                    o.push_back(char(0xF0 | (c.ch >> 18)));
-                    o.push_back(char(0x80 | ((c.ch >> 12) & 0x3F)));
-                    o.push_back(char(0x80 | ((c.ch >> 6) & 0x3F)));
-                    o.push_back(char(0x80 | (c.ch & 0x3F)));
-                }
+                append_cell_text(o, c);
             }
             return o;
         };

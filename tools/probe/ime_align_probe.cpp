@@ -114,7 +114,7 @@ static void type_key(WORD vk) {
 }
 
 int main() {
-    aino::Window win(560, 420, "ime align");
+    aino::Window win(aino::WindowConfig{560, 420, "ime align"});
     if (!win.ok()) { std::printf("[fatal] window\n"); return 1; }
 
     std::string email, search, note;
@@ -156,7 +156,7 @@ int main() {
     win.run([&](aino::Ui& ui) {
         g_hwnd.store(FindWindowW(nullptr, kTitle));
         ui.set_theme(aino::Theme::light());
-        ui.clear(ui.theme().background);
+        ui.clear(ui.theme().window_bg);
         aino::Stack c = ui.vbox(aino::Rect(20, 16, 500, 380), 8.0f, 0.0f);
         ui.label("第一个输入框：", c.next(20.0f), aino::Style().left());
         const aino::Rect box = c.next(36.0f);

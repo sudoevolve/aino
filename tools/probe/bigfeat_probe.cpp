@@ -256,9 +256,9 @@ static void test_vscroll() {
     // 切个模式就"位置丢了"，看着像两个东西。
     {
         const aino::Rect same(20.0f, 240.0f, 300.0f, 70.0f);
-        ui.begin_scroll(same, 900.0f);
-        ui.scroll_to(137.0f);
-        ui.end_scroll();
+        auto scroll = ui.scroll(same, 900.0f);
+        scroll.to(137.0f);
+        scroll.close();
         int fs = 0, ls = -1;
         const float shared = ui.scroll_visible(same, 30, 30.0f, &fs, &ls);
         std::snprintf(d, sizeof(d), "(通用区 scroll_to(137) → 虚拟模式读到 %.1f)", shared);

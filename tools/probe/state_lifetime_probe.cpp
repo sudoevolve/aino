@@ -279,7 +279,7 @@ static void nested_scroll_ownership() {
             auto child = ui.state_scope(1102);
             scroll.to(300);
             scroll.content(1200);
-            ui.scroll_to(400);
+            scroll.to(400);
             scroll.close();
             check(ui.impl->state_scope_id == 1102, "scroll methods restore the nested caller's owner");
             check(ui.impl->flags.peek(scroll.id) == nullptr,

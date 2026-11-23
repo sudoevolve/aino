@@ -121,8 +121,8 @@ struct Drv {
 // 内存版剪贴板：模拟 Window 绑定的那两个回调
 static std::string g_clip;
 static void bind_mem_clipboard(aino::Ui& ui) {
-    ui.impl->set_clipboard = [](const std::string& s) { g_clip = s; };
-    ui.impl->get_clipboard = []() { return g_clip; };
+    ui.impl->try_set_clipboard = [](const std::string& s) { g_clip = s; return true; };
+    ui.impl->get_clipboard_async = [](auto complete) { complete(g_clip); };
 }
 
 int main() {
@@ -175,10 +175,10 @@ int main() {
             if (multiline) h.ui.textarea(&value, aino::Rect(10, 10, 300, 120));
             else h.ui.input(&value, aino::Rect(10, 10, 260, 30));
         };
-        h.ui.impl->try_set_clipboard = [](const std::string&) { return false; };
+        h.ui.impl->try_set_clipboard = [](const std::string&) { return false; return true; };
         d.click(60, 25, draw); d.key('A', draw); d.key('X', draw);
         check(value == "preserve selection", "failed clipboard write preserves selected text");
-        h.ui.impl->try_set_clipboard = [](const std::string& text) { g_clip = text; return true; };
+        h.ui.impl->try_set_clipboard = [](const std::string& text) { g_clip = text; return true; return true; };
         d.key('C', draw);
         check(g_clip == value, "bool-only clipboard callback supports copy");
     }
@@ -276,6 +276,42 @@ int main() {
         check(v.empty() && g_clip == "l1\nl2\nl3", "B18 textarea 剪切：内容进剪贴板且原文清空");
     }
 
+    // 异步结果只属于发起时的编辑目标、内容和选区。
+    for (bool multiline : {false, true}) {
+        Harness h(&surf);
+        Drv d(h.ui, 420, 220);
+        std::string value = "original";
+        std::function<void(std::string)> complete;
+        h.ui.impl->get_clipboard_async = [&](auto callback) { complete = std::move(callback); };
+        auto draw = [&] {
+            if (multiline) h.ui.textarea(&value, {10, 10, 300, 120});
+            else h.ui.input(&value, {10, 10, 300, 30});
+        };
+        d.click(30, 25, draw);
+        d.key('A', draw);
+        d.key('V', draw);
+        check(value == "original" && bool(complete), "pending paste preserves selection content");
+        complete("later");
+        d.idle(draw);
+        check(value == "later", "async completion replaces the original selection once");
+        d.key('Z', draw);
+        check(value == "original", "async paste is one undo transaction");
+
+        d.key('V', draw);
+        value = "external update";
+        complete("stale");
+        d.idle(draw);
+        check(value == "external update", "late paste cannot overwrite a changed model");
+        d.key('V', draw);
+        void* focused = h.ui.focused_id();
+        h.ui.set_focus(nullptr);
+        d.idle(draw);
+        complete("wrong target");
+        h.ui.set_focus(focused);
+        d.idle(draw);
+        check(value == "external update", "late paste cannot follow a lost and regained focus");
+    }
+
     // =========================================================== C 组：真系统剪贴板
     // 只在剪贴板里**本来就是文本**时跑：否则覆盖掉用户复制的图片/文件不礼貌。
     // 跑完把原文本写回。
@@ -296,16 +332,14 @@ int main() {
         if (!has_text) {
             std::printf("  [SKIP] 当前剪贴板不是文本（可能是图片/文件），跳过以免覆盖\n");
         } else {
-            aino::Window win(160, 100, "aino-clip-probe");
+            aino::Window win(aino::WindowConfig{160, 100, "aino-clip-probe"});
             if (!win.ok()) {
                 check(false, "C0 探针窗口创建失败");
             } else {
-                win.set_clipboard("你好 aino 123");
+                (void)win.try_set_clipboard("你好 aino 123");
                 check(win.clipboard() == "你好 aino 123", "C1 UTF-16 剪贴板往返（含中文）");
 
-                // 只放 CF_TEXT 的源（不少老工具如此）：GetClipboardData 不会替你
-                // 转格式，必须自己回退去取 ANSI，否则读到空串 —— 表现为"从某软件
-                // 复制过来粘不进去"。
+                // Windows 负责将 CF_TEXT 合成为 CF_UNICODETEXT，库只读取 Unicode 格式。
                 bool put = false;
                 if (OpenClipboard(nullptr)) {
                     EmptyClipboard();
@@ -320,9 +354,9 @@ int main() {
                     CloseClipboard();
                 }
                 check(put, "C2 写入 CF_TEXT 测试数据");
-                check(win.clipboard() == "ansi plain 42", "C3 只有 CF_TEXT 时也能读出来（ANSI 回退）");
+                check(win.clipboard() == "ansi plain 42", "C3 系统将 CF_TEXT 合成为 Unicode");
 
-                win.set_clipboard(saved);   // 还原用户原来的剪贴板文本
+                (void)win.try_set_clipboard(saved);   // 还原用户原来的剪贴板文本
                 check(win.clipboard() == saved, "C4 恢复原剪贴板");
             }
         }

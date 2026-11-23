@@ -32,7 +32,7 @@ static void run_win(int idx, int w, int h, const char* title) {
     g_alive[idx] = true;
 
     win.run([&](aino::Ui& ui) {
-        ui.clear(ui.theme().background);
+        ui.clear(ui.theme().window_bg);
         ui.panel(Rect(0.0f, 0.0f, ui.width(), ui.height()));
         ui.label(std::string("win ") + std::to_string(idx),
                  Rect(20.0f, 20.0f, 260.0f, 24.0f), Style().font(13.0f));
@@ -55,7 +55,7 @@ int main() {
         g_alive[0] = true;
         bool spawned = false;
         win.run([&](aino::Ui& ui) {
-            ui.clear(ui.theme().background);
+            ui.clear(ui.theme().window_bg);
             ui.panel(Rect(0.0f, 0.0f, ui.width(), ui.height()));
             ui.label(std::string("win 0"), Rect(20.0f, 20.0f, 260.0f, 24.0f),
                      Style().font(13.0f));

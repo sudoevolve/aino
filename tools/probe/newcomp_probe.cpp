@@ -166,7 +166,7 @@ int main() {
         stars = 5;
         h.blank(0, 0, int(W), int(H));
         for (int i = 0; i < 40; ++i) h.step(draw);   // 等动画收敛到 1.0
-        const Color primary = LT.primary;
+        const Color primary = LT.tint;
         check(h.px_is(int(cx0), 22, primary), "星心被填成 primary");
         // 星形的四个"凹角"（外接圆角落）不应该被填
         const int corner_x = int(cx0 + size * 0.48f);
@@ -350,28 +350,28 @@ int main() {
         Harness h;
         const Rect box(0, 0, 200, 100);
         const float content_h = 400.0f;
-        h.step([&]() { h.ui.begin_scroll(box, content_h); h.ui.end_scroll(); return true; });
-        check(approx(h.ui.scroll_y(), 0.0f), "初始偏移 0");
+        h.step([&]() { auto scroll = h.ui.scroll(box, content_h); scroll.close(); return true; });
+        check(approx(h.ui.scroll_offset(box), 0.0f), "初始偏移 0");
         h.at(100, 50);
         h.wheel(-2.0f);                       // 向下滚 2 格 × 44
-        h.step([&]() { h.ui.begin_scroll(box, content_h); h.ui.end_scroll(); return true; });
-        check(approx(h.ui.scroll_y(), 88.0f), "滚 2 格 → 88");
+        h.step([&]() { auto scroll = h.ui.scroll(box, content_h); scroll.close(); return true; });
+        check(approx(h.ui.scroll_offset(box), 88.0f), "滚 2 格 → 88");
         h.at(100, 50);
         h.wheel(-100.0f);
-        h.step([&]() { h.ui.begin_scroll(box, content_h); h.ui.end_scroll(); return true; });
-        check(approx(h.ui.scroll_y(), 300.0f), "夹到 max = content_h - box.h");
+        h.step([&]() { auto scroll = h.ui.scroll(box, content_h); scroll.close(); return true; });
+        check(approx(h.ui.scroll_offset(box), 300.0f), "夹到 max = content_h - box.h");
         h.at(600, 400);                       // 鼠标在容器外
         h.wheel(5.0f);
-        h.step([&]() { h.ui.begin_scroll(box, content_h); h.ui.end_scroll(); return true; });
-        check(approx(h.ui.scroll_y(), 300.0f), "容器外滚轮无效");
+        h.step([&]() { auto scroll = h.ui.scroll(box, content_h); scroll.close(); return true; });
+        check(approx(h.ui.scroll_offset(box), 300.0f), "容器外滚轮无效");
         // group 与 clip 都要能正确弹出/弹回
-        check(h.ui.impl->group.size() == 1, "end_scroll 弹回 group");
+        check(h.ui.impl->clip_logic.empty(), "scroll close restores logical clip");
         check(h.ui.impl->clips.empty(), "end_scroll 弹回 clip");
         check(h.ui.impl->scroll_stack.empty(), "end_scroll 弹回上下文栈");
         // 内容比视口矮 → 不允许滚
         h.at(100, 50); h.wheel(-5.0f);
-        h.step([&]() { h.ui.begin_scroll(box, 60.0f); h.ui.end_scroll(); return true; });
-        check(approx(h.ui.scroll_y(), 0.0f), "内容更矮时不滚");
+        h.step([&]() { auto scroll = h.ui.scroll(box, 60.0f); scroll.close(); return true; });
+        check(approx(h.ui.scroll_offset(box), 0.0f), "内容更矮时不滚");
     }
 
     // -------------------------------------------------------------------------
@@ -381,12 +381,12 @@ int main() {
         const Rect box(0, 0, 200, 100);
         float first_y = -1.0f;
         auto draw = [&]() {
-            h.ui.begin_scroll(box, 400.0f);
+            auto scroll = h.ui.scroll(box, 400.0f);
             for (int i = 0; i < 6; ++i) {
-                const Rect r = h.ui.row(50.0f);
+                const Rect r(box.x, box.y + i * 50.0f - scroll.y(), box.w, 50.0f);
                 if (i == 0) first_y = r.y;
             }
-            h.ui.end_scroll();
+            scroll.close();
             return true;
         };
         h.step(draw);
@@ -404,7 +404,7 @@ int main() {
         const std::vector<float> vals = { 1.0f, 0.5f };
         const Rect box(0, 0, 20, 100);
         h.step([&]() { h.ui.bars(vals, box, Style()); return true; });
-        const Color primary = LT.primary;
+        const Color primary = LT.tint;
         // bw = (20 - gap*1)/2，gap = max(2, 20*0.02) = 2 → bw = 9：
         // 第 0 柱 x∈[0,9] 值 1.0 满高；第 1 柱 x∈[11,20] 值 0.5 只占下半
         check(h.px_is(4, 98, primary), "满高柱的底部有色");
@@ -456,8 +456,8 @@ int main() {
         const std::vector<std::string> heads = { "h1", "h2" };
         const std::vector<std::vector<std::string>> rows = { { "a", "b" }, { "c", "d" } };
         h.step([&]() { h.ui.table(heads, rows, box, Style()); return true; });
-        check(h.px_is(100, 5, LT.muted), "表头是 muted 底色（无字体时也能断言底色）");
-        check(h.px_is(100, 139, LT.border), "底边框是 border 色");
+        check(h.px_is(100, 5, LT.fill3), "表头是 muted 底色（无字体时也能断言底色）");
+        check(h.px_is(100, 139, LT.separator), "底边框是 border 色");
 
         h.fill_all(LT.window_bg);
         h.step([&]() { h.ui.alert("T", "D", box, Style()); return true; });
@@ -500,7 +500,7 @@ int main() {
 
         h.blank(0, 0, int(W), int(H));
         h.step([&]() { h.ui.toast("toast", Rect(0, 0, 160, 44), Style()); return true; });
-        check(h.px_is(80, 8, LT.popover), "toast 用 popover 底色");
+        check(h.px_is(80, 8, LT.popover_bg), "toast 用 popover 底色");
     }
 
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);

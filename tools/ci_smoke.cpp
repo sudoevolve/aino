@@ -21,7 +21,7 @@
 #include <cstdio>
 
 int main() {
-    aino::Window win(480, 320, "aino ci smoke");
+    aino::Window win(aino::WindowConfig{480, 320, "aino ci smoke"});
     if (!win.ok()) {
         std::printf("[smoke] 窗口创建失败（Linux 上多半是没有 DISPLAY）\n");
         return 2;
@@ -32,8 +32,8 @@ int main() {
     if (!win.impl->need_frame) return 4;
     int frames = 0, rejected_requests = 0;
     win.run([&](aino::Ui& ui) {
-        ui.clear(ui.theme().background);
-        ui.fill_rect(aino::Rect(20.0f, 20.0f, 120.0f, 60.0f), ui.theme().primary, 8.0f);
+        ui.clear(ui.theme().window_bg);
+        ui.fill_rect(aino::Rect(20.0f, 20.0f, 120.0f, 60.0f), ui.theme().tint, 8.0f);
         ui.label("ci smoke", aino::Rect(20.0f, 96.0f, 200.0f, 24.0f));
 
         const bool pending = win.impl->need_frame;

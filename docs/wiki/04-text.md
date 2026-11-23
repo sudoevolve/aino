@@ -24,7 +24,7 @@ void code_text  (const std::string& text, const Rect& box, const Style& st = Sty
 | 返回 | 无 |
 | 字号 | `theme.font_size`（13） |
 | 字重 | 400 |
-| 前景 | `st.fg` → 否则 `muted ? muted_foreground : foreground` |
+| 前景 | `st.fg` → 否则 `muted ? label2 : label` |
 | 对齐 | `Style` 里的 `align`/`valign`（默认 `Left` / `Middle`） |
 
 **生效的 Style 属性**：
@@ -88,9 +88,9 @@ ui.label("正文……", col.next(22.0f), aino::Style().left());
 |---|---|
 | 字号 | `theme.font_size`（13） |
 | 字重 | 400 |
-| 前景 | `st.fg` → 否则**恒定** `muted_foreground` |
+| 前景 | `st.fg` → 否则**恒定** `label2` |
 
-和 `label` 的唯一区别是前景色固定取 `muted_foreground`。
+和 `label` 的唯一区别是前景色固定取 `label2`。
 **它不吃 `muted` 标志**（本来就是次要色，再吃一次没有意义）。
 
 ```cpp
@@ -109,10 +109,10 @@ ui.muted_text("单头文件 · 零第三方依赖", col.next(18.0f), aino::Style
 |---|---|
 | 字号 | `theme.font_size - 1`（12） |
 | 字重 | 400（固定，不吃 `font_weight`） |
-| 底衬 | `st.bg` → 否则 `theme.muted` |
+| 底衬 | `st.bg` → 否则 `theme.fill3` |
 | 圆角 | `st.radius` → 否则 `theme.radius_sm`（4） |
 | 内边距 | 水平 **6px**（硬编码），垂直 0 |
-| 前景 | `st.fg` → 否则 `theme.foreground` |
+| 前景 | `st.fg` → 否则 `theme.label` |
 | 垂直对齐 | 固定 `Middle` |
 | 描边 | 只有 `border_width > 0` **且** `border_color` 非 none 时才画 |
 
@@ -166,7 +166,7 @@ macOS 用 `Menlo`，Linux 用 fontconfig 的 `monospace`。后端不实现也编
 - **不滚动**：`box.h` 装得下几行就画几行，多出来的直接裁掉（`cap = (box.h - 12) / 行高`）。
 - **不折行**：一行画到 `box.right() - 4` 就断，不会接第二行。长行要先自己切，或者给足宽度。
 
-想看整段就外面套一层 `begin_scroll()` / `end_scroll()`。高度用 `code_block_height()` 算 ——
+想看整段就使用 `auto sc = ui.scroll(viewport, content_h)`。高度用 `code_block_height()` 算 ——
 它和 `code_block()` 共用同一个行高公式，手填数字迟早对不上。
 
 ### 6.2 着色只做到「分块看得清」
@@ -283,8 +283,8 @@ float h = ui.text_height(long_doc, 700.0f, aino::Style().wrap_text());
 源码与 API 字符串统一使用 UTF-8；MSVC 使用 `/utf-8`。头文件的执行字符集 pragma
 不能替代其它编译单元的编译设置，也不能修复已经编码错误的输入。
 
-Windows 在转换宽字符时优先解码合法 UTF-8 段，非法字节尝试系统 ANSI 代码页，
-失败时使用替换字符。这是兼容路径，不保证任意混合编码都能还原。
+Windows 使用 UTF-8 转换宽字符，非法序列使用替换字符。应用必须显式转换外部编码，
+不接受 ANSI 或混合编码字节作为文本 API 输入。
 
 Linux 文字在客户端后备缓冲内光栅化，再随窗口图像上屏。字体加载与兜底信息可用
 `AINO_X11_TRACE=1` 查看。窗口标题通过 EWMH 的 `_NET_WM_NAME/UTF8_STRING` 发送，

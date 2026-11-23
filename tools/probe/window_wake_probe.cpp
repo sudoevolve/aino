@@ -23,7 +23,7 @@ int main() {
     _putenv_s("AINO_PROF", second.c_str());
     bool replaced_closed = false;
     {
-        aino::Window logged(320, 200, "aino log lifetime probe");
+        aino::Window logged(aino::WindowConfig{320, 200, "aino log lifetime probe"});
         replaced_closed = logged.ok() && std::remove(first.c_str()) == 0;
     }
     const bool destroyed_closed = std::remove(second.c_str()) == 0;
@@ -31,11 +31,82 @@ int main() {
     _putenv_s("AINO_PROF", prof_env.c_str());
     if (!replaced_closed || !destroyed_closed) return 6;
 #endif
-    aino::Window window(320, 200, "aino window wake probe");
+    aino::Window window(aino::WindowConfig{320, 200, "aino window wake probe"});
     if (!window.ok()) return 1;
+    window.render([](aino::Ui& ui) { ui.clear(ui.theme().window_bg); });
+    const auto* old_pixels = window.impl->canvas.px;
+    const int old_width = window.impl->canvas.w, old_height = window.impl->canvas.h;
+#if defined(AINO_PLATFORM_WINDOWS)
+    auto* surface = static_cast<aino::detail::Win32State*>(window.impl->native);
+    aino::detail::win_create_backbuffer(surface, 16385, 1);
+    aino::detail::win_create_backbuffer(surface, 16384, 16384);
+#elif defined(AINO_PLATFORM_X11)
+    auto* surface = static_cast<aino::detail::X11State*>(window.impl->native);
+    aino::detail::x11_create_backbuffer(surface, 16385, 1);
+    aino::detail::x11_create_backbuffer(surface, 16384, 16384);
+#elif defined(AINO_PLATFORM_MACOS)
+    auto* surface = static_cast<aino::detail::CocoaState*>(window.impl->native);
+    aino::detail::cocoa_create_backbuffer(surface, 16385, 1);
+    aino::detail::cocoa_create_backbuffer(surface, 16384, 16384);
+    aino::WindowConfig unscaled_config;
+    unscaled_config.high_dpi = false;
+    aino::Window unscaled(unscaled_config);
+    if (!unscaled.ok() || unscaled.impl->scale != 1.0f) return 9;
+#endif
+#if !defined(AINO_PLATFORM_WAYLAND)
+    if (window.impl->canvas.px != old_pixels || window.impl->canvas.w != old_width || window.impl->canvas.h != old_height)
+        return 9;
+#else
+    (void)old_pixels; (void)old_width; (void)old_height;
+#endif
+#if defined(AINO_PLATFORM_X11)
+    {
+        aino::Window owner(aino::WindowConfig{160, 100, "clipboard owner"});
+        aino::Window reader(aino::WindowConfig{160, 100, "clipboard reader"});
+        if (!owner.ok() || !reader.ok() || !owner.try_set_clipboard("async UTF-8 \xE4\xB8\xAD")) return 8;
+        bool requested = false, delivered = false, owner_serviced = false;
+        int owner_frames = 0;
+        window.set_frame_callback([&](aino::Ui& ui) {
+            ui.clear(ui.theme().window_bg);
+            ++owner_frames;
+            ui.request_frame_in(.02f);
+        });
+        std::mutex mutex;
+        std::condition_variable done;
+        bool finished = false;
+        std::thread timeout([&] {
+            std::unique_lock<std::mutex> lock(mutex);
+            if (!done.wait_for(lock, std::chrono::seconds(5), [&] { return finished; })) reader.close();
+        });
+        const auto started = std::chrono::steady_clock::now();
+        reader.run([&](aino::Ui& ui) {
+            ui.clear(ui.theme().window_bg);
+            if (!requested) {
+                requested = true;
+                reader.request_clipboard([&](std::string text) {
+                    delivered = text == "async UTF-8 \xE4\xB8\xAD";
+                    reader.close();
+                });
+            }
+            // 选区 owner 刻意晚 120ms 服务请求；期间另一个已注册窗口必须继续绘制。
+            if (!owner_serviced && std::chrono::steady_clock::now() - started >= std::chrono::milliseconds(120)) {
+                owner_serviced = true;
+                owner.poll();
+            }
+            ui.request_frame_in(.02f);
+        });
+        window.set_frame_callback({});
+        { std::lock_guard<std::mutex> lock(mutex); finished = true; }
+        done.notify_one(); timeout.join();
+        if (!delivered || owner_frames < 3 || std::chrono::steady_clock::now() - started >= std::chrono::seconds(2)) {
+            std::printf("[window-wake] async selection delivered=%d sibling_frames=%d\n", int(delivered), owner_frames);
+            return 8;
+        }
+    }
+#endif
 #if defined(_WIN32)
     {
-        aino::Window sibling(320, 200, "aino sibling close probe");
+        aino::Window sibling(aino::WindowConfig{320, 200, "aino sibling close probe"});
         if (!sibling.ok()) return 7;
         auto* native = static_cast<aino::detail::Win32State*>(sibling.impl->native);
         SendMessageW(native->hwnd, WM_CLOSE, 0, 0);
@@ -46,7 +117,7 @@ int main() {
     }
 #endif
     int manual_frames = 0;
-    window.render([&](aino::Ui& ui) { ui.clear(ui.theme().background); ++manual_frames; });
+    window.render([&](aino::Ui& ui) { ui.clear(ui.theme().window_bg); ++manual_frames; });
     window.render([&](aino::Ui& ui) {
         ++manual_frames;
         ui.input(nullptr, {0, 0, 100, 30});
@@ -73,7 +144,7 @@ int main() {
         }
         window.close();
     });
-    window.run([&](aino::Ui& ui) { ui.clear(ui.theme().background); ++frames; });
+    window.run([&](aino::Ui& ui) { ui.clear(ui.theme().window_bg); ++frames; });
     producer.join();
     if (failed || frames < 21) {
         std::printf("[window-wake] frames=%d timeout=%d\n", frames.load(), int(failed.load()));
@@ -81,7 +152,7 @@ int main() {
     }
     int caret_frames = 0;
     std::string text = "caret";
-    aino::Window caret_window(320, 200, "aino caret timer probe");
+    aino::Window caret_window(aino::WindowConfig{320, 200, "aino caret timer probe"});
     if (!caret_window.ok()) return 3;
     std::thread closer([&] {
         std::this_thread::sleep_for(std::chrono::milliseconds(2400));
@@ -101,7 +172,7 @@ int main() {
     if (caret_frames < 5 || caret_frames > 30) return 4;
     // 同一 UI Thread 动态创建子窗口；延迟帧、关闭通知、回收都由一个 run() 驱动。
     {
-        aino::Window parent(320, 200, "aino scheduled parent probe");
+        aino::Window parent(aino::WindowConfig{320, 200, "aino scheduled parent probe"});
         if (!parent.ok()) return 9;
         std::unique_ptr<aino::Window> child;
         int child_frames = 0;
@@ -114,12 +185,12 @@ int main() {
             if (!completion.wait_for(lock, std::chrono::seconds(5), [&] { return done; })) parent.close();
         });
         parent.run([&](aino::Ui& ui) {
-            ui.clear(ui.theme().background);
+            ui.clear(ui.theme().window_bg);
             if (!child) {
-                child = std::make_unique<aino::Window>(320, 200, "aino scheduled child probe");
+                child = std::make_unique<aino::Window>(aino::WindowConfig{320, 200, "aino scheduled child probe"});
                 if (!child->ok()) { parent.close(); return; }
                 child->set_frame_callback([&](aino::Ui& child_ui) {
-                    child_ui.clear(child_ui.theme().background);
+                    child_ui.clear(child_ui.theme().window_bg);
                     if (++child_frames == 2) child->close();
                     else child_ui.request_frame_in(.03f);
                 });
@@ -132,7 +203,7 @@ int main() {
         if (!collected || child_frames != 2) return 9;
     }
 #if defined(_WIN32)
-    aino::Window quit_window(320, 200, "aino explicit quit probe");
+    aino::Window quit_window(aino::WindowConfig{320, 200, "aino explicit quit probe"});
     if (!quit_window.ok()) return 8;
     PostQuitMessage(0);
     if (quit_window.poll() || !quit_window.should_close()) {

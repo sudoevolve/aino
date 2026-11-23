@@ -142,10 +142,10 @@ void draw_pomodoro(aino::Ui& ui, Pomodoro& timer, bool& dark, Clock::time_point 
 
     // 底部卡片：72 高而不是 68 —— 第二行文字下方要留 14 的逻辑内边距（AGENTS.md 的硬指标），
     // 68 时只有 10，字号一放大就贴到圆角上。
-    const Rect settings(sidebar, height - 88, width - sidebar, 88);
+    const Rect settings(sidebar, height - 94, width - sidebar, 94);
     ui.panel({settings.x + 24, settings.y, settings.w - 48, 72},
              Style()
-                 .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg)
+                 .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card_bg : ui.theme().control_bg)
                  .corner(12));
     ui.label("本轮时长", Rect(settings.x + 40, settings.y + 16, 100, 24), Style().left());
     const Rect stepper(settings.right() - 154, settings.y + 24, 88, 24);
@@ -162,7 +162,7 @@ void draw_pomodoro(aino::Ui& ui, Pomodoro& timer, bool& dark, Clock::time_point 
     const float card_w = content.w - 48, card_h = content.h - 36;
     ui.panel({content.x + 24, content.y + 18, card_w, card_h},
              Style()
-                 .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg)
+                 .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card_bg : ui.theme().control_bg)
                  .corner(12));
     // 圆环吃满卡片：原来固定 220，在 760×560 的卡片里四周空出两百多像素，
     // 看着像卡片没画完。取宽高的比例并夹在 [220, 340]，小窗口下也不会挤到按钮。
@@ -201,7 +201,6 @@ static aino::Theme app_theme(bool dark) {
     aino::Theme t = dark ? aino::Theme::dark() : aino::Theme::light();
     t.label2 = dark ? aino::Color(0xA0, 0xA0, 0xA6, 255) : aino::Color(0x6E, 0x6E, 0x73, 255);
     t.label3 = dark ? aino::Color(0x6E, 0x6E, 0x73, 255) : aino::Color(0x98, 0x98, 0x9D, 255);
-    t.muted_foreground = t.label2;
     return t;
 }
 

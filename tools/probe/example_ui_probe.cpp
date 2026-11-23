@@ -62,7 +62,7 @@ struct ExampleFrame {
     template<class Draw> void frame(Draw draw, aino::Input in = {}) {
         ui.impl->input = in;
         ui.begin_frame(960, 640, 1.f / 60, 1);
-        ui.clear(ui.theme().background);
+        ui.clear(ui.theme().window_bg);
         draw();
         ui.end_frame();
     }
@@ -84,6 +84,23 @@ struct ExampleFrame {
     }
 };
 }
+
+#ifdef AINO_PROBE_SSH
+static void await_profiles(App& app) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (app.profiles_busy() && !app.profile_done.load()) {
+        if (std::chrono::steady_clock::now() >= deadline) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    app.collect_profiles();
+    expect(!app.profiles_busy(), "profile worker completes within deadline");
+}
+static bool commit_profile(App& app, const Profile& p, int index) {
+    if (!save_profile(app, p, index)) return false;
+    await_profiles(app);
+    return app.profile_ok;
+}
+#endif
 
 int main(int argc, char** argv) {
 #ifdef AINO_PROBE_SSH
@@ -118,6 +135,7 @@ int main(int argc, char** argv) {
     ExampleFrame f;
 #ifdef AINO_PROBE_SSH
     {
+        ProfileStore store;
         std::string decoded;
         {
             const std::string valid = "\"\\uD83D\\uDE00\"", invalid = "\"\\uZZZZ\"";
@@ -125,21 +143,29 @@ int main(int argc, char** argv) {
             expect(unicode.str(&decoded) && decoded == "\xF0\x9F\x98\x80" && !broken.str(&decoded),
                    "profile migration decodes surrogate pairs and rejects invalid Unicode escapes");
         }
-        expect(!deobf("x:0z", &decoded) && !deobf("x:123", &decoded),
-               "invalid legacy secret encoding is rejected instead of becoming an empty password");
         const std::string damaged = "[{\"name\":\"damaged\",\"host\":\"example\",\"pass\":\"x:0z\",\"remember\":1}]";
         std::string error;
         expect(sshc::atomic_write_file(cfg_file(), damaged, &error), "prepare damaged legacy secret");
-        auto loaded = load_local_profiles();
+        auto loaded = store.load();
         expect(loaded.size() == 1 && loaded[0].secret_unavailable && loaded[0].stored_pass == "x:0z"
             && read_text_file(cfg_file()) == damaged, "loading damaged legacy secret preserves its original record");
-        expect(save_local_profiles(loaded, &error) && load_local_profiles()[0].stored_pass == "x:0z",
+        expect(store.save(loaded, &error) && store.load()[0].stored_pass == "x:0z",
                "saving unrelated profile fields preserves an unavailable legacy secret");
         const std::string truncated = "[{\"host\":\"example\",\"pass\":\"legacy\",\"remember\":1}";
         expect(sshc::atomic_write_file(cfg_file(), truncated, &error), "prepare truncated profile array");
-        (void)load_local_profiles();
-        expect(read_text_file(cfg_file()) == truncated && !profile_store_warning.empty(),
+        (void)store.load();
+        expect(read_text_file(cfg_file()) == truncated && !store.warning.empty(),
                "automatic migration never overwrites an incomplete profile document");
+        expect(!store.save(loaded, &error) && read_text_file(cfg_file()) == truncated,
+               "ordinary save cannot overwrite an incomplete profile document");
+        const std::string unknown = R"([{"host":"example","future":{"text":"}]\\\"[","array":[{},[1,-2.5e2,true,null]]}}])";
+        expect(sshc::atomic_write_file(cfg_file(), unknown, &error), "prepare unknown nested fields");
+        const auto parsed = store.load();
+        expect(parsed.size() == 1 && !store.writable && !store.save(loaded, &error)
+            && read_text_file(cfg_file()) == unknown, "nested strings and unknown fields survive a refused save");
+        const std::string trailing = R"([{"host":"example"},])";
+        expect(sshc::atomic_write_file(cfg_file(), trailing, &error), "prepare invalid trailing comma");
+        expect(store.load().empty() && !store.save(loaded, &error), "invalid JSON is read-only");
         expect(sshc::atomic_write_file(cfg_file(), "[]", &error), "reset dedicated profile fixture");
     }
     expect(std::string(explain_fail(FailStage::KeyExchange).title) == "SSH 密钥交换失败",
@@ -155,25 +181,31 @@ int main(int argc, char** argv) {
            "invalid local identity is distinct from server authentication failure");
     {
         App app;
+        ProfileStore store;
         Profile dirty;
         dirty.host = " \t host.example \r\n";
         dirty.user = " aino\t\t\t\t";
         dirty.remember = true;
         dirty.pass = " \t sample pass \t ";
-        expect(save_profile(app, dirty, -1), "profile normalizes identity boundary whitespace");
-        const auto saved = load_local_profiles();
+        expect(commit_profile(app, dirty, -1), "profile normalizes identity boundary whitespace");
+        const auto saved = store.load();
         expect(saved.size() == 1 && saved[0].host == "host.example" && saved[0].user == "aino",
                "normalized host and username persist without invisible suffixes");
         expect(saved.size() == 1 && saved[0].pass == dirty.pass,
                "identity normalization preserves password bytes including whitespace");
+        const auto original_secret = app.profiles[0].stored_pass;
+        auto renamed = app.profiles[0];
+        renamed.name = "renamed";
+        expect(commit_profile(app, renamed, 0) && app.profiles[0].stored_pass == original_secret,
+               "unchanged password reuses the protected value across metadata edits");
         const std::string before = read_text_file(cfg_file());
         dirty.user = "ai\tno";
-        expect(!save_profile(app, dirty, 0) && app.status.find("用户名") != std::string::npos &&
+        expect(!commit_profile(app, dirty, 0) && app.status.find("用户名") != std::string::npos &&
                read_text_file(cfg_file()) == before && app.profiles[0].user == "aino",
                "embedded username control rejects save without changing disk or model");
         dirty.user = "aino";
         dirty.host = "host\n.example";
-        expect(!save_profile(app, dirty, 0) && read_text_file(cfg_file()) == before,
+        expect(!commit_profile(app, dirty, 0) && read_text_file(cfg_file()) == before,
                "embedded host control rejects save");
         Engine engine;
         std::string error;
@@ -193,11 +225,12 @@ int main(int argc, char** argv) {
     }
     {
         App app;
+        ProfileStore store;
         Profile profile;
         profile.name = "saved";
         profile.host = "original.example";
-        expect(save_profile(app, profile, -1), "save profile persists before publishing model");
-        expect(load_local_profiles().size() == 1, "saved profile reloads");
+        expect(commit_profile(app, profile, -1), "save profile persists before publishing model");
+        expect(store.load().size() == 1, "saved profile reloads");
         app.draft = profile;
         app.draft.host = "edited.example";
         app.editing = 0;
@@ -207,12 +240,13 @@ int main(int argc, char** argv) {
         expect(held != INVALID_HANDLE_VALUE, "block profile replacement for failure test");
         auto editor = [&] { draw_editor(f.ui, app, f.ui.theme()); };
         f.click(editor, 480, 475);
+        await_profiles(app);
         expect(app.editor_open && app.draft.host == "edited.example" && app.profiles[0].host == profile.host,
                "failed save preserves editor draft and previously committed profile");
         expect(!app.status.empty(), "failed save reports an error");
         if (held != INVALID_HANDLE_VALUE) CloseHandle(held);
-        expect(load_local_profiles()[0].host == profile.host, "failed save leaves disk profile unchanged");
-        expect(save_profile(app, app.draft, 0) && load_local_profiles()[0].host == "edited.example",
+        expect(store.load()[0].host == profile.host, "failed save leaves disk profile unchanged");
+        expect(commit_profile(app, app.draft, 0) && store.load()[0].host == "edited.example",
                "retry persists edited profile");
         expect(save_download_dir(temporary_home.root.string()) && load_download_dir() == temporary_home.root.string(),
                "download preference atomically round trips");
@@ -262,8 +296,8 @@ int main(int argc, char** argv) {
     f.click(draw, 266, 55);
     expect(!reveal && password == "密钥", "eye hides without modifying password");
     std::string clipboard;
-    f.ui.impl->get_clipboard = [&] { return std::string("粘贴"); };
-    f.ui.impl->set_clipboard = [&](const std::string& value) { clipboard = value; };
+    f.ui.impl->get_clipboard_async = [&](auto complete) { complete(std::string("粘贴")); };
+    f.ui.impl->try_set_clipboard = [&](const std::string& value) { clipboard = value; return true; };
     f.click(draw, 60, 55);
     f.key(draw, 'A', true);
     f.key(draw, 'V', true);
@@ -528,12 +562,12 @@ int main(int argc, char** argv) {
         expect(wait_transfer() && !session.transfer_snapshot().error.empty(), "missing remote reports error");
         expect(start_transfer(session, true, local, "/missing-probe/file.bin", nullptr), "invalid target starts");
         expect(wait_transfer() && !session.transfer_snapshot().error.empty(), "invalid target reports error");
-        expect(session.engine.transfer().rh == nullptr && session.engine.transfer().fh == nullptr,
+        expect(!session.engine.transfer_snapshot().resources_open,
                "failed setup closes transfer handles");
         expect(start_transfer(session, false, "build/missing-probe/file.bin", "/session-probe.bin", nullptr),
                "unwritable local target starts");
         expect(wait_transfer() && !session.transfer_snapshot().error.empty(), "local open failure reports error");
-        expect(session.engine.transfer().rh == nullptr, "local failure closes remote handle");
+        expect(!session.engine.transfer_snapshot().resources_open, "local failure closes remote handle");
         expect(start_transfer(session, true, local, "/session-cancel.bin", nullptr), "cancel transfer starts");
         const auto cancel_start = std::chrono::steady_clock::now();
         session.xfer_cancel = true;
@@ -546,9 +580,9 @@ int main(int argc, char** argv) {
         const auto finish_end = std::chrono::steady_clock::now() + std::chrono::seconds(20);
         while (session.engine.transfer_busy() && std::chrono::steady_clock::now() < finish_end)
             session.engine.xfer_step();
-        expect(!session.engine.transfer_busy() && session.engine.transfer().error.empty(), "direct upload commits");
+        expect(!session.engine.transfer_busy() && session.engine.transfer_snapshot().error.empty(), "direct upload commits");
         session.engine.cancel_transfer();
-        expect(session.engine.transfer().error.empty(), "late cancel preserves committed success");
+        expect(session.engine.transfer_snapshot().error.empty(), "late cancel preserves committed success");
         session.engine.clear_transfer();
         session.engine.send("unicode\r");
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -610,12 +644,12 @@ int main(int argc, char** argv) {
     expect(!f.ui.animating(), "idle timer does not enable continuous animation");
     f.click(draw, 630, 432);
     expect(timer.running, "start button begins countdown");
-    f.click(draw, 885, 584);
+    f.click(draw, 885, 578);
     expect(timer.minutes[0] == 25, "duration control is disabled while running");
     now = after(2);
     f.click(draw, 630, 432);
     expect(!timer.running && timer.remaining == 1498, "pause button freezes countdown");
-    f.click(draw, 885, 584);
+    f.click(draw, 885, 578);
     expect(timer.minutes[0] == 26 && timer.remaining == 1560, "stepper updates and resets duration");
     f.click(draw, 630, 432);
     f.click(draw, 520, 432);

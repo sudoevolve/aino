@@ -34,7 +34,7 @@ static std::string g_text;
 
 int main() {
     std::printf("== IME 定位断言 ==\n");
-    Window win(480, 300, kTitle);
+    Window win(aino::WindowConfig{480, 300, kTitle});
     if (!win.ok()) { std::printf("window failed\n"); return 1; }
 
     // ---- ① 底层回读：结构体布局对不对 ----
@@ -123,7 +123,7 @@ int main() {
                 if (orig) orig(x, top, bottom);
             };
         }
-        ui.clear(ui.theme().background);
+        ui.clear(ui.theme().window_bg);
         ui.label("点一下下面的输入框，然后试着打中文", Rect(40.0f, 60.0f, 400.0f, 24.0f),
                  Style().left());
         ui.input(&g_text, Rect(40.0f, 100.0f, 300.0f, 36.0f), Style().hint("点这里再打中文"));

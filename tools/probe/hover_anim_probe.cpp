@@ -30,7 +30,7 @@ static std::atomic<int> g_frames{0};
 static std::atomic<int> g_in_spin{0};   // 库看到的鼠标落在 spinner 内的帧数（诊断用）
 
 int main() {
-    Window win(int(kLogicalW), 300, kTitle);
+    Window win(aino::WindowConfig{int(kLogicalW), 300, kTitle});
     if (!win.ok()) { std::printf("window failed\n"); return 1; }
 
     POINT saved{};
@@ -103,7 +103,7 @@ int main() {
         ++g_frames;
         if (Rect(60.0f, 60.0f, 64.0f, 64.0f).contains(ui.input().mouse.x, ui.input().mouse.y))
             ++g_in_spin;
-        ui.clear(ui.theme().background);
+        ui.clear(ui.theme().window_bg);
         ui.spinner(Rect(60.0f, 60.0f, 64.0f, 64.0f));
         ui.skeleton(Rect(200.0f, 70.0f, 180.0f, 16.0f), Style().animate());
         ui.label("把鼠标压在左边的圈上，它才会转", Rect(30.0f, 200.0f, 360.0f, 24.0f),

@@ -15,7 +15,7 @@
 | [图元与度量](09-primitives.md) | 几何、阴影、模糊、图像与系统图标 |
 | [性能与资源](10-performance.md) | 按需绘制、缓存预算、采样方法及历史基准 |
 | [动画与变换](11-motion.md) | 缓动、平移、缩放与旋转 |
-| [组件索引](12-component-index.md) | 公开 API、组合示例与兼容接口 |
+| [组件索引](12-component-index.md) | 公开 API、组合示例与使用范围 |
 | [平台与功能边界](14-platform-status.md) | 原生后端支持范围及已知限制 |
 | [原生 Wayland](15-wayland.md) | 无 XWayland 构建、窗口、缩放、输入与剪贴板 |
 

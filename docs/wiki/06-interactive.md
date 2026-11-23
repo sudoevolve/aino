@@ -141,7 +141,7 @@ ui.button("按我看看", box, aino::Style().primary().scale_on_press(0.97f));
 
 ### 建议尺寸
 
-高度用 `theme.control_h`（24）。宽度按内容：
+高度用 `theme.size_h[2]`（24）。宽度按内容：
 `ui.text_width(text, 13.0f, 500) + 32.0f`；想占满一行就直接把 `box.w` 给足
 （`button` 天生按传入的 `box` 铺满，不会只包住文字）。
 
@@ -242,7 +242,7 @@ Windows 输入框将组字串绘制在光标处，带下划线；组字期间隐
 ### 剪贴板
 
 `Window` 自动绑定剪贴板回调。Windows 优先读写 Unicode 文本，读取旧式文本时转为 UTF-8。
-离屏 `Ui` 或自定义窗口需要自行绑定 `impl->set_clipboard/get_clipboard`；
+离屏 `Ui` 或自定义窗口需要自行绑定 `impl->try_set_clipboard/get_clipboard_async`；
 这些内部回调只在实现定义可见的编译单元中可直接访问。
 
 | 情况 | 行为 |
@@ -288,7 +288,7 @@ ui.input(&email, col.next(24.0f), aino::Style().hint("you@example.com"));
 ```
 
 > `box` 的宽度决定可见区域，文本超出后**自动横向滚动**（跟随光标）。
-> 高度建议 24（`theme.control_h`）。
+> 高度建议 24（`theme.size_h[2]`）。
 
 ### 中文输入法（IME）
 
@@ -313,7 +313,7 @@ bool checkbox(bool* value, const std::string& label, const Rect& box, const Styl
 | 方框底（选中） | `theme.tint` |
 | 对勾色 | `theme.tint_foreground` |
 | 标签字号 | `theme.font_size` |
-| 焦点环 | `theme.ring` |
+| 焦点环 | `theme.focus_ring` |
 
 **生效的属性**：`fg` `font_size` `radius` `disabled`
 
@@ -453,7 +453,7 @@ bool radio_group(const std::vector<std::string>& items, int* index, const Rect& 
 | 返回 | `true` = 选中项变了 |
 | 布局 | **纵向等分 `box.h`**，每行一个圆环 + 标签 |
 | 圆环 | `max(16, fs + 3)`，默认 16×16；淡底、细描边与内阴影 |
-| 圆环色（选中） | `theme.primary` 实心 |
+| 圆环色（选中） | `theme.tint` 实心 |
 | 中心点 | 直径 **6**（不是按半径比例长到 8），`t*(2-t)` ease-out 弹出 |
 | 标签 | 13 Medium 85%，**选中不换字重**（换字重会让整行宽度跳一下） |
 
@@ -490,7 +490,7 @@ bool textarea(std::string* value, const Rect& box, const Style& st = Style());
 |---|---|
 | 返回 | `true` = 文本变了，光标或选区移动不返回 true |
 | 底色 | 浅色 `window_bg`，深色白色 alpha 20；`st.bg` 可覆盖 |
-| 描边 | `theme.input` 1px |
+| 描边 | `theme.input_border` 1px |
 | 圆角 | `theme.radius`（6） |
 | `pad_x` / `pad_y` | 10 / 8 |
 | 行高 | 按字体算（同 `line_height`） |
@@ -531,8 +531,8 @@ bool rating(int* value, int max_stars, const Rect& box, const Style& st = Style(
 | 返回 | `true` = 分数变了 |
 | 星星尺寸 | `min((box.w - 4*(n-1)) / n, box.h)` |
 | 星间距 | **4px** |
-| 空星色 | `theme.muted`；浅色主题下（亮度 > 0.82）改用 `theme.border` |
-| 实星色 | `st.bg` → 否则 `theme.primary` |
+| 空星色 | `theme.fill3`；浅色主题下（亮度 > 0.82）改用 `theme.separator` |
+| 实星色 | `st.bg` → 否则 `theme.tint` |
 | 上限 | `max_stars` 1..32（超出直接返回 false） |
 | 光标 | `Arrow` |
 
@@ -661,14 +661,14 @@ ui.input_group(&amount, "¥", "元", {x, y, 200, 36});
 - **点前后缀区域也会聚焦输入框**。看着是一个框，点在"元"上却没反应，是最容易被当成
   "控件坏了"的那种细节。抢焦点必须等 `input()` 跑完再抢 —— 它内部遇到"按下了但不在
   自己框内"会主动丢焦点，先抢会被它丢回去（晚一帧生效，肉眼无感）；
-- **聚焦时外框变 `theme.ring`**。外框既然是自己画的，`input()` 那套聚焦变色就得自己补，
+- **聚焦时外框变 `theme.focus_ring`**。外框既然是自己画的，`input()` 那套聚焦变色就得自己补，
   否则两个框上下排着时，点进去根本看不出光标落在哪一个。画法要和 `input()` 对齐
   （边框换 `ring` 并加粗 0.4，再叠一层 `paint_focus_ring` 的 55% 外环）—— 只画一根深色
   描边的话，同一个页面上 `input()` 和 `input_group` 的焦点态轻重不一，看着像后者报错了。
 
 > **坑：`Color(0,0,0,0)` 表达不了「别画底」。** `Color::is_none()` 只判 `a == 0`，
 > 所以"显式要透明"和"根本没传"在 `Style` 里长得一模一样。`input()` 拿到 a=0 会回退成
-> `theme.background`，在传进去的矩形上**按整高**铺一层白 —— 如果外壳是调用方先画的，
+> `theme.window_bg`，在传进去的矩形上**按整高**铺一层白 —— 如果外壳是调用方先画的，
 > 这层白就把外框的**上下两条边从中间吃掉**，只剩前后缀那两小段。表现是"两个上下排列的
 > 输入框中间那条横线不见了"（0.4.3 修的）。
 >
@@ -691,7 +691,7 @@ if (ui.input_otp(&code, 6, {x, y, 320, 48})) verify(code);
 | 输入 | **只收数字** —— 粘 "12a3" 也只吃 1、2、3 |
 | 退格 | 光标退一格并删掉该格 |
 | ← / → | 移动当前格 |
-| 当前格 | 描边换成 `theme.ring`、1.6px；空格子显示**静止**竖线（闪烁太费帧） |
+| 当前格 | 描边换成 `theme.focus_ring`、1.6px；空格子显示**静止**竖线（闪烁太费帧） |
 
 它**不复用 `input()`**：那个输入框带选区、拖选、双击选词、IME、撤销栈一整套，
 塞进一个 40×40 的格子既不合适也画不进去。
@@ -713,8 +713,8 @@ ui.field("邮箱", "不会公开", "", {x, y, w, h}, [&](const aino::Rect& r) {
 | 控件槽 | 剩下的全给它（至少 1px） | 由回调决定 |
 | 说明或错误（二者有其一） | `line_height(fs - 1)` + 6 | `fs - 1` / 400 |
 
-**`error` 优先于 `hint`**：两个都传只画 error，色用 `theme.destructive`；hint 用
-`theme.muted_foreground`。`field_height()` 与 `field()` 用的是同一组数字，改一处必须改另一处
+**`error` 优先于 `hint`**：两个都传只画 error，色用 `theme.red`；hint 用
+`theme.label2`。`field_height()` 与 `field()` 用的是同一组数字，改一处必须改另一处
 （源码里就挨着放，就是为了这个）。
 
 ### 16.8 `combobox` —— 可搜索的下拉

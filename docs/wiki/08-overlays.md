@@ -29,7 +29,7 @@ ui.tooltip(box, "永久删除，不可恢复");
 
 悬停约 0.4 秒出现；计时期间请求帧，显示稳定后停止。离开锚点重新计时。
 默认字号 11、字重 500、圆角 5、水平内边距 6、垂直内边距 3。
-底色 `tooltip_bg`，文字色 `popover_foreground`；深色主题增加细边。
+底色 `tooltip_bg`，文字色 `label`；深色主题增加细边。
 优先放在锚点上方 7，放不下时翻到下方；水平夹取至窗口内。
 支持 `bg/fg/font_size/disabled`。宽度按单行文字测量，不自动折行，长说明请使用 hover_card。
 
@@ -126,7 +126,7 @@ Esc 与面板外点击视为取消。它直接绘制，不铺黑色遮罩。
 ## 8. `drawer`
 
 ```cpp
-ui.drawer("详情", &open, 0, panel, [&](const aino::Rect& c) {
+ui.drawer("详情", &open, panel, [&](const aino::Rect& c) {
     if (ui.button("完成", {c.x, c.y, c.w, 24})) open = false;
 });
 ```

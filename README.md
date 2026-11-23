@@ -73,7 +73,7 @@ Requirements:
 #include <string>
 
 int main() {
-    aino::Window win(880, 560, "aino 示例");
+    aino::Window win(aino::WindowConfig{880, 560, "aino 示例"});
     if (!win.ok()) return 1;
 
     std::string email;
@@ -133,7 +133,7 @@ Visual Studio 产物在 `build/Release/`，Ninja/Makefiles 通常在 `build/`。
 cmake --build build --config Release --target aino_primitives_demo
 ```
 
-`ssh_client.cpp` 保留兼容目标名 `aino_ssh`，需额外安装 libssh2（MSVC 使用预编译 libssh2 + mbedTLS）。
+`ssh_client.cpp` 的构建目标为 `aino_ssh`，需额外安装 libssh2（MSVC 使用预编译 libssh2 + mbedTLS）。
 默认关闭，`-DAINO_BUILD_SSH=ON` 显式启用并检查依赖；详见 [构建说明](docs/wiki/01-quickstart.md)。
 
 `win.run(frame_cb)` 管理主循环，窗口按需重绘；动画与后台数据更新方式见

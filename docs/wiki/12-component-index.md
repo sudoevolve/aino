@@ -14,7 +14,7 @@
 | 选择与数值 | `checkbox`、`toggle`、`slider`、`tabs`、`segmented`、`select`、`radio_group`、`stepper`、`rating`、`toggle_group`、`toggle_group_multi`、`combobox`、`calendar`、`color_well`、`color_picker` | [06 交互](06-interactive.md) |
 | 展示与条目 | `avatar`、`spinner`、`alert`、`breadcrumb`、`kbd`、`accordion`、`table`、`sparkline`、`bars`、`item`、`empty_state`、`pagination`、`image_well` | [07 展示](07-display.md) |
 | 浮层 | `tooltip`、`menu`、`dialog`、`sheet`、`toast`、`popover`、`hover_card`、`alert_dialog`、`drawer`、`context_menu`、`menubar` | [08 浮层](08-overlays.md) |
-| 布局 | `vbox`、`hbox`、`begin_scroll`、`end_scroll`、`split_pane`、`aspect_rect` | [03 布局](03-layout.md) |
+| 布局 | `vbox`、`hbox`、`scroll`、`scroll_offset`、`split_pane`、`aspect_rect` | [03 布局](03-layout.md) |
 | 绘图与材质 | 几何图元、渐变、阴影、裁剪、文字度量、`system_icon`、`backdrop_blur`、`glass` | [09 图元](09-primitives.md) |
 | 动画与变换 | `tween`、`tween_color`、`fade`、`smooth`、`push_transform`、`pop_transform` | [11 动画](11-motion.md) |
 
@@ -44,14 +44,11 @@
 公开 API 未出现在 Gallery 中不代表废弃。完整参数和限制见对应章节，
 不要用卡片文案推断库已提供解析器、文件拖放、系统颜色选择器等能力。
 
-## 兼容接口与适用范围
+## 使用范围
 
-- 旧主题字段 `background/card/primary/secondary/accent` 等仍用于兼容；强调色通过
-  `set_tint()` 同步，不应只修改 `primary`。
-- `icon_button(glyph, ...)` 与 `aino::icons::*` 保留 UTF-8 字符接口；当前控件和示例优先
-  使用 `SystemIcon`，字符接口不保证跨平台字形一致。
-- `row/column/push_padding/begin_group` 是早期布局接口；新代码优先使用 `Stack`。
-- `drawer` 的 `side` 参数保留兼容，实际面板位置由 `box` 指定，没有隐式滑入动画。
+- 强调色使用 `Theme::set_tint()`，布局使用 `Stack` 和滚动作用域。
+- 系统图标使用 `SystemIcon`；自定义 UTF-8 图标字符依赖应用选择的字体。
+- `drawer` 的面板位置由 `box` 指定，没有隐式滑入动画。
 - `image_well` 是展示占位，`color_well` 只报告点击；文件选择、拖放与系统颜色面板由应用接入。
 - Linux/macOS 后端的已知限制见 [平台支持](14-platform-status.md)。
 

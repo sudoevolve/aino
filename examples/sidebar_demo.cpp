@@ -73,7 +73,7 @@ static void draw_sidebar_app(aino::Ui& ui, SidebarApp& app) {
                  Style().font(13).semi_bold().left().color(th.label2));
         const Rect group(col.x, y + 136, col.w, 128);
         ui.panel(group, Style()
-                            .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card
+                            .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card_bg
                                                                                : ui.theme().control_bg)
                             .corner(12));
         const Rect first(group.x, group.y, group.w, 64);
@@ -92,7 +92,7 @@ static void draw_sidebar_app(aino::Ui& ui, SidebarApp& app) {
                  Style().font(13).semi_bold().left().color(th.label2));
         const Rect appearance(col.x, y + 136, col.w, 64);
         ui.panel(appearance, Style()
-                                 .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card
+                                 .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card_bg
                                                                                     : ui.theme().control_bg)
                                  .corner(12));
         const Rect control = settings_row(ui, appearance, "应用外观", std::min(176.f, col.w * .44f));
@@ -104,7 +104,7 @@ static void draw_sidebar_app(aino::Ui& ui, SidebarApp& app) {
         ui.panel(
             notifications,
             Style()
-                .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg)
+                .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card_bg : ui.theme().control_bg)
                 .corner(12));
         const char* labels[] = {"允许通知", "播放提示音", "显示消息预览"};
         const char* details[] = {"接收应用的重要消息", "新消息到达时播放声音", "在通知中显示消息内容"};
@@ -122,7 +122,7 @@ static void draw_sidebar_app(aino::Ui& ui, SidebarApp& app) {
                  Style().font(13).semi_bold().left().color(th.label2));
         const Rect group(col.x, y + 136, col.w, 144);
         ui.panel(group, Style()
-                            .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card
+                            .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card_bg
                                                                                : ui.theme().control_bg)
                             .corner(12));
         sidebar_brand(ui, "aino", "单头文件 C++17 桌面 UI 库", {group.x + 20, group.y + 20, group.w - 40, 44},
@@ -139,7 +139,6 @@ static aino::Theme app_theme(bool dark) {
     aino::Theme t = dark ? aino::Theme::dark() : aino::Theme::light();
     t.label2 = dark ? aino::Color(0xA0, 0xA0, 0xA6, 255) : aino::Color(0x6E, 0x6E, 0x73, 255);
     t.label3 = dark ? aino::Color(0x6E, 0x6E, 0x73, 255) : aino::Color(0x98, 0x98, 0x9D, 255);
-    t.muted_foreground = t.label2;
     return t;
 }
 

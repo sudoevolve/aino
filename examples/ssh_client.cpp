@@ -96,8 +96,9 @@ struct Clipboard {
     bool set(const std::string& text) {
         return win && win->try_set_clipboard(text);
     }
-    std::string get() {
-        return win ? win->clipboard() : std::string();
+    void request(std::function<void(std::string)> complete) {
+        if (win) win->request_clipboard(std::move(complete));
+        else complete({});
     }
 };
 
@@ -117,6 +118,7 @@ struct Profile {
     std::string user;
     std::string pass;
     std::string stored_pass;
+    std::string saved_pass; // 上次成功恢复或提交的内容，用于复用未修改的系统凭据
     bool secret_unavailable = false;
     std::string key;
     bool remember = false; // 是否把密码写进文件
@@ -250,23 +252,7 @@ std::string json_esc(const std::string& s) {
     return o;
 }
 
-void append_utf8(std::string& out, uint32_t cp) {
-    if (cp < 0x80)
-        out.push_back(char(cp));
-    else if (cp < 0x800) {
-        out.push_back(char(0xC0 | (cp >> 6)));
-        out.push_back(char(0x80 | (cp & 0x3F)));
-    } else if (cp < 0x10000) {
-        out.push_back(char(0xE0 | (cp >> 12)));
-        out.push_back(char(0x80 | ((cp >> 6) & 0x3F)));
-        out.push_back(char(0x80 | (cp & 0x3F)));
-    } else {
-        out.push_back(char(0xF0 | (cp >> 18)));
-        out.push_back(char(0x80 | ((cp >> 12) & 0x3F)));
-        out.push_back(char(0x80 | ((cp >> 6) & 0x3F)));
-        out.push_back(char(0x80 | (cp & 0x3F)));
-    }
-}
+using sshc::append_utf8;
 
 // 极简 JSON 扫描器：只认本文件写出来的那种结构（数组 + 扁平对象 + 字符串/数字/布尔）
 struct JsonScan {
@@ -384,59 +370,79 @@ struct JsonScan {
         *out = std::strtoll(s.substr(st, i - st).c_str(), nullptr, 10);
         return errno != ERANGE;
     }
-    void skip() {
+    bool skip(unsigned depth = 0) {
+        if (depth >= 128) return false;
         ws();
-        if (i >= s.size())
-            return;
+        if (i >= s.size()) return false;
         if (s[i] == '"') {
             std::string t;
-            str(&t);
-            return;
+            return str(&t);
         }
         if (s[i] == '{' || s[i] == '[') {
-            const char open = s[i], close = (open == '{' ? '}' : ']');
-            int depth = 0;
+            const bool object = s[i++] == '{';
+            const char close = object ? '}' : ']';
+            if (eat(close)) return true;
             do {
-                if (s[i] == open)
-                    ++depth;
-                else if (s[i] == close)
-                    --depth;
-                ++i;
-            } while (i < s.size() && depth > 0);
-            return;
+                if (object) {
+                    std::string key;
+                    if (!str(&key) || !eat(':')) return false;
+                }
+                if (!skip(depth + 1)) return false;
+                if (eat(close)) return true;
+            } while (eat(','));
+            return false;
         }
-        while (i < s.size() && s[i] != ',' && s[i] != '}' && s[i] != ']')
+        for (const char* literal : {"true", "false", "null"}) {
+            const size_t length = std::strlen(literal);
+            if (s.compare(i, length, literal) == 0) { i += length; return true; }
+        }
+        if (s[i] == '-') ++i;
+        if (i >= s.size()) return false;
+        auto digit = [&] { return i < s.size() && s[i] >= '0' && s[i] <= '9'; };
+        if (s[i] == '0') ++i;
+        else {
+            if (!digit()) return false;
+            while (digit()) ++i;
+        }
+        if (i < s.size() && s[i] == '.') {
             ++i;
+            if (!digit()) return false;
+            while (digit()) ++i;
+        }
+        if (i < s.size() && (s[i] == 'e' || s[i] == 'E')) {
+            ++i;
+            if (i < s.size() && (s[i] == '+' || s[i] == '-')) ++i;
+            if (!digit()) return false;
+            while (digit()) ++i;
+        }
+        return true;
     }
 };
 
-// 旧版 XOR 记录仅供一次迁移，不再写回。
-bool deobf(const std::string& s, std::string* decoded) {
-    if (s.rfind("x:", 0) != 0) {
-        *decoded = s;
-        return true;
-    }
-    std::vector<unsigned char> bytes;
-    if (!sshc::credential_unhex(s.substr(2), bytes))
-        return false;
-    std::string o;
-    o.reserve(bytes.size());
-    for (size_t i = 0; i < bytes.size(); ++i)
-        o.push_back(char(bytes[i] ^ static_cast<unsigned char>(0x5A + i * 31)));
+// 配置状态只由配置任务访问；UI 在完成后接收整个快照。
+struct ProfileStore {
+    std::string warning;
+    bool writable = true;
+    bool loaded = false;
+    std::string original;
+    std::vector<Profile> load();
+    bool save(std::vector<Profile>& all, std::string* err = nullptr);
+};
 
-    *decoded = std::move(o);
-    return true;
-}
-
-std::string profile_store_warning;
-bool save_local_profiles(std::vector<Profile>& all, std::string* err = nullptr);
-
-std::vector<Profile> load_local_profiles() {
+std::vector<Profile> ProfileStore::load() {
     std::vector<Profile> out;
-    profile_store_warning.clear();
+    warning.clear();
+    writable = true;
+    loaded = true;
+    original.clear();
     std::FILE* f = sshc::open_local_file(cfg_file(), "rb");
-    if (!f)
+    if (!f) {
+        if (errno != ENOENT) {
+            writable = false;
+            warning = "连接配置无法读取，已禁止覆盖保存";
+        }
         return out;
+    }
     std::string txt;
     char buf[4096];
     size_t n;
@@ -444,18 +450,30 @@ std::vector<Profile> load_local_profiles() {
         txt.append(buf, n);
     const bool read_failed = std::ferror(f) != 0;
     std::fclose(f);
+    original = txt;
     if (read_failed) {
-        profile_store_warning = "连接配置读取失败，未迁移密码";
+        writable = false;
+        warning = "连接配置读取失败，已禁止覆盖保存";
         return out;
     }
 
-    bool migrate = false;
     bool parsed = true;
-    bool migration_safe = true;
-    profile_store_warning.clear();
-    JsonScan js(txt);
-    if (!js.eat('['))
+    bool known_schema = true;
+    warning.clear();
+    JsonScan document(txt);
+    const bool valid = document.peek('[') && document.skip();
+    document.ws();
+    if (!valid || document.i != txt.size()) {
+        writable = false;
+        warning = "连接配置格式不完整，已保留原文并禁止覆盖保存";
         return out;
+    }
+    JsonScan js(txt);
+    if (!js.eat('[')) {
+        writable = false;
+        warning = "连接配置不是完整数组，已禁止覆盖保存";
+        return out;
+    }
     while (!js.peek(']') && js.i < txt.size()) {
         if (!js.eat('{')) {
             parsed = false;
@@ -489,8 +507,8 @@ std::vector<Profile> load_local_profiles() {
                 if (parsed)
                     p.remember = v != 0;
             } else {
-                migration_safe = false;
-                js.skip();
+                known_schema = false;
+                parsed = js.skip();
             }
             if (!parsed || (!js.peek('}') && !js.eat(','))) {
                 parsed = false;
@@ -509,36 +527,37 @@ std::vector<Profile> load_local_profiles() {
             if (p.stored_pass.rfind("dpapi:", 0) == 0 || p.stored_pass.rfind("vault:", 0) == 0) {
                 p.secret_unavailable = !sshc::restore_password(p.stored_pass, &p.pass);
                 if (p.secret_unavailable)
-                    profile_store_warning = "部分系统凭据无法读取，请解锁系统凭据服务或重新输入密码";
+                    warning = "部分系统凭据无法读取，请解锁系统凭据服务或重新输入密码";
             } else {
-                p.secret_unavailable = !deobf(p.stored_pass, &p.pass);
-                if (p.secret_unavailable)
-                    profile_store_warning = "部分旧密码记录损坏，已保留原记录，请重新输入密码";
-                else
-                    migrate = true;
+                p.secret_unavailable = true;
+                warning = "密码记录格式不受支持，已保留原记录；请重新输入密码";
             }
         }
+        p.saved_pass = p.pass;
         if (!p.host.empty() || !p.name.empty())
             out.push_back(p);
     }
-    // 截断文件不能用已读到的部分条目覆盖；只有完整数组才允许自动迁移。
+    // 不完整或未识别的配置只能读取，不能用部分已知字段覆盖原文。
     const bool complete = js.eat(']');
     js.ws();
     if (!parsed || !complete || js.i != txt.size()) {
-        profile_store_warning = "连接配置不完整，未自动迁移密码；请先修复配置文件";
-    } else if (migrate && !migration_safe) {
-        profile_store_warning = "配置含未知字段，未自动重写；请备份后重新保存连接以迁移密码";
-    } else if (migrate) {
-        std::string error;
-        if (!save_local_profiles(out, &error))
-            profile_store_warning = "旧密码尚未迁移：" + error;
+        writable = false;
+        warning = "连接配置不完整，已禁止覆盖保存；请先修复配置文件";
+    } else if (!known_schema) {
+        writable = false;
+        warning = "配置含未知字段，已保留原文并禁止覆盖；请先备份并确认配置格式";
     }
     return out;
 }
 
-bool save_local_profiles(std::vector<Profile>& all, std::string* err) {
+bool ProfileStore::save(std::vector<Profile>& all, std::string* err) {
+    if (!loaded) (void)load();
     if (err)
         err->clear();
+    if (!writable) {
+        if (err) *err = "原配置不完整或含未知字段，未覆盖保存；请先备份并修复配置";
+        return false;
+    }
     std::vector<std::string> old_secrets, new_secrets, protected_values;
     if (std::FILE* file = sshc::open_local_file(cfg_file(), "rb")) {
         std::string previous;
@@ -546,7 +565,19 @@ bool save_local_profiles(std::vector<Profile>& all, std::string* err) {
         size_t count;
         while ((count = std::fread(buffer, 1, sizeof(buffer), file)))
             previous.append(buffer, count);
+        const bool read_failed = std::ferror(file) != 0;
         std::fclose(file);
+        if (previous != original) {
+            if (err) *err = "配置已被其他程序修改，请重新导入后再保存";
+            return false;
+        }
+        JsonScan document(previous);
+        const bool valid = document.peek('[') && document.skip();
+        document.ws();
+        if (read_failed || !valid || document.i != previous.size()) {
+            if (err) *err = "原配置读取失败或不完整，未覆盖保存";
+            return false;
+        }
         JsonScan scan(previous);
         while (scan.i < previous.size()) {
             std::string key, value;
@@ -556,6 +587,10 @@ bool save_local_profiles(std::vector<Profile>& all, std::string* err) {
             } else
                 ++scan.i;
         }
+    }
+    else if (errno != ENOENT || !original.empty()) {
+        if (err) *err = "原配置无法读取或已被移除，请重新导入后再保存";
+        return false;
     }
     bool committed = false;
     aino::detail::ScopeExit rollback([&] {
@@ -584,7 +619,9 @@ bool save_local_profiles(std::vector<Profile>& all, std::string* err) {
                "\""
                ", \"pass\":\"";
         std::string stored;
-        if (p.remember && !p.pass.empty()) {
+        if (p.remember && !p.stored_pass.empty() && !p.secret_unavailable && p.pass == p.saved_pass) {
+            stored = p.stored_pass;
+        } else if (p.remember && !p.pass.empty()) {
             const std::string identity = cfg_file() + "|" + std::to_string(p.host.size()) + ":" + p.host +
                                          "|" + std::to_string(p.port) + "|" + std::to_string(p.user.size()) +
                                          ":" + p.user + "|" + p.name;
@@ -601,19 +638,23 @@ bool save_local_profiles(std::vector<Profile>& all, std::string* err) {
     if (!sshc::atomic_write_file(cfg_file(), txt, err))
         return false;
     committed = true;
+    original = txt;
     size_t index = 0;
     for (auto& profile : all)
-        if (profile.src == 0)
+        if (profile.src == 0) {
             profile.stored_pass = protected_values[index++];
+            profile.saved_pass = profile.pass;
+            if (!profile.pass.empty()) profile.secret_unavailable = false;
+        }
     bool cleanup_failed = false;
     for (const auto& secret : old_secrets)
         if (std::find(protected_values.begin(), protected_values.end(), secret) == protected_values.end() &&
             !sshc::erase_password(secret))
             cleanup_failed = true;
     if (cleanup_failed) {
-        profile_store_warning = "连接已保存，但部分旧凭据未能清理，请在系统凭据服务中检查 aino SSH 条目";
+        warning = "连接已保存，但部分旧凭据未能清理，请在系统凭据服务中检查 aino SSH 条目";
         if (err)
-            *err = profile_store_warning;
+            *err = warning;
     }
     return true;
 }
@@ -630,7 +671,7 @@ std::string expand_home(std::string p) {
 // VSCode Remote-SSH 读的就是这个文件，所以"适配 VSCode"= 把这份 config 读进来。
 std::vector<Profile> parse_ssh_config(const std::string& path, int src) {
     std::vector<Profile> out;
-    std::FILE* f = std::fopen(path.c_str(), "rb");
+    std::FILE* f = sshc::open_local_file(path, "rb");
     if (!f)
         return out;
     std::vector<std::string> lines;
@@ -744,7 +785,7 @@ std::string vscode_config_file() {
     cands.push_back(home_dir() + "/.config/Code/User/settings.json");
 #endif
     for (const std::string& c : cands) {
-        std::FILE* f = std::fopen(c.c_str(), "rb");
+        std::FILE* f = sshc::open_local_file(c, "rb");
         if (!f)
             continue;
         std::string txt;
@@ -882,8 +923,8 @@ bool ensure_ssh_config(const std::string& path = ssh_config_path(), std::string*
                                    error);
 }
 
-std::vector<Profile> load_all_profiles() {
-    std::vector<Profile> all = load_local_profiles();
+std::vector<Profile> load_all_profiles(ProfileStore& store) {
+    std::vector<Profile> all = store.load();
     auto add = [&](const std::vector<Profile>& v) {
         for (const Profile& p : v) {
             // 按主机、用户和端口去重，本地配置优先。
@@ -914,7 +955,7 @@ std::vector<Profile> load_all_profiles() {
 }
 
 std::string load_download_dir() {
-    std::FILE* f = std::fopen(download_file().c_str(), "rb");
+    std::FILE* f = sshc::open_local_file(download_file(), "rb");
     if (!f)
         return home_dir();
     std::string s;
@@ -1075,7 +1116,7 @@ struct UploadJob {
 };
 
 // 一个会话 = 一条 SSH 连接 + 一个终端 + 一块文件面板
-struct Session {
+struct Session : std::enable_shared_from_this<Session> {
     uint64_t ui_scope = 0; // 本窗口内稳定且不复用，关闭时释放内部 UI 状态
     // ---- pty 尺寸同步 ----
     // 用来节流：远端拒收 window-change 时不要每帧都发一个请求。
@@ -1332,7 +1373,7 @@ bool start_transfer(Session& s, bool upload, const std::string& local, const std
                     s.engine.xfer_step(16u << 10, &s.xfer_cancel);
                     const auto now = std::chrono::steady_clock::now();
                     if (now >= next_update) {
-                        const auto& t = s.engine.transfer();
+                        const auto& t = s.engine.transfer_snapshot();
                         {
                             std::lock_guard<std::mutex> lk(s.xfer_mtx);
                             s.xfer_view = {t.name, t.error, t.done, t.total, true, false};
@@ -1344,7 +1385,7 @@ bool start_transfer(Session& s, bool upload, const std::string& local, const std
                 }
                 if (s.xfer_cancel && s.engine.transfer_busy())
                     s.engine.cancel_transfer();
-                const auto& t = s.engine.transfer();
+                const auto& t = s.engine.transfer_snapshot();
                 {
                     std::lock_guard<std::mutex> lk(s.xfer_mtx);
                     s.xfer_view = {t.name, t.error, t.done, t.total, false, true};
@@ -1770,7 +1811,7 @@ void draw_terminal(aino::Ui& ui, Session& a, const Rect& area, const TermMetrics
             const Color fg = cell_fg_eff(c);
             int run = 1;
             std::string text;
-            append_utf8(text, c.ch);
+            sshc::append_cell_text(text, c);
             bool wide = sshc::wc_width(c.ch) > 1;
             bool boxed = is_box_glyph(c.ch);
             while (x + run < n) {
@@ -1786,7 +1827,7 @@ void draw_terminal(aino::Ui& ui, Session& a, const Rect& area, const TermMetrics
                     wide = true;
                 if (is_box_glyph(d.ch))
                     boxed = true;
-                append_utf8(text, d.ch);
+                sshc::append_cell_text(text, d);
                 ++run;
             }
             if (wide || boxed) {
@@ -1860,7 +1901,11 @@ void copy_terminal(Session& session) {
 void paste_terminal(Session& session) {
     if (!session.engine.shell_open() || !session.clip)
         return;
-    const auto text = session.clip->get();
+    const auto weak = session.weak_from_this();
+    session.clip->request([weak](std::string text) {
+    const auto keep = weak.lock();
+    if (!keep || keep->shutdown_done || keep->retired || !keep->engine.shell_open()) return;
+    auto& session = *keep;
     std::string payload;
     payload.reserve(text.size());
     for (size_t i = 0; i < text.size(); ++i) {
@@ -1885,6 +1930,7 @@ void paste_terminal(Session& session) {
     } else {
         send_key(session, payload);
     }
+    });
 }
 
 bool terminal_shortcut(const aino::Input& input, int key) {
@@ -1957,12 +2003,11 @@ void handle_term_keys(aino::Ui& ui, Session& a) {
         {aino::KEY_HOME, "\x1b[H", "\x1bOH"},     {aino::KEY_END, "\x1b[F", "\x1bOF"},
         {aino::KEY_DELETE, "\x1b[3~", "\x1b[3~"},
     };
-    const bool nav = true;
     for (const KeySeq& s : seqs) {
         const int times = in.key_times(s.key);
         if (times <= 0)
             continue;
-        const char* one = (nav && a.term.alt_screen()) ? s.app : s.normal;
+        const char* one = a.term.application_cursor() ? s.app : s.normal;
         std::string batch;
         for (int i = 0; i < times; ++i)
             batch += one;
@@ -2025,18 +2070,22 @@ bool dlg_button(aino::Ui& ui, const std::string& label, const Rect& r, Btn k) {
 
 // 密码内容交给 input() 编辑，保留 UTF-8、选区、粘贴与撤销行为。
 void password_field(aino::Ui& ui, const aino::Theme& th, std::string* value, bool* reveal, const Rect& r) {
-    ui.input(value, Rect(r.x, r.y, r.w - 32.0f, r.h), Style().secret(!*reveal).hint("输入密码"));
+    Style style = Style().secret(!*reveal).hint("输入密码");
+    style.disabled = g_block_input;
+    ui.input(value, Rect(r.x, r.y, r.w - 32.0f, r.h), style);
     const Rect eye = Rect::centered(r.right() - 14.0f, r.cy(), 24.0f, 24.0f);
-    if (ui.button("", eye, Style().ghost()))
+    style = Style().ghost(); style.disabled = g_block_input;
+    if (ui.button("", eye, style))
         *reveal = !*reveal;
-    ui.system_icon(aino::SystemIcon::Eye, eye.inset(5.0f), *reveal ? th.primary : th.muted_foreground);
+    ui.system_icon(aino::SystemIcon::Eye, eye.inset(5.0f), *reveal ? th.tint : th.label2);
     ui.tooltip(eye, *reveal ? "隐藏密码" : "显示密码");
 }
 
 // 普通文本字段（标题 + 输入框）
 bool field(aino::Ui& ui, const aino::Theme& th, const char* label, std::string* v, const Rect& r) {
-    ui.draw_text(label, Rect(r.x, r.y - 16.0f, r.w, 14.0f), th.muted_foreground, Style().font(11.0f));
-    return ui.input(v, r);
+    ui.draw_text(label, Rect(r.x, r.y - 16.0f, r.w, 14.0f), th.label2, Style().font(11.0f));
+    Style style; style.disabled = g_block_input;
+    return ui.input(v, r, style);
 }
 
 // =============================================================================
@@ -2151,8 +2200,8 @@ int draw_action_menu(aino::Ui& ui, MenuState& menu, std::vector<MenuItem> items)
     ui.impl->gate_claim(box, aino::Ui::Impl::Z_FRAME_END);
     ui.deferred([&ui, items = std::move(items), box, hover] {
         const auto& theme = ui.theme();
-        ui.fill_rect(box, theme.popover, 9);
-        ui.stroke_rect(box, theme.border, 9, 1);
+        ui.fill_rect(box, theme.popover_bg, 9);
+        ui.stroke_rect(box, theme.separator, 9, 1);
         for (size_t i = 0; i < items.size(); ++i) {
             const Rect row(box.x + pad, box.y + pad + float(i) * row_h, width - pad * 2, row_h);
             if (hover == int(i))
@@ -2376,7 +2425,7 @@ void draw_sftp(aino::Ui& ui, Session& session, const aino::Theme& theme, const R
     float height = note_lines.empty() ? 0.f : 16.f + float(note_lines.size()) * 17;
     for (const auto& row : rows)
         height += row.height;
-    ui.panel(list, Style().background(theme.is_dark() ? theme.card : theme.control_bg).corner(12));
+    ui.panel(list, Style().background(theme.is_dark() ? theme.card_bg : theme.control_bg).corner(12));
     if (session.reset_file_scroll) {
         ui.scroll_to_index(list, 0, 1, int(height + 8));
         session.reset_file_scroll = false;
@@ -2428,7 +2477,7 @@ void draw_sftp(aino::Ui& ui, Session& session, const aino::Theme& theme, const R
                            {row.x + 8, row.y + 10, 16, 16}, directory ? theme.tint : theme.label2);
             float text_y = row.y + 8;
             for (const auto& line : layout.lines) {
-                ui.draw_text(line, {row.x + 34, text_y, row.w - 44, 18}, theme.foreground, Style().font(12));
+                ui.draw_text(line, {row.x + 34, text_y, row.w - 44, 18}, theme.label, Style().font(12));
                 text_y += 18;
             }
             if (entry) {
@@ -2488,7 +2537,7 @@ void draw_sftp(aino::Ui& ui, Session& session, const aino::Theme& theme, const R
         command = selected && !selected->dir ? Download : Open;
     }
 
-    ui.panel(footer, Style().background(theme.is_dark() ? theme.card : theme.control_bg).corner(12));
+    ui.panel(footer, Style().background(theme.is_dark() ? theme.card_bg : theme.control_bg).corner(12));
     const float inner_x = footer.x + 12;
     const float inner_w = footer.w - 24;
     const float two = (inner_w - 6) * .5f;
@@ -2594,9 +2643,9 @@ void draw_prompt(aino::Ui& ui, Session& a, const aino::Theme& th) {
     const float bx1 = box.x + 20, bx2 = box.right() - 20;
     const float bw = (bx2 - bx1 - 10) * .5f;
     ui.fill_rect({0, 0, W, H}, Color(0, 0, 0, 130));
-    ui.fill_rect(box, th.popover, 10);
-    ui.stroke_rect(box, th.border, 10, 1);
-    ui.draw_text(title, {bx1, box.y + 14, bx2 - bx1, 22}, th.foreground, Style().font(14).bold());
+    ui.fill_rect(box, th.popover_bg, 10);
+    ui.stroke_rect(box, th.separator, 10, 1);
+    ui.draw_text(title, {bx1, box.y + 14, bx2 - bx1, 22}, th.label, Style().font(14).bold());
     float detail_y = box.y + 42;
     for (const auto& line : lines) {
         ui.draw_text(line, {bx1, detail_y, bx2 - bx1, 20}, th.label2, Style().font(12));
@@ -2644,6 +2693,56 @@ void draw_prompt(aino::Ui& ui, Session& a, const aino::Theme& th) {
 struct App {
     Clipboard clip;
     std::vector<Profile> profiles;
+    ProfileStore profile_store;
+    std::thread profile_thread;
+    std::atomic<bool> profile_done{false};
+    bool profile_ok = false;
+    std::vector<Profile> profile_result;
+    std::string profile_message;
+    std::function<void()> profile_committed;
+
+    ~App() {
+        if (profile_thread.joinable()) profile_thread.join();
+        shutdown_all();
+    }
+    bool profiles_busy() const { return profile_thread.joinable(); }
+    bool queue_profiles(bool reload, std::vector<Profile> next = {}, std::function<void()> committed = {}) {
+        if (profiles_busy()) { status = "连接配置正在处理，请稍候"; return false; }
+        profile_done = false;
+        profile_committed = std::move(committed);
+        status = reload ? "正在读取连接配置…" : "正在保存连接配置…";
+        profile_thread = std::thread([this, reload, next = std::move(next)]() mutable {
+            try {
+                profile_message.clear();
+                if (reload) {
+                    next = load_all_profiles(profile_store);
+                    profile_ok = true;
+                    profile_message = profile_store.warning;
+                } else {
+                    profile_ok = profile_store.save(next, &profile_message);
+                }
+                profile_result = std::move(next);
+            } catch (const std::exception& e) {
+                profile_ok = false;
+                profile_message = std::string("连接配置处理失败：") + e.what();
+            } catch (...) {
+                profile_ok = false;
+                profile_message = "连接配置处理失败";
+            }
+            profile_done.store(true, std::memory_order_release);
+            if (win) win->wake();
+        });
+        return true;
+    }
+    void collect_profiles() {
+        if (!profiles_busy() || !profile_done.load(std::memory_order_acquire)) return;
+        profile_thread.join();
+        if (profile_ok) profiles = std::move(profile_result);
+        status = profile_message.empty() ? (profile_ok ? "连接配置已更新" : "连接配置未保存") : profile_message;
+        auto committed = std::move(profile_committed);
+        profile_committed = {};
+        if (profile_ok && committed) committed();
+    }
     std::vector<std::shared_ptr<Session>> tabs;
 
     // 正在后台收拾的会话。
@@ -2724,6 +2823,8 @@ struct App {
 
     // 退出程序时调用：等所有后台收拾完，再让 Window 析构
     void shutdown_all() {
+        for (auto& session : tabs) if (session) session->engine.request_stop();
+        for (auto& session : dying) if (session) session->engine.request_stop();
         for (auto& t : tabs) {
             if (t)
                 t->shutdown();
@@ -2753,7 +2854,8 @@ Session& active_session(App& app) {
     return *app.tabs[size_t(app.active)];
 }
 
-bool save_profile(App& app, const Profile& p, int index) {
+bool save_profile(App& app, const Profile& p, int index, std::function<void()> committed = {}) {
+    if (app.profiles_busy()) { app.status = "连接配置正在处理，请稍候"; return false; }
     Profile clean = p;
     clean.host = sshc::trim_connection_identity(clean.host);
     clean.user = sshc::trim_connection_identity(clean.user);
@@ -2771,10 +2873,7 @@ bool save_profile(App& app, const Profile& p, int index) {
         q.src = 0;
         next.push_back(q);
     }
-    if (!save_local_profiles(next, &app.status))
-        return false;
-    app.profiles = std::move(next);
-    return true;
+    return app.queue_profiles(false, std::move(next), std::move(committed));
 }
 
 // 打开一个会话（补齐密码后再连）
@@ -2856,21 +2955,21 @@ void draw_fail_panel(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, 
 
     const Rect panel(area.x + (area.w - pw) * 0.5f, area.y + std::max(24.0f, (area.h - ph) * 0.42f), pw, ph);
     ui.fill_rect(panel, th.is_dark() ? Color::hex(0x14161B) : th.control_bg, 10.0f);
-    ui.stroke_rect(panel, th.is_dark() ? Color::hex(0x2A2F3A) : th.border, 10.0f, 1.0f);
+    ui.stroke_rect(panel, th.is_dark() ? Color::hex(0x2A2F3A) : th.separator, 10.0f, 1.0f);
     // 错误状态强调线。
     ui.fill_rect(Rect(panel.x + 1.0f, panel.y, panel.w - 2.0f, 2.0f), fx.color, 0.0f);
 
     float y = panel.y + pad;
-    ui.draw_text(fx.title, Rect(panel.x + pad, y, text_w, 24.0f), th.is_dark() ? fx.color : th.foreground,
+    ui.draw_text(fx.title, Rect(panel.x + pad, y, text_w, 24.0f), th.is_dark() ? fx.color : th.label,
                  Style().font(15.0f).bold());
     y += 26.0f + 10.0f;
     for (const std::string& ln : err_lines) {
-        ui.draw_text(ln, Rect(panel.x + pad, y, text_w, 18.0f), th.foreground, Style().font(12.5f));
+        ui.draw_text(ln, Rect(panel.x + pad, y, text_w, 18.0f), th.label, Style().font(12.5f));
         y += 19.0f;
     }
     y += 8.0f;
     for (const std::string& ln : adv_lines) {
-        ui.draw_text(ln, Rect(panel.x + pad, y, text_w, 17.0f), th.muted_foreground, Style().font(12.0f));
+        ui.draw_text(ln, Rect(panel.x + pad, y, text_w, 17.0f), th.label2, Style().font(12.0f));
         y += 18.0f;
     }
     if (!adv_lines.empty())
@@ -2902,6 +3001,7 @@ void draw_fail_panel(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, 
 void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, const Rect& body);
 
 void new_profile(App& app) {
+    if (app.profiles_busy()) return;
     app.editor_open = true;
     app.editing = -1;
     app.draft = Profile{};
@@ -2971,7 +3071,7 @@ void draw_connection_text(aino::Ui& ui, const ConnectionRow& layout, const Rect&
     const float text_x = row.x + 44;
     float y = row.y + 12;
     for (const auto& line : layout.title) {
-        ui.draw_text(line, {text_x, y, text_width, 18}, theme.foreground, Style().font(12.5f).semi_bold());
+        ui.draw_text(line, {text_x, y, text_width, 18}, theme.label, Style().font(12.5f).semi_bold());
         y += 18;
     }
     for (const auto& line : layout.detail) {
@@ -3016,7 +3116,7 @@ void draw_connections(aino::Ui& ui, App& app, const aino::Theme& theme, const Re
         for (const auto& row : group)
             height += row.height;
         ui.panel({x, y, width, height},
-                 Style().background(theme.is_dark() ? theme.card : theme.control_bg).corner(12));
+                 Style().background(theme.is_dark() ? theme.card_bg : theme.control_bg).corner(12));
         for (size_t i = 0; i < group.size(); ++i) {
             const auto& layout = group[i];
             const auto& profile = app.profiles[size_t(layout.index)];
@@ -3051,7 +3151,7 @@ void draw_connections(aino::Ui& ui, App& app, const aino::Theme& theme, const Re
                         return;
                     }
                     if (profile.src == 0) {
-                        if (tool_button(ui, "编辑", {action + 76, row.cy() - 15, 60, 30}, false)) {
+                        if (tool_button(ui, "编辑", {action + 76, row.cy() - 15, 60, 30}, false) && !app.profiles_busy()) {
                             app.editor_open = true;
                             app.editing = layout.index;
                             app.draft = profile;
@@ -3062,8 +3162,7 @@ void draw_connections(aino::Ui& ui, App& app, const aino::Theme& theme, const Re
                         if (tool_button(ui, "删除", {action + 148, row.cy() - 15, 60, 30}, true)) {
                             auto next = app.profiles;
                             next.erase(next.begin() + layout.index);
-                            if (save_local_profiles(next, &app.status))
-                                app.profiles = std::move(next);
+                            app.queue_profiles(false, std::move(next));
                             return;
                         }
                     } else if (tool_button(ui, "打开配置", {action + 76, row.cy() - 15, 132, 30}, false)) {
@@ -3080,7 +3179,7 @@ void draw_connections(aino::Ui& ui, App& app, const aino::Theme& theme, const Re
     }
     if (!count) {
         ui.panel({x, y, width, 140},
-                 Style().background(theme.is_dark() ? theme.card : theme.control_bg).corner(12));
+                 Style().background(theme.is_dark() ? theme.card_bg : theme.control_bg).corner(12));
         ui.label(app.profile_filter.empty() ? "还没有连接" : "没有匹配的连接",
                  {x + 12, y + 28, width - 24, 24}, Style().font(14).semi_bold().center());
         if (!app.profile_filter.empty()) {
@@ -3124,7 +3223,7 @@ WorkspaceLayout workspace_layout(aino::Ui& ui, App& app) {
 }
 
 void draw_toolbar(aino::Ui& ui, App& app, const aino::Theme& theme) {
-    ui.fill_rect({0, 0, ui.width(), 56}, theme.card);
+    ui.fill_rect({0, 0, ui.width(), 56}, theme.card_bg);
     ui.separator({0, 55, ui.width(), 1});
     Style style = Style().ghost();
     style.disabled = g_block_input;
@@ -3141,9 +3240,7 @@ void draw_toolbar(aino::Ui& ui, App& app, const aino::Theme& theme) {
     if (tool_button(ui, "打开配置文件", {ui.width() - 286, 12, 120, 32}, false))
         open_config_file(app);
     if (tool_button(ui, "重新导入连接", {ui.width() - 156, 12, 104, 32}, false)) {
-        app.profiles = load_all_profiles();
-        app.status = profile_store_warning.empty() ? "已重新读取 SSH / VSCode 连接配置，现有会话继续运行。"
-                                                   : profile_store_warning;
+        app.queue_profiles(true);
     }
     const Rect appearance(ui.width() - 42, 12, 30, 32);
     if (ui.icon_button("", appearance, style))
@@ -3182,7 +3279,7 @@ void draw_workspace_sidebar(aino::Ui& ui, App& app, const aino::Theme& theme, co
     const auto path_lines = wrap_text(ui, display_path(ssh_config_path()), 10.5f, area.w - 56);
     const float footer_h = 48 + float(path_lines.size()) * 15;
     const Rect footer(area.x + 12, area.bottom() - 22 - footer_h, area.w - 24, footer_h);
-    ui.panel(footer, Style().background(theme.is_dark() ? theme.card : theme.control_bg).corner(12));
+    ui.panel(footer, Style().background(theme.is_dark() ? theme.card_bg : theme.control_bg).corner(12));
     ui.label("SSH 配置文件", {footer.x + 16, footer.y + 12, footer.w - 32, 18}, Style().font(11).semi_bold());
     float y = footer.y + 34;
     for (const auto& line : path_lines) {
@@ -3195,18 +3292,18 @@ void draw_workspace_sidebar(aino::Ui& ui, App& app, const aino::Theme& theme, co
 
 // ---- 连接编辑器（新建 / 编辑）----
 void draw_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
-    g_block_input = false; // 弹窗自己吃输入
+    g_block_input = app.profiles_busy();
     const float W = ui.width(), H = ui.height();
     const aino::Input& in = ui.input();
     ui.fill_rect(Rect(0, 0, W, H), Color(0, 0, 0, 140));
 
     const Rect box(W * 0.5f - 260.0f, H * 0.5f - 190.0f, 520.0f, 380.0f);
-    ui.fill_rect(box, th.popover, 12.0f);
-    ui.stroke_rect(box, th.border, 12.0f, 1.0f);
+    ui.fill_rect(box, th.popover_bg, 12.0f);
+    ui.stroke_rect(box, th.separator, 12.0f, 1.0f);
 
     const float x1 = box.x + 24.0f, x2 = box.right() - 24.0f;
     ui.draw_text(app.editing >= 0 ? "编辑连接" : "新建连接", Rect(x1, box.y + 18.0f, x2 - x1, 24.0f),
-                 th.foreground, Style().font(15.0f).bold());
+                 th.label, Style().font(15.0f).bold());
 
     const float lh = 54.0f;
     float y = box.y + 62.0f;
@@ -3217,9 +3314,10 @@ void draw_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
     field(ui, th, "主机", &app.draft.host, Rect(x1, y, half, 30.0f));
     {
         std::string port_s = std::to_string(app.draft.port);
-        ui.draw_text("端口", Rect(x1 + half + 12.0f, y - 16.0f, half, 14.0f), th.muted_foreground,
+        ui.draw_text("端口", Rect(x1 + half + 12.0f, y - 16.0f, half, 14.0f), th.label2,
                      Style().font(11.0f));
-        if (ui.input(&port_s, Rect(x1 + half + 12.0f, y, half, 30.0f))) {
+        Style edit_style; edit_style.disabled = app.profiles_busy();
+        if (ui.input(&port_s, Rect(x1 + half + 12.0f, y, half, 30.0f), edit_style)) {
             const int v = std::atoi(port_s.c_str());
             if (v > 0 && v < 65536)
                 app.draft.port = v;
@@ -3227,7 +3325,7 @@ void draw_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
     }
     y += lh;
     field(ui, th, "用户", &app.draft.user, Rect(x1, y, half, 30.0f));
-    ui.draw_text("密码", Rect(x1 + half + 12.0f, y - 16.0f, half, 14.0f), th.muted_foreground,
+    ui.draw_text("密码", Rect(x1 + half + 12.0f, y - 16.0f, half, 14.0f), th.label2,
                  Style().font(11.0f));
     password_field(ui, th, &app.draft.pass, &app.draft_reveal, Rect(x1 + half + 12.0f, y, half, 30.0f));
     y += lh;
@@ -3237,35 +3335,32 @@ void draw_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
     // 记住密码
     {
         const Rect cb(x1, y, 16.0f, 16.0f);
-        ui.checkbox(&app.draft_remember, "", cb);
+        Style edit_style; edit_style.disabled = app.profiles_busy();
+        ui.checkbox(&app.draft_remember, "", cb, edit_style);
         ui.draw_text("记住密码（由当前用户的系统凭据服务保护）",
-                     Rect(cb.right() + 10.0f, y - 2.0f, x2 - cb.right() - 20.0f, 20.0f), th.muted_foreground,
+                     Rect(cb.right() + 10.0f, y - 2.0f, x2 - cb.right() - 20.0f, 20.0f), th.label2,
                      Style().font(11.5f));
     }
 
     // 按钮
     const float by = box.bottom() - 52.0f;
     const float bw = (x2 - x1 - 20.0f) / 3.0f;
-    if (dlg_button(ui, "取消", Rect(x1, by, bw, 34.0f), Btn::Normal) || in.key_pressed[aino::KEY_ESC]) {
+    const bool cancel = dlg_button(ui, "取消", Rect(x1, by, bw, 34.0f), Btn::Normal);
+    if (!app.profiles_busy() && (cancel || in.key_pressed[aino::KEY_ESC])) {
         app.editor_open = false;
         return;
     }
     app.draft.remember = app.draft_remember;
     if (dlg_button(ui, "仅保存", Rect(x1 + bw + 10.0f, by, bw, 34.0f), Btn::Normal)) {
         if (!app.draft.host.empty()) {
-            if (!save_profile(app, app.draft, app.editing))
-                return;
-            app.editor_open = false;
-            if (app.status.empty())
-                app.status = "已保存连接";
+            save_profile(app, app.draft, app.editing, [&app] { app.editor_open = false; });
         }
     }
     if (dlg_button(ui, "保存并连接", Rect(x1 + (bw + 10.0f) * 2.0f, by, bw, 34.0f), Btn::Primary)) {
         if (!app.draft.host.empty()) {
-            if (!save_profile(app, app.draft, app.editing))
-                return;
-            const std::string save_warning = app.status;
             const Profile p = app.draft;
+            save_profile(app, p, app.editing, [&app, p] {
+            const std::string save_warning = app.status;
             app.editor_open = false;
             if (!p.pass.empty() || !p.key.empty())
                 open_session(app, p, p.pass);
@@ -3278,6 +3373,7 @@ void draw_editor(aino::Ui& ui, App& app, const aino::Theme& th) {
             }
             if (!save_warning.empty())
                 app.status = save_warning;
+            });
         }
     }
 }
@@ -3289,8 +3385,8 @@ void draw_ask_password(aino::Ui& ui, App& app, const aino::Theme& th) {
     const aino::Input& in = ui.input();
     ui.fill_rect(Rect(0, 0, W, H), Color(0, 0, 0, 140));
     const Rect box(W * 0.5f - 200.0f, H * 0.5f - 90.0f, 400.0f, 180.0f);
-    ui.fill_rect(box, th.popover, 12.0f);
-    ui.stroke_rect(box, th.border, 12.0f, 1.0f);
+    ui.fill_rect(box, th.popover_bg, 12.0f);
+    ui.stroke_rect(box, th.separator, 12.0f, 1.0f);
 
     std::string who = app.draft.host;
     if (app.ask_index >= 0 && app.ask_index < int(app.profiles.size()))
@@ -3298,9 +3394,9 @@ void draw_ask_password(aino::Ui& ui, App& app, const aino::Theme& th) {
             app.profiles[size_t(app.ask_index)].name + "  (" + app.profiles[size_t(app.ask_index)].host + ")";
 
     const float x1 = box.x + 24.0f, x2 = box.right() - 24.0f;
-    ui.draw_text("输入密码", Rect(x1, box.y + 18.0f, x2 - x1, 22.0f), th.foreground,
+    ui.draw_text("输入密码", Rect(x1, box.y + 18.0f, x2 - x1, 22.0f), th.label,
                  Style().font(14.0f).bold());
-    ui.draw_text(who, Rect(x1, box.y + 44.0f, x2 - x1, 18.0f), th.muted_foreground, Style().font(11.5f));
+    ui.draw_text(who, Rect(x1, box.y + 44.0f, x2 - x1, 18.0f), th.label2, Style().font(11.5f));
     password_field(ui, th, &app.ask_pass, &app.ask_reveal, Rect(x1, box.y + 68.0f, x2 - x1, 32.0f));
 
     const float by = box.bottom() - 50.0f;
@@ -3325,7 +3421,7 @@ void draw_ask_password(aino::Ui& ui, App& app, const aino::Theme& th) {
 // ---- 标签栏 ----
 void draw_tabs(aino::Ui& ui, App& app, const aino::Theme& th, const Rect& area) {
     const float W = area.w, h = area.h;
-    ui.fill_rect(area, th.card);
+    ui.fill_rect(area, th.card_bg);
     ui.separator({area.x, area.bottom() - 1, W, 1});
     Style home_style = Style().font(12).padding(12);
     home_style.disabled = g_block_input;
@@ -3363,7 +3459,7 @@ void draw_tabs(aino::Ui& ui, App& app, const aino::Theme& th, const Rect& area) 
     if (ui.icon_button("", add, add_style))
         app.show_start = true;
     ui.system_icon(aino::SystemIcon::Plus, add.inset(6.0f),
-                   (app.show_start ? th.primary : th.label2).scaled_alpha(g_block_input ? 0.45f : 1.0f));
+                   (app.show_start ? th.tint : th.label2).scaled_alpha(g_block_input ? 0.45f : 1.0f));
 
     if (closed >= 0)
         close_tab(app, closed);
@@ -3504,11 +3600,11 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
     const auto target_lines =
         wrap_text(ui, a.user + "@" + a.host + ":" + std::to_string(a.port), 11.5f, W - 208);
     const float strip_h = std::max(40.f, 16 + float(target_lines.size()) * 17);
-    ui.fill_rect({r_frame.x, r_frame.y, r_frame.w, strip_h}, th.card);
+    ui.fill_rect({r_frame.x, r_frame.y, r_frame.w, strip_h}, th.card_bg);
     ui.separator({r_frame.x, r_frame.y + strip_h - 1, r_frame.w, 1});
     float target_y = r_frame.y + 8;
     for (const auto& line : target_lines) {
-        ui.draw_text(line, {r_frame.x + 14, target_y, W - 208, 17}, th.foreground, Style().font(11.5f));
+        ui.draw_text(line, {r_frame.x + 14, target_y, W - 208, 17}, th.label, Style().font(11.5f));
         target_y += 17;
     }
     const bool connected = a.engine.connected();
@@ -3663,7 +3759,7 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
     }
 
     const Rect footer(body.x, body.bottom() - status_h, W, status_h);
-    ui.fill_rect(footer, th.card);
+    ui.fill_rect(footer, th.card_bg);
     ui.separator({footer.x, footer.y, footer.w, 1});
     float status_y = footer.y + 6;
     for (const auto& line : status_lines) {
@@ -3680,7 +3776,7 @@ void session_frame(aino::Ui& ui, Session& a, App& app, const aino::Theme& th, co
         const Rect progress(footer.right() - 190, status_y + transfer_h * .5f - 3, 100, 6);
         const float fraction =
             transfer.total ? std::min(1.f, float(double(transfer.done) / double(transfer.total))) : 0;
-        ui.fill_rect(progress, th.border, 3);
+        ui.fill_rect(progress, th.separator, 3);
         ui.fill_rect({progress.x, progress.y, progress.w * fraction, progress.h}, th.tint, 3);
         if (tool_button(ui, a.xfer_cancel ? "取消中…" : "取消",
                         {footer.right() - 76, status_y + (transfer_h - 26) * .5f, 62, 26}, false)) {
@@ -3720,7 +3816,7 @@ void draw_workspace(aino::Ui& ui, App& app, const aino::Theme& th) {
             const auto lines = wrap_text(ui, app.status, 11.f, layout.content.w - 56);
             const float height = 16 + float(lines.size()) * 16;
             const Rect note(layout.content.x, layout.content.bottom() - height, layout.content.w, height);
-            ui.fill_rect(note, th.card);
+            ui.fill_rect(note, th.card_bg);
             float y = note.y + 8;
             for (const auto& line : lines) {
                 ui.draw_text(line, {note.x + 28, y, note.w - 56, 16}, th.label2, Style().font(11));
@@ -3947,7 +4043,8 @@ std::vector<std::string> local_file_uris(std::string_view payload) {
 #endif
 
 void frame(aino::Ui& ui, App& app, const aino::Theme& theme) {
-    ui.clear(theme.background);
+    app.collect_profiles();
+    ui.clear(theme.window_bg);
     ui.set_animating(false);
     app.reap();
     for (auto& session : app.tabs)
@@ -4044,8 +4141,7 @@ int app_main() {
     app.win = &win;
     app.clip.win = &win;
     app.download_dir = load_download_dir();
-    app.profiles = load_all_profiles();
-    app.status = profile_store_warning;
+    app.queue_profiles(true);
 
     // 拖拽选区要跟着指针实时更新，而库默认"同一控件内移动不重绘"
     win.set_hover_skip(false);

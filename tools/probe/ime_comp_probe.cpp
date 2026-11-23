@@ -117,7 +117,7 @@ int main() {
     // 必须在建 aino 窗口之前抢注这个类名（见 make_fake_composition_window 的注释）
     HWND fake_comp = make_fake_composition_window();
 
-    Window win(int(kLogicalW), int(kLogicalH), "aino-imecomp-probe");
+    Window win(aino::WindowConfig{int(kLogicalW), int(kLogicalH), "aino-imecomp-probe"});
     if (!win.ok()) { std::printf("window failed\n"); return 1; }
 
     std::string text = "";                 // 空框 + hint：与 gallery 里的输入框一致

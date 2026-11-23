@@ -192,7 +192,7 @@ void draw_one(Ui& ui, Comp c, State& s) {
         ui.panel(Rect(50, 95, 360, 130));
         break;
     case C_CARD:
-        ui.card(Rect(50, 95, 360, 130));
+        ui.panel(Rect(50, 95, 360, 130));
         break;
     case C_SEPARATOR:
         ui.separator(Rect(70, 140, 320, 1));
@@ -376,7 +376,7 @@ int main(int argc, char** argv) {
     }
 
     State s;
-    aino::Window win(460, 300, std::string("aino perf ") + comp_name);
+    aino::Window win(aino::WindowConfig{460, 300, std::string("aino perf ") + comp_name});
     if (!win.ok()) { std::fprintf(stderr, "[perf] 窗口创建失败\n"); return 3; }
 
     // 统计累加器

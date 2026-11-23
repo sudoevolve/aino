@@ -24,7 +24,7 @@ ui.separator({300, 24, 1, 200});
 ```
 
 按宽高判断方向，画在盒子中线上，粗细 1 逻辑单位。
-颜色为 `st.bg`，未指定时用 `theme.border`。
+颜色为 `st.bg`，未指定时用 `theme.separator`。
 
 ## 3. `badge`
 
@@ -66,7 +66,7 @@ ui.skeleton({24, 160, 260, 16});
 ui.skeleton({24, 186, 180, 16}, aino::Style().animate());
 ```
 
-默认静态，底色 `theme.muted`，圆角 `theme.radius=6`。
+默认静态，底色 `theme.fill3`，圆角 `theme.radius=6`。
 `.animate()` 允许悬停时推进局部呼吸相位，移开或被浮层遮住时停止请求帧。
 它不提供常驻动画选项；帧回调中没有通用重绘请求入口。
 画廊加载预览统一只在悬停时动。

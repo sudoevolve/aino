@@ -131,14 +131,19 @@ int main() {
                 window.render([&](aino::Ui& ui) {
                 expect(std::abs(ui.width() - width) <= 1 && std::abs(ui.height() - height) <= 1,
                     "fixture retains requested logical client size");
-                ui.clear(ui.theme().background);
+                ui.clear(ui.theme().window_bg);
                 draw_workspace(ui, app, ui.theme());
                 const auto layout = workspace_layout(ui, app);
                 expect(layout.content.right() <= ui.width() + .1f && layout.content.bottom() <= ui.height() + .1f,
                     "workspace stays inside client bounds");
                 expect(layout.content.w >= 460, "terminal retains usable width");
-                if (mode == 1) expect(app.tabs[1]->r_list.bottom() <= ui.height() - 180,
-                    "file list leaves space for fixed actions");
+                if (mode == 1) {
+                    const float action_top = layout.sidebar.bottom() - 22 - 116;
+                    expect(app.tabs[1]->r_list.bottom() <= action_top - 12 + .1f,
+                        "file list leaves a gap above fixed actions");
+                    expect(layout.sidebar.bottom() - (action_top + 116) >= 22 - .1f,
+                        "fixed actions retain bottom clearance");
+                }
                 const Rect row(0, 0, app.sidebar_open ? layout.sidebar.w - 24 : 276, 0);
                 const auto measured = connection_row(ui, app.profiles[0], 0, row.w, true);
                 for (const auto& line : measured.title)

@@ -610,6 +610,7 @@ def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("127.0.0.1", ARGS.port))
+    ARGS.port = sock.getsockname()[1]
     sock.listen(16)
     print(f"SSH 测试服务器已启动: 127.0.0.1:{ARGS.port}  用户 {ARGS.user} / {ARGS.password}")
     sys.stdout.flush()

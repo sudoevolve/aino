@@ -1330,10 +1330,10 @@ float eval_F(const Ctx& c, float x, float y) {
 // 网格和坐标轴：画在曲线下面
 void draw_grid(aino::Ui& ui, const View& v, const aino::Theme& th) {
     const Rect& px = v.px;
-    // ⚠ `with_alpha` 是**替换** alpha，不是按比例缩。`th.border` 是 10% 黑，
+    // ⚠ `with_alpha` 是**替换** alpha，不是按比例缩。`th.separator` 是 10% 黑，
     // 替换成 150 之后就是 59% 的深灰 —— 网格线看起来像用尺子画的 Excel 表。
     // 官方图表（含 Swift Charts）的网格是 8~12% 的黑，坐标轴稍深一档。
-    const Color grid = th.border;
+    const Color grid = th.separator;
     const Color axis = th.label3;
 
     const float step = nice_step(v.half_w * 2.0f / 8.0f);
@@ -1367,7 +1367,7 @@ void draw_ticks(aino::Ui& ui, const View& v, const aino::Theme& th) {
     const float step = nice_step(v.half_w * 2.0f / 8.0f);
     const float step_y = nice_step(v.half_h * 2.0f / 6.0f);
     const float ax = v.sx(0.0f), ay = v.sy(0.0f);
-    const Color tc = th.muted_foreground.with_alpha(238);
+    const Color tc = th.label2.with_alpha(238);
     const float fs = 10.5f;
 
     // 坐标轴超出视野时，将刻度标签约束在视口边缘。
@@ -1424,7 +1424,7 @@ void draw_curve(Ctx& c) {
     // 光晕（宽、低 alpha）+ 实线：两次折线，视觉上"发光"但不糊
     polyline(ui, px, pts, c.curve_c.with_alpha(26), 6.0f);
 
-    if (c.pre.kind == Kind::Curve && !c.prog && c.th.background.luminance() < 0.5f) {
+    if (c.pre.kind == Kind::Curve && !c.prog && c.th.window_bg.luminance() < 0.5f) {
         // 深色主题下给曲线一层更明显的辉光，看起来像发光的示波器
         polyline(ui, px, pts, c.curve_c.with_alpha(40), 3.6f);
     }
@@ -1588,18 +1588,18 @@ void draw_colorbar(aino::Ui& ui, const View& v, const aino::Theme& th) {
     const Rect px = v.px;
     const float bw = 96.0f, bh = 7.0f;
     const Rect bar(px.x + 26.0f, px.bottom() - 22.0f, bw, bh);
-    ui.fill_rect(Rect(bar.x - 22.0f, bar.y - 6.0f, bw + 46.0f, bh + 12.0f), th.background.with_alpha(228),
+    ui.fill_rect(Rect(bar.x - 22.0f, bar.y - 6.0f, bw + 46.0f, bh + 12.0f), th.window_bg.with_alpha(228),
                  5.0f);
-    ui.stroke_rect(Rect(bar.x - 22.0f, bar.y - 6.0f, bw + 46.0f, bh + 12.0f), th.border.with_alpha(160), 5.0f,
+    ui.stroke_rect(Rect(bar.x - 22.0f, bar.y - 6.0f, bw + 46.0f, bh + 12.0f), th.separator.with_alpha(160), 5.0f,
                    1.0f);
     for (int i = 0; i < 32; ++i) {
         const float t = (static_cast<float>(i) + 0.5f) / 32.0f;
         ui.fill_rect(Rect(bar.x + bw * static_cast<float>(i) / 32.0f, bar.y, bw / 32.0f + 0.5f, bh),
                      viridis(t));
     }
-    ui.draw_text("-1", Rect(bar.x - 20.0f, bar.y - 2.0f, 17.0f, 11.0f), th.muted_foreground,
+    ui.draw_text("-1", Rect(bar.x - 20.0f, bar.y - 2.0f, 17.0f, 11.0f), th.label2,
                  Style().font(10.0f).right().middle());
-    ui.draw_text("+1", Rect(bar.right() + 4.0f, bar.y - 2.0f, 17.0f, 11.0f), th.muted_foreground,
+    ui.draw_text("+1", Rect(bar.right() + 4.0f, bar.y - 2.0f, 17.0f, 11.0f), th.label2,
                  Style().font(10.0f).left().middle());
 }
 
@@ -1663,7 +1663,7 @@ void draw_crosshair(Ctx& c) {
 
     if (has_dot) {
         // 先垫一层背景色，再画实心点：曲线正好穿过这里，不垫就看不出点在哪
-        ui.fill_circle(dot_x, dot_y, 5.2f, c.th.background);
+        ui.fill_circle(dot_x, dot_y, 5.2f, c.th.window_bg);
         ui.fill_circle(dot_x, dot_y, 4.0f, c.curve_c.with_alpha(70));
         ui.fill_circle(dot_x, dot_y, 2.8f, c.curve_c);
     }
@@ -1671,9 +1671,9 @@ void draw_crosshair(Ctx& c) {
     const float fs = 11.0f;
     const float w = ui.text_width(info, fs) + 20.0f;
     const Rect chip(px.x + 10.0f, px.y + 10.0f, std::max(140.0f, w), 24.0f);
-    ui.fill_rect(chip, c.th.background.with_alpha(232), 6.0f);
-    ui.stroke_rect(chip, c.th.border, 6.0f, 1.0f);
-    ui.draw_text(info, chip.inset(10.0f, 0.0f), c.th.foreground, Style().font(fs).left().middle());
+    ui.fill_rect(chip, c.th.window_bg.with_alpha(232), 6.0f);
+    ui.stroke_rect(chip, c.th.separator, 6.0f, 1.0f);
+    ui.draw_text(info, chip.inset(10.0f, 0.0f), c.th.label, Style().font(fs).left().middle());
 }
 
 void draw_legend(Ctx& c) {
@@ -1684,10 +1684,10 @@ void draw_legend(Ctx& c) {
     const Color dc = c.dark ? Color::hex(0xFB923C) : Color::hex(0xEA580C);
     const float y = px.y + 14.0f;
     ui.fill_circle(px.right() - 118.0f, y + 3.0f, 3.2f, c.curve_c);
-    ui.draw_text("y", Rect(px.right() - 110.0f, y - 5.0f, 20.0f, 16.0f), c.th.muted_foreground,
+    ui.draw_text("y", Rect(px.right() - 110.0f, y - 5.0f, 20.0f, 16.0f), c.th.label2,
                  Style().font(11.0f).left().middle());
     ui.fill_circle(px.right() - 62.0f, y + 3.0f, 3.2f, dc);
-    ui.draw_text("y'", Rect(px.right() - 54.0f, y - 5.0f, 30.0f, 16.0f), c.th.muted_foreground,
+    ui.draw_text("y'", Rect(px.right() - 54.0f, y - 5.0f, 30.0f, 16.0f), c.th.label2,
                  Style().font(11.0f).left().middle());
 }
 
@@ -1813,9 +1813,9 @@ void draw_sidebar(aino::Ui& ui, UiState& st, const aino::Theme& th) {
     scroll.close();
 
     // 底部：外观开关 + 运行状态
-    ui.panel(footer, Style().background(th.window_bg.luminance() < .5f ? th.card : th.control_bg).corner(12));
+    ui.panel(footer, Style().background(th.window_bg.luminance() < .5f ? th.card_bg : th.control_bg).corner(12));
     const Rect foot(footer.x + 12, footer.y + 12, footer.w - 24, 26);
-    ui.draw_text("深色主题", Rect(foot.x, foot.y, 90.0f, 26.0f), th.foreground,
+    ui.draw_text("深色主题", Rect(foot.x, foot.y, 90.0f, 26.0f), th.label,
                  Style().font(12.5f).left().middle());
     bool dark = a.dark;
     if (ui.toggle(&dark, Rect(foot.right() - 44.0f, foot.y + 3.0f, 44.0f, 20.0f))) {
@@ -1825,7 +1825,7 @@ void draw_sidebar(aino::Ui& ui, UiState& st, const aino::Theme& th) {
     }
     // 状态行：动画开着是 60fps 连续重绘，关掉就回到"一帧都不画"
     ui.draw_text(a.anim ? "正在播放 · 空格暂停" : "已暂停 · 空格播放",
-                 Rect(foot.x, foot.bottom() + 6, foot.w, 18), th.muted_foreground,
+                 Rect(foot.x, foot.bottom() + 6, foot.w, 18), th.label2,
                  Style().font(10.5f).left().middle());
 }
 
@@ -1835,7 +1835,7 @@ void draw_controls(aino::Ui& ui, UiState& st, const Rect& bar, const aino::Theme
     const bool custom = (a.cat == kCustomCat);
     ui.panel(bar,
              Style()
-                 .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg)
+                 .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card_bg : ui.theme().control_bg)
                  .corner(12));
 
     const Rect inner = bar.inset(16.0f, 14.0f);
@@ -1845,7 +1845,7 @@ void draw_controls(aino::Ui& ui, UiState& st, const Rect& bar, const aino::Theme
         // 每种模式给一句对症的示例 —— 光写 "支持表达式" 没人知道能写什么
         auto input_row = [&](const char* tag, std::string* s, const char* hint) {
             aino::Stack hb = ui.hbox(Rect(inner.x, y, inner.w, 36.0f), 10.0f);
-            ui.draw_text(tag, hb.next(52.0f), th.muted_foreground, Style().font(12.0f).left().middle());
+            ui.draw_text(tag, hb.next(52.0f), th.label2, Style().font(12.0f).left().middle());
             const Rect input = hb.fill();
             ui.input(s, input, Style().hint(hint));
             if (ui.input().pressed[0] && input.contains(ui.input().mouse))
@@ -1879,7 +1879,7 @@ void draw_controls(aino::Ui& ui, UiState& st, const Rect& bar, const aino::Theme
         const int n = custom ? 3 : static_cast<int>(pre.knobs.size());
         if (n == 0) {
             ui.draw_text("这个公式没有可调参数 —— 滚轮缩放、拖拽平移、双击复位",
-                         Rect(row.x, row.y, row.w, 34.0f), th.muted_foreground.with_alpha(210),
+                         Rect(row.x, row.y, row.w, 34.0f), th.label2.with_alpha(210),
                          Style().font(11.5f).left().middle());
         }
         // 每格限宽 300：窗口拉宽时滑杆不该拉到一米长，短滑杆更好瞄
@@ -1890,9 +1890,9 @@ void draw_controls(aino::Ui& ui, UiState& st, const Rect& bar, const aino::Theme
             const std::string label = custom ? fmt("%c", 'a' + i) : pre.knobs[i].label;
             const float lo = custom ? -3.0f : pre.knobs[i].lo;
             const float hi = custom ? 3.0f : pre.knobs[i].hi;
-            ui.draw_text(label, Rect(cell.x, cell.y, cell.w - 44.0f, 14.0f), th.muted_foreground,
+            ui.draw_text(label, Rect(cell.x, cell.y, cell.w - 44.0f, 14.0f), th.label2,
                          Style().font(11.5f).left().top());
-            ui.draw_text(fmt("%+.2f", a.p[i]), Rect(cell.x, cell.y, cell.w, 14.0f), th.foreground,
+            ui.draw_text(fmt("%+.2f", a.p[i]), Rect(cell.x, cell.y, cell.w, 14.0f), th.label,
                          Style().font(11.5f).right().top());
             ui.slider(&a.p[i], lo, hi, Rect(cell.x, cell.y + 17.0f, cell.w, 18.0f));
         }
@@ -1921,10 +1921,10 @@ void draw_controls(aino::Ui& ui, UiState& st, const Rect& bar, const aino::Theme
 
 void draw_plot(aino::Ui& ui, UiState& st, const Rect& card, const aino::Theme& th) {
     App& a = st.app;
-    const bool dark = th.background.luminance() < 0.5f;
+    const bool dark = th.window_bg.luminance() < 0.5f;
     ui.panel(card,
              Style()
-                 .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg)
+                 .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card_bg : ui.theme().control_bg)
                  .corner(12));
 
     const Rect px = card.inset(12.0f);
@@ -1942,8 +1942,8 @@ void draw_plot(aino::Ui& ui, UiState& st, const Rect& card, const aino::Theme& t
              ? false
              : st.presets[std::max(0, std::min(static_cast<int>(st.presets.size()) - 1, a.sel))].kind ==
                    Kind::Field);
-    if (field_mode || !(th.background == th.card))
-        ui.fill_rect(px, th.background);
+    if (field_mode || !(th.window_bg == th.card_bg))
+        ui.fill_rect(px, th.window_bg);
 
     // 自定义公式：源码变了就重编译（每帧只比一次字符串，开销可忽略）
     if (custom) {
@@ -2106,9 +2106,9 @@ void draw_plot(aino::Ui& ui, UiState& st, const Rect& card, const aino::Theme& t
         }
         if (bad) {
             const Rect box(px.x + 12.0f, px.y + 12.0f, std::min(360.0f, px.w - 24.0f), 34.0f);
-            ui.fill_rect(box, th.destructive.with_alpha(24), 6.0f);
-            ui.stroke_rect(box, th.destructive.with_alpha(90), 6.0f, 1.0f);
-            ui.draw_text(bad + msg, box.inset(10.0f, 0.0f), th.destructive,
+            ui.fill_rect(box, th.red.with_alpha(24), 6.0f);
+            ui.stroke_rect(box, th.red.with_alpha(90), 6.0f, 1.0f);
+            ui.draw_text(bad + msg, box.inset(10.0f, 0.0f), th.red,
                          Style().font(12.0f).left().middle());
         }
     }
@@ -2323,9 +2323,9 @@ int main() {
             custom
                 ? (a.custom_mode == 1 ? ("x = " + a.custom_src + "    y = " + a.custom_src2) : a.custom_src)
                 : pre->formula;
-        const Color fcol = (!custom || a.prog.ok) ? (th.background.luminance() < 0.5f ? Color::hex(0x60A5FA)
+        const Color fcol = (!custom || a.prog.ok) ? (th.window_bg.luminance() < 0.5f ? Color::hex(0x60A5FA)
                                                                                       : Color::hex(0x2563EB))
-                                                  : th.destructive;
+                                                  : th.red;
         const Kind mode = custom ? (a.custom_mode == 0   ? Kind::Curve
                                     : a.custom_mode == 1 ? Kind::Param
                                     : a.custom_mode == 2 ? Kind::Polar

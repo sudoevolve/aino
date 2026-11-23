@@ -15,6 +15,7 @@
 | 布局/截图 | `verify_gallery.py`、`verify_render.py` | Windows 桌面及实际像素验证；不能用测量结果替代截图 |
 | 性能 | `perf_gallery.py`、`perf_bench.py` | 进程 CPU、内存和真实交互采样；测量口径见 `docs/wiki/10-performance.md` |
 | 专项探针 | `probe/` | 自动断言、复现和手工网络诊断并存；网络/GUI 探针需要相应环境 |
+| SSH 发布验收 | `ssh_release_check.py` | 临时目录、临时 HOME、回环服务器，验证真实 SSH/SFTP；仅测试需要 Paramiko 4.0.0 |
 | 合成等价性 | `probe/shadow_mask_probe.cpp`、`probe/icon_mask_probe.cpp` | 投影掩膜缓存（≤1 LSB）与图标整行合成（逐字节）的前后对照，已进 CTest |
 
 Python 脚本建议使用 Python 3.10+。进程采样额外安装 `python -m pip install -r tools/requirements.txt`；
@@ -44,6 +45,17 @@ Python 脚本建议使用 Python 3.10+。进程采样额外安装 `python -m pip
 SSH 的 `example_ui_probe.cpp --local-transfer <端口>` 是显式网络验收入口，覆盖后台上传下载、
 目录与传输交错、最新 PTY 尺寸、取消唤醒、错误清理和提交后取消；默认离线运行不执行这些场景。
 本地服务器与隔离目录方法见 [快速开始](../docs/wiki/01-quickstart.md)。慢网与提交回复丢失仍需独立验收。
+
+发布验收构建 `AINO_BUILD_TESTS=ON`、`AINO_BUILD_SSH=ON` 后执行：
+
+```sh
+python -m pip install paramiko==4.0.0
+python tools/ssh_release_check.py --engine build/test/aino_test_ssh_protocol
+```
+
+Windows 的路径按生成器加入 `Release/` 或使用 Ninja 的输出目录，附加
+`--ui <aino_test_ssh_ui.exe 路径>` 验证客户端工作线程。脚本为子进程设置隔离目录，
+结束后关闭服务器并回收临时文件，不读取用户连接配置。POSIX 还会在高于 FD_SETSIZE 的 socket 上连接。
 
 官网/Wiki 使用 `python tools/build_site.py` 打包到 `build/site/`，只依赖 Python 标准库。
 本地预览直接启动静态服务器，不使用回归工具；打包与 GitHub Pages 发布方法见 [网站说明](../site/README.md)。

@@ -121,6 +121,20 @@ int main() {
         check(!terminal.bracketed_paste() && !terminal.has_selection(), "mode and selection clear on exit");
     }
 
+    {
+        Terminal terminal;
+        auto feed = [&](const std::string& text) { terminal.feed(text.data(), text.size()); };
+        feed("\x1b[?1h");
+        check(terminal.application_cursor() && !terminal.alt_screen(), "application cursor mode is independent of alternate screen");
+        feed("\x1b[?1049h\x1b[?1l");
+        check(!terminal.application_cursor() && terminal.alt_screen(), "alternate screen does not force application cursor mode");
+        terminal.reset();
+        feed("e\xCC\x81"); terminal.select_all();
+        check(terminal.line_text(0) == "e\xCC\x81" && terminal.selected_text().find("e\xCC\x81") == 0,
+              "combining codepoint survives drawing data and clipboard extraction");
+        for (int i = 0; i < 100; ++i) feed("\xCC\x81");
+        check(terminal.screen_row(0)[0].combining_count == 4, "combining storage is bounded per cell");
+    }
     std::printf("\n%s (%d fails)\n", fails ? "FAILED" : "ALL PASS", fails);
     return fails ? 1 : 0;
 }

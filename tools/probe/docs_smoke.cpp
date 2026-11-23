@@ -27,7 +27,7 @@ struct AppState {
 
 // ---- 01-quickstart：最小程序 ----
 void docs_01() {
-    aino::Window win(880, 560, "aino 示例");
+    aino::Window win(aino::WindowConfig{880, 560, "aino 示例"});
     if (!win.ok()) return;
 
     std::string email;
@@ -45,7 +45,7 @@ void docs_01() {
 
 // ---- 01-quickstart：窗口控制与主题 ----
 void docs_01_window() {
-    aino::Window win(1120, 720, "标题");
+    aino::Window win(aino::WindowConfig{1120, 720, "标题"});
     win.ok(); win.ui(); win.set_title("新标题"); win.set_size(1280, 800);
     (void)win.width(); (void)win.height(); (void)win.dpi_scale();
     win.set_anim_fps(30.0f);
@@ -58,7 +58,7 @@ void docs_01_window() {
 
     win.run([&](aino::Ui& ui) {
         const aino::Theme& th = ui.theme();
-        ui.fill_rect({0, 0, ui.width(), ui.height()}, th.background);
+        ui.fill_rect({0, 0, ui.width(), ui.height()}, th.window_bg);
     });
     win.close();
 }
@@ -79,7 +79,7 @@ void docs_02() {
     (void)r.contains(1.0f, 2.0f); (void)r.contains(aino::Vec2(1, 2));
     (void)r.intersects(Rect()); (void)r.inset(2.0f); (void)r.inset(2.0f, 3.0f);
     (void)r.offset(1.0f, 1.0f); (void)r.offset(aino::Vec2(1, 1)); (void)r.expand(2.0f);
-    (void)r.pad(1.0f, 1.0f);
+    (void)r.inset(1.0f, 1.0f);
     Rect m = r;
     (void)m.cut_left(5.0f); (void)m.cut_right(5.0f); (void)m.cut_top(5.0f); (void)m.cut_bottom(5.0f);
 }
@@ -112,14 +112,6 @@ void docs_03(Ui& ui, AppState& s) {
 
     // 滚动
     Rect viewport = {24, 24, 300, 200};
-    ui.begin_scroll(viewport, 800.0f);
-    Stack sc = ui.vbox({viewport.x, viewport.y, viewport.w, 800.0f}, 10.0f);
-    for (int i = 0; i < 20; ++i) ui.label("行", sc.next(28.0f));
-    ui.end_scroll();
-    (void)ui.scroll_y();
-    ui.scroll_to(0.0f);
-
-    // 滚动（统一写法：作用域即视口，析构自动收尾）
     {
         auto sc = ui.scroll(viewport, 800.0f);
         Stack c2 = ui.vbox({viewport.x, viewport.y, viewport.w, 800.0f}, 10.0f);
@@ -164,7 +156,7 @@ void docs_05(Ui& ui, Stack& r) {
     ui.panel({24, 24, 400, 240});
     ui.panel({24, 24, 400, 60}, Style().muted_text());
     ui.panel({24, 24, 400, 60}, Style().corner(0).stroke(0, Color::none()));
-    ui.card({24, 24, 400, 240});
+    ui.panel({24, 24, 400, 240});
     ui.separator(r.next(1.0f));
     ui.separator({300, 24, 1, 200});
     ui.badge("New", r.next(52.0f));
@@ -183,7 +175,8 @@ void docs_06(Ui& ui, AppState& s, Stack& col) {
     ui.button("取消", col.next(24.0f), Style().outline());
     ui.button("删除", col.next(24.0f), Style().destructive());
     ui.button("按我看看", col.next(24.0f), Style().primary().scale_on_press(0.97f));
-    ui.icon_button(aino::icons::close, {100, 100, 32, 32});
+    ui.icon_button("", {100, 100, 32, 32});
+    ui.system_icon(aino::SystemIcon::Close, {108, 108, 16, 16}, ui.theme().label);
     ui.icon_button("+", {140, 100, 32, 32}, Style().outline());
     if (ui.nav_item("导航", s.tab == 0, col.next(34.0f))) s.tab = 0;
 
@@ -293,7 +286,7 @@ void docs_08(Ui& ui, AppState& s) {
 
 // ---- 09：图元 ----
 void docs_09(Ui& ui, Stack& col) {
-    ui.clear(ui.theme().background);
+    ui.clear(ui.theme().window_bg);
     ui.fill_rect({24, 24, 200, 60}, Color::hex(0x18181B), 12.0f);
     ui.stroke_rect({24, 100, 200, 60}, Color::hex(0xE4E4E7), 8.0f, 1.0f);
     ui.fill_circle(300, 60, 20, Color::hex(0x2563EB));
@@ -329,10 +322,10 @@ void docs_11(Ui& ui, Stack& col) {
 
     // 补间 + 缓动
     const float t = ui.tween(id, hovered ? 1.0f : 0.0f, 0.24f, aino::easing::out_cubic);
-    ui.fill_rect(Rect(box.x, box.y, 240.0f * t, 3.0f), ui.theme().primary, 1.5f);
+    ui.fill_rect(Rect(box.x, box.y, 240.0f * t, 3.0f), ui.theme().tint, 1.5f);
 
     // 颜色补间
-    const Color bg = ui.tween_color(id ^ 7u, hovered ? ui.theme().accent : ui.theme().background, 0.18f);
+    const Color bg = ui.tween_color(id ^ 7u, hovered ? ui.theme().fill3 : ui.theme().window_bg, 0.18f);
     ui.panel(box, Style().background(bg));
 
     // 显隐
@@ -341,7 +334,7 @@ void docs_11(Ui& ui, Stack& col) {
         aino::Transform tint;
         tint.translate = aino::Vec2(0.0f, 8.0f * (1.0f - a));
         ui.push_transform(tint);
-        ui.panel(box, Style().background(ui.theme().card.alpha255(int(255 * a))));
+        ui.panel(box, Style().background(ui.theme().card_bg.alpha255(int(255 * a))));
         ui.pop_transform();
     }
 
@@ -356,14 +349,14 @@ void docs_11(Ui& ui, Stack& col) {
     tf.rotate = -1.5f * t;
     tf.origin = aino::Vec2(box.cx(), box.cy());
     ui.push_transform(tf);
-    ui.panel(box, Style().background(ui.theme().card));
+    ui.panel(box, Style().background(ui.theme().card_bg));
     ui.label("卡片", box, Style().center());
     ui.pop_transform();
 
     aino::Transform slide;
     slide.translate = aino::Vec2(-280.0f * (1.0f - t), 0.0f);
     ui.push_transform(slide);
-    ui.fill_rect(box, ui.theme().accent, 6.0f);
+    ui.fill_rect(box, ui.theme().fill3, 6.0f);
     ui.pop_transform();
     (void)ui.transform();
     (void)ui.transformed();

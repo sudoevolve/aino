@@ -1,6 +1,6 @@
 # 02 · 样式与主题
 
-当前主题采用 macOS 风格，保留旧版主题字段供已有应用使用。
+当前主题采用 macOS 风格，颜色使用原生语义命名。
 尺寸和颜色以 `aino.hpp` 的主题工厂为准；资料来源与映射见 [设计资料](../macos27/README.md)。
 背景材质使用模糊近似，没有折射与色散。
 
@@ -142,7 +142,7 @@ const aino::Input& in = ui.input();
 | `valign` | `VAlign` | `Middle` | 垂直对齐 |
 | `align_set` | `bool` | `false` | 区分「用户显式指定」与「组件默认」—— 组件靠它决定要不要强制居中 |
 | `valign_set` | `bool` | `false` | 同上，垂直方向 |
-| `muted` | `bool` | `false` | 前景改用 `muted_foreground` |
+| `muted` | `bool` | `false` | 前景改用 `label2` |
 | `placeholder` | `std::string` | `""` | 占位文本（`input` / `textarea` / `select` 用） |
 | `wrap` | `bool` | `false` | 自动折行；`\n` 永远生效 |
 | `line_gap` | `float` | `0.0f` | 行距附加量（0 = 直接用字体的行高） |
@@ -156,8 +156,8 @@ const aino::Input& in = ui.input();
 
 | 方法 | 等价于 | 说明 |
 |---|---|---|
-| `color(c)` / `text_color(c)` | `fg = c` | 前景色 |
-| `background(c)` / `fill(c)` | `bg = c` | 填充色 |
+| `color(c)` | `fg = c` | 前景色 |
+| `background(c)` | `bg = c` | 填充色 |
 | `stroke(w, c)` | `border_width = w; border_color = c` | 描边 |
 | `corner(r)` | `radius = r` | 圆角 |
 | `padded(x, y)` | `pad_x = x; pad_y = y` | 内边距 |
@@ -227,13 +227,13 @@ luminance <= 0.5 →  press = lighten(0.24)
 variant 决定 base/fg/border
   → st.bg 覆盖 base/hover（并重算 press）
   → st.fg 覆盖 fg
-  → st.muted 覆盖 fg 为 muted_foreground
+  → st.muted 覆盖 fg 为 label2
   → st.border_color 覆盖 border（并补 border_w=1）
   → st.border_width >= 0 覆盖 border_w
   → st.radius 覆盖 radius
 ```
 
-也就是说 `Style().primary().fill(red)` 得到的是**红底 + primary 的前景色**，
+也就是说 `Style().primary().background(red)` 得到的是**红底 + primary 的前景色**，
 危险操作使用 `Style().destructive()`，它使用中性底和红字。
 
 ---
@@ -270,23 +270,14 @@ variant 决定 base/fg/border
 强调色板包括 `blue/red/orange/yellow/green/mint/teal/cyan/indigo/purple/pink/brown/gray`。
 `track_well()` 返回随浅深色变化的中性凹槽色，`is_dark()` 依据窗口背景亮度判断。
 
-### 3.2 兼容字段映射
+### 3.2 表面与交互色
 
-工厂在创建时设置这些映射；直接改任一字段不会自动重算其它字段。
-
-| 兼容字段 | 来源 |
+| 字段 | 用途 |
 |---|---|
-| `background/foreground` | `window_bg/label` |
-| `card` | 浅色 `control_bg`；深色 `#252525`（panel 默认实际使用 `fill3`） |
-| `card_foreground` | `label` |
-| `popover/popover_foreground` | `popover_bg/label` |
-| `primary/primary_foreground` | `tint/tint_foreground` |
-| `secondary/secondary_foreground` | `fill/label` |
-| `muted/muted_foreground` | `fill3/label2` |
-| `accent/accent_foreground` | `fill3/label` |
-| `destructive/destructive_foreground` | `red/白色` |
-| `border/input` | `separator`（input 同为黑/白 alpha 26） |
-| `ring` | 默认强调蓝 alpha 128/140 |
+| `card_bg` | 分组卡片表面：浅色为 `control_bg`，深色为 `#252525` |
+| `on_red` | 红色表面上的文字 |
+| `input_border` | 编辑框边线 |
+| `focus_ring` | 聚焦指示环 |
 
 ### 3.3 尺寸
 
@@ -299,7 +290,7 @@ variant 决定 base/fg/border
 | `size_padx` | 7 | 10 | 16 | 16 | 16 |
 | `size_pady` | 2 | 3 | 4 | 6 | 10 |
 
-高度别名为 `control_h_mini/control_h_sm/control_h/control_h_lg/control_h_xl`。
+高度通过 `size_h[0..4]` 读取。
 默认 `radius=6`、`radius_sm=4`、`radius_lg=10`、`radius_xl=12`、`radius_full=9999`，
 `font_size=13`、`line_height=16`、`pad_x=16`、`pad_y=4`、`corner_smoothing=0.6`。
 组件可按尺寸使用自己的几何规则，不代表每个组件都直接读取所有 token。
@@ -319,8 +310,8 @@ t.set_tint(t.purple);
 win.set_theme(t);
 ```
 
-`set_tint(c)` 同步 `tint/tint_foreground`、`primary/primary_foreground`、`ring`、`table_sel`。
-`accent` 仍保留中性悬停填充。应用保存色板索引，切换浅深色后对新主题再次调用此方法。
+`set_tint(c)` 同步 `tint/tint_foreground`、`focus_ring`、`table_sel`。
+中性悬停填充使用 `fill3`。应用保存色板索引，切换浅深色后对新主题再次调用此方法。
 `same_as()` 比较全部颜色、尺寸表、度量与字体，`set_theme()` 不会对相同值重复排帧。
 
 ---
@@ -362,7 +353,7 @@ win.set_theme(t);
 ## 5. 系统图标
 
 控件与示例优先使用 `SystemIcon`。Windows 使用 Segoe Fluent Icons，缺失时尝试
-Segoe MDL2 Assets；macOS 使用 SF Symbols；X11 使用系统字体的 Unicode 符号回退。
+Segoe MDL2 Assets；macOS 使用 SF Symbols；X11/Wayland 使用系统图标主题的 symbolic 图标。
 不需要第三方图标字体。
 
 ```cpp
@@ -372,5 +363,5 @@ ui.system_icon(aino::SystemIcon::Close, box.inset(4), ui.theme().label);
 ```
 
 方形按钮需传相同宽高。`system_icon()` 只绘制，按钮负责命中和状态。
-`icon_button(glyph, box)` 和 `aino::icons::*` 保留为 UTF-8 字符接口，字形依赖系统字体；
-它们不会自动把任意字符替换为系统图标。
+`icon_button(glyph, box)` 支持应用自定义的 UTF-8 字符，字形依赖所选字体，
+不会自动把任意字符替换为系统图标。系统图标栅格尺寸最大 512 物理像素，掩膜缓存最多 8 MiB。

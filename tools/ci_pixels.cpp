@@ -303,9 +303,9 @@ static void write_bmp(const Shot& s, const char* path) {
 // =============================================================================
 static bool scene_clear() {
     const Theme th = Theme::light();
-    const Color bg = th.background;
+    const Color bg = th.window_bg;
 
-    aino::Window win(200, 150, "aino pixels: clear");
+    aino::Window win(aino::WindowConfig{200, 150, "aino pixels: clear"});
     if (!win.ok()) { win_fail("S1"); return false; }
     win.set_theme(th);
 
@@ -359,13 +359,13 @@ static bool scene_clear() {
 // =============================================================================
 static bool scene_primitives() {
     const Theme th = Theme::light();
-    const Color bg      = th.background;          // 纯白
+    const Color bg      = th.window_bg;          // 纯白
     const Color c_red   = Color(214, 40, 40);
     const Color c_blue  = Color(0, 120, 255);
     const Color c_green = Color(30, 180, 90);
     const Color c_yell  = Color(255, 200, 0);
 
-    aino::Window win(420, 380, "aino pixels: primitives");
+    aino::Window win(aino::WindowConfig{420, 380, "aino pixels: primitives"});
     if (!win.ok()) { win_fail("S2"); return false; }
     win.set_theme(th);
 
@@ -580,10 +580,10 @@ static bool scene_primitives() {
 // =============================================================================
 static bool scene_dark() {
     const Theme th = Theme::dark();
-    const Color bg   = th.background;   // 0x09090B
-    const Color card = th.card;         // 0x101012
+    const Color bg   = th.window_bg;   // 0x09090B
+    const Color card = th.card_bg;         // 0x101012
 
-    aino::Window win(300, 220, "aino pixels: dark");
+    aino::Window win(aino::WindowConfig{300, 220, "aino pixels: dark"});
     if (!win.ok()) { win_fail("S3"); return false; }
     win.set_theme(th);
 
@@ -628,7 +628,7 @@ static bool scene_dark() {
 // =============================================================================
 static bool scene_cjk_fallback() {
     const Theme th = Theme::light();
-    const Color bg = th.background;
+    const Color bg = th.window_bg;
 
 #if defined(AINO_PLATFORM_WINDOWS)
     const char* latin_only = "Consolas";        // 随系统带，正文里没有汉字
@@ -708,94 +708,17 @@ static bool scene_cjk_fallback() {
 }
 
 // =============================================================================
-//  场景 5（只有 Windows 考）：混合编码字面量仍须解得出中文
-//
-//  MSVC 没加 /utf-8 时，字面量按系统 ANSI 代码页编。串里只要有一个"ANSI 里也
-//  有单字节表示"的字符（"·" U+00B7 最典型），编译结果就是**混合编码**：中文
-//  留 UTF-8 字节、那个字符变单字节。整串既不合法 UTF-8 也不是纯 ANSI。
-//  老的 to_wide 在严格判定失败后整串回退 CP_ACP，每个 UTF-8 字节都被解成一个
-//  西欧字母 —— "最小"显示成 "æœ€å°"。这里直接把这种混合串喂给 to_wide：
-//  中文必须原样出来。
-//
-//  注意这段只解释 **Windows 编译器**这一种来源。曾经在这里断言过「源码被当成
-//  Latin-1 读」的第三种坏法并配套写了还原逻辑，后来查明那是误判 —— 标题乱的真
-//  实原因在 X11（见场景 6），那套还原逻辑已随 0.4.12 删除。
-// =============================================================================
-static bool scene_mixed_literal() {
-#if !defined(AINO_PLATFORM_WINDOWS)
-    return true;        // to_wide 是 Windows 专有路径，别的平台没有可考的
-#else
-    std::string s = "\xE6\x9C\x80\xE5\xB0\x8F";   // "最小" 的 UTF-8 字节
-    s.push_back(char(0xB7));                      // 被编译器转成单字节的 "·"
-    s += " 0.4.7";
-    const std::wstring w = aino::detail::to_wide(s);
-    char buf[192];
-    std::snprintf(buf, sizeof buf, "解出 %zu 个字符，首个码位 U+%04X（期望 U+6700）",
-                  w.size(), w.empty() ? 0u : unsigned(w[0]));
-    want_true(w.size() >= 2 && w[0] == wchar_t(0x6700) && w[1] == wchar_t(0x5C0F),
-              "S5 混合编码串里的中文没被当成西欧字母", buf);
-
-    // 再考一次**真的字面量**。这条在"没加 /utf-8"的 MSVC 下才会暴露问题：
-    // 串里那个 "·" 会被编成单字节，中文留 UTF-8 字节 —— 正好是用户遇到的那种
-    // 混合编码。pragma execution_character_set 生效（或者 to_wide 兜住）才对。
-    const std::string lit = "最小 · 示例";
-    const std::wstring wl = aino::detail::to_wide(lit);
-    std::snprintf(buf, sizeof buf, "字面量解出 %zu 个字符，首码位 U+%04X",
-                  wl.size(), wl.empty() ? 0u : unsigned(wl[0]));
-    want_true(wl.size() >= 2 && wl[0] == wchar_t(0x6700) && wl[1] == wchar_t(0x5C0F),
-              "S5 编译期字面量按 UTF-8 处理（/utf-8 或 pragma 生效）", buf);
-
-    // 再钉住"不许退化成整片西欧字母"：混合串解出来必须接近原义长度
-    // （"最小"2 + 分隔符 1 + " 0.4.7"6 = 9），而不是每个 UTF-8 字节一个字符。
-    std::snprintf(buf, sizeof buf, "长度 %zu（期望 9）末字符 U+%04X",
-                  w.size(), w.empty() ? 0u : unsigned(w.back()));
-    want_true(w.size() == 9, "S5 混合串没有退化成「每个字节一个西欧字母」", buf);
-
-    // 那个孤立的坏字节要么解成 "·"（单字节 ACP），要么落替换符 —— 不能是别的。
-    want_true(w.size() > 2 && (w[2] == wchar_t(0x00B7) || w[2] == wchar_t(0xFFFD)),
-              "S5 孤立坏字节按系统 ANSI 单字节解", buf);
-
-    // 路径 (a)：整串是系统 ANSI（用户没加 /utf-8，且串里全是中文）。按 ACP 编成
-    // 字节再喂回来必须还原 —— 逐段混合解码不能把这条老路弄坏。
-    //
-    // 但样本得挑：CI 的 Windows runner 系统代码页是 **1252**，
-    // WideCharToMultiByte 会把「最小示例」替换成 4 个 '?'（U+003F），这种情况下
-    // 还原不了也不该还原 —— 这条断言因此在 CI 上红了好几轮，本地是 936 看不见。
-    // 所以先问 ACP 能不能表示中文：能就用「最小示例」，不能就退到「café」。
-    // 后者在 1252 是单字节 0xE9、在 936 是双字节 A8A6，两条 ACP 路径都能考到。
-    {
-        const wchar_t cjk[] = {0x6700, 0x5C0F, 0x793A, 0x4F8B, 0};   // 最小示例
-        char ansi[32] = {0};
-        const int got = ::WideCharToMultiByte(CP_ACP, 0, cjk, 4, ansi, int(sizeof ansi),
-                                              nullptr, nullptr);
-        wchar_t back[8] = {0};
-        const int backn = got > 0 ? ::MultiByteToWideChar(CP_ACP, 0, ansi, got, back, 8) : 0;
-        const bool cjk_ok = got > 0 && backn == 4 &&
-                            back[0] == wchar_t(0x6700) && back[3] == wchar_t(0x4F8B);
-
-        const wchar_t lat[] = {0x63, 0x61, 0x66, 0xE9, 0};           // café
-        const wchar_t* src = cjk_ok ? cjk : lat;
-        char enc[32] = {0};
-        const int n = ::WideCharToMultiByte(CP_ACP, 0, src, 4, enc, int(sizeof enc),
-                                            nullptr, nullptr);
-        const std::wstring wa = aino::detail::to_wide(std::string(enc, size_t(n > 0 ? n : 0)));
-        std::snprintf(buf, sizeof buf, "ACP=%d 样本=%s 编出 %d 字节，解回 %zu 个字符，首码位 U+%04X",
-                      int(::GetACP()), cjk_ok ? "最小示例" : "café", n, wa.size(),
-                      wa.empty() ? 0u : unsigned(wa[0]));
-        want_true(wa.size() == 4 && wa[0] == wchar_t(src[0]) && wa[3] == wchar_t(src[3]),
-                  "S5 整串系统 ANSI 仍按 CP_ACP 解", buf);
-    }
-
-    // 补充平面（4 字节 UTF-8）要出代理对，别被当两段坏字节按 ACP 解掉。
-    {
-        const std::wstring we = aino::detail::to_wide(std::string("\xF0\x9F\x98\x80"));  // 😀
-        std::snprintf(buf, sizeof buf, "解出 %zu 个字符，首码位 U+%04X",
-                      we.size(), we.empty() ? 0u : unsigned(we[0]));
-        want_true(we.size() == 2 && we[0] == wchar_t(0xD83D) && we[1] == wchar_t(0xDE00),
-                  "S5 4 字节 UTF-8 转成代理对", buf);
-    }
-    return true;
+static bool scene_utf8_conversion() {
+#if defined(AINO_PLATFORM_WINDOWS)
+    const auto text = aino::detail::to_wide("\xE6\x9C\x80\xE5\xB0\x8F");
+    want_true(text == L"\u6700\u5C0F", "UTF-8 conversion preserves CJK", "");
+    const auto invalid = aino::detail::to_wide(std::string("A") + char(0xB7) + "B");
+    want_true(invalid == L"A\uFFFDB", "invalid UTF-8 uses replacement instead of a legacy code page", "");
+    const auto emoji = aino::detail::to_wide("\xF0\x9F\x98\x80");
+    want_true(emoji.size() == 2 && emoji[0] == 0xD83D && emoji[1] == 0xDE00,
+              "UTF-8 supplementary character becomes one surrogate pair", "");
 #endif
+    return true;
 }
 
 // =============================================================================
@@ -838,7 +761,7 @@ static bool scene_x11_title() {
 #else
     // 标题用显式转义写，别让源码编码再插一手（这条断言考的是属性，不是编译期）
     const std::string t1("\xE6\x9C\x80\xE5\xB0\x8F\xE7\xA4\xBA\xE4\xBE\x8B");  // 最小示例
-    aino::Window win(260, 140, t1);
+    aino::Window win(aino::WindowConfig{260, 140, t1});
     aino::detail::X11State* s = reinterpret_cast<aino::detail::X11State*>(win.impl->native);
     if (!s || !s->dpy || !s->win) { win_fail("x11_title"); return false; }
 
@@ -889,7 +812,7 @@ static bool scene_text_alpha() {
         const Color background = dark ? Color(24, 24, 24) : Color(240, 240, 240);
         for (int alpha : {0, 128}) {
             // render_scene 会关闭窗口，每个样本使用独立窗口，避免读取前一帧。
-            aino::Window win(260, 110, "aino pixels: text alpha");
+            aino::Window win(aino::WindowConfig{260, 110, "aino pixels: text alpha"});
             if (!win.ok()) { win_fail("S7"); return false; }
             Shot shot;
             if (!render_scene(win, [&](Ui& ui) {
@@ -921,7 +844,7 @@ int main() {
     if (!scene_primitives())  return 2;
     if (!scene_dark())        return 2;
     if (!scene_cjk_fallback()) return 2;
-    if (!scene_mixed_literal()) return 2;
+    if (!scene_utf8_conversion()) return 2;
     if (!scene_x11_title())      return 2;
     if (!scene_text_alpha())     return 2;
 

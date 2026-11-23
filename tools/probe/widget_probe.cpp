@@ -259,7 +259,7 @@ static void test_input_group() {
     auto draw = [&]() { ui.input_group(&v, "¥", "元", box); };
 
     // 外框四条边必须**完整**。曾经 input() 会把"显式传的透明底"当成"没传"，
-    // 在 inner（整高）上铺一层 th.background —— 上下两条边的中间段被这层白底吃掉，
+    // 在 inner（整高）上铺一层 th.window_bg —— 上下两条边的中间段被这层白底吃掉，
     // 只剩前后缀那两小段。用户看到的是"两个上下排列的输入框中间那条横线没了"。
     //
     // 判据是"边框处比框内白底更暗"，不能只判"够暗"：Surface 里 box 以上的
@@ -539,7 +539,7 @@ static void test_drawer() {
     const Rect panel(200.0f, 0.0f, 300.0f, 360.0f);
 
     auto draw = [&]() {
-        ui.drawer("详情", &open, 0, panel, [&](const Rect& c) {
+        ui.drawer("详情", &open, panel, [&](const Rect& c) {
             ++drawn;
             ui.label("内容", c);
         });

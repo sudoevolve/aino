@@ -20,6 +20,9 @@
 #include <vector>
 
 #include "../../examples/ssh_core.hpp"
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
 
 static int g_fail = 0;
 static int g_pass = 0;
@@ -44,6 +47,27 @@ static void check(bool ok, const char* what, const std::string& detail = "") {
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+#ifndef _WIN32
+    struct OpenFiles {
+        std::vector<int> descriptors;
+        ~OpenFiles() { for (int fd : descriptors) ::close(fd); }
+    } open_files;
+    if (std::getenv("SSH_PROBE_HIGH_FD")) {
+        const rlim_t target = FD_SETSIZE + 64;
+        rlimit limits{};
+        if (getrlimit(RLIMIT_NOFILE, &limits) != 0 || limits.rlim_max <= target) return 2;
+        if (limits.rlim_cur <= target) {
+            limits.rlim_cur = std::min(limits.rlim_max, target + 64);
+            if (setrlimit(RLIMIT_NOFILE, &limits) != 0) return 2;
+        }
+        while (open_files.descriptors.empty() || open_files.descriptors.back() < int(target)) {
+            const int fd = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+            if (fd < 0) return 2;
+            open_files.descriptors.push_back(fd);
+        }
+        std::printf("High descriptor connection check: next fd > %d\n", int(target));
+    }
+#endif
     const char* host = std::getenv("SSH_PROBE_HOST") ? std::getenv("SSH_PROBE_HOST") : "127.0.0.1";
     const int port = std::getenv("SSH_PROBE_PORT") ? std::atoi(std::getenv("SSH_PROBE_PORT")) : 2222;
 
@@ -73,7 +97,7 @@ int main() {
         const bool ok = e.connect(host, port, "demo", "demo", "", &err);
         check(ok, "TCP + 握手 + 密码认证", err);
         if (!ok) { std::printf("\n连接不上，先起测试服务器：python tools/dev_ssh_server.py\n"); return 1; }
-        check(!e.fingerprint().empty(), "拿到主机密钥指纹", e.fingerprint());
+        check(!e.fingerprint_snapshot().empty(), "拿到主机密钥指纹", e.fingerprint_snapshot());
         check(e.open_shell(100, 30, &err), "申请 PTY + 启动 shell", err);
         e.start_reader();
     }
@@ -157,7 +181,7 @@ int main() {
         e.start_upload(local, remote);
         for (int i = 0; i < 400 && e.transfer_busy(); ++i) e.xfer_step();
         check(!e.transfer_busy(), "上传完成");
-        check(e.transfer().error.empty(), "上传无错误", e.transfer().error);
+        check(e.transfer_snapshot().error.empty(), "上传无错误", e.transfer_snapshot().error);
         e.clear_transfer();
 
         std::vector<sshc::Entry> lst;

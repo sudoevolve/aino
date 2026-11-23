@@ -50,7 +50,7 @@ using Easing = float (*)(float);   // 输入 0..1，输出 0..1（可以过冲�
 
 ```cpp
 float t = ui.tween(id, open ? 1.0f : 0.0f, 0.24f, aino::easing::out_cubic);
-ui.fill_rect(aino::Rect(x, y, 240.0f * t, 3.0f), ui.theme().primary, 1.5f);
+ui.fill_rect(aino::Rect(x, y, 240.0f * t, 3.0f), ui.theme().tint, 1.5f);
 ```
 
 | 参数 | 说明 |
@@ -69,7 +69,7 @@ ui.fill_rect(aino::Rect(x, y, 240.0f * t, 3.0f), ui.theme().primary, 1.5f);
 ### 颜色：`tween_color`
 
 ```cpp
-aino::Color bg = ui.tween_color(id, hover ? ui.theme().accent : ui.theme().background, 0.18f);
+aino::Color bg = ui.tween_color(id, hover ? ui.theme().fill3 : ui.theme().window_bg, 0.18f);
 ```
 
 一个进度驱动四个通道（不是 4 个独立 tween），所以插值路径是直线，中途不发脏。
@@ -82,7 +82,7 @@ if (a > 0.01f) {
     aino::Transform tint;
     tint.translate = aino::Vec2(0.0f, 8.0f * (1.0f - a));     // 从下方 8px 升上来
     ui.push_transform(tint);
-    ui.panel(box, aino::Style().background(ui.theme().card.alpha255(int(255 * a))));
+    ui.panel(box, aino::Style().background(ui.theme().card_bg.alpha255(int(255 * a))));
     ui.pop_transform();
 }
 ```
@@ -122,7 +122,7 @@ t.rotate = -6.0f;
 t.scale  = 1.08f;
 t.origin = aino::Vec2(card.cx(), card.cy());
 ui.push_transform(t);
-    ui.panel(card, aino::Style().background(ui.theme().card));
+    ui.panel(card, aino::Style().background(ui.theme().card_bg));
     ui.label("悬停放大并轻微倾斜", card, aino::Style().center());
 ui.pop_transform();
 ```
@@ -148,7 +148,7 @@ ui.pop_transform();
 | `fill_rect` / `stroke_rect` | 精确（走原来的专用光栅器） | 多边形近似（每角 5 段圆弧，`raster_poly` 抗锯齿） |
 | `fill_circle` | 精确 | 精确（圆旋转不变，半径按缩放走） |
 | `draw_line` | 精确 | 精确（端点映射，宽度按缩放） |
-| `draw_text` | 精确（**字号按 scale 放大**，不是拉位图） | 精确（GDI `lfEscapement` 原生旋转，边缘仍是灰度 AA） |
+| `draw_text` | 字号按 scale 放大 | 仅 Windows GDI 原生旋转；X11/Wayland/CoreText 当前忽略文字旋转角度 |
 | `drop_shadow` | 精确 | 用**包围盒**（阴影不跟着转，但不会消失） |
 | `push_clip` | 精确 | 用**包围盒**（轴对齐的裁剪区表达不了旋转矩形） |
 
@@ -185,7 +185,7 @@ t.scale  = 1.0f + 0.03f * h;
 t.rotate = -1.5f * h;
 t.origin = aino::Vec2(box.cx(), box.cy());
 ui.push_transform(t);
-    ui.panel(box, aino::Style().background(ui.theme().card));
+    ui.panel(box, aino::Style().background(ui.theme().card_bg));
     ui.label("卡片", box, aino::Style().center());
 ui.pop_transform();
 ```

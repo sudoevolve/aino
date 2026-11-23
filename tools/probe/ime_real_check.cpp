@@ -84,7 +84,7 @@ static HKL find_zh() {
 }
 
 int main() {
-    aino::Window win(520, 330, "ime real");
+    aino::Window win(aino::WindowConfig{520, 330, "ime real"});
     if (!win.ok()) return 1;
 
     std::thread([&] {
@@ -158,7 +158,7 @@ int main() {
     win.run([&](aino::Ui& ui) {
         g_hwnd.store(FindWindowW(nullptr, kTitle));
         ui.set_theme(aino::Theme::light());
-        ui.clear(ui.theme().background);
+        ui.clear(ui.theme().window_bg);
         ui.label("空输入框（带 hint）：", aino::Rect(20, 12, 300, 20), aino::Style().left());
         ui.input(&g_name, aino::Rect(20, 36, 460, 34), aino::Style().hint("you@example.com"));
         ui.label("多行：", aino::Rect(20, 82, 300, 20), aino::Style().left());

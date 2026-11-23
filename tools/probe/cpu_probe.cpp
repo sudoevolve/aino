@@ -10,7 +10,7 @@
 int main(int argc, char** argv) {
     const int mode = argc > 1 ? std::atoi(argv[1]) : 0;
 
-    aino::Window win(400, 300, "cpu probe");
+    aino::Window win(aino::WindowConfig{400, 300, "cpu probe"});
     if (!win.ok()) return 1;
 
     std::string txt = "hi";
@@ -18,7 +18,7 @@ int main(int argc, char** argv) {
 
     win.run([&](aino::Ui& ui) {
         if (mode == 4) ui.set_theme(t < 0.5f ? aino::Theme::light() : aino::Theme::dark());
-        ui.clear(ui.theme().background);
+        ui.clear(ui.theme().window_bg);
         switch (mode) {
             case 0: ui.label("idle", { 10, 10, 100, 20 }); break;
             case 1: ui.spinner({ 20, 20, 40, 40 }); break;

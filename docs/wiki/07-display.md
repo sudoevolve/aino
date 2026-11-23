@@ -28,7 +28,7 @@ void bars      (const std::vector<float>& values, const Rect& box, const Style& 
 | 字号 | `st.font_size` → 否则 `d * 0.42`（随直径缩放） |
 | 字重 | 600（固定） |
 | 前景 | `st.fg` → 否则按与窗口背景合成后的亮度选 `foreground` / 白色 |
-| 描边 | **默认 1px `theme.border`**；`st.border_width` 可改粗细（写 0 关掉），`st.border_color` 改色 |
+| 描边 | **默认 1px `theme.separator`**；`st.border_width` 可改粗细（写 0 关掉），`st.border_color` 改色 |
 
 **生效的属性**：`bg` `fg` `border_color` `border_width` `font_size` `disabled`
 
@@ -51,8 +51,8 @@ ui.avatar("李",   {24, 24, 48, 48}, aino::Style().stroke(2, aino::Color::hex(0x
 | 项 | 默认值 |
 |---|---|
 | 返回 | 无；**只在鼠标悬停（或 `animate()`）时请求重绘** |
-| 底环色 | `theme.muted` |
-| 旋转弧色 | `theme.primary` |
+| 底环色 | `theme.fill3` |
+| 旋转弧色 | `theme.tint` |
 | 线宽 | `max(1.5, d * 0.12)` |
 | 半径 | `d * 0.5 - 1.5` |
 | 最小尺寸 | 6px（更小直接不画） |
@@ -101,7 +101,7 @@ ui.spinner(box, aino::Style().background(aino::Color::hex(0x16A34A)));   // 绿�
 | 字号 | `theme.font_size` |
 | 符号 | 系统符号：`info.circle`（中性 50%）/ `exclamationmark.triangle`（系统红） |
 | 标题 | 600 字重，色 `foreground`（**不因 Destructive 染红**） |
-| 描述 | 400 字重，色 `muted_foreground`，**自动折行** |
+| 描述 | 400 字重，色 `label2`，**自动折行** |
 
 **生效的属性**：`bg` `fg` `radius` `pad_x` `font_size`
 `variant`（`Default` / `Secondary` / `Destructive`）`disabled`
@@ -143,7 +143,7 @@ ui.alert(t, d, col.next(ui.alert_height(t, d, 380.0f, st)), st);
 | 返回 | 无 |
 | 字号 | `theme.font_size` |
 | 最后一段 | 500 字重 + `foreground` |
-| 其它段 | 400 字重 + `muted_foreground` |
+| 其它段 | 400 字重 + `label2` |
 | 分隔符 | 系统 Next 符号，间距 **14px** |
 | 裁剪 | 自动裁到 `box` |
 
@@ -168,7 +168,7 @@ ui.breadcrumb({"首页", "组件", "展示补充"}, col.next(20.0f));
 | 圆角 | **4** |
 | 字号 | `theme.font_size - 2`（默认 11） |
 | 字重 | 500 |
-| 前景 | `muted_foreground` |
+| 前景 | `label2` |
 
 **生效的属性**：`bg` `fg` `border_color` `radius` `font_size` `disabled`
 
@@ -196,7 +196,7 @@ bool accordion(const std::string& title, bool* open, const Rect& box, const Styl
 | 箭头 | 系统 ChevronDown / Next，随展开状态变化 |
 | hover 底色 | `theme.fill3` 随悬停淡入 |
 | 圆角 | `theme.radius_sm`（4） |
-| 焦点环 | `theme.ring` |
+| 焦点环 | `theme.focus_ring` |
 
 **生效的属性**：`fg` `font_size` `radius` `disabled`
 
@@ -234,10 +234,10 @@ void table(const std::vector<std::string>& headers,
 | 行高 | `max(fs + 7, 20)` |
 | 列宽 | **一律等分** `box.w / cols` |
 | 表头底 | 默认不铺底；显式 `st.bg` 时铺底 |
-| 表头字 | 字号 11、字重 **600**、色 `muted_foreground` |
+| 表头字 | 字号 11、字重 **600**、色 `label2` |
 | 列分隔线 | 无竖线 |
 | 斑马纹 | 显式 `st.bg` 时，奇数行使用 `theme.row_alt` |
-| 行分隔线 | 每行底部 1px `theme.border` |
+| 行分隔线 | 每行底部 1px `theme.separator` |
 | 单元格 `pad_x` | **12** |
 | 外框 | 默认无外描边 |
 | 裁剪 | 自动裁到 `box`，超出高度的行不画 |
@@ -259,7 +259,7 @@ ui.table(heads, rows, col.next(160.0f), aino::Style().font(12.0f));
 - 列宽固定等分，不能单独设置。需要自定义列宽时，用布局器、文本与图元组合绘制。
 - `rows` 每行的列数可以与 `headers` 不同（少的部分不画，多出来的被忽略）。
 - `headers` 为空时按 `rows` 里最长的行数推断列数（此时不画表头行）。
-- **不可滚动**。行多了请套 `begin_scroll`，并把 `content_h` 传成
+- **不可滚动**。行多了请使用 `ui.scroll()` 作用域，并把 `content_h` 传成
   `表头 + 行数 * 行高`。
 
 ---
@@ -276,7 +276,7 @@ void sparkline(const std::vector<float>& values, const Rect& box, const Style& s
 | 最少点数 | 2（少于 2 直接不画） |
 | 纵向归一化 | 自动取 `min/max`，全部相等时人为撑开 ±1 |
 | 内边距 | 四周 **2px** |
-| 线色 | `st.bg` → 否则 `theme.primary` |
+| 线色 | `st.bg` → 否则 `theme.tint` |
 | 线宽 | `st.border_width > 0` 时用它，否则 **1.8** |
 | 区域填充 | 线下方三角面，alpha **30**（`disabled` 时 14） |
 | 只要裸线 | 传 `Style().ghost()`（判断条件是 `variant != Ghost`） |
@@ -306,8 +306,8 @@ void bars(const std::vector<float>& values, const Rect& box, const Style& st = S
 | 柱间距 | `max(2, box.w * 0.02)` |
 | 柱宽 | 剩余宽度等分 |
 | 圆角 | `st.radius` → 否则 `min(3, 柱宽/2)` |
-| 正值色 | `st.bg` → 否则 `theme.primary` |
-| 负值色 | `theme.muted`（一眼区分"掉下去的那几根"） |
+| 正值色 | `st.bg` → 否则 `theme.tint` |
+| 负值色 | `theme.fill3`（一眼区分"掉下去的那几根"） |
 | 最小高度 | 1px（值为 0 也画一条，避免"消失"） |
 
 **生效的属性**：`bg`（正值色）`radius` `disabled`
@@ -366,7 +366,7 @@ if (ui.item("张伟", "zhangwei@example.com", "管理员", {x, y, w, 52}))
 | 悬停 | `theme.fill3.scaled_alpha(t_h)` |
 | 内边距 | `st.pad_x`，否则 10px |
 | 一行 / 两行 | `description` 为空 → 单行（`fs` / 500）；否则标题 `fs` / 500 + 描述 11 / 400，两行整体在 `box` 里垂直居中，行间 2px |
-| 尾部文字 | 右对齐、`fs-1`、`muted_foreground`，宽度按实测 + 12 |
+| 尾部文字 | 右对齐、`fs-1`、`label2`，宽度按实测 + 12 |
 
 它的高度完全由 `box.h` 决定 —— 两行模式需要约 `line_height(fs) + 2 + line_height(11)`，
 给少了会挤。52px 可为两行内容保留较充足的间距。
@@ -382,7 +382,7 @@ ui.empty_state("还没有通知", "有事时会出现在这里", {x, y, w, 160})
 | 段 | 字号 / 字重 | 颜色 |
 |---|---|---|
 | 标题 | `fs + 1` / 500 | `st.fg` → 否则 `foreground` |
-| 描述 | `fs - 1` / 400 | `muted_foreground` |
+| 描述 | `fs - 1` / 400 | `label2` |
 
 左右各留 16px 不画字。`description` 可以留空，那时只有标题。它**没有交互**，
 所以不需要 `*` 参数，也不返回值。

@@ -84,7 +84,7 @@ int main() {
         const auto widget = im->widget_id("textarea", box, 0, uint64_t(reinterpret_cast<uintptr_t>(&document)));
         aino::detail::grab_focus(im, widget);
         ui.textarea(&document, box); ui.end_frame();
-        im->get_clipboard = [] { return std::string(128u << 10, 'b'); };
+        im->get_clipboard_async = [](auto complete) { complete(std::string(128u << 10, 'b')); };
         im->input = {};
         im->input.key_pressed['V'] = im->input.key_ctrl['V'] = im->input.key_down[aino::KEY_CTRL] = true;
         ui.begin_frame(640, 480, 1.f / 60, 1);

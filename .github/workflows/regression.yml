@@ -124,6 +124,17 @@ jobs:
       - name: Build examples and probes
         run: cmake --build build/ci --config Release --parallel 2
 
+      - name: Isolated SSH server dependency
+        run: python -m pip install paramiko==4.0.0
+
+      - name: Local SSH and transfer release checks on Windows
+        if: runner.os == 'Windows'
+        run: python tools/ssh_release_check.py --engine build/ci/Release/aino_test_ssh_protocol.exe --ui build/ci/Release/aino_test_ssh_ui.exe
+
+      - name: Local SSH and high descriptor release checks on POSIX
+        if: runner.os != 'Windows'
+        run: python tools/ssh_release_check.py --engine build/ci/aino_test_ssh_protocol
+
       - name: CTest
         if: runner.os != 'Linux'
         run: ctest --test-dir build/ci -C Release --output-on-failure --parallel 2
@@ -131,15 +142,6 @@ jobs:
       - name: CTest on Xvfb
         if: runner.os == 'Linux'
         run: xvfb-run -a ctest --test-dir build/ci -C Release --output-on-failure --parallel 2
-
-      - name: MSVC execution charset without utf-8 option
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          cl /nologo /std:c++17 /EHsc /O2 /MT tools/ci_pixels.cpp user32.lib gdi32.lib ole32.lib windowscodecs.lib /Fe:build/ci/ci_pixels_noutf8.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & ./build/ci/ci_pixels_noutf8.exe
-          exit $LASTEXITCODE
 
       - name: X11 CJK fallback with a short font chain
         if: runner.os == 'Linux'

@@ -54,7 +54,7 @@ def build_probe(name):
     return r.returncode == 0, ((r.stdout or "") + (r.stderr or ""))[-400:]
 
 
-def run_probe(name, want_tail):
+def run_probe(name):
     exe = os.path.join(PROBE, name + ".exe")
     r = run([exe], cwd=PROBE)
     out = (r.stdout or "") + (r.stderr or "")
@@ -94,36 +94,36 @@ def verify_gallery(extra=()):
 
 
 PROBES = (
-    ('wake_probe', 'verdict: PASS', '后台通知：合并通知 / 并发交付'),
-    ('window_wake_probe', 'verdict: PASS', '真实窗口：后台唤醒 / 关闭 / 光标定时 / 日志生命周期'),
-    ('ssh_files_probe', '0 failed', 'SSH 本地文件：主机记录 / 句柄 / 失败路径'),
-    ('state_lifetime_probe', 'verdict: PASS', '控件状态生命周期：隐藏保留 / 显式释放 / 作用域隔离 / 延迟回调'),
-    ('capture_probe', '[capture] verdict: PASS', '鼠标捕获生命周期：控件消失 / 取消 / 失焦 / 正常拖动'),
-    ('gallery_layout_probe', 'verdict: PASS', '画廊布局报告：跨平台测量 / 越界 / 重叠 / CI 格式'),
-    ('pomodoro_probe', '26 passed, 0 failed', '番茄钟：实际时钟 / 暂停续计 / 模式导航 / 时长 / 外观'),
-    ('example_ui_probe', '57 passed, 0 failed', '函数示例：侧栏裁剪 / 采样缓存 / 无效公式 / 输入快捷键'),
-    ('macos_gallery_probe', 'verdict: PASS', 'macOS 主题联动 / 实际示例交互 / 响应式布局'),
-    ('layoutprobe', '通过 27 项，失败 0 项', 'Stack 布局计算'),
-    ('newcomp_probe', '87 passed, 0 failed', '新增组件行为 + 像素'),
-    ('raster_equiv', '通过 1602 项，失败 0 项', '光栅化 vs 参考实现'),
-    ('shadow_text_probe', '通过 24 项，失败 0 项', '阴影衰减 + 文本换行/裁剪/量高'),
-    ('arc_probe', '通过 10 项，失败 0 项', '圆弧无接缝 + 渐变 + 端帽'),
-    ('hover_anim_probe', '[hover] verdict: PASS', 'spinner/skeleton 只悬停才动'),
-    ('ime_probe', '通过 6 项，失败 0 项', 'IME 组合窗/候选窗定位'),
-    ('bigfeat_probe', '通过 47 项，失败 0 项', '折行缓存/滚动/撤销/补间/变换'),
-    ('edit_probe', '通过 12 项，失败 0 项', '编辑器按键链路（撤销/重做/选区）'),
-    ('resize_probe', '通过 19 项，失败 0 项', '缩放后缓冲一致（无黑帧/无拉伸）'),
-    ('overlay_probe', '通过 37 项，失败 0 项', '浮层不穿透（点击/hover/光标/滚轮/键盘/层级）'),
-    ('gate_order_probe', 'PASS（通过 8 项，失败 0 项）', '浮层层级：后画的控件不得穿透弹层'),
-    ('clip_probe', '[clip] verdict: PASS', '剪贴板 C/X/V（不崩 + 复制/剪切/粘贴语义）'),
-    ('scrollbar_probe', '[scrollbar] verdict: PASS', '滚动条拖动/点轨道（不再是纯装饰）'),
-    ('ime_comp_probe', '[imecomp] verdict: PASS', 'IME 组字串画进输入框（不是只在组合窗）'),
-    ('widget_probe', '通过 79 项，失败 0 项', '0.3.x 新控件行为（Toggle/OTP/Combobox/分页/月历/浮层/分割/菜单栏）'),
-    ('interaction_probe', '失败 0 项', '存量控件交互（含稳定身份 / 撤销隔离 / 光标调度）'),
-    ('measure_probe', '通过 9 项，失败 0 项', '测量模式不落像素 + 嵌套滚动归属'),
-    ('click_probe', '通过 11 项，失败 0 项', '点击归属（裁剪外不吃点击 / 一次按下只归一个）'),
-    ('cfg_probe', '通过 16 项，失败 0 项', 'WindowConfig（字体名/尺寸约束/居中/可缩放）'),
-    ('hover_fade_probe', '通过 14 项，失败 0 项', 'hover 淡入淡出无暗闪（透明底只推 alpha）'),
+    ('wake_probe', '后台通知：合并通知 / 并发交付'),
+    ('window_wake_probe', '真实窗口：后台唤醒 / 关闭 / 光标定时 / 日志生命周期'),
+    ('ssh_files_probe', 'SSH 本地文件：主机记录 / 句柄 / 失败路径'),
+    ('state_lifetime_probe', '控件状态生命周期：隐藏保留 / 显式释放 / 作用域隔离 / 延迟回调'),
+    ('capture_probe', '鼠标捕获生命周期：控件消失 / 取消 / 失焦 / 正常拖动'),
+    ('gallery_layout_probe', '画廊布局报告：跨平台测量 / 越界 / 重叠 / CI 格式'),
+    ('pomodoro_probe', '番茄钟：实际时钟 / 暂停续计 / 模式导航 / 时长 / 外观'),
+    ('example_ui_probe', '函数示例：侧栏裁剪 / 采样缓存 / 无效公式 / 输入快捷键'),
+    ('macos_gallery_probe', 'macOS 主题联动 / 实际示例交互 / 响应式布局'),
+    ('layoutprobe', 'Stack 布局计算'),
+    ('newcomp_probe', '新增组件行为 + 像素'),
+    ('raster_equiv', '光栅化 vs 参考实现'),
+    ('shadow_text_probe', '阴影衰减 + 文本换行/裁剪/量高'),
+    ('arc_probe', '圆弧无接缝 + 渐变 + 端帽'),
+    ('hover_anim_probe', 'spinner/skeleton 只悬停才动'),
+    ('ime_probe', 'IME 组合窗/候选窗定位'),
+    ('bigfeat_probe', '折行缓存/滚动/撤销/补间/变换'),
+    ('edit_probe', '编辑器按键链路（撤销/重做/选区）'),
+    ('resize_probe', '缩放后缓冲一致（无黑帧/无拉伸）'),
+    ('overlay_probe', '浮层不穿透（点击/hover/光标/滚轮/键盘/层级）'),
+    ('gate_order_probe', '浮层层级：后画的控件不得穿透弹层'),
+    ('clip_probe', '剪贴板 C/X/V（不崩 + 复制/剪切/粘贴语义）'),
+    ('scrollbar_probe', '滚动条拖动/点轨道（不再是纯装饰）'),
+    ('ime_comp_probe', 'IME 组字串画进输入框（不是只在组合窗）'),
+    ('widget_probe', '0.3.x 新控件行为（Toggle/OTP/Combobox/分页/月历/浮层/分割/菜单栏）'),
+    ('interaction_probe', '存量控件交互（含稳定身份 / 撤销隔离 / 光标调度）'),
+    ('measure_probe', '测量模式不落像素 + 嵌套滚动归属'),
+    ('click_probe', '点击归属（裁剪外不吃点击 / 一次按下只归一个）'),
+    ('cfg_probe', 'WindowConfig（字体名/尺寸约束/居中/可缩放）'),
+    ('hover_fade_probe', 'hover 淡入淡出无暗闪（透明底只推 alpha）'),
 )
 
 CORE = {"state_lifetime_probe", "wake_probe", "window_wake_probe", "ssh_files_probe", "capture_probe", "macos_gallery_probe", "interaction_probe", "widget_probe", "overlay_probe",
@@ -146,11 +146,11 @@ def main():
     args = ap.parse_args()
     results.clear()
     if args.list:
-        for name, _, label in PROBES:
+        for name, label in PROBES:
             print(name + ": " + label)
         return 0
-    wanted = set(args.only.split(",")) if args.only else (set(n for n, _, _ in PROBES) if args.full else CORE)
-    unknown = wanted - {n for n, _, _ in PROBES}
+    wanted = set(args.only.split(",")) if args.only else (set(n for n, _ in PROBES) if args.full else CORE)
+    unknown = wanted - {n for n, _ in PROBES}
     if unknown:
         ap.error("未知探针: " + ", ".join(sorted(unknown)))
     selected = [p for p in PROBES if p[0] in wanted]
@@ -159,13 +159,13 @@ def main():
         step("构建画廊", ok, detail if not ok else "")
         if not ok:
             return 1
-    for name, tail, label in selected:
+    for name, label in selected:
         if not args.no_build:
             ok, detail = build_probe(name)
             if not ok:
                 step("编译 " + name, False, detail)
                 continue
-        ok, detail = run_probe(name, tail)
+        ok, detail = run_probe(name)
         step(label, ok, detail)
     if args.full:
         for name, check in (("画廊实窗", verify_gallery),

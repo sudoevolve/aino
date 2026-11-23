@@ -13,7 +13,7 @@ using aino::Rect; using aino::Style; using aino::Ui;
 
 int main(int argc, char** argv) {
     const int mode = argc > 1 ? std::atoi(argv[1]) : 0;
-    aino::Window win(1080, 700, "bench");
+    aino::Window win(aino::WindowConfig{1080, 700, "bench"});
     if (!win.ok()) return 1;
 
     std::string s = "解析配置 12 ms";
@@ -25,7 +25,7 @@ int main(int argc, char** argv) {
 
     win.run([&](Ui& ui) {
         ui.set_animating(true);
-        ui.clear(ui.theme().background);
+        ui.clear(ui.theme().window_bg);
         if (mode == 0) {                     // 只清屏
         } else if (mode == 1) {              // 文字：60 个 label
             for (int i = 0; i < 60; ++i)
@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
             for (int i = 0; i < 3; ++i)
                 ui.panel(Rect(16.0f + float(i) * 352.0f, 16.0f, 336.0f, 660.0f));
             for (int i = 0; i < 12; ++i)
-                ui.panel(Rect(40.0f, 40.0f + float(i) * 50.0f, 300.0f, 40.0f), Style().background(ui.theme().muted));
+                ui.panel(Rect(40.0f, 40.0f + float(i) * 50.0f, 300.0f, 40.0f), Style().background(ui.theme().fill3));
         } else if (mode == 3) {              // 描边：40 个 outline 圆角矩形
             for (int i = 0; i < 40; ++i)
                 ui.panel(Rect(20.0f + float(i % 4) * 260.0f, 20.0f + float(i / 4) * 60.0f, 240.0f, 48.0f), Style().outline());

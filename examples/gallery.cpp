@@ -287,7 +287,6 @@ aino::Theme gallery_theme(const App &a) {
     // 示例保留固定的次级灰阶，避免卡片和窗口底色改变文字层次。
     th.label2 = a.dark ? aino::Color(0xA0, 0xA0, 0xA6, 255) : aino::Color(0x6E, 0x6E, 0x73, 255);
     th.label3 = a.dark ? aino::Color(0x6E, 0x6E, 0x73, 255) : aino::Color(0x98, 0x98, 0x9D, 255);
-    th.muted_foreground = th.label2;
     th.set_tint(current_accent(a));
     return th;
 }
@@ -1160,7 +1159,7 @@ void draw_style(Ui &ui, App &a, CardId id, Rect b) {
         };
         // 色块是画在卡片上的，hex 也按同一底色合成后再显示 —— 否则
         // label（85% 黑）和 separator（10% 黑）都会印成 #000000，和肉眼看到的方块对不上。
-        const Color card_bg = th.window_bg.luminance() < .5f ? th.card : th.control_bg;
+        const Color card_bg = th.window_bg.luminance() < .5f ? th.card_bg : th.control_bg;
         const float cell = b.w / 8.f;
         for (int i = 0; i < 8; ++i) {
             const float x = b.x + cell * float(i);
@@ -1245,7 +1244,7 @@ void draw_about(Ui &ui, App &a, Rect b) {
     y += 26;
     const float row_h = 46.f;
     const Rect card(x, y, w, row_h * 3);
-    ui.panel(card, Style().background(th.window_bg.luminance() < .5f ? th.card : th.control_bg).corner(12));
+    ui.panel(card, Style().background(th.window_bg.luminance() < .5f ? th.card_bg : th.control_bg).corner(12));
     struct InfoRow {
         const char *key;
         const char *value;
@@ -1528,7 +1527,7 @@ void draw_nav(Ui &ui, App &a, const GalleryLayout &layout) {
             y += kNavStep;
         }
     }
-    ui.panel(footer, Style().background(a.dark ? ui.theme().card : ui.theme().control_bg).corner(12));
+    ui.panel(footer, Style().background(a.dark ? ui.theme().card_bg : ui.theme().control_bg).corner(12));
     label(ui, "外观", {footer.x + 16, footer.y + 8, 34, 28}, 11, true);
     Rect modes{70, footer.y + 8, 152, 28};
     well(ui, modes);
@@ -1588,7 +1587,7 @@ void draw_card(Ui &ui, App &a, const Card &card, Rect r) {
     label(ui, card.name, {r.x + 2, r.y + 2, r.w - 4, 22}, 13, true, 600);
     ui.panel({r.x, r.y + 22 + kCardTitleGap, r.w, r.h - 22 - kCardTitleGap},
              Style()
-                 .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card : ui.theme().control_bg)
+                 .background(ui.theme().window_bg.luminance() < .5f ? ui.theme().card_bg : ui.theme().control_bg)
                  .corner(12));
     draw_body(ui, a, card.id, card_body(r));
 }
@@ -1686,7 +1685,7 @@ void draw_overlays(Ui &ui, App &a, float y) {
                             danger ? "此操作无法撤销，请确认需要删除的内容。"
                                    : "你的设置已准备好，可以保存并继续。",
                             danger ? "删除" : "保存", "取消", open, r,
-                            danger ? Style().destructive() : Style().background(ui.theme().popover)))
+                            danger ? Style().destructive() : Style().background(ui.theme().popover_bg)))
             notify(ui, a, danger ? "项目已删除" : "设置已保存", danger ? 2 : 0);
     }
 }
@@ -1803,7 +1802,7 @@ void open_material_window(const std::shared_ptr<MaterialEditor> &state, aino::Th
             auto &win = *state->window;
             auto &name = state->name;
             auto &description = state->description;
-            ui.clear(ui.theme().background);
+            ui.clear(ui.theme().window_bg);
             auto col = ui.vbox({0, 0, ui.width(), ui.height()}, 8, 24);
             ui.heading("新建素材", col.next(28), Style().left());
             ui.label("名称", col.next(18), Style().left());

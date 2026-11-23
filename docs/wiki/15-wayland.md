@@ -72,10 +72,10 @@ compositor 提供 text-input-v3 时，输入框发送光标矩形、密码/多�
 没有 v3 协议时仍能使用 xkb 文本与 Compose，但不承诺系统 CJK 输入法可用。
 目前未提供 surrounding-text、上下文删除、预编辑内部选区或触屏输入。
 
-剪贴板通过 `wl_data_device` 交换 UTF-8 文本，保留 `clipboard()` / `try_set_clipboard()` API。
+剪贴板通过 `wl_data_device` 交换 UTF-8 文本，使用 `request_clipboard()` / `try_set_clipboard()`。
 系统要求有效的输入 serial 和键盘焦点；没有权限时写入返回 false，调用方不能据此删除原选区。
 接收与发送都有 32 MiB 大小上限及 2 秒期限，超时/断管不会提交部分粘贴数据。
-读取期间也会服务同线程其他窗口的选区请求，防止同进程复制粘贴互相等待。
+异步读取通过 socket 可读事件及期限接入多窗口主循环，等待期间所有窗口继续响应。
 为限制未完成请求，最多保留八个剪贴板 source 和八条发送流；达到上限时拒绝新请求。
 后台发送不会阻塞 UI，应用退出后的剪贴板保留取决于桌面剪贴板管理器。
 SSH 示例接收 `text/uri-list` 形式的本地文件拖放，以复制动作上传到当前目录。

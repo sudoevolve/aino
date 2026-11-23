@@ -53,13 +53,13 @@ inline std::string home_dir() {
             return p;
     }
 #if defined(_WIN32)
-    const char* p = std::getenv("USERPROFILE");
-    if (!p)
-        p = std::getenv("HOMEDRIVE");
+    const wchar_t* value = _wgetenv(L"USERPROFILE");
+    if (!value) value = _wgetenv(L"HOMEDRIVE");
+    return value ? std::filesystem::path(value).u8string() : std::string(".");
 #else
     const char* p = std::getenv("HOME");
-#endif
     return p ? std::string(p) : std::string(".");
+#endif
 }
 
 // 同目录独占创建，避免传输失败或取消时先截断最终目标。
@@ -303,12 +303,12 @@ struct KnownHosts {
             fp.find_first_of("\r\n ") != std::string::npos)
             return fail("主机密钥记录格式无效");
         std::error_code ec;
-        const bool exists = std::filesystem::exists(path, ec);
+        const bool exists = std::filesystem::exists(std::filesystem::u8path(path), ec);
         if (ec)
             return fail("无法检查主机密钥记录");
         std::string contents;
         if (exists) {
-            std::ifstream file(path, std::ios::binary);
+            std::ifstream file(std::filesystem::u8path(path), std::ios::binary);
             if (!file)
                 return fail("无法读取主机密钥记录");
             std::string line;

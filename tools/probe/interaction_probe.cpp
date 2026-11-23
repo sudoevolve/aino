@@ -298,11 +298,11 @@ static void test_input_edit() {
     check(v == before_controls, "仅控制字符输入不删除选区");
     d.type("替换", draw);
     check(v == "替换", "忽略 Tab 后原选区仍可替换");
-    ui.impl->get_clipboard = [] { return std::string("用\t户\r\n名\x7f"); };
+    ui.impl->get_clipboard_async = [](auto complete) { complete(std::string("用\t户\r\n名\x7f")); };
     d.key_ctrl('A', draw);
     d.key_ctrl('V', draw);
     check(v == "用户名", "单行粘贴过滤控制字符并保留 UTF-8");
-    ui.impl->get_clipboard = [] { return std::string("\t\r\n"); };
+    ui.impl->get_clipboard_async = [](auto complete) { complete(std::string("\t\r\n")); };
     d.key_ctrl('A', draw);
     d.key_ctrl('V', draw);
     check(v == "用户名", "只有控制字符的粘贴不清空选区");
@@ -759,7 +759,6 @@ static void test_scroll() {
     auto draw = [&]() {
         auto sc = ui.scroll(vp, ih * float(n));
         last_y = sc.y();
-        for (int i = 0; i < n; ++i) ui.row(ih);
     };
 
     d.idle(draw);

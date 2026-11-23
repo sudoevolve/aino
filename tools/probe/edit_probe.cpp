@@ -59,7 +59,7 @@ static void key(HWND h, int vk, bool ctrl = false, bool shift = false) {
 }
 
 int main() {
-    Window win(int(kLogicalW), int(kLogicalH), "aino-edit-probe");
+    Window win(aino::WindowConfig{int(kLogicalW), int(kLogicalH), "aino-edit-probe"});
     if (!win.ok()) { std::printf("window failed\n"); return 1; }
 
     std::thread driver([&] {
@@ -156,7 +156,7 @@ int main() {
 
     win.run([](Ui& ui) {
         std::lock_guard<std::mutex> l(g_mu);
-        ui.clear(ui.theme().background);
+        ui.clear(ui.theme().window_bg);
         ui.label("单行 input", Rect(20, 14, 200, 20), Style().muted_text());
         ui.input(&g.single, kSingleBox);
         ui.label("多行 textarea", Rect(20, 100, 200, 20), Style().muted_text());

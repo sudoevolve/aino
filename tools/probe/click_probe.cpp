@@ -128,14 +128,15 @@ struct NavScene {
     aino::Rect theme_btn() const { return aino::Rect(16.0f, kH - kFootH + 9.0f, 34.0f, 34.0f); }
 
     void draw(aino::Ui& ui) {
-        ui.clear(ui.theme().background);
+        ui.clear(ui.theme().window_bg);
         // 页脚先画 —— 和 gallery 一样，主题按钮在列表之前
         if (ui.icon_button("", theme_btn(), aino::Style().outline())) ++theme_clicks;
 
         auto sc = ui.scroll(list(), kItemH * float(kRows));
         (void)sc;
         for (int i = 0; i < kRows; ++i) {
-            const aino::Rect r = ui.row(kItemH);
+            const auto vp = list();
+            const aino::Rect r(vp.x, vp.y + i * kItemH - sc.y(), vp.w, kItemH);
             if (ui.nav_item("item " + std::to_string(i), false,
                             aino::Rect(r.x + 10.0f, r.y, r.w - 20.0f, r.h))) {
                 last_row = i;

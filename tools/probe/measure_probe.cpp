@@ -14,6 +14,7 @@
 #include "../../aino.hpp"
 
 #include <cstdio>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -293,12 +294,106 @@ static void test_measure_clips() {
     check(ui.end_measure().empty(), "完全裁剪的图元不增加测量边界");
 }
 
+static void test_focused_edit_boundaries() {
+    Surface sf(320, 240);
+    Harness h(&sf);
+    auto& ui = h.ui;
+    for (int kind = 0; kind != 3; ++kind) {
+        std::string value = kind == 2 ? "12" : "abcd";
+        const aino::Rect box{10, 10, 200, 100};
+        auto draw = [&](bool disabled) {
+            auto style = aino::Style().id(901 + kind);
+            style.disabled = disabled;
+            if (kind == 0) return ui.input(&value, box, style);
+            if (kind == 1) return ui.textarea(&value, box, style);
+            return ui.input_otp(&value, 6, box, style);
+        };
+        ui.impl->input = {};
+        ui.begin_frame(320, 240, .016f, 1);
+        const auto id = ui.impl->widget_id(kind == 0 ? "input" : kind == 1 ? "textarea" : "otp", box, 0, 901 + kind);
+        aino::detail::grab_focus(ui.impl, id);
+        ui.impl->caret = 1;
+        ui.impl->input.text_input = "7";
+        const auto original = value;
+        ui.begin_measure();
+        draw(false);
+        auto measured = ui.end_measure();
+        check(value == original && measured.h > 0 && ui.impl->focus_id == id,
+              "measuring a focused editor preserves model, focus and visible bounds");
+        check(draw(false) && value != original, "drawing consumes the input once after measurement");
+        ui.end_frame();
+        const auto edited = value;
+        int clipboard_calls = 0;
+        ui.impl->try_set_clipboard = [&](const std::string&) { ++clipboard_calls; return true; };
+        ui.impl->get_clipboard_async = [&](auto complete) { ++clipboard_calls; complete("pasted"); };
+        for (int key : std::array<int, 6>{aino::KEY_BACKSPACE, aino::KEY_DELETE, 'X', 'V', 'Z', 'Y'}) {
+            ui.impl->input = {};
+            ui.begin_frame(320, 240, .016f, 1);
+            aino::detail::grab_focus(ui.impl, id);
+            ui.impl->caret = 1;
+            ui.impl->sel_anchor = 0;
+            ui.impl->input.key_pressed[key] = true;
+            if (key < 128) ui.impl->input.key_ctrl[key] = true;
+            ui.begin_measure(); draw(false); ui.end_measure();
+            check(value == edited && ui.impl->caret == 1 && ui.impl->sel_anchor == 0 && !clipboard_calls,
+                  "measurement preserves selection and blocks delete, clipboard and history commands");
+            check(!draw(true) && value == edited && !ui.focused_id() && !clipboard_calls,
+                  "disabled editor blocks delete, clipboard and history commands");
+            ui.end_frame();
+        }
+        ui.impl->try_set_clipboard = {};
+        ui.impl->get_clipboard_async = {};
+        ui.impl->input = {};
+        ui.impl->input.text_input = "9";
+        ui.begin_frame(320, 240, .016f, 1);
+        check(!draw(true) && value == edited && !ui.focused_id(), "disabling a focused editor blocks keyboard edits");
+        ui.end_frame();
+    }
+    aino::detail::WidgetStateTable<float> table;
+    table[1] = 123;
+    table.set_measuring(true); table[1] = 0; table[2] = 4; table.set_measuring(false);
+    check(table[1] == 123 && !table.peek(2), "measurement isolates existing and newly created state");
+}
+
+static void test_caret_layout() {
+    Surface sf(320, 240);
+    Harness h(&sf);
+    h.ui.begin_frame(320, 240, .016f, 1);
+    for (const auto& text : {std::string("abc123"), std::string("a中\xF0\x9F\x98\x80z"), std::string()}) {
+        std::vector<float> positions;
+        h.tr.caret_positions(text, 13, 400, positions);
+        check(positions.size() == size_t(aino::utf8_count(text) + 1), "caret map has one entry per codepoint boundary");
+        bool exact = true;
+        for (size_t i = 0; i < positions.size(); ++i)
+            exact &= aino::detail::caret_from_x(h.ui, text, positions[i], 13, 400) == int(i);
+        check(exact, "caret hit test preserves ASCII, CJK and surrogate boundaries");
+    }
+    using Clock = std::chrono::steady_clock;
+    for (int length : {1000, 10000}) {
+        const std::string text(size_t(length), 'x');
+        std::vector<float> fast, baseline;
+        h.tr.caret_positions(text, 13, 400, fast); // 预热字体
+        auto start = Clock::now();
+        h.tr.caret_positions(text, 13, 400, fast);
+        const auto fast_us = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count();
+        start = Clock::now();
+        h.tr.aino::detail::TextRenderer::caret_positions(text, 13, 400, baseline);
+        const auto old_us = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count();
+        check(fast == baseline, "single layout matches prefix measurement for long ASCII input");
+        std::printf("[caret-layout] codepoints=%d single_us=%lld prefix_us=%lld\n", length,
+            static_cast<long long>(fast_us), static_cast<long long>(old_us));
+    }
+    h.ui.end_frame();
+}
+
 int main() {
     std::printf("=== 测量模式 / 滚轮归属 ===\n");
     test_measure_no_pixels();
     test_measure_no_side_effects();
     test_nested_wheel();
     test_measure_clips();
+    test_focused_edit_boundaries();
+    test_caret_layout();
     std::printf("\n=== 通过 %d 项，失败 %d 项 ===\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

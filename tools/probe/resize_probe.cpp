@@ -79,7 +79,7 @@ static bool right_stripe_ok(const Frame& f) {
 int main() {
     std::printf("== 缩放后备缓冲一致性断言 ==\n");
 
-    Window win(700, 480, "aino-resize");
+    Window win(aino::WindowConfig{700, 480, "aino-resize"});
     if (!win.ok()) { std::printf("window failed\n"); return 1; }
     HWND h = FindWindowW(nullptr, kTitle);
     auto* st = reinterpret_cast<detail::Win32State*>(win.impl->native);
@@ -92,7 +92,7 @@ int main() {
     // 竖条的存在与否直接反映"有没有按当前宽度重排" —— 只拉伸旧画面的话它还在老位置上。
     win.impl->frame_cb_ptr = [&win]() {
         Ui& ui = win.impl->ui;
-        ui.clear(ui.theme().background);
+        ui.clear(ui.theme().window_bg);
         ui.fill_rect(Rect(ui.width() - 40.0f, 0.0f, 40.0f, ui.height()),
                      Color::hex(0x2563EB), 0.0f);
     };

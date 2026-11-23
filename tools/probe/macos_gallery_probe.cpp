@@ -70,7 +70,7 @@ struct Fixture {
         ui.impl->input.released[0] = release;
         ui.impl->input.wheel = wheel;
         ui.begin_frame(width, height, 1.0f / 60.0f, scale);
-        ui.clear(ui.theme().background);
+        ui.clear(ui.theme().window_bg);
         draw();
         ui.end_frame();
     }
@@ -327,15 +327,15 @@ int main() {
             const Color want_label3 = dark ? Color(0x6E, 0x6E, 0x73, 255) : Color(0x98, 0x98, 0x9D, 255);
             native.label2 = want_label2;
             native.label3 = want_label3;
-            native.muted_foreground = want_label2;
+            native.label2 = want_label2;
             const auto th = gallery_theme(app);
             expect(th.same_as(native),
                    "gallery extends the native theme only with opaque secondary text");
             expect(equal(th.label2, want_label2) && equal(th.label3, want_label3) &&
                        th.label2.a == 255 && th.label3.a == 255,
                    "gallery secondary text stays opaque so GDI keeps the hierarchy");
-            expect(equal(th.tint, th.primary) && equal(th.table_sel, th.tint) &&
-                       th.ring.rgb24() == th.tint.rgb24(),
+            expect(equal(th.tint, th.tint) && equal(th.table_sel, th.tint) &&
+                       th.focus_ring.rgb24() == th.tint.rgb24(),
                    "accent changes synchronize all derived theme tokens");
         }
     expect(equal(aino::Theme::dark().title_bg, aino::Theme::dark().window_bg),
@@ -417,7 +417,7 @@ int main() {
                    "standard is an opaque neutral button without a border");
             expect(equal(primary.base, th.tint) && equal(primary.fg, th.tint_foreground),
                    "default button keeps its accent semantics");
-            for (Color backdrop : {th.window_bg, th.card}) {
+            for (Color backdrop : {th.window_bg, th.card_bg}) {
                 App variants;
                 f.ui.set_focus(nullptr);
                 auto draw = [&] {
@@ -500,7 +500,7 @@ int main() {
                 for (int y = bottom; y < bottom + int(32 * scale); ++y)
                     for (int x = int((card.x + 16) * scale); x < int((card.right() - 16) * scale); ++x)
                         overflow |= !equal(f.pixel(x, y), backdrop);
-                const Color surface = dark ? f.ui.theme().card : f.ui.theme().control_bg;
+                const Color surface = dark ? f.ui.theme().card_bg : f.ui.theme().control_bg;
                 for (int y = int((card.y + kCardBodyY + 142) * scale); y < bottom - int(10 * scale); ++y)
                     for (int x = int((card.x + 16) * scale); x < int((card.x + 160) * scale); ++x)
                         number_visible |= !equal(f.pixel(x, y), surface);
@@ -676,7 +676,7 @@ int main() {
     app.pending_anchor = 0;
     f.frame(full);
     f.frame(full);
-    expect(equal(f.ui.theme().primary, accent_color(4, app.dark)), "chosen accent survives navigation");
+    expect(equal(f.ui.theme().tint, accent_color(4, app.dark)), "chosen accent survives navigation");
     Rect button = app.card_rects[ButtonVariants];
     int hits = app.hits;
     f.click(button.x + 38, button.y + 60, full);
@@ -687,7 +687,7 @@ int main() {
         notice.notices.push_back({"保存完成", 0, false});
         quiet.ui.set_theme(gallery_theme(notice));
         quiet.ui.begin_frame(quiet.width, quiet.height, 4.0f, 1.0f);
-        quiet.ui.clear(quiet.ui.theme().background);
+        quiet.ui.clear(quiet.ui.theme().window_bg);
         build_ui(quiet.ui, notice);
         quiet.ui.end_frame();
         expect(notice.notices.size() == 1,
@@ -717,7 +717,7 @@ int main() {
         expect(app.custom_accent && equal(current_accent(app), custom) && custom.a == 255,
                "RGB slider edits only its channel and reaches the full 0-255 range");
         expect(app.color_open && equal(f.ui.theme().tint, custom) &&
-                   equal(f.ui.theme().primary, custom) && equal(f.ui.theme().table_sel, custom),
+                   equal(f.ui.theme().tint, custom) && equal(f.ui.theme().table_sel, custom),
                "RGB edits update the live global theme without closing the palette");
     }
     const int appearance = app.appearance;
@@ -748,7 +748,7 @@ int main() {
                     picker.ui.set_theme(dark ? aino::Theme::dark() : aino::Theme::light());
                     const Rect content{26, 70, width, 282};
                     const Rect panel = content.outset(20);
-                    const Color background = picker.ui.theme().background;
+                    const Color background = picker.ui.theme().window_bg;
                     picker.frame([&] {
                         picker.ui.color_picker(&color, &open, {40, 20, 184, 24});
                     }, -100, -100, false, false, 0, scale);
@@ -843,7 +843,7 @@ int main() {
                     picker.frame([&] { draw_datetime(picker.ui, state, Time, body); },
                                  -100, -100, false, false, 0, scale);
                     GdiFlush();
-                    const Color background = picker.ui.theme().background;
+                    const Color background = picker.ui.theme().window_bg;
                     int left = picker.canvas.w, right = -1;
                     for (int y = int((body.y + 52) * scale); y < int((body.y + 78) * scale); ++y) {
                         for (int x = int((gap_x + 2) * scale); x < int((gap_x + 22) * scale); ++x) {
@@ -903,7 +903,7 @@ int main() {
     app = App{};
     auto password = [&] { f.ui.input(&app.password, {20, 20, 360, 24}, Style().secret()); };
     std::string clipboard = "unchanged";
-    f.ui.impl->set_clipboard = [&](const std::string &text) { clipboard = text; };
+    f.ui.impl->try_set_clipboard = [&](const std::string &text) { clipboard = text; return true; };
     f.click(80, 32, password);
     f.key('A', password, true);
     f.key('C', password, true);

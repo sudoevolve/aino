@@ -118,7 +118,7 @@ static void type_key(WORD vk) {
 }
 
 int main() {
-    aino::Window win(560, 340, "ime flicker");
+    aino::Window win(aino::WindowConfig{560, 340, "ime flicker"});
     if (!win.ok()) { std::printf("[fatal] window\n"); return 1; }
 
     std::string name;
@@ -211,7 +211,7 @@ int main() {
     win.run([&](aino::Ui& ui) {
         g_hwnd.store(FindWindowW(nullptr, kTitle));
         ui.set_theme(aino::Theme::light());
-        ui.clear(ui.theme().background);
+        ui.clear(ui.theme().window_bg);
         ui.label("输入框：", aino::Rect(20, 16, 300, 20), aino::Style().left());
         ui.input(&name, aino::Rect(20, 40, 500, 34), aino::Style().hint("在这里打拼音"));
     });
