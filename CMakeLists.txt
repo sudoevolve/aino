@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.15)
 cmake_policy(SET CMP0091 NEW)
-project(aino_demo VERSION 0.5.3 LANGUAGES CXX)
+project(aino_demo VERSION 0.5.4 LANGUAGES CXX)
+
+if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja")
+    include(cmake/MsvcDependencies.cmake)
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

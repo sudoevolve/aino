@@ -9,6 +9,7 @@
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -25,9 +26,7 @@ def _find_vs_root():
 
 VS_ROOT = _find_vs_root()
 VCVARS = os.path.join(VS_ROOT, "VC", "Auxiliary", "Build", "vcvars64.bat")
-CMAKE = r"C:\Program Files\CMake\bin\cmake.exe"
-# 从当前 Python 安装目录定位 Ninja。
-NINJA_DIR = os.path.dirname(sys.executable)
+CMAKE = os.environ.get("AINO_CMAKE") or shutil.which("cmake") or r"C:\Program Files\CMake\bin\cmake.exe"
 
 # 关键：给 cmd.exe 一份干净的 Windows 环境，避免 PATH 里的 Git usr/bin
 # 让批处理内的 find / sort 等命令解析到 Unix 版本，从而导致输出失真。
@@ -114,8 +113,13 @@ def msvc_env():
     if "VSCMD_ARG_TGT_ARCH" not in env and "VCToolsInstallDir" not in env:
         raise SystemExit("vcvars64.bat 未能导出 MSVC 环境:\n" + proc.stdout[-2000:])
     augment_windows_sdk(env)
-    # Ninja 放在 PATH 最前面
-    env["PATH"] = NINJA_DIR + ";" + env.get("PATH", "")
+    # 保留独立安装的 Ninja；检查和 CMake 配置必须使用同一个可执行文件。
+    candidates = [os.environ.get("AINO_NINJA"),
+                  shutil.which("ninja", path=env.get("PATH")), shutil.which("ninja"),
+                  os.path.join(os.path.dirname(sys.executable), "ninja.exe")]
+    ninja = next((path for path in candidates if path and os.path.isfile(path)), None)
+    if ninja:
+        env["PATH"] = os.path.dirname(ninja) + ";" + env.get("PATH", "")
     return env
 
 
@@ -124,6 +128,7 @@ def main():
     ap.add_argument("--src", help="源码目录（CMakeLists.txt 所在或指向它的目录）")
     ap.add_argument("--build", required=True, help="构建目录")
     ap.add_argument("--target", default=None, help="仅构建指定 target")
+    ap.add_argument("--parallel", type=int, default=2, help="并行编译数量，默认 2")
     ap.add_argument("--config", default="Release", help="CMAKE_BUILD_TYPE，默认 Release")
     ap.add_argument("--install", action="store_true", help="构建后执行 cmake --install")
     ap.add_argument("--pretend", action="store_true", help="只探测环境，不构建")
@@ -131,12 +136,15 @@ def main():
     args = ap.parse_args()
 
     env = msvc_env()
+    ninja = shutil.which("ninja", path=env.get("PATH"))
+    if not ninja:
+        raise SystemExit("找不到 Ninja；请安装 Ninja 或用 AINO_NINJA 指定可执行文件")
 
     probe = subprocess.run("cl 2>&1 | findstr /C:\"Version\"",
                            shell=True, env=env, capture_output=True, text=True,
                            errors="replace")
     print("[msvc] cl.exe :", " ".join(probe.stdout.split()) or "(no version banner)")
-    print("[msvc] ninja  :", subprocess.run("ninja --version", shell=True, env=env,
+    print("[msvc] ninja  :", subprocess.run([ninja, "--version"], env=env,
                                             capture_output=True, text=True,
                                             errors="replace").stdout.strip())
     for tool in ("rc", "mt"):
@@ -152,7 +160,7 @@ def main():
         cfg = [CMAKE, "-S", os.path.abspath(args.src), "-B", os.path.abspath(args.build),
                "-G", "Ninja", "-DCMAKE_BUILD_TYPE=" + args.config,
                "-DCMAKE_C_COMPILER=cl", "-DCMAKE_CXX_COMPILER=cl",
-               "-DCMAKE_MAKE_PROGRAM=" + os.path.join(NINJA_DIR, "ninja.exe")]
+               "-DCMAKE_MAKE_PROGRAM=" + ninja]
         cfg += args.extra
         print("\n[msvc] configure:", " ".join(cfg), "\n", flush=True)
         r = subprocess.run(cfg, env=env, capture_output=True, text=True, errors="replace",
@@ -162,7 +170,7 @@ def main():
             print(r.stderr[-6000:], file=sys.stderr)
             raise SystemExit("CMake 配置失败 (exit {})".format(r.returncode))
 
-    build = [CMAKE, "--build", os.path.abspath(args.build)]
+    build = [CMAKE, "--build", os.path.abspath(args.build), "--parallel", str(max(1, args.parallel))]
     if args.target:
         build += ["--target", args.target]
     print("\n[msvc] build:", " ".join(build), "\n", flush=True)
