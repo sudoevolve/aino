@@ -12,6 +12,53 @@ env:
   PYTHONUTF8: "1"
 
 jobs:
+  wayland:
+    name: Pure Wayland / Weston
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      WAYLAND_DISPLAY: aino-ci
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wayland runtime and CJK fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends weston libwayland-client0 libwayland-cursor0 \
+            libxkbcommon0 libfreetype6 libfontconfig1 libgdk-pixbuf-2.0-0 fonts-noto-cjk
+      - name: Build release probes without X11
+        run: |
+          cmake -S . -B build/wayland -DAINO_WAYLAND=ON -DAINO_BUILD_TESTS=ON -DAINO_BUILD_SSH=OFF
+          cmake --build build/wayland --parallel 2 --target aino_test_wayland aino_test_window_wake aino_test_smoke aino_test_pixels aino_test_link_contract
+      - name: Native protocol and lifecycle checks
+        shell: bash
+        run: |
+          unset DISPLAY
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/aino-wayland"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          weston --backend=headless --renderer=pixman --shell=desktop-shell.so \
+            --socket="$WAYLAND_DISPLAY" --width=1600 --height=1000 --idle-time=0 \
+            --no-config --log="$RUNNER_TEMP/aino-weston.log" &
+          compositor=$!
+          trap 'kill "$compositor" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 100); do
+            if [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then break; fi
+            if ! kill -0 "$compositor" 2>/dev/null; then cat "$RUNNER_TEMP/aino-weston.log"; exit 1; fi
+            sleep 0.1
+          done
+          test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+          ctest --test-dir build/wayland --output-on-failure -R '^(wayland|window_wake|smoke|pixels|link_contract)$'
+      - name: Preserve Wayland reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wayland-release-reports
+          path: |
+            build/wayland/Testing/Temporary/
+            build/wayland/test-output/
+            ${{ runner.temp }}/aino-weston.log
+          if-no-files-found: ignore
+
   regression:
     name: ${{ matrix.os }} / CMake + CTest
     strategy:

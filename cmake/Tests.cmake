@@ -34,6 +34,9 @@ aino_add_test(pixels NATIVE tools/ci_pixels.cpp)
 aino_add_test(capture NATIVE tools/probe/capture_probe.cpp)
 aino_add_test(window_wake NATIVE tools/probe/window_wake_probe.cpp)
 aino_add_test(gallery_layout NATIVE tools/probe/gallery_layout_probe.cpp)
+if(AINO_WAYLAND)
+    aino_add_test(wayland NATIVE tools/probe/wayland_probe.cpp)
+endif()
 set_tests_properties(pixels PROPERTIES ENVIRONMENT "AINO_PIX_BMP=1")
 
 # 这些离屏夹具明确使用 GDI；文件名包含 macos 不代表原生 macOS 覆盖。

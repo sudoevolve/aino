@@ -12,6 +12,7 @@
 //  编译：
 //      MSVC: cl /std:c++17 /utf-8 /EHsc /MT main.cpp user32.lib gdi32.lib ole32.lib windowscodecs.lib
 //      GCC: g++ -std=c++17 main.cpp -lX11 -ldl
+//      Wayland: g++ -std=c++17 -DAINO_WAYLAND main.cpp -ldl -pthread
 //      Clang: clang++ -std=c++17 main.cpp -framework Cocoa -framework CoreText -framework CoreGraphics -framework ImageIO
 //
 //  源码为 UTF-8，MSVC 使用 /utf-8。
@@ -55,7 +56,12 @@
 #elif defined(__APPLE__)
 #  define AINO_PLATFORM_MACOS 1
 #elif defined(__linux__) || defined(__unix__)
-#  define AINO_PLATFORM_X11 1
+#  if defined(AINO_WAYLAND)
+#    define AINO_PLATFORM_WAYLAND 1
+#  else
+#    define AINO_PLATFORM_X11 1
+#  endif
+#  define AINO_PLATFORM_UNIX 1
 #else
 #  error "aino: 未支持的平台"
 #endif
@@ -1223,7 +1229,8 @@ struct WindowConfig {
     std::string title  = "aino";
 
     // ---- 图标 ----
-    // Windows: .ico; macOS: image or .icns for Dock; X11: decoded image for _NET_WM_ICON.
+    // Windows: .ico; macOS: image or .icns for Dock; X11: _NET_WM_ICON。
+    // Wayland 通过 app_id 和桌面 .desktop 文件匹配图标。
     std::string icon_path;
 
     // ---- 字体 ----
@@ -1231,7 +1238,7 @@ struct WindowConfig {
     // 再按文件里 `name` 表写着的家族名排版 —— 所以不用手工填家族名。
     // 只填 font_family 则使用系统已安装的家族名。两个都填时：先注册文件，
     // 家族名以文件为准；注册失败才退回 font_family。
-    // X11 不注册字体文件；解析出的家族名仍通过 fontconfig 或系统字体匹配。
+    // Linux 不注册字体文件；解析出的家族名仍通过 fontconfig 匹配。
     std::string font_path;
     std::string font_family;            // 空 = 平台默认无衬线
     std::string font_family_mono;       // 空 = Consolas / 平台等宽
@@ -1250,8 +1257,11 @@ struct WindowConfig {
     bool center = true;
 
     // Windows：关掉后不声明进程 DPI 感知，由系统缩放；只有第一个窗口说了算。
-    // X11：关掉后固定使用 1 倍逻辑像素，不读取桌面 DPI 或缩放环境变量。
+    // Linux：关掉后固定以 1 倍栅格绘制；Wayland 的输出缩放由 compositor 协调。
     bool high_dpi = true;
+
+    /** @brief Wayland 的桌面标识，应与 .desktop 文件名一致；其他后端忽略。 */
+    std::string app_id = "aino";
 };
 
 /** @brief 原生窗口与事件循环；除 wake()/close() 外，在所属 UI 线程操作。
@@ -1386,7 +1396,13 @@ int system_icon_worker_entry(int argc, char** argv);
 #  include <X11/cursorfont.h>   // XC_left_ptr / XC_hand2 ...
 #  include <X11/keysym.h>
 #  include <X11/Xatom.h>
+#endif
+#if defined(AINO_PLATFORM_UNIX)
 #  include <unistd.h>
+#  include <sys/mman.h>
+#  include <sys/socket.h>
+#  include <pthread.h>
+#  include <clocale>
 #  include <cerrno>       // XOpenDisplay 失败时要报 errno（EAGAIN=11 是"现在别连"）
 // 文字渲染：FreeType + fontconfig（运行时 dlopen），核心 XLFD 字体兜底。
 //
@@ -1414,7 +1430,8 @@ int system_icon_worker_entry(int argc, char** argv);
 #    include <filesystem>
 extern char** environ;
 #  endif
-#elif defined(AINO_PLATFORM_MACOS)
+#endif
+#if defined(AINO_PLATFORM_MACOS)
 // MacTypes.h 会往**全局**塞 ::Rect 和 ::Style（QuickDraw 遗产），和 aino::Rect /
 // aino::Style 撞名 —— 用户代码里 `using aino::Rect;` 会变成二义性。包含系统头之前
 // 先把这两个名字改掉，让全局只剩 MacRect / MacStyle（SDL 处理 QuickDraw 也是这招）。
@@ -1693,7 +1710,7 @@ inline std::string font_family_from_file(const std::string& path) {
 
 // =============================================================================
 //  8.2  像素画布 + CPU 光栅化
-//     内存布局：4 字节/像素。Windows / X11 是 BGRA，macOS 是 RGBA。
+//     内存布局：4 字节/像素。Windows / Linux 是 BGRA，macOS 是 RGBA。
 // =============================================================================
 #ifdef AINO_PLATFORM_MACOS
 static const int CH_R = 0, CH_G = 1, CH_B = 2, CH_A = 3;
@@ -3505,6 +3522,9 @@ void w32_destroy(Window* self);
 #elif defined(AINO_PLATFORM_X11)
 void x11_create(Window* self, const WindowConfig& cfg);
 void x11_destroy(Window* self);
+#elif defined(AINO_PLATFORM_WAYLAND)
+void wayland_create(Window* self, const WindowConfig& cfg);
+void wayland_destroy(Window* self);
 #elif defined(AINO_PLATFORM_MACOS)
 void cocoa_create(Window* self, const WindowConfig& cfg);
 void cocoa_destroy(Window* self);
@@ -4203,6 +4223,7 @@ struct Ui::Impl {
     // 把输入法的组合窗 / 候选窗挪到光标处（参数是**物理客户区**像素：
     // caret_x, 输入框上沿, 输入框下沿）。平台后端绑定；未绑定就什么都不做。
     std::function<void(float, float, float)> ime_pos;
+    std::function<void(bool, bool)> ime_content_type;
     // IME 正在组字的串（拼音/注音…，UTF-8）。这是**预编辑**文本：上屏前它不属于
     // value，一个字节都不该写进去（写进去就等于"打拼音时正文被污染"）。
     // input / textarea 在聚焦时把它画在 caret 处、带下划线，caret 顺延到它后面。
@@ -7004,6 +7025,7 @@ bool Ui::input(std::string* value, const Rect& box, const Style& st) {
     // 输入法：把拼音串钉在输入框下沿、候选框再往下一点。
     // 不做这一步，系统会把它们放在客户区左上角，和输入框完全对不上。
     if (focused && impl->ime_pos) {
+        if (impl->ime_content_type) impl->ime_content_type(st.password, false);
         const Rect pb = impl->phys(Rect(caret_x, box.y, 1.0f, box.h));
         impl->ime_pos(pb.x, pb.y, pb.bottom());
     }
@@ -8221,6 +8243,7 @@ bool Ui::textarea(std::string* value, const Rect& box, const Style& st) {
         }
         impl->schedule_caret();
         if (impl->ime_pos) {
+            if (impl->ime_content_type) impl->ime_content_type(false, true);
             // 光标滚出可视区时把 IME 钉在最近的那一行，别让它飞到框外
             const float iy = detail::clampf(cy, box.y, std::max(box.y, box.bottom() - lh));
             const Rect pb = impl->phys(Rect(cx, iy, 1.0f, lh));
@@ -11063,6 +11086,11 @@ namespace detail {
 struct X11State;
 inline void x11_set_ime_pos(X11State* s, float caret_x, float top, float bottom);
 } // namespace detail
+#elif defined(AINO_PLATFORM_WAYLAND)
+namespace detail {
+struct WaylandState;
+inline void wayland_set_ime_pos(WaylandState* s, float x, float top, float bottom);
+} // namespace detail
 #endif
 
 // 老的两参构造：集中填一次，避免 WindowConfig{ w, h, title } 这种聚合初始化
@@ -11112,6 +11140,11 @@ Window::Window(const WindowConfig& cfg) : impl(new Impl()) {
         impl->ui.impl->ime_owner = true;
         detail::x11_set_ime_pos(static_cast<detail::X11State*>(impl->native), x, top, bottom);
     };
+#elif defined(AINO_PLATFORM_WAYLAND)
+    impl->ui.impl->ime_pos = [this](float x, float top, float bottom) {
+        impl->ui.impl->ime_owner = true;
+        detail::wayland_set_ime_pos(static_cast<detail::WaylandState*>(impl->native), x, top, bottom);
+    };
 #endif
     // 剪贴板：input / textarea 的 Ctrl+C / X / V 从这里读写系统剪贴板。
     // 这两个回调原先**忘了绑** —— 结果是按 Ctrl+C 时调用一个空的 std::function，
@@ -11146,6 +11179,8 @@ Window::Window(const WindowConfig& cfg) : impl(new Impl()) {
     detail::w32_create(this, impl->cfg);
 #elif defined(AINO_PLATFORM_X11)
     detail::x11_create(this, impl->cfg);
+#elif defined(AINO_PLATFORM_WAYLAND)
+    detail::wayland_create(this, impl->cfg);
 #elif defined(AINO_PLATFORM_MACOS)
     detail::cocoa_create(this, impl->cfg);
 #endif
@@ -11158,6 +11193,8 @@ Window::~Window() {
     detail::w32_destroy(this);
 #elif defined(AINO_PLATFORM_X11)
     detail::x11_destroy(this);
+#elif defined(AINO_PLATFORM_WAYLAND)
+    detail::wayland_destroy(this);
 #elif defined(AINO_PLATFORM_MACOS)
     detail::cocoa_destroy(this);
 #endif
@@ -11188,8 +11225,10 @@ void  Window::set_theme(const Theme& t) {
     impl->ui.set_theme(t);
     impl->need_frame = true;
 }
+#ifndef AINO_PLATFORM_WAYLAND
 int   Window::width() const { return int(float(impl->client_w) / impl->scale + 0.5f); }
 int   Window::height() const { return int(float(impl->client_h) / impl->scale + 0.5f); }
+#endif
 float Window::dpi_scale() const { return impl->scale; }
 bool  Window::should_close() const { return !impl->running; }
 void  Window::request_repaint() {
@@ -12410,7 +12449,7 @@ inline float desktop_scale(const char* override_scale, const char* gdk_scale,
 }
 } // namespace detail
 
-#if defined(AINO_PLATFORM_X11)
+#if defined(AINO_PLATFORM_UNIX)
 
 namespace detail {
 
@@ -12421,7 +12460,7 @@ inline std::string& x11_icon_theme() { static thread_local std::string theme; re
 // 是**全缓冲**的，不 flush 的话进程一死，前面打的字全部丢失 —— 日志里只剩
 // 一行 glibc 的报错，看不出死在哪一步。
 inline bool x11_trace_on() {
-    static const bool on = (std::getenv("AINO_X11_TRACE") != nullptr);
+    static const bool on = (std::getenv("AINO_X11_TRACE") != nullptr || std::getenv("AINO_WAYLAND_TRACE") != nullptr);
     return on;
 }
 inline void x11_trace(const char* fmt, ...) {
@@ -12633,7 +12672,7 @@ inline int x11_chain_cap() {
     return v >= 2 ? v : 16;
 }
 
-class X11TextRenderer : public TextRenderer {
+class UnixTextRenderer : public TextRenderer {
 public:
     void init(float, const std::string& family, const std::string& mono) override {
         // 两套名字：FreeType 按 fontconfig 家族名匹配（"sans"），
@@ -12646,13 +12685,19 @@ public:
                   ft_ready_ ? 1 : 0);
     }
     void reconfigure(float dpi, const std::string& family, const std::string& mono) override {
+#ifdef AINO_PLATFORM_X11
         Display* dpy = dpy_;
         const Drawable target = target_;
-        release(); init(dpi, family, mono);
+#endif
+        release();
+        init(dpi, family, mono);
+#ifdef AINO_PLATFORM_X11
         set_drawable(dpy, target, nullptr);
+#endif
     }
     void release() override {
         release_fonts();
+#ifdef AINO_PLATFORM_X11
         if (dpy_) {
             for (auto& kv : sets_) {
                 if (!kv.second) continue;
@@ -12664,6 +12709,7 @@ public:
         }
         sets_.clear();
         dpy_ = nullptr;
+#endif
         x11_trace("text release done");
     }
     float measure(const std::string& utf8, float size, int weight) override {
@@ -12679,6 +12725,7 @@ public:
             }
             if (w > 0.0f) return w;
         }
+#ifdef AINO_PLATFORM_X11
         XFontSet fs = fontset(size);
         if (!fs) return float(utf8.size()) * size * 0.55f;
         XRectangle ink{}, logical{};
@@ -12687,22 +12734,33 @@ public:
         // 文字算成"零宽"，居中/右对齐全错位。退回按字宽估算。
         if (logical.width <= 0) return float(utf8.size()) * size * 0.55f;
         return float(logical.width);
+#else
+        return float(utf8_count(utf8)) * size * 0.55f;
+#endif
     }
     float ascent(float size, int weight) override {
         if (Font* f = font(size, weight, false)) return float(f->asc);
+#ifdef AINO_PLATFORM_X11
         XFontSet fs = fontset(size);
         if (!fs) return size * 0.8f;
         XFontSetExtents* e = XExtentsOfFontSet(fs);
         if (!e) return size * 0.8f;
         return float(-e->max_logical_extent.y);
+#else
+        return size * 0.8f;
+#endif
     }
     float line_height(float size, int weight) override {
         if (Font* f = font(size, weight, false)) return float(f->asc + f->desc);
+#ifdef AINO_PLATFORM_X11
         XFontSet fs = fontset(size);
         if (!fs) return size * 1.4f;
         XFontSetExtents* e = XExtentsOfFontSet(fs);
         if (!e) return size * 1.4f;
         return float(e->max_logical_extent.height);
+#else
+        return size * 1.4f;
+#endif
     }
     // 等宽通道：代码块靠它按列对齐。Windows 用 Consolas，Linux 自然就是
     // fontconfig 的 monospace（DejaVu Sans Mono / Noto Sans Mono）。
@@ -12730,18 +12788,25 @@ public:
               float size, int weight, const Color& c, const Rect& clip) override {
         if (utf8.empty()) return;
         if (ft_draw(cv, utf8, x, y_top, size, weight, c, clip, false)) return;
+#ifdef AINO_PLATFORM_X11
         if (dpy_) core_draw(cv, utf8, x, y_top, size, weight, c, clip);
+#endif
     }
     void draw_mono(Canvas& cv, const std::string& utf8, float x, float y_top,
                    float size, int weight, const Color& c, const Rect& clip) override {
         if (utf8.empty()) return;
         if (ft_draw(cv, utf8, x, y_top, size, weight, c, clip, true)) return;
+#ifdef AINO_PLATFORM_X11
         if (dpy_) core_draw(cv, utf8, x, y_top, size, weight, c, clip);
+#endif
     }
+#ifdef AINO_PLATFORM_X11
     void set_drawable(Display* d, Drawable target, GC) {
         dpy_ = d;
         target_ = target;
     }
+#endif
+    bool ready() const { return ft_ready_; }
     struct CacheStats { size_t fonts, faces, glyph_bytes; };
     CacheStats cache_stats() const { return {fonts_.size(), faces_.size(), glyph_bytes_}; }
 
@@ -12943,7 +13008,7 @@ private:
     }
 
     // 取一个码位的字形：先试上次命中的字体，再沿兜底链找第一个覆盖它的。
-    // 一个都没有就只占半格宽度、不画墨 —— 宁可空白也不吐豆腐方块。
+    // 缺少字体时画 .notdef 并报告一次，不能把不可读的内容静默变成空白。
     const Glyph& glyph(Font& f, unsigned long cp) {
         uncached_glyph_ = Glyph{};
         auto it = f.glyphs.find(cp);
@@ -12994,6 +13059,19 @@ private:
             }
         } else {
             g.adv = int(f.px * 0.5 * 64.0 + 0.5);
+            if (cp >= 32 && cp != 127) {
+                if (!missing_font_reported_) {
+                    std::fprintf(stderr, "[aino/font] No installed font covers U+%04lX; showing a missing-glyph marker. "
+                        "Install suitable fonts (CJK: fonts-noto-cjk).\n", cp);
+                    missing_font_reported_ = true;
+                }
+                if (void* face = open_face(f, 0)) {
+                    if (ft.load_glyph(face, 0, 0x4) == 0) {
+                        auto* slot = static_cast<FtSlotLite*>(static_cast<FtFaceLite*>(face)->glyph);
+                        if (slot) { g.adv = int(slot->advance.x); copy_bitmap(slot, g); }
+                    }
+                }
+            }
         }
         constexpr size_t budget = 4u * 1024u * 1024u;
         // 单个超大字形只供本次调用使用，不让它撑破持久缓存预算。
@@ -13094,6 +13172,7 @@ private:
 
     // 核心 XLFD 字体那条老路：1bit 点阵、无抗锯齿、字重拉不开。
     // 只在 FreeType 加载不到（极简容器）时才会走到这里。
+#ifdef AINO_PLATFORM_X11
     void core_draw(Canvas& cv, const std::string& utf8, float x, float y_top,
                    float size, int weight, const Color& c, const Rect& clip) {
         if (!dpy_ || utf8.empty()) return;
@@ -13223,11 +13302,15 @@ private:
     Drawable target_ = 0;      // 窗口：只用来创建 Pixmap
     Pixmap pm1_ = 0;           // 1×1 depth 1 —— 只为建下面那个 GC
     GC gc1_ = nullptr;         // depth 1 的 GC
+#endif
     bool ft_ready_ = false;    // FreeType + fontconfig 都加载成功
+    bool missing_font_reported_ = false;
     std::string family_;       // 核心字体的 XLFD 家族（空 = "*"）
     std::string sans_;         // fontconfig 家族名（空 = "sans"）
     std::string mono_;
+#ifdef AINO_PLATFORM_X11
     std::unordered_map<int, XFontSet> sets_;
+#endif
     std::unordered_map<int, Font> fonts_;
     struct SharedFace { void* face = nullptr; long size = 0; uint64_t touched = 0; };
     std::map<std::pair<std::string, long>, SharedFace> faces_;
@@ -13239,6 +13322,8 @@ private:
 };
 
 
+#ifdef AINO_PLATFORM_X11
+using X11TextRenderer = UnixTextRenderer;
 struct X11State {
     Window::Impl* owner = nullptr;
     Display* dpy = nullptr;
@@ -14035,13 +14120,2124 @@ std::string Window::clipboard() const {
     return s->clipboard_ok ? s->clipboard_received : std::string();
 }
 
+#else
+} // namespace detail
 #endif // AINO_PLATFORM_X11
+#endif // AINO_PLATFORM_UNIX
 
 // =============================================================================
-//  8.20  macOS 后端
-//        纯 C++ 通过 objc runtime 调 AppKit（不写 Objective-C 语法，
-//        这样头文件在普通 .cpp 里也能编译）；绘制用 CoreGraphics，
-//        文字用 CoreText。同样未经真机验证。
+//  8.20  Wayland 后端：CPU 画布、共享内存呈现与原生输入协议
+// =============================================================================
+#ifdef AINO_PLATFORM_WAYLAND
+namespace detail {
+namespace wl {
+struct Proxy;
+struct Interface;
+struct Message { const char* name; const char* signature; const Interface** types; };
+struct Interface {
+    const char* name;
+    int version, method_count;
+    const Message* methods;
+    int event_count;
+    const Message* events;
+};
+struct Array { size_t size, alloc; void* data; };
+// BEGIN AINO WAYLAND PROTOCOLS (tools/generate_wayland_protocols.py)
+// 协议布局来自 Wayland / wayland-protocols XML，保留原协议名称与版本。
+/* wayland
+Copyright © 2008-2011 Kristian Høgsberg
+Copyright © 2010-2011 Intel Corporation
+Copyright © 2012-2013 Collabora, Ltd.
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation files
+(the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of the Software,
+and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice (including the
+next paragraph) shall be included in all copies or substantial
+portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+/* xdg_shell
+Copyright © 2008-2013 Kristian Høgsberg
+Copyright © 2013      Rafael Antognolli
+Copyright © 2013      Jasper St. Pierre
+Copyright © 2010-2013 Intel Corporation
+Copyright © 2015-2017 Samsung Electronics Co., Ltd
+Copyright © 2015-2017 Red Hat Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice (including the next
+paragraph) shall be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+*/
+/* viewporter
+Copyright © 2013-2016 Collabora, Ltd.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice (including the next
+paragraph) shall be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+*/
+/* fractional_scale_v1
+Copyright © 2022 Kenny Levinsen
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice (including the next
+paragraph) shall be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+*/
+/* text_input_unstable_v3
+Copyright © 2012, 2013 Intel Corporation
+Copyright © 2015, 2016 Jan Arne Petersen
+Copyright © 2017, 2018 Red Hat, Inc.
+Copyright © 2018       Purism SPC
+
+Permission to use, copy, modify, distribute, and sell this
+software and its documentation for any purpose is hereby granted
+without fee, provided that the above copyright notice appear in
+all copies and that both that copyright notice and this permission
+notice appear in supporting documentation, and that the name of
+the copyright holders not be used in advertising or publicity
+pertaining to distribution of the software without specific,
+written prior permission.  The copyright holders make no
+representations about the suitability of this software for any
+purpose.  It is provided "as is" without express or implied
+warranty.
+
+THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
+SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
+SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
+AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+*/
+/* xdg_decoration_unstable_v1
+Copyright © 2018 Simon Ser
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice (including the next
+paragraph) shall be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+*/
+extern const Interface wl_display;
+extern const Interface wl_registry;
+extern const Interface wl_callback;
+extern const Interface wl_compositor;
+extern const Interface wl_shm_pool;
+extern const Interface wl_shm;
+extern const Interface wl_buffer;
+extern const Interface wl_data_offer;
+extern const Interface wl_data_source;
+extern const Interface wl_data_device;
+extern const Interface wl_data_device_manager;
+extern const Interface wl_shell;
+extern const Interface wl_shell_surface;
+extern const Interface wl_surface;
+extern const Interface wl_seat;
+extern const Interface wl_pointer;
+extern const Interface wl_keyboard;
+extern const Interface wl_touch;
+extern const Interface wl_output;
+extern const Interface wl_region;
+extern const Interface wl_subcompositor;
+extern const Interface wl_subsurface;
+extern const Interface xdg_wm_base;
+extern const Interface xdg_positioner;
+extern const Interface xdg_surface;
+extern const Interface xdg_toplevel;
+extern const Interface xdg_popup;
+extern const Interface wp_viewporter;
+extern const Interface wp_viewport;
+extern const Interface wp_fractional_scale_manager_v1;
+extern const Interface wp_fractional_scale_v1;
+extern const Interface zwp_text_input_v3;
+extern const Interface zwp_text_input_manager_v3;
+extern const Interface zxdg_decoration_manager_v1;
+extern const Interface zxdg_toplevel_decoration_v1;
+inline const Interface* wl_display_request_types_0[] = {&wl_callback};
+inline const Interface* wl_display_request_types_1[] = {&wl_registry};
+inline const Message wl_display_requests[] = {
+        {"sync", "n", wl_display_request_types_0},
+        {"get_registry", "n", wl_display_request_types_1},
+};
+inline const Interface* wl_display_event_types_0[] = {nullptr, nullptr, nullptr};
+inline const Interface* wl_display_event_types_1[] = {nullptr};
+inline const Message wl_display_events[] = {
+        {"error", "ous", wl_display_event_types_0},
+        {"delete_id", "u", wl_display_event_types_1},
+};
+inline const Interface wl_display{"wl_display", 1, 2, wl_display_requests, 2, wl_display_events};
+inline const Interface* wl_registry_request_types_0[] = {nullptr, nullptr, nullptr, nullptr};
+inline const Message wl_registry_requests[] = {
+        {"bind", "usun", wl_registry_request_types_0},
+};
+inline const Interface* wl_registry_event_types_0[] = {nullptr, nullptr, nullptr};
+inline const Interface* wl_registry_event_types_1[] = {nullptr};
+inline const Message wl_registry_events[] = {
+        {"global", "usu", wl_registry_event_types_0},
+        {"global_remove", "u", wl_registry_event_types_1},
+};
+inline const Interface wl_registry{"wl_registry", 1, 1, wl_registry_requests, 2, wl_registry_events};
+inline const Interface* wl_callback_event_types_0[] = {nullptr};
+inline const Message wl_callback_events[] = {
+        {"done", "u", wl_callback_event_types_0},
+};
+inline const Interface wl_callback{"wl_callback", 1, 0, nullptr, 1, wl_callback_events};
+inline const Interface* wl_compositor_request_types_0[] = {&wl_surface};
+inline const Interface* wl_compositor_request_types_1[] = {&wl_region};
+inline const Message wl_compositor_requests[] = {
+        {"create_surface", "n", wl_compositor_request_types_0},
+        {"create_region", "n", wl_compositor_request_types_1},
+};
+inline const Interface wl_compositor{"wl_compositor", 6, 2, wl_compositor_requests, 0, nullptr};
+inline const Interface* wl_shm_pool_request_types_0[] = {&wl_buffer, nullptr, nullptr, nullptr, nullptr, nullptr};
+inline const Interface* wl_shm_pool_request_types_2[] = {nullptr};
+inline const Message wl_shm_pool_requests[] = {
+        {"create_buffer", "niiiiu", wl_shm_pool_request_types_0},
+        {"destroy", "", nullptr},
+        {"resize", "i", wl_shm_pool_request_types_2},
+};
+inline const Interface wl_shm_pool{"wl_shm_pool", 1, 3, wl_shm_pool_requests, 0, nullptr};
+inline const Interface* wl_shm_request_types_0[] = {&wl_shm_pool, nullptr, nullptr};
+inline const Message wl_shm_requests[] = {
+        {"create_pool", "nhi", wl_shm_request_types_0},
+};
+inline const Interface* wl_shm_event_types_0[] = {nullptr};
+inline const Message wl_shm_events[] = {
+        {"format", "u", wl_shm_event_types_0},
+};
+inline const Interface wl_shm{"wl_shm", 1, 1, wl_shm_requests, 1, wl_shm_events};
+inline const Message wl_buffer_requests[] = {
+        {"destroy", "", nullptr},
+};
+inline const Message wl_buffer_events[] = {
+        {"release", "", nullptr},
+};
+inline const Interface wl_buffer{"wl_buffer", 1, 1, wl_buffer_requests, 1, wl_buffer_events};
+inline const Interface* wl_data_offer_request_types_0[] = {nullptr, nullptr};
+inline const Interface* wl_data_offer_request_types_1[] = {nullptr, nullptr};
+inline const Interface* wl_data_offer_request_types_4[] = {nullptr, nullptr};
+inline const Message wl_data_offer_requests[] = {
+        {"accept", "u?s", wl_data_offer_request_types_0},
+        {"receive", "sh", wl_data_offer_request_types_1},
+        {"destroy", "", nullptr},
+        {"finish", "3", nullptr},
+        {"set_actions", "3uu", wl_data_offer_request_types_4},
+};
+inline const Interface* wl_data_offer_event_types_0[] = {nullptr};
+inline const Interface* wl_data_offer_event_types_1[] = {nullptr};
+inline const Interface* wl_data_offer_event_types_2[] = {nullptr};
+inline const Message wl_data_offer_events[] = {
+        {"offer", "s", wl_data_offer_event_types_0},
+        {"source_actions", "3u", wl_data_offer_event_types_1},
+        {"action", "3u", wl_data_offer_event_types_2},
+};
+inline const Interface wl_data_offer{"wl_data_offer", 3, 5, wl_data_offer_requests, 3, wl_data_offer_events};
+inline const Interface* wl_data_source_request_types_0[] = {nullptr};
+inline const Interface* wl_data_source_request_types_2[] = {nullptr};
+inline const Message wl_data_source_requests[] = {
+        {"offer", "s", wl_data_source_request_types_0},
+        {"destroy", "", nullptr},
+        {"set_actions", "3u", wl_data_source_request_types_2},
+};
+inline const Interface* wl_data_source_event_types_0[] = {nullptr};
+inline const Interface* wl_data_source_event_types_1[] = {nullptr, nullptr};
+inline const Interface* wl_data_source_event_types_5[] = {nullptr};
+inline const Message wl_data_source_events[] = {
+        {"target", "?s", wl_data_source_event_types_0},
+        {"send", "sh", wl_data_source_event_types_1},
+        {"cancelled", "", nullptr},
+        {"dnd_drop_performed", "3", nullptr},
+        {"dnd_finished", "3", nullptr},
+        {"action", "3u", wl_data_source_event_types_5},
+};
+inline const Interface wl_data_source{"wl_data_source", 3, 3, wl_data_source_requests, 6, wl_data_source_events};
+inline const Interface* wl_data_device_request_types_0[] = {&wl_data_source, &wl_surface, &wl_surface, nullptr};
+inline const Interface* wl_data_device_request_types_1[] = {&wl_data_source, nullptr};
+inline const Message wl_data_device_requests[] = {
+        {"start_drag", "?oo?ou", wl_data_device_request_types_0},
+        {"set_selection", "?ou", wl_data_device_request_types_1},
+        {"release", "2", nullptr},
+};
+inline const Interface* wl_data_device_event_types_0[] = {&wl_data_offer};
+inline const Interface* wl_data_device_event_types_1[] = {nullptr, &wl_surface, nullptr, nullptr, &wl_data_offer};
+inline const Interface* wl_data_device_event_types_3[] = {nullptr, nullptr, nullptr};
+inline const Interface* wl_data_device_event_types_5[] = {&wl_data_offer};
+inline const Message wl_data_device_events[] = {
+        {"data_offer", "n", wl_data_device_event_types_0},
+        {"enter", "uoff?o", wl_data_device_event_types_1},
+        {"leave", "", nullptr},
+        {"motion", "uff", wl_data_device_event_types_3},
+        {"drop", "", nullptr},
+        {"selection", "?o", wl_data_device_event_types_5},
+};
+inline const Interface wl_data_device{"wl_data_device", 3, 3, wl_data_device_requests, 6, wl_data_device_events};
+inline const Interface* wl_data_device_manager_request_types_0[] = {&wl_data_source};
+inline const Interface* wl_data_device_manager_request_types_1[] = {&wl_data_device, &wl_seat};
+inline const Message wl_data_device_manager_requests[] = {
+        {"create_data_source", "n", wl_data_device_manager_request_types_0},
+        {"get_data_device", "no", wl_data_device_manager_request_types_1},
+};
+inline const Interface wl_data_device_manager{"wl_data_device_manager", 3, 2, wl_data_device_manager_requests, 0, nullptr};
+inline const Interface* wl_shell_request_types_0[] = {&wl_shell_surface, &wl_surface};
+inline const Message wl_shell_requests[] = {
+        {"get_shell_surface", "no", wl_shell_request_types_0},
+};
+inline const Interface wl_shell{"wl_shell", 1, 1, wl_shell_requests, 0, nullptr};
+inline const Interface* wl_shell_surface_request_types_0[] = {nullptr};
+inline const Interface* wl_shell_surface_request_types_1[] = {&wl_seat, nullptr};
+inline const Interface* wl_shell_surface_request_types_2[] = {&wl_seat, nullptr, nullptr};
+inline const Interface* wl_shell_surface_request_types_4[] = {&wl_surface, nullptr, nullptr, nullptr};
+inline const Interface* wl_shell_surface_request_types_5[] = {nullptr, nullptr, &wl_output};
+inline const Interface* wl_shell_surface_request_types_6[] = {&wl_seat, nullptr, &wl_surface, nullptr, nullptr, nullptr};
+inline const Interface* wl_shell_surface_request_types_7[] = {&wl_output};
+inline const Interface* wl_shell_surface_request_types_8[] = {nullptr};
+inline const Interface* wl_shell_surface_request_types_9[] = {nullptr};
+inline const Message wl_shell_surface_requests[] = {
+        {"pong", "u", wl_shell_surface_request_types_0},
+        {"move", "ou", wl_shell_surface_request_types_1},
+        {"resize", "ouu", wl_shell_surface_request_types_2},
+        {"set_toplevel", "", nullptr},
+        {"set_transient", "oiiu", wl_shell_surface_request_types_4},
+        {"set_fullscreen", "uu?o", wl_shell_surface_request_types_5},
+        {"set_popup", "ouoiiu", wl_shell_surface_request_types_6},
+        {"set_maximized", "?o", wl_shell_surface_request_types_7},
+        {"set_title", "s", wl_shell_surface_request_types_8},
+        {"set_class", "s", wl_shell_surface_request_types_9},
+};
+inline const Interface* wl_shell_surface_event_types_0[] = {nullptr};
+inline const Interface* wl_shell_surface_event_types_1[] = {nullptr, nullptr, nullptr};
+inline const Message wl_shell_surface_events[] = {
+        {"ping", "u", wl_shell_surface_event_types_0},
+        {"configure", "uii", wl_shell_surface_event_types_1},
+        {"popup_done", "", nullptr},
+};
+inline const Interface wl_shell_surface{"wl_shell_surface", 1, 10, wl_shell_surface_requests, 3, wl_shell_surface_events};
+inline const Interface* wl_surface_request_types_1[] = {&wl_buffer, nullptr, nullptr};
+inline const Interface* wl_surface_request_types_2[] = {nullptr, nullptr, nullptr, nullptr};
+inline const Interface* wl_surface_request_types_3[] = {&wl_callback};
+inline const Interface* wl_surface_request_types_4[] = {&wl_region};
+inline const Interface* wl_surface_request_types_5[] = {&wl_region};
+inline const Interface* wl_surface_request_types_7[] = {nullptr};
+inline const Interface* wl_surface_request_types_8[] = {nullptr};
+inline const Interface* wl_surface_request_types_9[] = {nullptr, nullptr, nullptr, nullptr};
+inline const Interface* wl_surface_request_types_10[] = {nullptr, nullptr};
+inline const Message wl_surface_requests[] = {
+        {"destroy", "", nullptr},
+        {"attach", "?oii", wl_surface_request_types_1},
+        {"damage", "iiii", wl_surface_request_types_2},
+        {"frame", "n", wl_surface_request_types_3},
+        {"set_opaque_region", "?o", wl_surface_request_types_4},
+        {"set_input_region", "?o", wl_surface_request_types_5},
+        {"commit", "", nullptr},
+        {"set_buffer_transform", "2i", wl_surface_request_types_7},
+        {"set_buffer_scale", "3i", wl_surface_request_types_8},
+        {"damage_buffer", "4iiii", wl_surface_request_types_9},
+        {"offset", "5ii", wl_surface_request_types_10},
+};
+inline const Interface* wl_surface_event_types_0[] = {&wl_output};
+inline const Interface* wl_surface_event_types_1[] = {&wl_output};
+inline const Interface* wl_surface_event_types_2[] = {nullptr};
+inline const Interface* wl_surface_event_types_3[] = {nullptr};
+inline const Message wl_surface_events[] = {
+        {"enter", "o", wl_surface_event_types_0},
+        {"leave", "o", wl_surface_event_types_1},
+        {"preferred_buffer_scale", "6i", wl_surface_event_types_2},
+        {"preferred_buffer_transform", "6u", wl_surface_event_types_3},
+};
+inline const Interface wl_surface{"wl_surface", 6, 11, wl_surface_requests, 4, wl_surface_events};
+inline const Interface* wl_seat_request_types_0[] = {&wl_pointer};
+inline const Interface* wl_seat_request_types_1[] = {&wl_keyboard};
+inline const Interface* wl_seat_request_types_2[] = {&wl_touch};
+inline const Message wl_seat_requests[] = {
+        {"get_pointer", "n", wl_seat_request_types_0},
+        {"get_keyboard", "n", wl_seat_request_types_1},
+        {"get_touch", "n", wl_seat_request_types_2},
+        {"release", "5", nullptr},
+};
+inline const Interface* wl_seat_event_types_0[] = {nullptr};
+inline const Interface* wl_seat_event_types_1[] = {nullptr};
+inline const Message wl_seat_events[] = {
+        {"capabilities", "u", wl_seat_event_types_0},
+        {"name", "2s", wl_seat_event_types_1},
+};
+inline const Interface wl_seat{"wl_seat", 9, 4, wl_seat_requests, 2, wl_seat_events};
+inline const Interface* wl_pointer_request_types_0[] = {nullptr, &wl_surface, nullptr, nullptr};
+inline const Message wl_pointer_requests[] = {
+        {"set_cursor", "u?oii", wl_pointer_request_types_0},
+        {"release", "3", nullptr},
+};
+inline const Interface* wl_pointer_event_types_0[] = {nullptr, &wl_surface, nullptr, nullptr};
+inline const Interface* wl_pointer_event_types_1[] = {nullptr, &wl_surface};
+inline const Interface* wl_pointer_event_types_2[] = {nullptr, nullptr, nullptr};
+inline const Interface* wl_pointer_event_types_3[] = {nullptr, nullptr, nullptr, nullptr};
+inline const Interface* wl_pointer_event_types_4[] = {nullptr, nullptr, nullptr};
+inline const Interface* wl_pointer_event_types_6[] = {nullptr};
+inline const Interface* wl_pointer_event_types_7[] = {nullptr, nullptr};
+inline const Interface* wl_pointer_event_types_8[] = {nullptr, nullptr};
+inline const Interface* wl_pointer_event_types_9[] = {nullptr, nullptr};
+inline const Interface* wl_pointer_event_types_10[] = {nullptr, nullptr};
+inline const Message wl_pointer_events[] = {
+        {"enter", "uoff", wl_pointer_event_types_0},
+        {"leave", "uo", wl_pointer_event_types_1},
+        {"motion", "uff", wl_pointer_event_types_2},
+        {"button", "uuuu", wl_pointer_event_types_3},
+        {"axis", "uuf", wl_pointer_event_types_4},
+        {"frame", "5", nullptr},
+        {"axis_source", "5u", wl_pointer_event_types_6},
+        {"axis_stop", "5uu", wl_pointer_event_types_7},
+        {"axis_discrete", "5ui", wl_pointer_event_types_8},
+        {"axis_value120", "8ui", wl_pointer_event_types_9},
+        {"axis_relative_direction", "9uu", wl_pointer_event_types_10},
+};
+inline const Interface wl_pointer{"wl_pointer", 9, 2, wl_pointer_requests, 11, wl_pointer_events};
+inline const Message wl_keyboard_requests[] = {
+        {"release", "3", nullptr},
+};
+inline const Interface* wl_keyboard_event_types_0[] = {nullptr, nullptr, nullptr};
+inline const Interface* wl_keyboard_event_types_1[] = {nullptr, &wl_surface, nullptr};
+inline const Interface* wl_keyboard_event_types_2[] = {nullptr, &wl_surface};
+inline const Interface* wl_keyboard_event_types_3[] = {nullptr, nullptr, nullptr, nullptr};
+inline const Interface* wl_keyboard_event_types_4[] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+inline const Interface* wl_keyboard_event_types_5[] = {nullptr, nullptr};
+inline const Message wl_keyboard_events[] = {
+        {"keymap", "uhu", wl_keyboard_event_types_0},
+        {"enter", "uoa", wl_keyboard_event_types_1},
+        {"leave", "uo", wl_keyboard_event_types_2},
+        {"key", "uuuu", wl_keyboard_event_types_3},
+        {"modifiers", "uuuuu", wl_keyboard_event_types_4},
+        {"repeat_info", "4ii", wl_keyboard_event_types_5},
+};
+inline const Interface wl_keyboard{"wl_keyboard", 9, 1, wl_keyboard_requests, 6, wl_keyboard_events};
+inline const Message wl_touch_requests[] = {
+        {"release", "3", nullptr},
+};
+inline const Interface* wl_touch_event_types_0[] = {nullptr, nullptr, &wl_surface, nullptr, nullptr, nullptr};
+inline const Interface* wl_touch_event_types_1[] = {nullptr, nullptr, nullptr};
+inline const Interface* wl_touch_event_types_2[] = {nullptr, nullptr, nullptr, nullptr};
+inline const Interface* wl_touch_event_types_5[] = {nullptr, nullptr, nullptr};
+inline const Interface* wl_touch_event_types_6[] = {nullptr, nullptr};
+inline const Message wl_touch_events[] = {
+        {"down", "uuoiff", wl_touch_event_types_0},
+        {"up", "uui", wl_touch_event_types_1},
+        {"motion", "uiff", wl_touch_event_types_2},
+        {"frame", "", nullptr},
+        {"cancel", "", nullptr},
+        {"shape", "6iff", wl_touch_event_types_5},
+        {"orientation", "6if", wl_touch_event_types_6},
+};
+inline const Interface wl_touch{"wl_touch", 9, 1, wl_touch_requests, 7, wl_touch_events};
+inline const Message wl_output_requests[] = {
+        {"release", "3", nullptr},
+};
+inline const Interface* wl_output_event_types_0[] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+inline const Interface* wl_output_event_types_1[] = {nullptr, nullptr, nullptr, nullptr};
+inline const Interface* wl_output_event_types_3[] = {nullptr};
+inline const Interface* wl_output_event_types_4[] = {nullptr};
+inline const Interface* wl_output_event_types_5[] = {nullptr};
+inline const Message wl_output_events[] = {
+        {"geometry", "iiiiissi", wl_output_event_types_0},
+        {"mode", "uiii", wl_output_event_types_1},
+        {"done", "2", nullptr},
+        {"scale", "2i", wl_output_event_types_3},
+        {"name", "4s", wl_output_event_types_4},
+        {"description", "4s", wl_output_event_types_5},
+};
+inline const Interface wl_output{"wl_output", 4, 1, wl_output_requests, 6, wl_output_events};
+inline const Interface* wl_region_request_types_1[] = {nullptr, nullptr, nullptr, nullptr};
+inline const Interface* wl_region_request_types_2[] = {nullptr, nullptr, nullptr, nullptr};
+inline const Message wl_region_requests[] = {
+        {"destroy", "", nullptr},
+        {"add", "iiii", wl_region_request_types_1},
+        {"subtract", "iiii", wl_region_request_types_2},
+};
+inline const Interface wl_region{"wl_region", 1, 3, wl_region_requests, 0, nullptr};
+inline const Interface* wl_subcompositor_request_types_1[] = {&wl_subsurface, &wl_surface, &wl_surface};
+inline const Message wl_subcompositor_requests[] = {
+        {"destroy", "", nullptr},
+        {"get_subsurface", "noo", wl_subcompositor_request_types_1},
+};
+inline const Interface wl_subcompositor{"wl_subcompositor", 1, 2, wl_subcompositor_requests, 0, nullptr};
+inline const Interface* wl_subsurface_request_types_1[] = {nullptr, nullptr};
+inline const Interface* wl_subsurface_request_types_2[] = {&wl_surface};
+inline const Interface* wl_subsurface_request_types_3[] = {&wl_surface};
+inline const Message wl_subsurface_requests[] = {
+        {"destroy", "", nullptr},
+        {"set_position", "ii", wl_subsurface_request_types_1},
+        {"place_above", "o", wl_subsurface_request_types_2},
+        {"place_below", "o", wl_subsurface_request_types_3},
+        {"set_sync", "", nullptr},
+        {"set_desync", "", nullptr},
+};
+inline const Interface wl_subsurface{"wl_subsurface", 1, 6, wl_subsurface_requests, 0, nullptr};
+inline const Interface* xdg_wm_base_request_types_1[] = {&xdg_positioner};
+inline const Interface* xdg_wm_base_request_types_2[] = {&xdg_surface, &wl_surface};
+inline const Interface* xdg_wm_base_request_types_3[] = {nullptr};
+inline const Message xdg_wm_base_requests[] = {
+        {"destroy", "", nullptr},
+        {"create_positioner", "n", xdg_wm_base_request_types_1},
+        {"get_xdg_surface", "no", xdg_wm_base_request_types_2},
+        {"pong", "u", xdg_wm_base_request_types_3},
+};
+inline const Interface* xdg_wm_base_event_types_0[] = {nullptr};
+inline const Message xdg_wm_base_events[] = {
+        {"ping", "u", xdg_wm_base_event_types_0},
+};
+inline const Interface xdg_wm_base{"xdg_wm_base", 7, 4, xdg_wm_base_requests, 1, xdg_wm_base_events};
+inline const Interface* xdg_positioner_request_types_1[] = {nullptr, nullptr};
+inline const Interface* xdg_positioner_request_types_2[] = {nullptr, nullptr, nullptr, nullptr};
+inline const Interface* xdg_positioner_request_types_3[] = {nullptr};
+inline const Interface* xdg_positioner_request_types_4[] = {nullptr};
+inline const Interface* xdg_positioner_request_types_5[] = {nullptr};
+inline const Interface* xdg_positioner_request_types_6[] = {nullptr, nullptr};
+inline const Interface* xdg_positioner_request_types_8[] = {nullptr, nullptr};
+inline const Interface* xdg_positioner_request_types_9[] = {nullptr};
+inline const Message xdg_positioner_requests[] = {
+        {"destroy", "", nullptr},
+        {"set_size", "ii", xdg_positioner_request_types_1},
+        {"set_anchor_rect", "iiii", xdg_positioner_request_types_2},
+        {"set_anchor", "u", xdg_positioner_request_types_3},
+        {"set_gravity", "u", xdg_positioner_request_types_4},
+        {"set_constraint_adjustment", "u", xdg_positioner_request_types_5},
+        {"set_offset", "ii", xdg_positioner_request_types_6},
+        {"set_reactive", "3", nullptr},
+        {"set_parent_size", "3ii", xdg_positioner_request_types_8},
+        {"set_parent_configure", "3u", xdg_positioner_request_types_9},
+};
+inline const Interface xdg_positioner{"xdg_positioner", 7, 10, xdg_positioner_requests, 0, nullptr};
+inline const Interface* xdg_surface_request_types_1[] = {&xdg_toplevel};
+inline const Interface* xdg_surface_request_types_2[] = {&xdg_popup, &xdg_surface, &xdg_positioner};
+inline const Interface* xdg_surface_request_types_3[] = {nullptr, nullptr, nullptr, nullptr};
+inline const Interface* xdg_surface_request_types_4[] = {nullptr};
+inline const Message xdg_surface_requests[] = {
+        {"destroy", "", nullptr},
+        {"get_toplevel", "n", xdg_surface_request_types_1},
+        {"get_popup", "n?oo", xdg_surface_request_types_2},
+        {"set_window_geometry", "iiii", xdg_surface_request_types_3},
+        {"ack_configure", "u", xdg_surface_request_types_4},
+};
+inline const Interface* xdg_surface_event_types_0[] = {nullptr};
+inline const Message xdg_surface_events[] = {
+        {"configure", "u", xdg_surface_event_types_0},
+};
+inline const Interface xdg_surface{"xdg_surface", 7, 5, xdg_surface_requests, 1, xdg_surface_events};
+inline const Interface* xdg_toplevel_request_types_1[] = {&xdg_toplevel};
+inline const Interface* xdg_toplevel_request_types_2[] = {nullptr};
+inline const Interface* xdg_toplevel_request_types_3[] = {nullptr};
+inline const Interface* xdg_toplevel_request_types_4[] = {&wl_seat, nullptr, nullptr, nullptr};
+inline const Interface* xdg_toplevel_request_types_5[] = {&wl_seat, nullptr};
+inline const Interface* xdg_toplevel_request_types_6[] = {&wl_seat, nullptr, nullptr};
+inline const Interface* xdg_toplevel_request_types_7[] = {nullptr, nullptr};
+inline const Interface* xdg_toplevel_request_types_8[] = {nullptr, nullptr};
+inline const Interface* xdg_toplevel_request_types_11[] = {&wl_output};
+inline const Message xdg_toplevel_requests[] = {
+        {"destroy", "", nullptr},
+        {"set_parent", "?o", xdg_toplevel_request_types_1},
+        {"set_title", "s", xdg_toplevel_request_types_2},
+        {"set_app_id", "s", xdg_toplevel_request_types_3},
+        {"show_window_menu", "ouii", xdg_toplevel_request_types_4},
+        {"move", "ou", xdg_toplevel_request_types_5},
+        {"resize", "ouu", xdg_toplevel_request_types_6},
+        {"set_max_size", "ii", xdg_toplevel_request_types_7},
+        {"set_min_size", "ii", xdg_toplevel_request_types_8},
+        {"set_maximized", "", nullptr},
+        {"unset_maximized", "", nullptr},
+        {"set_fullscreen", "?o", xdg_toplevel_request_types_11},
+        {"unset_fullscreen", "", nullptr},
+        {"set_minimized", "", nullptr},
+};
+inline const Interface* xdg_toplevel_event_types_0[] = {nullptr, nullptr, nullptr};
+inline const Interface* xdg_toplevel_event_types_2[] = {nullptr, nullptr};
+inline const Interface* xdg_toplevel_event_types_3[] = {nullptr};
+inline const Message xdg_toplevel_events[] = {
+        {"configure", "iia", xdg_toplevel_event_types_0},
+        {"close", "", nullptr},
+        {"configure_bounds", "4ii", xdg_toplevel_event_types_2},
+        {"wm_capabilities", "5a", xdg_toplevel_event_types_3},
+};
+inline const Interface xdg_toplevel{"xdg_toplevel", 7, 14, xdg_toplevel_requests, 4, xdg_toplevel_events};
+inline const Interface* xdg_popup_request_types_1[] = {&wl_seat, nullptr};
+inline const Interface* xdg_popup_request_types_2[] = {&xdg_positioner, nullptr};
+inline const Message xdg_popup_requests[] = {
+        {"destroy", "", nullptr},
+        {"grab", "ou", xdg_popup_request_types_1},
+        {"reposition", "3ou", xdg_popup_request_types_2},
+};
+inline const Interface* xdg_popup_event_types_0[] = {nullptr, nullptr, nullptr, nullptr};
+inline const Interface* xdg_popup_event_types_2[] = {nullptr};
+inline const Message xdg_popup_events[] = {
+        {"configure", "iiii", xdg_popup_event_types_0},
+        {"popup_done", "", nullptr},
+        {"repositioned", "3u", xdg_popup_event_types_2},
+};
+inline const Interface xdg_popup{"xdg_popup", 7, 3, xdg_popup_requests, 3, xdg_popup_events};
+inline const Interface* wp_viewporter_request_types_1[] = {&wp_viewport, &wl_surface};
+inline const Message wp_viewporter_requests[] = {
+        {"destroy", "", nullptr},
+        {"get_viewport", "no", wp_viewporter_request_types_1},
+};
+inline const Interface wp_viewporter{"wp_viewporter", 1, 2, wp_viewporter_requests, 0, nullptr};
+inline const Interface* wp_viewport_request_types_1[] = {nullptr, nullptr, nullptr, nullptr};
+inline const Interface* wp_viewport_request_types_2[] = {nullptr, nullptr};
+inline const Message wp_viewport_requests[] = {
+        {"destroy", "", nullptr},
+        {"set_source", "ffff", wp_viewport_request_types_1},
+        {"set_destination", "ii", wp_viewport_request_types_2},
+};
+inline const Interface wp_viewport{"wp_viewport", 1, 3, wp_viewport_requests, 0, nullptr};
+inline const Interface* wp_fractional_scale_manager_v1_request_types_1[] = {&wp_fractional_scale_v1, &wl_surface};
+inline const Message wp_fractional_scale_manager_v1_requests[] = {
+        {"destroy", "", nullptr},
+        {"get_fractional_scale", "no", wp_fractional_scale_manager_v1_request_types_1},
+};
+inline const Interface wp_fractional_scale_manager_v1{"wp_fractional_scale_manager_v1", 1, 2, wp_fractional_scale_manager_v1_requests, 0, nullptr};
+inline const Message wp_fractional_scale_v1_requests[] = {
+        {"destroy", "", nullptr},
+};
+inline const Interface* wp_fractional_scale_v1_event_types_0[] = {nullptr};
+inline const Message wp_fractional_scale_v1_events[] = {
+        {"preferred_scale", "u", wp_fractional_scale_v1_event_types_0},
+};
+inline const Interface wp_fractional_scale_v1{"wp_fractional_scale_v1", 1, 1, wp_fractional_scale_v1_requests, 1, wp_fractional_scale_v1_events};
+inline const Interface* zwp_text_input_v3_request_types_3[] = {nullptr, nullptr, nullptr};
+inline const Interface* zwp_text_input_v3_request_types_4[] = {nullptr};
+inline const Interface* zwp_text_input_v3_request_types_5[] = {nullptr, nullptr};
+inline const Interface* zwp_text_input_v3_request_types_6[] = {nullptr, nullptr, nullptr, nullptr};
+inline const Message zwp_text_input_v3_requests[] = {
+        {"destroy", "", nullptr},
+        {"enable", "", nullptr},
+        {"disable", "", nullptr},
+        {"set_surrounding_text", "sii", zwp_text_input_v3_request_types_3},
+        {"set_text_change_cause", "u", zwp_text_input_v3_request_types_4},
+        {"set_content_type", "uu", zwp_text_input_v3_request_types_5},
+        {"set_cursor_rectangle", "iiii", zwp_text_input_v3_request_types_6},
+        {"commit", "", nullptr},
+};
+inline const Interface* zwp_text_input_v3_event_types_0[] = {&wl_surface};
+inline const Interface* zwp_text_input_v3_event_types_1[] = {&wl_surface};
+inline const Interface* zwp_text_input_v3_event_types_2[] = {nullptr, nullptr, nullptr};
+inline const Interface* zwp_text_input_v3_event_types_3[] = {nullptr};
+inline const Interface* zwp_text_input_v3_event_types_4[] = {nullptr, nullptr};
+inline const Interface* zwp_text_input_v3_event_types_5[] = {nullptr};
+inline const Message zwp_text_input_v3_events[] = {
+        {"enter", "o", zwp_text_input_v3_event_types_0},
+        {"leave", "o", zwp_text_input_v3_event_types_1},
+        {"preedit_string", "?sii", zwp_text_input_v3_event_types_2},
+        {"commit_string", "?s", zwp_text_input_v3_event_types_3},
+        {"delete_surrounding_text", "uu", zwp_text_input_v3_event_types_4},
+        {"done", "u", zwp_text_input_v3_event_types_5},
+};
+inline const Interface zwp_text_input_v3{"zwp_text_input_v3", 1, 8, zwp_text_input_v3_requests, 6, zwp_text_input_v3_events};
+inline const Interface* zwp_text_input_manager_v3_request_types_1[] = {&zwp_text_input_v3, &wl_seat};
+inline const Message zwp_text_input_manager_v3_requests[] = {
+        {"destroy", "", nullptr},
+        {"get_text_input", "no", zwp_text_input_manager_v3_request_types_1},
+};
+inline const Interface zwp_text_input_manager_v3{"zwp_text_input_manager_v3", 1, 2, zwp_text_input_manager_v3_requests, 0, nullptr};
+inline const Interface* zxdg_decoration_manager_v1_request_types_1[] = {&zxdg_toplevel_decoration_v1, &xdg_toplevel};
+inline const Message zxdg_decoration_manager_v1_requests[] = {
+        {"destroy", "", nullptr},
+        {"get_toplevel_decoration", "no", zxdg_decoration_manager_v1_request_types_1},
+};
+inline const Interface zxdg_decoration_manager_v1{"zxdg_decoration_manager_v1", 1, 2, zxdg_decoration_manager_v1_requests, 0, nullptr};
+inline const Interface* zxdg_toplevel_decoration_v1_request_types_1[] = {nullptr};
+inline const Message zxdg_toplevel_decoration_v1_requests[] = {
+        {"destroy", "", nullptr},
+        {"set_mode", "u", zxdg_toplevel_decoration_v1_request_types_1},
+        {"unset_mode", "", nullptr},
+};
+inline const Interface* zxdg_toplevel_decoration_v1_event_types_0[] = {nullptr};
+inline const Message zxdg_toplevel_decoration_v1_events[] = {
+        {"configure", "u", zxdg_toplevel_decoration_v1_event_types_0},
+};
+inline const Interface zxdg_toplevel_decoration_v1{"zxdg_toplevel_decoration_v1", 1, 3, zxdg_toplevel_decoration_v1_requests, 1, zxdg_toplevel_decoration_v1_events};
+// END AINO WAYLAND PROTOCOLS
+
+struct Api {
+    void* library = nullptr;
+    Proxy* (*connect)(const char*) = nullptr;
+    void (*disconnect)(Proxy*) = nullptr;
+    int (*get_fd)(Proxy*) = nullptr;
+    int (*flush)(Proxy*) = nullptr;
+    int (*dispatch_pending)(Proxy*) = nullptr;
+    int (*prepare_read)(Proxy*) = nullptr;
+    int (*read_events)(Proxy*) = nullptr;
+    void (*cancel_read)(Proxy*) = nullptr;
+    int (*roundtrip)(Proxy*) = nullptr;
+    Proxy* (*marshal)(Proxy*, uint32_t, const Interface*, uint32_t, uint32_t, ...) = nullptr;
+    uint32_t (*version)(Proxy*) = nullptr;
+    int (*listen)(Proxy*, void (**)(void), void*) = nullptr;
+    void (*destroy)(Proxy*) = nullptr;
+    bool load() {
+        library = dlopen("libwayland-client.so.0", RTLD_NOW | RTLD_LOCAL);
+        if (!library) return false;
+#define AINO_WL_LOAD(field, name) \
+        field = reinterpret_cast<decltype(field)>(dlsym(library, name)); \
+        if (!field) return false
+        AINO_WL_LOAD(connect, "wl_display_connect");
+        AINO_WL_LOAD(disconnect, "wl_display_disconnect");
+        AINO_WL_LOAD(get_fd, "wl_display_get_fd");
+        AINO_WL_LOAD(flush, "wl_display_flush");
+        AINO_WL_LOAD(dispatch_pending, "wl_display_dispatch_pending");
+        AINO_WL_LOAD(prepare_read, "wl_display_prepare_read");
+        AINO_WL_LOAD(read_events, "wl_display_read_events");
+        AINO_WL_LOAD(cancel_read, "wl_display_cancel_read");
+        AINO_WL_LOAD(roundtrip, "wl_display_roundtrip");
+        AINO_WL_LOAD(marshal, "wl_proxy_marshal_flags");
+        AINO_WL_LOAD(version, "wl_proxy_get_version");
+        AINO_WL_LOAD(listen, "wl_proxy_add_listener");
+        AINO_WL_LOAD(destroy, "wl_proxy_destroy");
+#undef AINO_WL_LOAD
+        return true;
+    }
+};
+inline Api& api() { static Api value; return value; }
+inline bool available() { static const bool ready = api().load(); return ready; }
+template<class... Args> inline Proxy* request(Proxy* object, uint32_t opcode, Args... args) {
+    return api().marshal(object, opcode, nullptr, api().version(object), 0, args...);
+}
+template<class... Args> inline Proxy* create(Proxy* object, uint32_t opcode, const Interface& type, Args... args) {
+    return api().marshal(object, opcode, &type, std::min(api().version(object), uint32_t(type.version)), 0, nullptr, args...);
+}
+inline void destroy(Proxy*& object, uint32_t opcode = 0) {
+    if (object) api().marshal(object, opcode, nullptr, api().version(object), 1);
+    object = nullptr;
+}
+inline void local_destroy(Proxy*& object) {
+    if (object) api().destroy(object);
+    object = nullptr;
+}
+template<class Listener> inline void listen(Proxy* object, const Listener& listener, void* data) {
+    api().listen(object, reinterpret_cast<void (**)(void)>(const_cast<Listener*>(&listener)), data);
+}
+
+struct Xkb {
+    void* library = nullptr;
+    void* (*context_new)(int) = nullptr;
+    void (*context_unref)(void*) = nullptr;
+    void* (*keymap_new)(void*, const char*, int, int) = nullptr;
+    void (*keymap_unref)(void*) = nullptr;
+    void* (*state_new)(void*) = nullptr;
+    void (*state_unref)(void*) = nullptr;
+    uint32_t (*update_mask)(void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) = nullptr;
+    uint32_t (*sym)(void*, uint32_t) = nullptr;
+    uint32_t (*layout)(void*, uint32_t) = nullptr;
+    int (*symbols)(void*, uint32_t, uint32_t, uint32_t, const uint32_t**) = nullptr;
+    int (*utf8)(void*, uint32_t, char*, size_t) = nullptr;
+    int (*mod_active)(void*, const char*, int) = nullptr;
+    int (*repeats)(void*, uint32_t) = nullptr;
+    void* (*compose_table)(void*, const char*, int) = nullptr;
+    void (*compose_table_unref)(void*) = nullptr;
+    void* (*compose_new)(void*, int) = nullptr;
+    void (*compose_unref)(void*) = nullptr;
+    int (*compose_feed)(void*, uint32_t) = nullptr;
+    int (*compose_status)(void*) = nullptr;
+    int (*compose_utf8)(void*, char*, size_t) = nullptr;
+    void (*compose_reset)(void*) = nullptr;
+    bool load() {
+        library = dlopen("libxkbcommon.so.0", RTLD_NOW | RTLD_LOCAL);
+        if (!library) return false;
+#define AINO_XKB_LOAD(field, name) \
+        field = reinterpret_cast<decltype(field)>(dlsym(library, "xkb_" name)); \
+        if (!field) return false
+        AINO_XKB_LOAD(context_new, "context_new");
+        AINO_XKB_LOAD(context_unref, "context_unref");
+        AINO_XKB_LOAD(keymap_new, "keymap_new_from_string");
+        AINO_XKB_LOAD(keymap_unref, "keymap_unref");
+        AINO_XKB_LOAD(state_new, "state_new");
+        AINO_XKB_LOAD(state_unref, "state_unref");
+        AINO_XKB_LOAD(update_mask, "state_update_mask");
+        AINO_XKB_LOAD(sym, "state_key_get_one_sym");
+        AINO_XKB_LOAD(layout, "state_key_get_layout");
+        AINO_XKB_LOAD(symbols, "keymap_key_get_syms_by_level");
+        AINO_XKB_LOAD(utf8, "state_key_get_utf8");
+        AINO_XKB_LOAD(mod_active, "state_mod_name_is_active");
+        AINO_XKB_LOAD(repeats, "keymap_key_repeats");
+        AINO_XKB_LOAD(compose_table, "compose_table_new_from_locale");
+        AINO_XKB_LOAD(compose_table_unref, "compose_table_unref");
+        AINO_XKB_LOAD(compose_new, "compose_state_new");
+        AINO_XKB_LOAD(compose_unref, "compose_state_unref");
+        AINO_XKB_LOAD(compose_feed, "compose_state_feed");
+        AINO_XKB_LOAD(compose_status, "compose_state_get_status");
+        AINO_XKB_LOAD(compose_utf8, "compose_state_get_utf8");
+        AINO_XKB_LOAD(compose_reset, "compose_state_reset");
+#undef AINO_XKB_LOAD
+        return true;
+    }
+};
+inline Xkb& xkb() { static Xkb value; return value; }
+inline bool keyboard_available() { static const bool ready = xkb().load(); return ready; }
+
+struct CursorImage { uint32_t width, height, hotspot_x, hotspot_y, delay; };
+struct ThemeCursor { unsigned image_count; CursorImage** images; char* name; };
+struct CursorApi {
+    void* library = nullptr;
+    void* (*load)(const char*, int, Proxy*) = nullptr;
+    void (*destroy)(void*) = nullptr;
+    ThemeCursor* (*get)(void*, const char*) = nullptr;
+    Proxy* (*buffer)(CursorImage*) = nullptr;
+    CursorApi() {
+        library = dlopen("libwayland-cursor.so.0", RTLD_NOW | RTLD_LOCAL);
+        if (!library) return;
+        load = reinterpret_cast<decltype(load)>(dlsym(library, "wl_cursor_theme_load"));
+        destroy = reinterpret_cast<decltype(destroy)>(dlsym(library, "wl_cursor_theme_destroy"));
+        get = reinterpret_cast<decltype(get)>(dlsym(library, "wl_cursor_theme_get_cursor"));
+        buffer = reinterpret_cast<decltype(buffer)>(dlsym(library, "wl_cursor_image_get_buffer"));
+        if (!load || !destroy || !get || !buffer) load = nullptr;
+    }
+};
+inline CursorApi& cursors() { static CursorApi value; return value; }
+} // namespace wl
+
+struct WaylandState {
+    Window::Impl* owner = nullptr;
+    wl::Proxy *display = nullptr, *registry = nullptr, *compositor = nullptr, *shm = nullptr;
+    wl::Proxy *shell = nullptr, *surface = nullptr, *xdg_surface = nullptr, *toplevel = nullptr;
+    wl::Proxy *seat = nullptr, *pointer = nullptr, *keyboard = nullptr, *frame = nullptr;
+    wl::Proxy *data_manager = nullptr, *data_device = nullptr, *selection = nullptr;
+    wl::Proxy *text_manager = nullptr, *text_input = nullptr;
+    wl::Proxy *viewporter = nullptr, *viewport = nullptr, *fractional_manager = nullptr, *fractional = nullptr;
+    wl::Proxy *decoration_manager = nullptr, *decoration = nullptr, *cursor_surface = nullptr;
+    uint32_t seat_name = 0, compositor_name = 0, shm_name = 0, shell_name = 0;
+    struct Output { wl::Proxy* proxy = nullptr; int scale = 1; uint32_t name = 0; bool entered = false; };
+    std::list<Output> outputs;
+    struct Buffer {
+        wl::Proxy* proxy = nullptr;
+        void* pixels = MAP_FAILED;
+        size_t bytes = 0;
+        int width = 0, height = 0;
+        bool busy = false;
+        ~Buffer() { wl::destroy(proxy); if (pixels != MAP_FAILED) munmap(pixels, bytes); }
+    };
+    std::vector<std::unique_ptr<Buffer>> buffers;
+    std::vector<uint8_t> pixels;
+    struct Offer { wl::Proxy* proxy; std::string mime; };
+    std::list<Offer> offers;
+    struct Source { wl::Proxy* proxy; std::shared_ptr<const std::string> text; };
+    std::list<Source> sources;
+    struct Send {
+        int fd; std::shared_ptr<const std::string> text; size_t offset = 0;
+        std::chrono::steady_clock::time_point deadline;
+    };
+    std::list<Send> sends;
+    uint32_t serial = 0, pointer_serial = 0, text_serial = 0;
+    uint32_t content_hint = 0, content_purpose = 0, sent_hint = 0, sent_purpose = 0;
+    uint64_t text_focus = 0;
+    bool configured = false, failed = false, flush_blocked = false;
+    bool completed_frame = false;
+    bool pointer_inside = false, keyboard_inside = false, text_entered = false, text_enabled = false;
+    bool clipboard_reading = false;
+    bool preedit_pending = false, commit_pending = false;
+    std::string preedit, commit, text_in;
+    Rect caret, sent_caret{-1, -1, -1, -1};
+    int width = 1, height = 1, pending_width = 0, pending_height = 0;
+    int title_height = 32, header_rows = 0, buffer_height = 0, title_pressed = 0;
+    bool maximized = false;
+    int output_scale = 1, preferred_scale = 0;
+    bool resize_pending = true;
+    float mx = -1e6f, my = -1e6f, wheel = 0;
+    bool btn_down[3]{}, btn_pressed[3]{}, btn_released[3]{};
+    int clicks = 0;
+    uint32_t click_time = 0;
+    Vec2 click_position;
+    bool key_down[KEY_COUNT]{}, key_pressed[KEY_COUNT]{};
+    int mapped_keys[768]{};
+    bool key_ctrl[KEY_COUNT]{}, key_shift[KEY_COUNT]{}, key_alt[KEY_COUNT]{};
+    unsigned char key_repeat[KEY_COUNT]{};
+    void *context = nullptr, *keymap = nullptr, *xkb_state = nullptr;
+    void *compose_table = nullptr, *compose = nullptr, *cursor_theme = nullptr;
+    int cursor_scale = 0, cursor_index = -1;
+    int repeat_rate = 25, repeat_delay = 600;
+    uint32_t repeat_key = 0;
+    std::chrono::steady_clock::time_point repeat_at{};
+};
+inline std::vector<WaylandState*>& wayland_windows() {
+    thread_local std::vector<WaylandState*> windows;
+    return windows;
+}
+inline void wayland_fail(WaylandState* s, const char* message) {
+    if (!s->failed) std::fprintf(stderr, "[aino/wayland] %s\n", message);
+    s->failed = true;
+    s->owner->running = false;
+}
+inline void wayland_flush(WaylandState* s) {
+    if (s->failed) return;
+    s->flush_blocked = wl::api().flush(s->display) < 0;
+    if (s->flush_blocked && errno != EAGAIN) wayland_fail(s, "display flush failed");
+}
+
+inline void wayland_dispatch(WaylandState* s) {
+    if (!s->display || s->failed) return;
+    auto& api = wl::api();
+    // 单个 UI 线程拥有连接；prepare/read/cancel 成对，后台仅通过 WakeSignal 通知。
+    while (api.prepare_read(s->display) != 0) {
+        if (api.dispatch_pending(s->display) < 0) { wayland_fail(s, "display disconnected"); return; }
+    }
+    wayland_flush(s);
+    pollfd fd{api.get_fd(s->display), POLLIN, 0};
+    const int ready = ::poll(&fd, 1, 0);
+    if (ready > 0 && (fd.revents & (POLLIN | POLLHUP | POLLERR))) {
+        if (api.read_events(s->display) < 0) wayland_fail(s, "display read failed");
+    } else api.cancel_read(s->display);
+    if (!s->failed && api.dispatch_pending(s->display) < 0) wayland_fail(s, "display dispatch failed");
+}
+
+inline bool wayland_can_render(const WaylandState* s) {
+    if (!s || !s->configured || s->failed || s->frame) return false;
+    if (s->buffers.size() < 3) return true;
+    for (const auto& buffer : s->buffers) if (!buffer->busy) return true;
+    return false;
+}
+inline void wayland_scale_changed(WaylandState* s) {
+    s->resize_pending = true;
+    s->owner->need_frame = true;
+}
+inline bool wayland_resize(WaylandState* s) {
+    auto* o = s->owner;
+    if (!s->resize_pending || o->ui.impl->frame_open) return true;
+    if (s->pending_width > 0) s->width = s->pending_width;
+    if (s->pending_height > 0) s->height = std::max(1, s->pending_height - s->title_height);
+    s->pending_width = s->pending_height = 0;
+    float scale = 1;
+    if (o->cfg.high_dpi) scale = s->preferred_scale > 0 && s->viewport
+        ? s->preferred_scale / 120.f : float(s->output_scale);
+    scale = clampf(scale, .5f, 8.f);
+    const int width = int(std::ceil(s->width * scale));
+    const int height = int(std::ceil(s->height * scale));
+    const int header_rows = int(std::ceil(s->title_height * scale));
+    const int buffer_height = height + header_rows;
+    if (width <= 0 || height <= 0 || width > 16384 || height > 16384 ||
+        buffer_height > 16384 || uint64_t(width) * buffer_height > 16777216u) {
+        wayland_fail(s, "requested buffer exceeds CPU surface budget");
+        return false;
+    }
+    if (o->client_w != width || o->client_h != height || o->scale != scale || s->header_rows != header_rows) {
+        s->pixels.resize(size_t(width) * buffer_height * 4);
+        s->header_rows = header_rows;
+        s->buffer_height = buffer_height;
+        o->client_w = width;
+        o->client_h = height;
+        o->scale = scale;
+        o->canvas.w = width;
+        o->canvas.h = height;
+        o->canvas.stride = width * 4;
+        o->canvas.px = s->pixels.data() + size_t(header_rows) * width * 4;
+        o->canvas.clear_clip();
+        o->ui.impl->canvas = &o->canvas;
+        if (o->text) o->text->reconfigure(scale, o->theme.font_family, o->theme.font_family_mono);
+    }
+    s->resize_pending = false;
+    return true;
+}
+inline std::unique_ptr<WaylandState::Buffer> wayland_buffer(WaylandState* s) {
+    const int width = s->owner->client_w, height = s->buffer_height;
+    const size_t bytes = size_t(width) * height * 4;
+    // mkstemp + unlink 兼容旧内核；共享内存只活到 buffer release，不留下命名文件。
+    const char* runtime = std::getenv("XDG_RUNTIME_DIR");
+    if (!runtime || !*runtime) return {};
+    std::string path = std::string(runtime) + "/aino-shm-XXXXXX";
+    const int fd = mkstemp(&path[0]);
+    if (fd < 0) return {};
+    unlink(path.c_str());
+    ScopeExit close_fd([fd] { ::close(fd); });
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC) < 0 || ftruncate(fd, off_t(bytes)) < 0) return {};
+    auto buffer = std::make_unique<WaylandState::Buffer>();
+    buffer->pixels = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (buffer->pixels == MAP_FAILED) return {};
+    buffer->bytes = bytes;
+    auto* pool = wl::create(s->shm, 0, wl::wl_shm_pool, fd, int32_t(bytes));
+    if (!pool) return {};
+    buffer->proxy = wl::create(pool, 0, wl::wl_buffer, 0, width, height, width * 4, uint32_t(1));
+    wl::destroy(pool, 1);
+    if (!buffer->proxy) return {};
+    buffer->width = width;
+    buffer->height = height;
+    static const struct { void (*release)(void*, wl::Proxy*); } listener{
+        [](void* data, wl::Proxy*) {
+            auto* buffer = static_cast<WaylandState::Buffer*>(data);
+            buffer->busy = false;
+        }
+    };
+    wl::listen(buffer->proxy, listener, buffer.get());
+    return buffer;
+}
+inline void wayland_present(WaylandState* s) {
+    auto* o = s->owner;
+    WaylandState::Buffer* target = nullptr;
+    for (auto& buffer : s->buffers) if (!buffer->busy) {
+        if (buffer->width != o->client_w || buffer->height != s->buffer_height) {
+            buffer = wayland_buffer(s);
+            if (!buffer) { wayland_fail(s, "cannot allocate shared memory buffer"); return; }
+        }
+        target = buffer.get();
+        break;
+    }
+    if (!target && s->buffers.size() < 3) {
+        auto buffer = wayland_buffer(s);
+        if (!buffer) { wayland_fail(s, "cannot allocate shared memory buffer"); return; }
+        target = buffer.get();
+        s->buffers.push_back(std::move(buffer));
+    }
+    if (!target) return;
+#if AINO_BIG_ENDIAN
+    auto* output = static_cast<uint32_t*>(target->pixels);
+    for (size_t i = 0; i < target->bytes / 4; ++i) {
+        const auto* pixel = s->pixels.data() + i * 4;
+        output[i] = 0xff000000u | uint32_t(pixel[CH_R]) << 16 | uint32_t(pixel[CH_G]) << 8 | pixel[CH_B];
+    }
+#else
+    std::memcpy(target->pixels, s->pixels.data(), target->bytes);
+#endif
+    if (s->viewport) {
+        wl::request(s->surface, 8, 1);
+        wl::request(s->viewport, 2, s->width, s->height + s->title_height);
+    } else wl::request(s->surface, 8, int(o->scale));
+    wl::request(s->surface, 1, target->proxy, 0, 0);
+    wl::request(s->surface, 9, 0, 0, o->client_w, s->buffer_height);
+    wl::request(s->xdg_surface, 3, 0, 0, s->width, s->height + s->title_height);
+    s->frame = wl::create(s->surface, 3, wl::wl_callback);
+    static const struct { void (*done)(void*, wl::Proxy*, uint32_t); } listener{
+        [](void* data, wl::Proxy*, uint32_t) {
+            auto* s = static_cast<WaylandState*>(data);
+            wl::local_destroy(s->frame);
+        }
+    };
+    if (s->frame) wl::listen(s->frame, listener, s);
+    target->busy = true;
+    s->completed_frame = false;
+    wl::request(s->surface, 6);
+    wayland_flush(s);
+}
+
+inline int wayland_key(uint32_t symbol) {
+    if (symbol >= 'a' && symbol <= 'z') return int(symbol - 'a' + 'A');
+    if (symbol >= 32 && symbol <= 126) return int(symbol);
+    if (symbol >= 0xffbe && symbol <= 0xffc9) return KEY_F1 + int(symbol - 0xffbe);
+    if (symbol >= 0xffb0 && symbol <= 0xffb9) return '0' + int(symbol - 0xffb0);
+    switch (symbol) {
+    case 0xff08: return KEY_BACKSPACE;
+    case 0xff09: case 0xfe20: return KEY_TAB;
+    case 0xff0d: case 0xff8d: return KEY_ENTER;
+    case 0xffaa: return '*';
+    case 0xffab: return '+';
+    case 0xffad: return '-';
+    case 0xffae: return '.';
+    case 0xffaf: return '/';
+    case 0xff1b: return KEY_ESC;
+    case 0xffff: case 0xff9f: return KEY_DELETE;
+    case 0xff51: case 0xff96: return KEY_LEFT;
+    case 0xff53: case 0xff98: return KEY_RIGHT;
+    case 0xff52: case 0xff97: return KEY_UP;
+    case 0xff54: case 0xff99: return KEY_DOWN;
+    case 0xff50: case 0xff95: return KEY_HOME;
+    case 0xff57: case 0xff9c: return KEY_END;
+    case 0xff55: case 0xff9a: return KEY_PAGEUP;
+    case 0xff56: case 0xff9b: return KEY_PAGEDOWN;
+    case 0xffe1: case 0xffe2: return KEY_SHIFT;
+    case 0xffe3: case 0xffe4: return KEY_CTRL;
+    case 0xffe9: case 0xffea: case 0xfe03: return KEY_ALT;
+    case 0xffeb: case 0xffec: return KEY_SUPER;
+    default: return KEY_NONE;
+    }
+}
+inline void wayland_reset_input(WaylandState* s) {
+    std::fill_n(s->mapped_keys, 768, KEY_NONE);
+    std::fill_n(s->key_down, KEY_COUNT, false);
+    std::fill_n(s->key_pressed, KEY_COUNT, false);
+    std::fill_n(s->key_repeat, KEY_COUNT, 0);
+    std::fill_n(s->btn_down, 3, false);
+    std::fill_n(s->btn_pressed, 3, false);
+    std::fill_n(s->btn_released, 3, false);
+    s->repeat_key = 0;
+    s->text_in.clear();
+    s->owner->ui.impl->active = 0;
+    s->owner->ui.impl->ime_comp.clear();
+    if (s->compose) wl::xkb().compose_reset(s->compose);
+    s->owner->need_frame = true;
+}
+inline void wayland_modifiers(WaylandState* s) {
+    if (!s->xkb_state) return;
+    auto& xkb = wl::xkb();
+    s->key_down[KEY_SHIFT] = xkb.mod_active(s->xkb_state, "Shift", 8) > 0;
+    s->key_down[KEY_CTRL] = xkb.mod_active(s->xkb_state, "Control", 8) > 0;
+    s->key_down[KEY_ALT] = xkb.mod_active(s->xkb_state, "Mod1", 8) > 0;
+    s->key_down[KEY_SUPER] = xkb.mod_active(s->xkb_state, "Mod4", 8) > 0;
+}
+inline void wayland_key_event(WaylandState* s, uint32_t key, bool down, bool repeat) {
+    if (!s->xkb_state || key >= 768) return;
+    auto& xkb = wl::xkb();
+    const uint32_t symbol = xkb.sym(s->xkb_state, key + 8);
+    int mapped = s->mapped_keys[key];
+    if (down && !repeat) {
+        uint32_t base = symbol;
+        const uint32_t* symbols = nullptr;
+        if (xkb.symbols(s->keymap, key + 8, xkb.layout(s->xkb_state, key + 8), 0, &symbols) == 1 &&
+            symbols && symbols[0] >= 32 && symbols[0] <= 126) base = symbols[0];
+        mapped = s->mapped_keys[key] = wayland_key(base);
+    }
+    if (mapped > 0 && mapped < KEY_COUNT) {
+        if (repeat) {
+            if (s->key_repeat[mapped] < 255) ++s->key_repeat[mapped];
+        } else {
+            s->key_down[mapped] = down;
+            if (down) s->key_pressed[mapped] = true;
+        }
+        if (down) {
+            s->key_ctrl[mapped] = s->key_down[KEY_CTRL];
+            s->key_shift[mapped] = s->key_down[KEY_SHIFT];
+            s->key_alt[mapped] = s->key_down[KEY_ALT];
+        }
+    }
+    if (!down) s->mapped_keys[key] = KEY_NONE;
+    if (down && !s->key_down[KEY_CTRL] && !s->key_down[KEY_ALT] && !s->key_down[KEY_SUPER]) {
+        // v3 可用不代表输入法正在消费按键；普通输入仍走 xkb，预编辑期间由输入法提交。
+        if (s->owner->ui.impl->ime_comp.empty()) {
+            char buffer[128];
+            int length = 0;
+            bool composed = false;
+            if (s->compose) {
+                xkb.compose_feed(s->compose, symbol);
+                const int status = xkb.compose_status(s->compose);
+                if (status == 1) composed = true;
+                else if (status == 2) {
+                    length = xkb.compose_utf8(s->compose, buffer, sizeof buffer);
+                    xkb.compose_reset(s->compose);
+                    composed = true;
+                } else if (status == 3) { xkb.compose_reset(s->compose); composed = true; }
+            }
+            if (!composed) length = xkb.utf8(s->xkb_state, key + 8, buffer, sizeof buffer);
+            if (length > 0 && size_t(length) < sizeof buffer)
+                for (int i = 0; i < length; ++i) if (uint8_t(buffer[i]) >= 32 || buffer[i] == '\t')
+                    s->text_in.push_back(buffer[i]);
+        }
+    }
+    s->owner->need_frame = true;
+}
+inline void wayland_repeat(WaylandState* s) {
+    if (!s->repeat_key || s->repeat_rate <= 0 || !s->keyboard_inside) return;
+    const auto now = std::chrono::steady_clock::now();
+    const auto step = std::chrono::microseconds(1000000 / std::max(1, s->repeat_rate));
+    for (int count = 0; count < 32 && now >= s->repeat_at; ++count) {
+        wayland_key_event(s, s->repeat_key, true, true);
+        s->repeat_at += step;
+    }
+    if (now >= s->repeat_at) s->repeat_at = now + step;
+}
+
+inline void wayland_cursor(WaylandState* s) {
+    if (!s->pointer || !s->pointer_inside || !s->pointer_serial || !s->cursor_surface) return;
+    auto& api = wl::cursors();
+    if (!api.load) return;
+    const int scale = std::max(1, int(std::ceil(s->owner->scale)));
+    if (s->cursor_scale != scale) {
+        if (s->cursor_theme) api.destroy(s->cursor_theme);
+        const char* theme = std::getenv("XCURSOR_THEME");
+        int size = 24;
+        if (const char* value = std::getenv("XCURSOR_SIZE")) size = std::max(8, std::min(128, std::atoi(value)));
+        s->cursor_theme = api.load(theme, size * scale, s->shm);
+        s->cursor_scale = scale;
+        s->cursor_index = -1;
+    }
+    const int index = s->my < 0 ? 0 : std::max(0, std::min(5, int(s->owner->cursor)));
+    if (!s->cursor_theme || s->cursor_index == index) return;
+    const char* names[] = {"left_ptr", "hand2", "xterm", "sb_h_double_arrow", "sb_v_double_arrow", "xterm"};
+    auto* cursor = api.get(s->cursor_theme, names[index]);
+    if (!cursor) cursor = api.get(s->cursor_theme, "left_ptr");
+    if (!cursor || !cursor->image_count) return;
+    auto* image = cursor->images[0];
+    auto* buffer = api.buffer(image);
+    if (!buffer) return;
+    wl::request(s->pointer, 0, s->pointer_serial, s->cursor_surface,
+        int(image->hotspot_x / scale), int(image->hotspot_y / scale));
+    wl::request(s->cursor_surface, 8, scale);
+    wl::request(s->cursor_surface, 1, buffer, 0, 0);
+    wl::request(s->cursor_surface, 2, 0, 0, int(image->width), int(image->height));
+    wl::request(s->cursor_surface, 6);
+    s->cursor_index = index;
+}
+
+inline void wayland_set_ime_pos(WaylandState* s, float x, float top, float bottom) {
+    if (!s) return;
+    const float scale = s->owner->scale;
+    s->caret = {x / scale, top / scale + s->title_height, 1, std::max(1.f, (bottom - top) / scale)};
+}
+inline void wayland_text_state(WaylandState* s) {
+    if (!s->text_input) return;
+    const bool enabled = s->text_entered && s->owner->ui.impl->ime_owner;
+    const bool reset = enabled && s->text_focus != s->owner->ui.impl->focus_id;
+    bool changed = enabled != s->text_enabled || reset;
+    if (changed) {
+        wl::request(s->text_input, enabled ? 1 : 2);
+        s->text_enabled = enabled;
+        s->owner->ui.impl->ime_comp.clear();
+        if (s->compose) wl::xkb().compose_reset(s->compose);
+        s->text_focus = enabled ? s->owner->ui.impl->focus_id : 0;
+    }
+    if (enabled && (changed || s->content_hint != s->sent_hint || s->content_purpose != s->sent_purpose)) {
+        wl::request(s->text_input, 5, s->content_hint, s->content_purpose);
+        s->sent_hint = s->content_hint;
+        s->sent_purpose = s->content_purpose;
+        changed = true;
+    }
+    if (enabled && (changed || s->caret.x != s->sent_caret.x || s->caret.y != s->sent_caret.y ||
+        s->caret.h != s->sent_caret.h)) {
+        wl::request(s->text_input, 6, int(s->caret.x), int(s->caret.y), 1, int(std::ceil(s->caret.h)));
+        s->sent_caret = s->caret;
+        changed = true;
+    }
+    if (changed) { wl::request(s->text_input, 7); ++s->text_serial; }
+}
+
+inline void wayland_size_hints(WaylandState* s) {
+    const auto& cfg = s->owner->cfg;
+    const int width = std::max(1, cfg.width);
+    const int height = std::max(1, cfg.height);
+    const int min_w = cfg.resizable ? std::max(0, cfg.min_width) : width;
+    const int min_h = cfg.resizable ? std::max(0, cfg.min_height) : height;
+    const int max_w = cfg.resizable ? std::max(0, cfg.max_width) : width;
+    const int max_h = cfg.resizable ? std::max(0, cfg.max_height) : height;
+    wl::request(s->toplevel, 8, min_w, min_h ? min_h + s->title_height : 0);
+    wl::request(s->toplevel, 7, max_w ? std::max(min_w, max_w) : 0,
+        max_h ? std::max(min_h, max_h) + s->title_height : 0);
+}
+inline int wayland_title_button(const WaylandState* s) {
+    if (!s->title_height || s->my < -s->title_height || s->my >= 0) return 0;
+    const float y = s->my + s->title_height;
+    if (y < 6 || y >= 26) return 0;
+    if (s->mx >= 10 && s->mx < 30) return 1;
+    if (s->mx >= 30 && s->mx < 50) return 2;
+    if (s->mx >= 50 && s->mx < 70 && s->owner->cfg.resizable) return 3;
+    return 0;
+}
+inline bool wayland_title_event(WaylandState* s, uint32_t serial, uint32_t time, bool down) {
+    if (!s->title_height) return false;
+    if (s->title_pressed) {
+        if (!down) {
+            if (wayland_title_button(s) == s->title_pressed) {
+                if (s->title_pressed == 1) s->owner->running = false;
+                else if (s->title_pressed == 2) wl::request(s->toplevel, 13);
+                else wl::request(s->toplevel, s->maximized ? 10 : 9);
+            }
+            s->title_pressed = 0;
+        }
+        s->owner->need_frame = true;
+        return true;
+    }
+    if (!down) return false;
+    const float surface_y = s->my + s->title_height;
+    uint32_t edge = s->mx < 4 ? 4 : s->mx >= s->width - 4 ? 8 : 0;
+    if (surface_y < 4) edge |= 1;
+    else if (s->my >= s->height - 4) edge |= 2;
+    if (edge && s->owner->cfg.resizable && !s->maximized) {
+        wl::request(s->toplevel, 6, s->seat, serial, edge);
+        return true;
+    }
+    if (s->my >= 0) return false;
+    s->title_pressed = wayland_title_button(s);
+    if (!s->title_pressed) {
+        if (s->owner->cfg.resizable && time - s->click_time < 400 &&
+            std::abs(s->mx - s->click_position.x) < 5 && std::abs(s->my - s->click_position.y) < 5)
+            wl::request(s->toplevel, s->maximized ? 10 : 9);
+        else wl::request(s->toplevel, 5, s->seat, serial);
+        s->click_time = time;
+        s->click_position = {s->mx, s->my};
+    }
+    s->owner->need_frame = true;
+    return true;
+}
+inline void wayland_draw_title(WaylandState* s) {
+    if (!s->header_rows) return;
+    auto* o = s->owner;
+    Canvas canvas;
+    canvas.px = s->pixels.data();
+    canvas.w = o->client_w;
+    canvas.h = s->header_rows;
+    canvas.stride = o->canvas.stride;
+    const auto& theme = o->ui.theme();
+    const float scale = o->scale;
+    canvas.clear(theme.window_bg);
+    const Color colors[] = {Color::hex(0xff5f57), Color::hex(0xfebb2e), Color::hex(0x28c840)};
+    for (int i = 0; i < 3; ++i) {
+        Color color = i == 2 && !o->cfg.resizable ? theme.separator : colors[i];
+        if (s->title_pressed == i + 1) color = color.darken(.15f);
+        raster_rrect(canvas, Rect((14.f + i * 20) * scale, 10 * scale, 12 * scale, 12 * scale), color, 6 * scale);
+    }
+    const float font = 12 * scale;
+    const auto& title = o->cfg.title;
+    const float available = std::max(0.f, (s->width - 160.f) * scale);
+    std::string fitted = title;
+    if (o->text->measure(fitted, font, 600) > available) {
+        size_t first = 0, last = size_t(utf8_count(title));
+        while (first < last) {
+            const size_t count = first + (last - first + 1) / 2;
+            const auto candidate = title.substr(0, utf8_byte_offset(title, int(count))) + "…";
+            if (o->text->measure(candidate, font, 600) <= available) first = count;
+            else last = count - 1;
+        }
+        fitted = first ? title.substr(0, utf8_byte_offset(title, int(first))) + "…" : "";
+    }
+    const float text_width = o->text->measure(fitted, font, 600);
+    o->text->draw(canvas, fitted, (canvas.w - text_width) * .5f,
+        (s->header_rows - o->text->line_height(font, 600)) * .5f, font, 600, theme.label,
+        Rect(80 * scale, 0, available, float(s->header_rows)));
+    canvas.blend_row(s->header_rows - 1, 0, canvas.w, theme.separator);
+}
+
+inline void wayland_attach_input(WaylandState* s, uint32_t capabilities) {
+    if (!(capabilities & 1)) {
+        wl::destroy(s->pointer, 1);
+        s->pointer_inside = false;
+        std::fill_n(s->btn_down, 3, false);
+        s->owner->ui.impl->active = 0;
+    } else if (!s->pointer) {
+        s->pointer = wl::create(s->seat, 0, wl::wl_pointer);
+        static const struct {
+            void (*enter)(void*, wl::Proxy*, uint32_t, wl::Proxy*, int32_t, int32_t);
+            void (*leave)(void*, wl::Proxy*, uint32_t, wl::Proxy*);
+            void (*motion)(void*, wl::Proxy*, uint32_t, int32_t, int32_t);
+            void (*button)(void*, wl::Proxy*, uint32_t, uint32_t, uint32_t, uint32_t);
+            void (*axis)(void*, wl::Proxy*, uint32_t, uint32_t, int32_t);
+            void (*frame)(void*, wl::Proxy*);
+            void (*source)(void*, wl::Proxy*, uint32_t);
+            void (*stop)(void*, wl::Proxy*, uint32_t, uint32_t);
+            void (*discrete)(void*, wl::Proxy*, uint32_t, int32_t);
+        } listener{
+            [](void* data, wl::Proxy*, uint32_t serial, wl::Proxy*, int32_t x, int32_t y) {
+                auto* s = static_cast<WaylandState*>(data);
+                s->pointer_serial = serial;
+                s->pointer_inside = true;
+                s->mx = x / 256.f; s->my = y / 256.f - s->title_height;
+                s->cursor_index = -1;
+                wayland_cursor(s);
+                s->owner->need_frame = true;
+            },
+            [](void* data, wl::Proxy*, uint32_t, wl::Proxy*) {
+                auto* s = static_cast<WaylandState*>(data);
+                s->pointer_inside = false;
+                s->mx = s->my = -1e6f;
+                s->owner->need_frame = true;
+            },
+            [](void* data, wl::Proxy*, uint32_t, int32_t x, int32_t y) {
+                auto* s = static_cast<WaylandState*>(data);
+                s->mx = x / 256.f; s->my = y / 256.f - s->title_height;
+                if (!s->owner->hover_skip || s->title_pressed || s->owner->ui.impl->hover_would_change(s->mx, s->my)) {
+                    s->owner->need_frame = true;
+                    s->owner->move_only = true;
+                }
+            },
+            [](void* data, wl::Proxy*, uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {
+                auto* s = static_cast<WaylandState*>(data);
+                s->serial = serial;
+                const int index = button == 0x110 ? 0 : button == 0x111 ? 1 : button == 0x112 ? 2 : -1;
+                if (index < 0) return;
+                if (index == 0 && wayland_title_event(s, serial, time, state != 0)) return;
+                s->btn_down[index] = state != 0;
+                if (state) {
+                    s->btn_pressed[index] = true;
+                    if (index == 0) {
+                        const float dx = s->mx - s->click_position.x, dy = s->my - s->click_position.y;
+                        s->clicks = time - s->click_time < 400 && dx * dx + dy * dy < 25 ? 2 : 1;
+                        s->click_time = time;
+                        s->click_position = {s->mx, s->my};
+                    }
+                } else s->btn_released[index] = true;
+                s->owner->move_only = false;
+                s->owner->need_frame = true;
+            },
+            [](void* data, wl::Proxy*, uint32_t, uint32_t axis, int32_t value) {
+                auto* s = static_cast<WaylandState*>(data);
+                if (axis == 0) { s->wheel -= value / 2560.f; s->owner->need_frame = true; }
+            },
+            [](void*, wl::Proxy*) {}, [](void*, wl::Proxy*, uint32_t) {},
+            [](void*, wl::Proxy*, uint32_t, uint32_t) {}, [](void*, wl::Proxy*, uint32_t, int32_t) {}
+        };
+        wl::listen(s->pointer, listener, s);
+    }
+    if (!(capabilities & 2)) {
+        wl::destroy(s->keyboard);
+        s->keyboard_inside = false;
+        wayland_reset_input(s);
+    } else if (!s->keyboard) {
+        s->keyboard = wl::create(s->seat, 1, wl::wl_keyboard);
+        static const struct {
+            void (*keymap)(void*, wl::Proxy*, uint32_t, int32_t, uint32_t);
+            void (*enter)(void*, wl::Proxy*, uint32_t, wl::Proxy*, wl::Array*);
+            void (*leave)(void*, wl::Proxy*, uint32_t, wl::Proxy*);
+            void (*key)(void*, wl::Proxy*, uint32_t, uint32_t, uint32_t, uint32_t);
+            void (*modifiers)(void*, wl::Proxy*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+            void (*repeat)(void*, wl::Proxy*, int32_t, int32_t);
+        } listener{
+            [](void* data, wl::Proxy*, uint32_t format, int32_t fd, uint32_t size) {
+                auto* s = static_cast<WaylandState*>(data);
+                ScopeExit close_fd([fd] { ::close(fd); });
+                if (format != 1 || !size || size > 16u * 1024 * 1024) return;
+                void* bytes = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
+                if (bytes == MAP_FAILED) return;
+                ScopeExit unmap([=] { munmap(bytes, size); });
+                if (static_cast<const char*>(bytes)[size - 1] != 0) return;
+                auto& api = wl::xkb();
+                auto* keymap = api.keymap_new(s->context, static_cast<const char*>(bytes), 1, 0);
+                auto* state = keymap ? api.state_new(keymap) : nullptr;
+                if (!state) { if (keymap) api.keymap_unref(keymap); return; }
+                if (s->xkb_state) api.state_unref(s->xkb_state);
+                if (s->keymap) api.keymap_unref(s->keymap);
+                s->keymap = keymap; s->xkb_state = state;
+                wayland_reset_input(s);
+            },
+            [](void* data, wl::Proxy*, uint32_t serial, wl::Proxy*, wl::Array* keys) {
+                auto* s = static_cast<WaylandState*>(data);
+                s->serial = serial; s->keyboard_inside = true;
+                if (s->xkb_state && keys) for (size_t i = 0; i < keys->size / sizeof(uint32_t); ++i) {
+                    const auto key = static_cast<uint32_t*>(keys->data)[i];
+                    const int mapped = wayland_key(wl::xkb().sym(s->xkb_state, key + 8));
+                    if (mapped > 0 && mapped < KEY_COUNT && key < 768) {
+                        s->key_down[mapped] = true;
+                        s->mapped_keys[key] = mapped;
+                    }
+                }
+                wayland_modifiers(s);
+                s->owner->need_frame = true;
+            },
+            [](void* data, wl::Proxy*, uint32_t, wl::Proxy*) {
+                auto* s = static_cast<WaylandState*>(data);
+                s->keyboard_inside = false;
+                wayland_reset_input(s);
+            },
+            [](void* data, wl::Proxy*, uint32_t serial, uint32_t, uint32_t key, uint32_t state) {
+                auto* s = static_cast<WaylandState*>(data);
+                s->serial = serial;
+                wayland_key_event(s, key, state != 0, false);
+                if (state && s->keymap && wl::xkb().repeats(s->keymap, key + 8) && s->repeat_rate > 0) {
+                    s->repeat_key = key;
+                    s->repeat_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(s->repeat_delay);
+                } else if (!state && key == s->repeat_key) s->repeat_key = 0;
+            },
+            [](void* data, wl::Proxy*, uint32_t, uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group) {
+                auto* s = static_cast<WaylandState*>(data);
+                if (s->xkb_state) wl::xkb().update_mask(s->xkb_state, depressed, latched, locked, 0, 0, group);
+                wayland_modifiers(s);
+            },
+            [](void* data, wl::Proxy*, int32_t rate, int32_t delay) {
+                auto* s = static_cast<WaylandState*>(data);
+                s->repeat_rate = std::max(0, std::min(1000, rate));
+                s->repeat_delay = std::max(0, std::min(10000, delay));
+                if (!rate) s->repeat_key = 0;
+            }
+        };
+        wl::listen(s->keyboard, listener, s);
+    }
+}
+
+inline ssize_t wayland_write(int fd, const char* bytes, size_t size) {
+    // compositor 给出的通常是 pipe；局部屏蔽 SIGPIPE，不能修改应用的全局信号处理。
+    sigset_t blocked, old, pending;
+    sigemptyset(&blocked);
+    sigaddset(&blocked, SIGPIPE);
+    if (pthread_sigmask(SIG_BLOCK, &blocked, &old) != 0) { errno = EIO; return -1; }
+    sigpending(&pending);
+    const bool had_pipe = sigismember(&pending, SIGPIPE) == 1;
+    const auto written = ::write(fd, bytes, size);
+    const int saved = errno;
+    if (written < 0 && saved == EPIPE && !had_pipe) {
+        timespec timeout{};
+        while (sigtimedwait(&blocked, nullptr, &timeout) < 0 && errno == EINTR) {}
+    }
+    pthread_sigmask(SIG_SETMASK, &old, nullptr);
+    errno = saved;
+    return written;
+}
+inline void wayland_send_clipboard(WaylandState* s) {
+    const auto now = std::chrono::steady_clock::now();
+    for (auto it = s->sends.begin(); it != s->sends.end();) {
+        bool done = now >= it->deadline;
+        if (!done) {
+            const size_t remaining = it->text->size() - it->offset;
+            const auto written = wayland_write(it->fd, it->text->data() + it->offset, std::min<size_t>(remaining, 65536));
+            if (written > 0) it->offset += size_t(written);
+            else if (written < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) done = true;
+            done |= it->offset == it->text->size();
+        }
+        if (done) { ::close(it->fd); it = s->sends.erase(it); }
+        else ++it;
+    }
+}
+inline void wayland_trim_offers(WaylandState* s) {
+    for (auto it = s->offers.begin(); it != s->offers.end();) {
+        if (it->proxy == s->selection) ++it;
+        else { wl::destroy(it->proxy, 2); it = s->offers.erase(it); }
+    }
+}
+inline void wayland_attach_data(WaylandState* s) {
+    if (!s->data_manager || !s->seat || s->data_device) return;
+    s->data_device = wl::create(s->data_manager, 1, wl::wl_data_device, s->seat);
+    static const struct {
+        void (*offer)(void*, wl::Proxy*, wl::Proxy*);
+        void (*enter)(void*, wl::Proxy*, uint32_t, wl::Proxy*, int32_t, int32_t, wl::Proxy*);
+        void (*leave)(void*, wl::Proxy*);
+        void (*motion)(void*, wl::Proxy*, uint32_t, int32_t, int32_t);
+        void (*drop)(void*, wl::Proxy*);
+        void (*selection)(void*, wl::Proxy*, wl::Proxy*);
+    } listener{
+        [](void* data, wl::Proxy*, wl::Proxy* offer) {
+            auto* s = static_cast<WaylandState*>(data);
+            s->offers.push_back({offer, {}});
+            static const struct {
+                void (*mime)(void*, wl::Proxy*, const char*);
+                void (*actions)(void*, wl::Proxy*, uint32_t);
+                void (*action)(void*, wl::Proxy*, uint32_t);
+            } offer_listener{
+                [](void* data, wl::Proxy* offer, const char* mime) {
+                    auto* s = static_cast<WaylandState*>(data);
+                    if (!mime) return;
+                    for (auto& item : s->offers) if (item.proxy == offer) {
+                        if (std::strcmp(mime, "text/plain;charset=utf-8") == 0 ||
+                            (item.mime.empty() && std::strcmp(mime, "text/plain") == 0)) item.mime = mime;
+                    }
+                },
+                [](void*, wl::Proxy*, uint32_t) {}, [](void*, wl::Proxy*, uint32_t) {}
+            };
+            wl::listen(offer, offer_listener, s);
+        },
+        [](void* data, wl::Proxy*, uint32_t serial, wl::Proxy*, int32_t, int32_t, wl::Proxy* offer) {
+            // 未提供拖放 API；明确拒绝，不能把拖放 offer 当作剪贴板。
+            if (offer) wl::request(offer, 0, serial, static_cast<const char*>(nullptr));
+            wayland_trim_offers(static_cast<WaylandState*>(data));
+        },
+        [](void*, wl::Proxy*) {}, [](void*, wl::Proxy*, uint32_t, int32_t, int32_t) {},
+        [](void*, wl::Proxy*) {},
+        [](void* data, wl::Proxy*, wl::Proxy* offer) {
+            auto* s = static_cast<WaylandState*>(data);
+            s->selection = offer;
+            wayland_trim_offers(s);
+        }
+    };
+    wl::listen(s->data_device, listener, s);
+}
+inline bool wayland_set_clipboard(WaylandState* s, const std::string& text) {
+    if (!s || s->failed || !s->data_device || !s->serial || !s->keyboard_inside ||
+        text.size() > (32u << 20) || s->sources.size() >= 8) return false;
+    auto* proxy = wl::create(s->data_manager, 0, wl::wl_data_source);
+    if (!proxy) return false;
+    s->sources.push_back({proxy, std::make_shared<const std::string>(text)});
+    static const struct {
+        void (*target)(void*, wl::Proxy*, const char*);
+        void (*send)(void*, wl::Proxy*, const char*, int32_t);
+        void (*cancelled)(void*, wl::Proxy*);
+        void (*drop)(void*, wl::Proxy*);
+        void (*finished)(void*, wl::Proxy*);
+        void (*action)(void*, wl::Proxy*, uint32_t);
+    } listener{
+        [](void*, wl::Proxy*, const char*) {},
+        [](void* data, wl::Proxy* proxy, const char* mime, int32_t fd) {
+            auto* s = static_cast<WaylandState*>(data);
+            const bool supported = mime && (std::strcmp(mime, "text/plain;charset=utf-8") == 0 ||
+                std::strcmp(mime, "text/plain") == 0);
+            if (supported && s->sends.size() < 8) for (const auto& source : s->sources) if (source.proxy == proxy) {
+                const int flags = fcntl(fd, F_GETFL);
+                if (flags >= 0 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 && fcntl(fd, F_SETFD, FD_CLOEXEC) == 0) {
+                    s->sends.push_back({fd, source.text, 0, std::chrono::steady_clock::now() + std::chrono::seconds(2)});
+                    return;
+                }
+                break;
+            }
+            ::close(fd);
+        },
+        [](void* data, wl::Proxy* proxy) {
+            auto* s = static_cast<WaylandState*>(data);
+            for (auto it = s->sources.begin(); it != s->sources.end(); ++it) if (it->proxy == proxy) {
+                wl::destroy(it->proxy, 1);
+                s->sources.erase(it);
+                break;
+            }
+        },
+        [](void*, wl::Proxy*) {}, [](void*, wl::Proxy*) {}, [](void*, wl::Proxy*, uint32_t) {}
+    };
+    wl::listen(proxy, listener, s);
+    wl::request(proxy, 0, "text/plain;charset=utf-8");
+    wl::request(proxy, 0, "text/plain");
+    wl::request(s->data_device, 1, proxy, s->serial);
+    wayland_flush(s);
+    return !s->failed;
+}
+
+inline void wayland_attach_text(WaylandState* s) {
+    if (!s->text_manager || !s->seat || s->text_input) return;
+    s->text_input = wl::create(s->text_manager, 1, wl::zwp_text_input_v3, s->seat);
+    static const struct {
+        void (*enter)(void*, wl::Proxy*, wl::Proxy*);
+        void (*leave)(void*, wl::Proxy*, wl::Proxy*);
+        void (*preedit)(void*, wl::Proxy*, const char*, int32_t, int32_t);
+        void (*commit)(void*, wl::Proxy*, const char*);
+        void (*remove)(void*, wl::Proxy*, uint32_t, uint32_t);
+        void (*done)(void*, wl::Proxy*, uint32_t);
+    } listener{
+        [](void* data, wl::Proxy*, wl::Proxy*) {
+            auto* s = static_cast<WaylandState*>(data);
+            s->text_entered = true;
+            s->owner->need_frame = true;
+        },
+        [](void* data, wl::Proxy*, wl::Proxy*) {
+            auto* s = static_cast<WaylandState*>(data);
+            s->text_entered = false;
+            s->preedit_pending = s->commit_pending = false;
+            s->preedit.clear(); s->commit.clear();
+            s->owner->ui.impl->ime_comp.clear();
+            wayland_text_state(s);
+            s->owner->need_frame = true;
+        },
+        [](void* data, wl::Proxy*, const char* text, int32_t, int32_t) {
+            auto* s = static_cast<WaylandState*>(data);
+            s->preedit = text ? text : "";
+            s->preedit_pending = true;
+        },
+        [](void* data, wl::Proxy*, const char* text) {
+            auto* s = static_cast<WaylandState*>(data);
+            s->commit = text ? text : "";
+            s->commit_pending = true;
+        },
+        // 未声明 surrounding-text 能力；compositor 不应发送依赖上下文的删除。
+        [](void*, wl::Proxy*, uint32_t, uint32_t) {},
+        [](void* data, wl::Proxy*, uint32_t serial) {
+            auto* s = static_cast<WaylandState*>(data);
+            if (s->text_entered && s->text_enabled && serial == s->text_serial) {
+                if (s->commit_pending) {
+                    s->text_in += s->commit;
+                    s->owner->ui.impl->ime_comp.clear();
+                }
+                if (s->preedit_pending) s->owner->ui.impl->ime_comp = s->preedit;
+                if (s->commit_pending || s->preedit_pending) s->owner->need_frame = true;
+            }
+            s->preedit_pending = s->commit_pending = false;
+            s->preedit.clear(); s->commit.clear();
+        }
+    };
+    wl::listen(s->text_input, listener, s);
+}
+
+inline void wayland_output_scale(WaylandState* s) {
+    int scale = 1;
+    for (const auto& output : s->outputs) if (output.entered) scale = std::max(scale, output.scale);
+    if (s->output_scale != scale) { s->output_scale = scale; wayland_scale_changed(s); }
+}
+inline void wayland_registry(WaylandState* s) {
+    static const struct {
+        void (*global)(void*, wl::Proxy*, uint32_t, const char*, uint32_t);
+        void (*remove)(void*, wl::Proxy*, uint32_t);
+    } listener{
+        [](void* data, wl::Proxy*, uint32_t name, const char* interface, uint32_t version) {
+            auto* s = static_cast<WaylandState*>(data);
+            auto bind = [&](const wl::Interface& type, uint32_t cap) {
+                const uint32_t bound = std::min(version, cap);
+                return wl::api().marshal(s->registry, 0, &type, bound, 0, name, type.name, bound, nullptr);
+            };
+            if (std::strcmp(interface, "wl_compositor") == 0 && !s->compositor && version >= 4) {
+                s->compositor = bind(wl::wl_compositor, 4); s->compositor_name = name;
+            } else if (std::strcmp(interface, "wl_shm") == 0 && !s->shm) {
+                s->shm = bind(wl::wl_shm, 1); s->shm_name = name;
+                static const struct { void (*format)(void*, wl::Proxy*, uint32_t); } formats{
+                    [](void*, wl::Proxy*, uint32_t) {}
+                };
+                wl::listen(s->shm, formats, s);
+            } else if (std::strcmp(interface, "xdg_wm_base") == 0 && !s->shell) {
+                s->shell = bind(wl::xdg_wm_base, 1); s->shell_name = name;
+                static const struct { void (*ping)(void*, wl::Proxy*, uint32_t); } shell{
+                    [](void*, wl::Proxy* object, uint32_t serial) { wl::request(object, 3, serial); }
+                };
+                wl::listen(s->shell, shell, s);
+            } else if (std::strcmp(interface, "wl_seat") == 0 && !s->seat && version >= 5) {
+                s->seat = bind(wl::wl_seat, 7); s->seat_name = name;
+                static const struct {
+                    void (*capabilities)(void*, wl::Proxy*, uint32_t);
+                    void (*name)(void*, wl::Proxy*, const char*);
+                } seat{
+                    [](void* data, wl::Proxy*, uint32_t caps) { wayland_attach_input(static_cast<WaylandState*>(data), caps); },
+                    [](void*, wl::Proxy*, const char*) {}
+                };
+                wl::listen(s->seat, seat, s);
+                wayland_attach_data(s);
+                wayland_attach_text(s);
+            } else if (std::strcmp(interface, "wl_data_device_manager") == 0 && !s->data_manager && version >= 3) {
+                s->data_manager = bind(wl::wl_data_device_manager, 3);
+                wayland_attach_data(s);
+            } else if (std::strcmp(interface, "zwp_text_input_manager_v3") == 0 && !s->text_manager) {
+                s->text_manager = bind(wl::zwp_text_input_manager_v3, 1);
+                wayland_attach_text(s);
+            } else if (std::strcmp(interface, "wp_viewporter") == 0 && !s->viewporter) {
+                s->viewporter = bind(wl::wp_viewporter, 1);
+            } else if (std::strcmp(interface, "wp_fractional_scale_manager_v1") == 0 && !s->fractional_manager) {
+                s->fractional_manager = bind(wl::wp_fractional_scale_manager_v1, 1);
+            } else if (std::strcmp(interface, "zxdg_decoration_manager_v1") == 0 && !s->decoration_manager) {
+                s->decoration_manager = bind(wl::zxdg_decoration_manager_v1, 1);
+            } else if (std::strcmp(interface, "wl_output") == 0) {
+                auto* proxy = bind(wl::wl_output, 2);
+                s->outputs.push_back({proxy, 1, name, false});
+                static const struct {
+                    void (*geometry)(void*, wl::Proxy*, int32_t, int32_t, int32_t, int32_t, int32_t, const char*, const char*, int32_t);
+                    void (*mode)(void*, wl::Proxy*, uint32_t, int32_t, int32_t, int32_t);
+                    void (*done)(void*, wl::Proxy*);
+                    void (*scale)(void*, wl::Proxy*, int32_t);
+                } output{
+                    [](void*, wl::Proxy*, int32_t, int32_t, int32_t, int32_t, int32_t, const char*, const char*, int32_t) {},
+                    [](void*, wl::Proxy*, uint32_t, int32_t, int32_t, int32_t) {},
+                    [](void* data, wl::Proxy*) { wayland_output_scale(static_cast<WaylandState*>(data)); },
+                    [](void* data, wl::Proxy* proxy, int32_t factor) {
+                        auto* s = static_cast<WaylandState*>(data);
+                        for (auto& output : s->outputs) if (output.proxy == proxy) output.scale = std::max(1, std::min(8, factor));
+                    }
+                };
+                wl::listen(proxy, output, s);
+            }
+        },
+        [](void* data, wl::Proxy*, uint32_t name) {
+            auto* s = static_cast<WaylandState*>(data);
+            if (name == s->compositor_name || name == s->shm_name || name == s->shell_name)
+                wayland_fail(s, "required compositor global removed");
+            if (name == s->seat_name) {
+                wayland_attach_input(s, 0);
+                wl::destroy(s->text_input);
+                wl::destroy(s->data_device, 2);
+                wl::destroy(s->seat, 3);
+                s->seat_name = 0;
+                s->serial = s->pointer_serial = s->text_serial = 0;
+                s->text_entered = s->text_enabled = false;
+                s->selection = nullptr;
+                wayland_trim_offers(s);
+            }
+            for (auto it = s->outputs.begin(); it != s->outputs.end(); ++it) if (it->name == name) {
+                wl::local_destroy(it->proxy);
+                s->outputs.erase(it);
+                wayland_output_scale(s);
+                break;
+            }
+        }
+    };
+    wl::listen(s->registry, listener, s);
+}
+
+inline void wayland_destroy(Window* self) {
+    auto* o = self->impl;
+    auto* s = static_cast<WaylandState*>(o->native);
+    if (!s) return;
+    auto& windows = wayland_windows();
+    windows.erase(std::remove(windows.begin(), windows.end(), s), windows.end());
+    for (const auto& send : s->sends) ::close(send.fd);
+    for (auto& source : s->sources) wl::destroy(source.proxy, 1);
+    s->selection = nullptr;
+    wayland_trim_offers(s);
+    wl::local_destroy(s->frame);
+    wl::destroy(s->text_input);
+    wl::destroy(s->data_device, 2);
+    wl::destroy(s->pointer, 1);
+    wl::destroy(s->keyboard);
+    wl::destroy(s->seat, 3);
+    wl::destroy(s->fractional);
+    wl::destroy(s->viewport);
+    wl::destroy(s->decoration);
+    wl::destroy(s->toplevel);
+    wl::destroy(s->xdg_surface);
+    wl::destroy(s->surface);
+    wl::destroy(s->cursor_surface);
+    if (s->cursor_theme) wl::cursors().destroy(s->cursor_theme);
+    s->buffers.clear();
+    for (auto& output : s->outputs) wl::local_destroy(output.proxy);
+    wl::destroy(s->decoration_manager);
+    wl::destroy(s->fractional_manager);
+    wl::destroy(s->viewporter);
+    wl::destroy(s->text_manager);
+    wl::local_destroy(s->data_manager);
+    wl::destroy(s->shell);
+    wl::local_destroy(s->compositor);
+    wl::local_destroy(s->shm);
+    wl::local_destroy(s->registry);
+    if (s->display) { wl::api().flush(s->display); wl::api().disconnect(s->display); }
+    auto& xkb = wl::xkb();
+    if (s->compose) xkb.compose_unref(s->compose);
+    if (s->compose_table) xkb.compose_table_unref(s->compose_table);
+    if (s->xkb_state) xkb.state_unref(s->xkb_state);
+    if (s->keymap) xkb.keymap_unref(s->keymap);
+    if (s->context) xkb.context_unref(s->context);
+    o->canvas.px = nullptr;
+    o->canvas.w = o->canvas.h = o->canvas.stride = 0;
+    delete s;
+    o->native = nullptr;
+}
+
+inline void wayland_create(Window* self, const WindowConfig& cfg) {
+    if (!wl::available() || !wl::keyboard_available()) {
+        std::fprintf(stderr, "[aino/wayland] requires libwayland-client >= 1.20 and libxkbcommon\n");
+        return;
+    }
+    auto* o = self->impl;
+    auto state = std::make_unique<WaylandState>();
+    auto* s = state.get();
+    s->owner = o;
+    s->display = wl::api().connect(nullptr);
+    if (!s->display) { std::fprintf(stderr, "[aino/wayland] cannot connect to WAYLAND_DISPLAY\n"); return; }
+    o->native = state.release();
+    bool ready = false;
+    ScopeExit cleanup([&] { if (!ready) wayland_destroy(self); });
+    s->context = wl::xkb().context_new(0);
+    if (!s->context) return;
+    const char* locale = std::setlocale(LC_CTYPE, nullptr);
+    if (!locale || std::strcmp(locale, "C") == 0) {
+        locale = std::getenv("LC_ALL");
+        if (!locale || !*locale) locale = std::getenv("LC_CTYPE");
+        if (!locale || !*locale) locale = std::getenv("LANG");
+    }
+    s->compose_table = wl::xkb().compose_table(s->context, locale && *locale ? locale : "C.UTF-8", 0);
+    if (s->compose_table) s->compose = wl::xkb().compose_new(s->compose_table, 0);
+    s->registry = wl::create(s->display, 1, wl::wl_registry);
+    if (!s->registry) return;
+    wayland_registry(s);
+    if (wl::api().roundtrip(s->display) < 0 || !s->compositor || !s->shm || !s->shell) {
+        std::fprintf(stderr, "[aino/wayland] compositor v4, wl_shm and xdg-shell are required\n");
+        return;
+    }
+    s->width = std::max(1, cfg.width);
+    s->height = std::max(1, cfg.height);
+    s->surface = wl::create(s->compositor, 0, wl::wl_surface);
+    s->cursor_surface = wl::create(s->compositor, 0, wl::wl_surface);
+    if (!s->surface || !s->cursor_surface) return;
+    static const struct {
+        void (*enter)(void*, wl::Proxy*, wl::Proxy*);
+        void (*leave)(void*, wl::Proxy*, wl::Proxy*);
+    } surface{
+        [](void* data, wl::Proxy*, wl::Proxy* proxy) {
+            auto* s = static_cast<WaylandState*>(data);
+            for (auto& output : s->outputs) if (output.proxy == proxy) output.entered = true;
+            wayland_output_scale(s);
+        },
+        [](void* data, wl::Proxy*, wl::Proxy* proxy) {
+            auto* s = static_cast<WaylandState*>(data);
+            for (auto& output : s->outputs) if (output.proxy == proxy) output.entered = false;
+            wayland_output_scale(s);
+        }
+    };
+    wl::listen(s->surface, surface, s);
+    if (s->viewporter) s->viewport = wl::create(s->viewporter, 1, wl::wp_viewport, s->surface);
+    if (s->fractional_manager && s->viewport) {
+        s->fractional = wl::create(s->fractional_manager, 1, wl::wp_fractional_scale_v1, s->surface);
+        static const struct { void (*scale)(void*, wl::Proxy*, uint32_t); } listener{
+            [](void* data, wl::Proxy*, uint32_t scale) {
+                auto* s = static_cast<WaylandState*>(data);
+                if (scale >= 60 && scale <= 960 && int(scale) != s->preferred_scale) {
+                    s->preferred_scale = int(scale); wayland_scale_changed(s);
+                }
+            }
+        };
+        if (s->fractional) wl::listen(s->fractional, listener, s);
+    }
+    s->xdg_surface = wl::create(s->shell, 2, wl::xdg_surface, s->surface);
+    if (!s->xdg_surface) return;
+    static const struct { void (*configure)(void*, wl::Proxy*, uint32_t); } configure{
+        [](void* data, wl::Proxy* object, uint32_t serial) {
+            auto* s = static_cast<WaylandState*>(data);
+            wl::request(object, 4, serial);
+            s->configured = true;
+            wayland_scale_changed(s);
+        }
+    };
+    wl::listen(s->xdg_surface, configure, s);
+    s->toplevel = wl::create(s->xdg_surface, 1, wl::xdg_toplevel);
+    if (!s->toplevel) return;
+    static const struct {
+        void (*configure)(void*, wl::Proxy*, int32_t, int32_t, wl::Array*);
+        void (*close)(void*, wl::Proxy*);
+    } toplevel{
+        [](void* data, wl::Proxy*, int32_t width, int32_t height, wl::Array* states) {
+            auto* s = static_cast<WaylandState*>(data);
+            if (width > 0) s->pending_width = width;
+            if (height > 0) s->pending_height = height;
+            s->maximized = false;
+            if (states) for (size_t i = 0; i < states->size / sizeof(uint32_t); ++i)
+                if (static_cast<uint32_t*>(states->data)[i] == 1) s->maximized = true;
+        },
+        [](void* data, wl::Proxy*) { static_cast<WaylandState*>(data)->owner->running = false; }
+    };
+    wl::listen(s->toplevel, toplevel, s);
+    wl::request(s->toplevel, 2, cfg.title.c_str());
+    wl::request(s->toplevel, 3, cfg.app_id.empty() ? "aino" : cfg.app_id.c_str());
+    wayland_size_hints(s);
+    if (s->decoration_manager) {
+        s->decoration = wl::create(s->decoration_manager, 1, wl::zxdg_toplevel_decoration_v1, s->toplevel);
+        static const struct { void (*configure)(void*, wl::Proxy*, uint32_t); } decoration{
+            [](void* data, wl::Proxy*, uint32_t mode) {
+                auto* s = static_cast<WaylandState*>(data);
+                const int height = mode == 2 ? 0 : 32;
+                if (s->title_height != height) {
+                    s->title_height = height;
+                    wayland_size_hints(s);
+                    wayland_scale_changed(s);
+                }
+            }
+        };
+        if (s->decoration) {
+            wl::listen(s->decoration, decoration, s);
+            wl::request(s->decoration, 1, uint32_t(2));
+        }
+    }
+    auto text = std::make_unique<UnixTextRenderer>();
+    text->init(1, o->theme.font_family, o->theme.font_family_mono);
+    if (!text->ready()) {
+        std::fprintf(stderr, "[aino/wayland] requires FreeType and fontconfig runtime libraries\n");
+        return;
+    }
+    o->text = text.release();
+    o->ui.impl->text = o->text;
+    o->ui.impl->ime_content_type = [s](bool password, bool multiline) {
+        s->content_hint = password ? 64u | 128u : multiline ? 512u : 0u;
+        s->content_purpose = password ? 8u : 0u;
+    };
+    if (!wayland_resize(s)) return;
+    wl::request(s->surface, 6);
+    wayland_flush(s);
+    wayland_windows().push_back(s);
+    ready = !s->failed;
+}
+
+inline void wayland_feed_input(WaylandState* s) {
+    Input& input = s->owner->ui.impl->input;
+    input.mouse_prev = input.mouse;
+    input.mouse = {s->mx, s->my};
+    input.mouse_delta = input.mouse - input.mouse_prev;
+    for (int i = 0; i < 3; ++i) {
+        input.down[i] = s->btn_down[i];
+        input.pressed[i] = s->btn_pressed[i];
+        input.released[i] = s->btn_released[i];
+        s->btn_pressed[i] = s->btn_released[i] = false;
+    }
+    input.wheel = s->wheel; s->wheel = 0;
+    input.click_count = s->clicks; input.double_click = s->clicks >= 2; s->clicks = 0;
+    input.dragging = s->btn_down[0];
+    input.text_input.swap(s->text_in); s->text_in.clear();
+    for (int i = 0; i < KEY_COUNT; ++i) {
+        input.key_down[i] = s->key_down[i];
+        input.key_pressed[i] = s->key_pressed[i];
+        input.key_repeat[i] = s->key_repeat[i];
+        input.key_ctrl[i] = s->key_ctrl[i];
+        input.key_shift[i] = s->key_shift[i];
+        input.key_alt[i] = s->key_alt[i];
+        s->key_pressed[i] = false; s->key_repeat[i] = 0;
+    }
+}
+
+inline void wayland_wait_fds(WaylandState* s, std::vector<pollfd>& fds, int& timeout, bool input = true) {
+    if (!s || s->failed) return;
+    const auto now = std::chrono::steady_clock::now();
+    auto deadline = [&](std::chrono::steady_clock::time_point end) {
+        const int delay = int(std::max<int64_t>(0, std::chrono::ceil<std::chrono::milliseconds>(end - now).count()));
+        if (timeout < 0 || delay < timeout) timeout = delay;
+    };
+    if (input && s->repeat_key && s->keyboard_inside && s->repeat_rate > 0) deadline(s->repeat_at);
+    fds.push_back({wl::api().get_fd(s->display), short(POLLIN | (s->flush_blocked ? POLLOUT : 0)), 0});
+    if (input) fds.push_back({s->owner->wake_signal.read_descriptor(), POLLIN, 0});
+    for (const auto& send : s->sends) { fds.push_back({send.fd, POLLOUT, 0}); deadline(send.deadline); }
+}
+} // namespace detail
+
+int Window::width() const {
+    auto* s = static_cast<const detail::WaylandState*>(impl->native);
+    return s ? s->width : 0;
+}
+int Window::height() const {
+    auto* s = static_cast<const detail::WaylandState*>(impl->native);
+    return s ? s->height : 0;
+}
+bool Window::poll() {
+    auto* s = static_cast<detail::WaylandState*>(impl->native);
+    if (!s || !impl->running) return false;
+    if (impl->wake_signal.consume()) impl->need_frame = true;
+    detail::wayland_dispatch(s);
+    detail::wayland_send_clipboard(s);
+    detail::wayland_repeat(s);
+    if (s->completed_frame && s->resize_pending && !impl->ui.impl->frame_open) {
+        const int width = impl->client_w;
+        const int height = impl->client_h;
+        const int header = s->header_rows;
+        const float scale = impl->scale;
+        if (!detail::wayland_resize(s)) return false;
+        // 已完成的图像属于旧尺寸，不能在确认新 configure 后作为新尺寸的帧提交。
+        if (width != impl->client_w || height != impl->client_h || header != s->header_rows || scale != impl->scale) {
+            s->completed_frame = false;
+            impl->need_frame = true;
+        }
+    }
+    if (s->completed_frame && !impl->ui.impl->frame_open && detail::wayland_can_render(s))
+        detail::wayland_present(s);
+    detail::wayland_flush(s);
+    return impl->running;
+}
+void Window::render() {
+    auto* o = impl;
+    auto* s = static_cast<detail::WaylandState*>(o->native);
+    if (!s || o->ui.impl->frame_open) return;
+    if (s->failed) return;
+    if (!detail::wayland_resize(s)) return;
+    const auto now = detail::prof_now() / 1000;
+    float dt = o->last_frame_ms ? (now - o->last_frame_ms) / 1000.f : 1.f / 60;
+    if (dt > .25f) { o->ui.impl->caret_blink += dt - .25f; dt = .25f; }
+    o->last_frame_ms = now;
+    detail::wayland_feed_input(s);
+    o->need_frame = false;
+    detail::ScopeExit cleanup([o] {
+        if (o->ui.impl->frame_open) { o->ui.impl->abort_frame(); o->need_frame = true; }
+    });
+    o->ui.begin_frame(float(s->width), float(s->height), dt, o->scale);
+    if (o->frame_cb_ptr) o->frame_cb_ptr();
+    o->ui.end_frame();
+    detail::wayland_draw_title(s);
+    detail::wayland_text_state(s);
+    o->cursor = o->ui.cursor();
+    detail::wayland_cursor(s);
+    s->completed_frame = true;
+    if (detail::wayland_can_render(s)) detail::wayland_present(s);
+    else detail::wayland_flush(s);
+}
+void Window::set_title(const std::string& title) {
+    auto* s = static_cast<detail::WaylandState*>(impl->native);
+    if (s && !s->failed) {
+        impl->cfg.title = title;
+        impl->need_frame = true;
+        detail::wl::request(s->toplevel, 2, title.c_str());
+        detail::wayland_flush(s);
+    }
+}
+void Window::set_size(int width, int height) {
+    auto* s = static_cast<detail::WaylandState*>(impl->native);
+    if (!s || s->failed) return;
+    auto clamp = [](int value, int minimum, int maximum) {
+        return std::max(std::max(1, minimum), maximum > 0 ? std::min(value, maximum) : value);
+    };
+    s->pending_width = clamp(width, impl->cfg.min_width, impl->cfg.max_width);
+    s->pending_height = clamp(height, impl->cfg.min_height, impl->cfg.max_height);
+    impl->cfg.width = s->pending_width;
+    impl->cfg.height = s->pending_height;
+    s->pending_height += s->title_height;
+    if (!impl->cfg.resizable) detail::wayland_size_hints(s);
+    detail::wayland_scale_changed(s);
+}
+void Window::set_clipboard(const std::string& text) { (void)try_set_clipboard(text); }
+bool Window::try_set_clipboard(const std::string& text) {
+    return detail::wayland_set_clipboard(static_cast<detail::WaylandState*>(impl->native), text);
+}
+std::string Window::clipboard() const {
+    auto* s = static_cast<detail::WaylandState*>(impl->native);
+    if (!s || s->failed || !s->selection || s->clipboard_reading) return {};
+    std::string mime;
+    for (const auto& offer : s->offers) if (offer.proxy == s->selection) mime = offer.mime;
+    if (mime.empty()) return {};
+    int sockets[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) < 0) return {};
+    if (fcntl(sockets[0], F_SETFL, O_NONBLOCK) < 0) { ::close(sockets[0]); ::close(sockets[1]); return {}; }
+    detail::ScopeExit cleanup([&] { ::close(sockets[0]); s->clipboard_reading = false; });
+    s->clipboard_reading = true;
+    detail::wl::request(s->selection, 1, mime.c_str(), sockets[1]);
+    ::close(sockets[1]);
+    detail::wayland_flush(s);
+    std::string result;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < deadline && !s->failed) {
+        char bytes[65536];
+        const auto count = ::read(sockets[0], bytes, sizeof bytes);
+        if (count == 0) return result;
+        if (count > 0) {
+            if (result.size() + size_t(count) > (32u << 20)) return {};
+            result.append(bytes, size_t(count));
+            continue;
+        }
+        if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) return {};
+        std::vector<pollfd> fds{{sockets[0], POLLIN, 0}};
+        int timeout = int(std::max<int64_t>(0,
+            std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count()));
+        // 同线程其他窗口可能是选区 owner；仅派发协议，resize 延迟到下一帧。
+        for (auto* window : detail::wayland_windows()) {
+            detail::wayland_dispatch(window);
+            detail::wayland_send_clipboard(window);
+            detail::wayland_flush(window);
+            detail::wayland_wait_fds(window, fds, timeout, false);
+        }
+        ::poll(fds.data(), fds.size(), timeout);
+    }
+    return {};
+}
+#endif // AINO_PLATFORM_WAYLAND
+
+
+// =============================================================================
+//  8.21  macOS 后端
+//        纯 C++ 通过 objc runtime 调 AppKit；绘制用 CoreGraphics，文字用 CoreText。
+//        尚未经真机验证。
 // =============================================================================
 #if defined(AINO_PLATFORM_MACOS)
 // 这些 objc runtime 函数由 <objc/runtime.h> / <objc/message.h> 提供，别再手写声明
@@ -14838,6 +17034,9 @@ void Window::run(const std::function<void(Ui&)>& frame) {
             if (!live(window)) continue;
             auto* o = window->impl;
             if (!o->running || !o->frame_cb_ptr) continue;
+#ifdef AINO_PLATFORM_WAYLAND
+            if (!detail::wayland_can_render(static_cast<detail::WaylandState*>(o->native))) continue;
+#endif
             const auto now = Clock::now();
             if ((o->need_frame || o->ui.animating() || o->ui.impl->repaint_timeout_ms() == 0)
                 && now >= o->next_frame_at) {
@@ -14862,6 +17061,9 @@ void Window::run(const std::function<void(Ui&)>& frame) {
             auto* o = window->impl;
             if (!o->running || !o->frame_cb_ptr) continue;
             if (o->wake_signal.pending()) limit(0);
+#ifdef AINO_PLATFORM_WAYLAND
+            if (!detail::wayland_can_render(static_cast<detail::WaylandState*>(o->native))) continue;
+#endif
             const int until_frame = int(std::max<int64_t>(0,
                 std::chrono::ceil<std::chrono::milliseconds>(o->next_frame_at - Clock::now()).count()));
             const int timer = o->ui.impl->repaint_timeout_ms();
@@ -14888,6 +17090,11 @@ void Window::run(const std::function<void(Ui&)>& frame) {
             descriptors.push_back({window->impl->wake_signal.read_descriptor(), POLLIN, 0});
         }
         ::poll(descriptors.data(), descriptors.size(), timeout);
+#elif defined(AINO_PLATFORM_WAYLAND)
+        std::vector<pollfd> descriptors;
+        for (Window* window : windows) if (window->impl->running)
+            detail::wayland_wait_fds(static_cast<detail::WaylandState*>(window->impl->native), descriptors, timeout);
+        ::poll(descriptors.data(), descriptors.size(), timeout);
 #elif defined(AINO_PLATFORM_MACOS)
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, timeout < 0 ? 1e9 : double(timeout) / 1000.0, true);
 #endif
@@ -14900,7 +17107,7 @@ struct SystemIconMask {
     std::vector<uint8_t> alpha;
 };
 
-#if defined(AINO_PLATFORM_X11)
+#if defined(AINO_PLATFORM_UNIX)
 // 只使用 GdkPixbuf 的图像加载，不初始化 GTK 或创建额外窗口。
 struct X11IconPixels {
     void* lib = nullptr;
@@ -15306,7 +17513,7 @@ inline SystemIconMask load_system_icon(SystemIcon icon, int size) {
     }
     if (name) CFRelease(name);
     oc_send<void>(pool, sel_registerName("drain"));
-#elif defined(AINO_PLATFORM_X11)
+#elif defined(AINO_PLATFORM_UNIX)
     return x11_load_system_icon(icon, size);
 #else
     (void)icon; (void)size;
@@ -15326,7 +17533,7 @@ std::string executable_directory() {
     _NSGetExecutablePath(nullptr, &size);
     std::vector<char> buffer(size);
     if (size && _NSGetExecutablePath(buffer.data(), &size) == 0) path = buffer.data();
-#elif defined(AINO_PLATFORM_X11)
+#elif defined(AINO_PLATFORM_UNIX)
     std::vector<char> buffer(4096);
     const ssize_t n = readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
     if (n > 0 && size_t(n) < buffer.size() - 1) path.assign(buffer.data(), size_t(n));
@@ -15433,7 +17640,7 @@ bool Image::load(const std::string& path, std::string* error) {
     if (image) CGImageRelease(image);
     if (source) CFRelease(source);
     if (url) CFRelease(url);
-#elif defined(AINO_PLATFORM_X11)
+#elif defined(AINO_PLATFORM_UNIX)
     static detail::X11IconPixels api;
     int metadata_w = 0, metadata_h = 0;
     const bool bounded = api.lib && api.file_info(path.c_str(), &metadata_w, &metadata_h)
@@ -15497,7 +17704,7 @@ bool Image::load_resource(int resource_id, std::string* error) {
 }
 
 int system_icon_worker_entry(int argc, char** argv) {
-#if defined(AINO_PLATFORM_X11) && defined(__linux__)
+#if defined(AINO_PLATFORM_UNIX) && defined(__linux__)
     if (argc > 1 && std::strcmp(argv[1], "--aino-system-icons-v1") == 0) {
         if (argc != 4 || !argv[2] || !*argv[2]) return 2;
         char* end = nullptr; const long size = std::strtol(argv[2], &end, 10);
@@ -15526,13 +17733,13 @@ int system_icon_worker_entry(int argc, char** argv) {
 bool Ui::system_icon(SystemIcon icon, const Rect& box, const Color& color) {
     if (impl->measure_on) { impl->measure_add(box); return true; }
     if (!impl->canvas || box.empty() || color.a == 0) return false;
-#if defined(AINO_PLATFORM_WINDOWS) || defined(AINO_PLATFORM_MACOS) || defined(AINO_PLATFORM_X11)
+#if defined(AINO_PLATFORM_WINDOWS) || defined(AINO_PLATFORM_MACOS) || defined(AINO_PLATFORM_UNIX)
     const Rect physical = impl->xf_phys(box);
     const int size = std::max(1, int(std::floor(std::min(physical.w, physical.h))));
     const uint64_t key = uint64_t(icon) << 32 | uint32_t(size);
     // 按线程缓存栅格化结果，复用时只混合像素；尺寸变化不保留系统 DC、字体或 NSImage。
     static thread_local std::unordered_map<uint64_t, detail::SystemIconMask> masks;
-#ifdef AINO_PLATFORM_X11
+#ifdef AINO_PLATFORM_UNIX
     static thread_local std::string last_theme;
     const auto current_theme = detail::x11_effective_icon_theme();
     if (last_theme != current_theme) { masks.clear(); last_theme = current_theme; }

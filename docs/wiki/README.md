@@ -17,6 +17,7 @@
 | [动画与变换](11-motion.md) | 缓动、平移、缩放与旋转 |
 | [组件索引](12-component-index.md) | 公开 API、组合示例与兼容接口 |
 | [平台与功能边界](14-platform-status.md) | 原生后端支持范围及已知限制 |
+| [原生 Wayland](15-wayland.md) | 无 XWayland 构建、窗口、缩放、输入与剪贴板 |
 
 ## 开发约定
 

@@ -10,7 +10,8 @@
 | 类别 | 入口 | 说明 |
 | --- | --- | --- |
 | 构建 | `build.py`、`cl_one.py`、`msvc_build.py`、`toolchain.py` | Windows 辅助入口；需自行安装编译器；`AINO_GXX` 可显式指定 g++ |
-| 功能回归 | `regress.py`、`ci_smoke.cpp`、`ci_pixels.cpp` | Python 回归入口主要面向 Windows；CI 冒烟及像素程序支持三个后端 |
+| Wayland 协议 | `generate_wayland_protocols.py` | 从系统 XML 更新头文件内 ABI 与许可；只在升级协议时运行，普通构建不需要 |
+| 功能回归 | `regress.py`、`ci_smoke.cpp`、`ci_pixels.cpp` | Python 回归入口主要面向 Windows；CI 冒烟及像素程序适配各原生后端 |
 | 布局/截图 | `verify_gallery.py`、`verify_render.py` | Windows 桌面及实际像素验证；不能用测量结果替代截图 |
 | 性能 | `perf_gallery.py`、`perf_bench.py` | 进程 CPU、内存和真实交互采样；测量口径见 `docs/wiki/10-performance.md` |
 | 专项探针 | `probe/` | 自动断言、复现和手工网络诊断并存；网络/GUI 探针需要相应环境 |

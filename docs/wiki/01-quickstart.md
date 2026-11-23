@@ -19,6 +19,17 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
 
+Linux 默认使用 X11。纯 Wayland 使用独立构建目录：
+
+```sh
+cmake -S . -B build/wayland -DAINO_WAYLAND=ON
+cmake --build build/wayland --parallel 2
+env -u DISPLAY ./build/wayland/aino_gallery
+```
+
+无需 X11 链接库或 Wayland 开发头文件；运行库、输入法协议及桌面集成见
+[原生 Wayland](15-wayland.md)。所有编译单元必须使用一致的后端宏。
+
 CMake 自动扫描 `examples/*.cpp`，每个文件生成 `aino_<文件名>` 目标。
 新增或删除顶层 `.cpp` 后，构建会触发重新配置；Visual Studio 可能需要重新加载后再构建一次。
 也可先运行 `cmake -S . -B build` 立即更新目标，再构建。`.hpp` 不生成可执行文件。
@@ -227,6 +238,7 @@ python tools/build_ssh.py ui
 | MSVC | `cl /std:c++17 /utf-8 /EHsc /O2 /MT main.cpp user32.lib gdi32.lib ole32.lib windowscodecs.lib` |
 | MinGW | `g++ -std=c++17 -O2 -mwindows -s -static main.cpp -o app.exe -lgdi32 -luser32 -lole32 -lwindowscodecs` |
 | GCC/X11 | `g++ -std=c++17 -O2 main.cpp -o app -lX11 -ldl` |
+| GCC/Wayland | `g++ -std=c++17 -O2 -DAINO_WAYLAND main.cpp -o app -ldl -pthread` |
 | Clang/macOS | `clang++ -std=c++17 -O2 main.cpp -o app -framework Cocoa -framework CoreText -framework CoreGraphics -framework ImageIO` |
 
 Windows 示例默认静态链接编译器运行时，仍使用系统 DLL。
@@ -234,7 +246,8 @@ Windows 示例默认静态链接编译器运行时，仍使用系统 DLL。
 仅当明确接受 DLL 部署时使用 `AINO_STATIC_EXE=OFF`；MinGW 此时采用
 `-static-libgcc -static-libstdc++`，并随附工具链提供的 `libwinpthread-1.dll`。
 
-Linux 文字后端运行时加载 FreeType/fontconfig，无需链接其开发库；缺失时回退到 XFontSet。
+Linux 文字后端运行时加载 FreeType/fontconfig，无需链接其开发库；X11 缺失时回退到 XFontSet，
+原生 Wayland 缺失时建窗失败并报告原因。
 中文还需安装 CJK 字体。Debian/Ubuntu 可安装：
 
 ```sh
@@ -249,7 +262,8 @@ X11（包括 Wayland 会话中的 XWayland）默认从 XSETTINGS 的 `Xft/DPI`�
 有效范围为 0.5–4。桌面 DPI 与整数倍率不会重复相乘，`GDK_DPI_SCALE` 不用于整窗缩放。
 `cfg.high_dpi=false` 时 X11 固定使用 1 倍，忽略上述设置。
 窗口大小、尺寸约束、`set_size()` 和输入坐标统一使用逻辑像素。
-这是 X11/XWayland 后端，尚未实现原生 Wayland 或逐显示器的独立缩放。
+上述缩放配置只适用于 X11/XWayland，不提供逐显示器的独立缩放。
+原生 Wayland 使用 output / fractional-scale 协议，见 [Wayland 缩放说明](15-wayland.md)。
 
 ## 4. 最小程序
 
@@ -280,7 +294,7 @@ int main() {
 ## 5. 窗口与主循环
 
 `win.run(frame_cb)` 处理事件、建立帧、调用绘制回调并上屏；无事件和动画时阻塞等待。
-Windows 等待内核事件与线程消息，X11 同时等待原生连接和唤醒描述符，Cocoa 使用主线程 RunLoop。
+Windows 等待内核事件与线程消息，X11/Wayland 同时等待原生连接和唤醒描述符，Cocoa 使用主线程 RunLoop。
 帧回调内不提供通用重绘请求。控件状态变化由当前输入帧处理；帧回调外的一次更新可调用
 `ui.request_next_frame()`。自定义动画在需要推进时调用 `ui.request_animation_frame()`，
 只续一帧；全局连续动画使用 `ui.set_animating(true)`，动画结束时必须关闭。
@@ -302,10 +316,11 @@ win.set_anim_fps(30);
 ```
 
 `cfg.icon_path`：Windows 读取 `.ico`；macOS 设置应用图标；X11 设置 `_NET_WM_ICON`。
+Wayland 使用 `cfg.app_id` 匹配已安装的 `.desktop` 图标，具体安装方式见 [15](15-wayland.md)。
 Windows 大小图标按窗口 DPI 加载，跨显示器缩放变化时重载；自定义 ICO 建议包含
 16、20、24、32、40、48、64、96、128、256 像素图层，避免用单一尺寸放大。
 仓库示例的内嵌图标由 `assets/aino_icon.rc` 提供，修改图标后需要重新构建 exe。
-`cfg.font_path`：Windows/macOS 可注册字体文件；X11 按字体家族与 fontconfig 查找。
+`cfg.font_path`：Windows/macOS 可注册字体文件；Linux 按字体家族与 fontconfig 查找。
 `font_family_mono` 用于等宽文本通道。`min_*` / `max_*` 均为逻辑尺寸。
 `win.close()` 请求关闭，后台线程更新后调用 `win.wake()` 唤醒循环；跨线程共享应用状态仍需同步。
 `wake()` 和 `close()` 只操作原子标志及本地通知资源，不调用 Xlib，可从后台线程调用。

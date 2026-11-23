@@ -23,6 +23,26 @@ Windows 离屏夹具直接构造输入，不能替代系统输入法、剪贴板
 画廊素材子窗口入口为 `examples/gallery.cpp` 的 `open_material_window()`。
 上述缺口不会因示例能编译或绘图像素通过而自动消失。
 
+## Linux / 原生 Wayland
+
+使用 `-DAINO_WAYLAND=ON`，不链接 X11、不依赖 XWayland；接入方法见
+[原生 Wayland](15-wayland.md)。默认 Linux 构建仍为 X11。
+
+| 能力 | 实现与边界 |
+| --- | --- |
+| 绘制与呈现 | FreeType/fontconfig 客户端文字、CPU 光栅器、wl_shm；最多三个缓冲，release 后复用 |
+| 调度与多窗口 | 独立窗口连接、联合等待 socket/唤醒管道/剪贴板发送、frame callback 与按键重复截止时间 |
+| 窗口管理 | xdg-shell 标题、尺寸约束与关闭；优先服务端装饰，缺少时使用库内标题栏；位置由 compositor 决定 |
+| DPI | output 整数缩放；fractional-scale-v1 + viewporter 存在时采用首选分数缩放；混合 DPI 实屏另验 |
+| 键盘与指针 | xkb keymap、Compose、修饰键快照、按键重复、按钮、双击、拖动、垂直滚动与主题光标 |
+| 输入法 | 可选 text-input-v3，光标矩形、用途、预编辑与提交；未实现 surrounding-text、上下文删除和预编辑选区 |
+| 剪贴板 | wl_data_device UTF-8，2 秒截止时间、32 MiB 上限、非阻塞发送；写入须有焦点和有效 serial |
+| 桌面集成 | `WindowConfig::app_id` 匹配 .desktop；不自动安装桌面图标；尚无拖放、触屏与无障碍桥接 |
+
+源码入口是 `WaylandState`、`wayland_registry/create/present/dispatch` 与 Wayland 的 `Window` 方法。
+协议表内嵌于头文件，系统库动态加载；普通构建不需要协议生成工具或第三方开发头文件。
+日常 CI 只编译本后端，不能据此宣称所有 Wayland 桌面和输入法均已完成验收。
+
 ## SSH/SFTP 功能边界
 
 网络示例的完整性与窗口后端分开验收。

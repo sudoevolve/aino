@@ -111,7 +111,7 @@ cmake --build build --config Release</code></pre></div>
         <div class="wrap help-layout"><div><p class="eyebrow">再了解一点</p><h2 id="help-title">你可能<br>还想知道。</h2></div><div class="questions">
           <details><summary>是否需要 GPU 或第三方 UI 框架？</summary><p>核心通过 CPU 光栅化，并使用系统窗口、字体和绘图接口；不需要 GPU 图形 API 或第三方 UI 框架。Linux 的字体和图像功能使用系统运行库，可选 SSH 示例使用 libssh2。具体要求见<a href="?page=01-quickstart.md">构建说明</a>。</p></details>
           <details><summary>空闲时，CPU 仍会持续绘制吗？</summary><p>窗口在无事件时阻塞等待，后台状态变化后主动唤醒。光标闪烁、动画和持续播放仍需要更新，实际 CPU 开销随场景变化。缓存预算和采样方法见<a href="?page=10-performance.md">性能与资源</a>。</p></details>
-          <details><summary>三个平台的支持范围一样吗？</summary><p>Windows、macOS 和 Linux 原生后端已存在，Linux 使用 X11 / XWayland。输入法、多显示器、系统互通与无障碍能力仍有不同边界，接入前请查看<a href="?page=14-platform-status.md">平台能力矩阵</a>。</p></details>
+          <details><summary>三个平台的支持范围一样吗？</summary><p>Windows、macOS 和 Linux 原生后端已存在，Linux 可选 X11 或原生 Wayland。输入法、多显示器、系统互通与无障碍能力仍有不同边界，接入前请查看<a href="?page=14-platform-status.md">平台能力矩阵</a>及<a href="?page=15-wayland.md">Wayland 教程</a>。</p></details>
           <details><summary>Wiki 教程在哪里维护？</summary><p>正文直接读取仓库 <code>docs/wiki/</code> 中的 Markdown，目录来自教程索引。阅读页可通过“查看 Markdown”回到原文件。工程审查记录独立放在 <code>docs/reviews/</code>。</p></details>
           <details><summary>如何参与项目？</summary><p>欢迎<a href="https://github.com/sudoevolve/aino/issues">反馈可复现的问题</a>、完善教程或贡献代码。开发前请阅读<a href="https://github.com/sudoevolve/aino/blob/main/AGENTS.md">开发约定</a>。项目以 Apache-2.0 协议开源。</p></details>
         </div></div>

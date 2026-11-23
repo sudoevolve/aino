@@ -28,3 +28,15 @@ jobs:
         run: cmake -S . -B build/ci -DCMAKE_BUILD_TYPE=Release -DAINO_BUILD_TESTS=OFF -DAINO_BUILD_SSH=ON
       - name: Compile examples
         run: cmake --build build/ci --config Release --parallel 2
+
+  wayland:
+    name: Linux / native Wayland
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: SSH development library
+        run: sudo apt-get update && sudo apt-get install -y libssh2-1-dev
+      - name: Configure without X11 or Wayland development headers
+        run: cmake -S . -B build/wayland -DCMAKE_BUILD_TYPE=Release -DAINO_WAYLAND=ON -DAINO_BUILD_TESTS=OFF -DAINO_BUILD_SSH=ON
+      - name: Compile native Wayland examples
+        run: cmake --build build/wayland --parallel 2

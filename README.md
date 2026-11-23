@@ -32,12 +32,16 @@ aino 以原生桌面体验和低空闲开销为目标。核心库集中在 `aino
   </tr>
 </table>
 
+Linux 原生 Wayland 组件画廊（实际 CPU 内容画布）：
+
+<img src="screenshots/wayland-gallery.png" alt="原生 Wayland 中文组件画廊" width="760">
+
 ## Features
 
 - **单头文件**：核心实现位于 `aino.hpp`，C++17，无第三方 UI 依赖。
 - **事件驱动**：无事件时阻塞等待；仅在需要时重绘，空闲时 CPU 占用接近 0。
 - **CPU 光栅化**：自绘几何、图像和材质效果，配合系统字体与窗口后端。
-- **原生平台后端**：Windows GDI、macOS Cocoa、Linux X11。
+- **原生平台后端**：Windows GDI、macOS Cocoa、Linux X11 / Wayland。
 - **完整组件集**：布局、主题、输入控件、表格、图表、浮层与动画等。
 - **图像支持**：PNG、JPEG、BMP 与 GIF 首帧，可加载后复用并绘制。
 
@@ -141,10 +145,11 @@ cmake --build build --config Release --target aino_primitives_demo
 macOS Finder 图标需要 `.app` 和 `.icns`；Linux 桌面图标需要 `.desktop` 入口，
 仅设置窗口图标不会改变文件管理器显示的图标。非 Windows 示例仍需旁置 PNG。详见 [图元文档](docs/wiki/09-primitives.md)。
 
-三个后端：Windows（GDI）、Linux（X11）和 macOS（Cocoa）。**Windows 是唯一完成实机验收的后端**；
-Linux/macOS 的绘制、输入、剪贴板与窗口路径已实现，原生桌面互通和多显示器仍需验收，
-接入前请读 [平台能力矩阵](docs/wiki/14-platform-status.md)。Wayland 会话通过 XWayland 运行，
-目前没有原生 Wayland 后端。
+原生后端：Windows（GDI）、Linux（X11 / Wayland）和 macOS（Cocoa）。
+Linux 默认使用 X11；`-DAINO_WAYLAND=ON` 构建纯 Wayland，直接以共享内存呈现 CPU 像素，
+不依赖 XWayland 或 GPU。[Wayland 接入](docs/wiki/15-wayland.md)说明运行库、输入法和桌面标识。
+不同桌面的系统互通、输入法与混合 DPI 多屏仍需分别验收，详见
+[平台能力矩阵](docs/wiki/14-platform-status.md)。
 
 ## Project Layout
 
@@ -184,6 +189,7 @@ CMakeLists.txt               示例构建配置
 - [10 逐组件性能实测（历史基准）](docs/wiki/10-performance.md)
 - [11 动画与变换](docs/wiki/11-motion.md)
 - [12 组件与示例索引](docs/wiki/12-component-index.md)
+- [15 原生 Wayland](docs/wiki/15-wayland.md)
 - [文档索引](docs/README.md)
 
 ## License
