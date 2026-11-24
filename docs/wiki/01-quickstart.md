@@ -260,7 +260,8 @@ Windows 示例默认静态链接编译器运行时，仍使用系统 DLL。
 `-static-libgcc -static-libstdc++`，并随附工具链提供的 `libwinpthread-1.dll`。
 
 Linux 文字后端运行时加载 FreeType/fontconfig，无需链接其开发库；X11 缺失时回退到 XFontSet，
-原生 Wayland 缺失时建窗失败并报告原因。
+原生 Wayland 缺失时建窗失败并报告原因。X11 缩放同步按需运行时加载 libXext，
+缺失时窗口照常缩放，只是合成器不会在缩放期间保持上一帧。
 中文还需安装 CJK 字体。Debian/Ubuntu 可安装：
 
 ```sh
