@@ -13,11 +13,13 @@
 //      读新露出区域的像素；
 //   ② 尺寸变化处理完之后，出帧预算必须已经到期，下一轮主循环会立刻出帧；
 //   ③ 管理器的同步请求被应答成它要的计数器值（扩展协议：帧进行中奇数、画完偶数；
-//      旧式协议：恰好等于目标值），请求之后没有跟着配置事件时也应答，且不空转。
+//      旧式协议：恰好等于目标值），请求之后没有跟着配置事件时也应答，且不空转；
+//   ④ 帧进行中到达的配置事件不会卡在 Xlib 内部队列里：主循环阻塞前必须先看队列。
 //
 // 反例：把背景手工改回白色，同一套判据必须读出白色，否则①什么也没证明。
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <atomic>
 #define AINO_IMPLEMENTATION
 #include "../../aino.hpp"
 #include <chrono>
@@ -203,6 +205,38 @@ int main() {
         win.render(frame);
         check(st->sync_serial == 0 && !win.impl->need_frame, "下一帧照常应答，不再排帧");
         report("无配置事件时扩展协议仍落到偶数", counter(st->sync_counter_ext), 3002);
+    }
+
+    // ---- ④ 帧内到达的配置事件：主循环不能睡死 ----
+    // libX11 的 XFlush 在发送之后会把 socket 里已有的事件读进内部队列，帧末的 XFlush 就在做
+    // 这件事。之后这些事件不再出现在 fd 上，只等 fd 的主循环会一直睡到下一个无关事件到来。
+    {
+        std::atomic<bool> drew{false};
+        int step = 0;
+        std::thread watchdog([&] { // 修复缺失时 run() 不会自己返回，由看门狗收尾并判失败
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            win.close();
+        });
+        win.run([&](Ui& ui) {
+            ui.clear(kPage);
+            if (step++ == 0) {
+                // 这一帧进行中到达一次尺寸变化。XSync 等回复时同样把事件读进 Xlib 队列；
+                // 用合成事件不经过窗口管理器，有没有 WM 结果都一样。
+                XEvent e{};
+                e.xconfigure.type = ConfigureNotify;
+                e.xconfigure.event = st->win;
+                e.xconfigure.window = st->win;
+                e.xconfigure.width = 612;
+                e.xconfigure.height = 432;
+                XSendEvent(dpy, st->win, False, StructureNotifyMask, &e);
+                XSync(dpy, False);
+            } else if (ui.width() == 612.0f) {
+                drew = true;
+                win.close();
+            }
+        });
+        watchdog.join();
+        check(drew, "帧内到达的配置事件在主循环里被处理，没有睡死");
     }
 
     check(resized_ok, "所有尺寸变化都被服务器应用");

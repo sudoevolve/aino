@@ -3668,7 +3668,7 @@ struct Ui::Impl {
 
     Canvas* canvas = nullptr;
     TextRenderer* text = nullptr;
-    // 最近一次 clear() 的页面底色，clear_used 区分"没调用过 clear() 和清成了白色"。
+    // 本帧 clear() 的页面底色，clear_used 区分"本帧没调用过 clear() 和清成了白色"。
     // X11 后端拿它同步窗口背景像素（见 x11_update_background）：服务器在尺寸变化
     // 时只会用背景色补画面。
     Color clear_color = Color::hex(0xFFFFFF);
@@ -4236,6 +4236,7 @@ void Ui::release_state_scope(uint64_t id) {
 void Ui::begin_frame(float w, float h, float dt, float dpi) {
     impl->frame_open = true;
     impl->timed_repaint = false;
+    impl->clear_used = false;
     impl->width = w;
     impl->height = h;
     impl->dt = (dt > 0.0f && dt < 1.0f) ? dt : (1.0f / 60.0f);
@@ -13549,6 +13550,12 @@ inline void x11_create_backbuffer(X11State* s, int w, int h) {
     o->client_w = w; o->client_h = h;
 }
 
+// libX11 的 XFlush 发完请求后会把 socket 里已有的事件读进内部队列（见其 _XFlush），
+// 帧末的 x11_present 就在做这件事。之后这些事件不再出现在 fd 上，只 poll 裸 fd 会漏掉。
+inline bool x11_events_queued(X11State* s) {
+    return s && s->dpy && XEventsQueued(s->dpy, QueuedAfterFlush) > 0;
+}
+
 inline void x11_present(X11State* s) {
     if (!s->img) return;
     XPutImage(s->dpy, s->win, s->gc, s->img, 0, 0, 0, 0, unsigned(s->pw), unsigned(s->ph));
@@ -17262,6 +17269,12 @@ void Window::run(const std::function<void(Ui&)>& frame) {
             if (o->wake_signal.pending()) limit(0);
             if (o->clipboard_complete) limit(int(std::max<int64_t>(0,
                 std::chrono::ceil<std::chrono::milliseconds>(o->clipboard_deadline - Clock::now()).count())));
+#ifdef AINO_PLATFORM_X11
+            // 帧末 XFlush 读进 Xlib 队列的事件不在 fd 上，队列非空就不能睡，否则一直卡到
+            // 下一个无关事件到来（尺寸变化后新尺寸的那一帧出不来）。
+            if (detail::x11_events_queued(static_cast<detail::X11State*>(o->native)))
+                limit(0);
+#endif
 #ifdef AINO_PLATFORM_WAYLAND
             if (!detail::wayland_can_render(static_cast<detail::WaylandState*>(o->native))) continue;
 #endif
