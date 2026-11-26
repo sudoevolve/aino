@@ -1,8 +1,11 @@
 # 16 Android 适配分析
 
-> 状态：**分析文档，不含代码改动**，也未提交。
-> 本机没有 NDK、没有真机，所以凡是"在设备上成立"的判断都标了凭据来源；
-> 标「**需实测**」的条目是推理，不是结论。数字只要来自本仓库的测量，都写明出处。
+> 状态：**P0 已实施并过真机验收**（2026-11-26，OPPO PJE110 / Android 16 / arm64-v8a）。
+> 已落地：`AINO_PLATFORM_ANDROID` 后端（§8.22）、`WindowConfig::native_surface/render_scale`、
+> AFontMatcher+FreeType 文字、触摸→鼠标/滚轮映射、`android/` 打包工程（无 Gradle）、
+> `examples/mobile_gallery.cpp` 双入口 demo。真机实测：渲染/文字/触摸对准/拖动滚动/
+> 转屏保状态/静置 CPU 0.0% 均通过。
+> 下文的分析与"需实测"条目保留原样作为设计依据；P1（软键盘 IME）起仍未实施。
 
 ---
 

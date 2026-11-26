@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- aino gallery：纯 C++ NativeActivity（android:hasCode="false"，没有 dex）。
+     configChanges 拦截转屏/分屏等配置变化：Activity 不重建，surface 只是
+     resize —— Ui 状态（开关、滑块、滚动位置）在转屏后原地保留。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="dev.aino.mobilegallery"
+    android:versionCode="1"
+    android:versionName="0.5.4">
+
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35"/>
+
+    <application
+        android:label="aino Gallery"
+        android:icon="@mipmap/ic_launcher"
+        android:hasCode="false"
+        android:allowBackup="false"
+        android:extractNativeLibs="true"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
+
+        <activity android:name="android.app.NativeActivity"
+            android:exported="true"
+            android:label="aino Gallery"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|uiMode|density|fontScale"
+            android:resizeableActivity="true">
+            <meta-data android:name="android.app.lib_name" android:value="main"/>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
