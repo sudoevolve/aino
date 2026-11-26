@@ -17313,6 +17313,10 @@ struct AndroidState {
     float    touch_start_x = 0.0f, touch_start_y = 0.0f, touch_last_y = 0.0f;
     uint64_t click_time_ms = 0;
     float    click_x = 0.0f, click_y = 0.0f;
+
+    // 软键盘：ime_pos 回调在本帧有输入框聚焦时置位；render() 帧末比对并调
+    // ANativeActivity_showSoftInput / hideSoftInput（NDK 公开 C 接口）。
+    bool ime_shown = false;
 };
 
 // -----------------------------------------------------------------------------
@@ -17612,6 +17616,8 @@ inline void android_surface_resized(AndroidState* s) {
 }
 
 inline int android_map_keycode(int32_t keycode) {
+    if (keycode >= AKEYCODE_A && keycode <= AKEYCODE_Z) return int('A') + (keycode - AKEYCODE_A);
+    if (keycode >= AKEYCODE_0 && keycode <= AKEYCODE_9) return int('0') + (keycode - AKEYCODE_0);
     switch (keycode) {
         case AKEYCODE_DEL:         return KEY_BACKSPACE;
         case AKEYCODE_FORWARD_DEL: return KEY_DELETE;
@@ -17644,8 +17650,47 @@ inline int android_map_keycode(int32_t keycode) {
     }
 }
 
+// 字符级输入：软键盘在没有 InputConnection 时会退化成硬件风格的按键流，
+// 硬件键盘也是同一通道 —— 把 AKEYCODE 折算成 ASCII 塞进 text_in。
+// 组合输入（拼音组字等走 commitText 的 IME 路径）没有 C 接口，仍需 Java 桥。
+inline int android_keycode_char(int32_t keycode, bool shift) {
+    if (keycode >= AKEYCODE_A && keycode <= AKEYCODE_Z)
+        return (shift ? 'A' : 'a') + (keycode - AKEYCODE_A);
+    if (keycode >= AKEYCODE_0 && keycode <= AKEYCODE_9)
+        return '0' + (keycode - AKEYCODE_0);
+    switch (keycode) {
+        case AKEYCODE_SPACE:          return ' ';
+        case AKEYCODE_COMMA:          return ',';
+        case AKEYCODE_PERIOD:         return '.';
+        case AKEYCODE_MINUS:          return shift ? '_' : '-';
+        case AKEYCODE_EQUALS:         return shift ? '+' : '=';
+        case AKEYCODE_LEFT_BRACKET:   return shift ? '{' : '[';
+        case AKEYCODE_RIGHT_BRACKET:  return shift ? '}' : ']';
+        case AKEYCODE_BACKSLASH:      return shift ? '|' : '\\';
+        case AKEYCODE_SEMICOLON:      return shift ? ':' : ';';
+        case AKEYCODE_APOSTROPHE:     return shift ? '"' : '\'';
+        case AKEYCODE_SLASH:          return shift ? '?' : '/';
+        case AKEYCODE_AT:             return '@';
+        case AKEYCODE_PLUS:           return '+';
+        case AKEYCODE_STAR:           return '*';
+        case AKEYCODE_POUND:          return '#';
+        default:                      return 0;
+    }
+}
+
 inline void android_handle_key(AndroidState* s, AInputEvent* e, bool down) {
-    const int key = android_map_keycode(AKeyEvent_getKeyCode(e));
+    const int32_t code = AKeyEvent_getKeyCode(e);
+    // 字符级输入：首按与自动重复都产字；Ctrl/Alt 组合键不产字
+    //（与桌面 WM_CHAR / XLookupString 的语义一致）。
+    if (down && !s->key_down[KEY_CTRL] && !s->key_down[KEY_ALT]) {
+        const bool shift = (AKeyEvent_getMetaState(e) & AMETA_SHIFT_ON) != 0;
+        const int ch = android_keycode_char(code, shift);
+        if (ch) {
+            s->text_in.push_back(char(ch));
+            s->owner->need_frame = true;
+        }
+    }
+    const int key = android_map_keycode(code);
     if (key <= 0 || key >= KEY_COUNT) return;
     if (down) {
         const int32_t os_repeat = AKeyEvent_getRepeatCount(e);
@@ -17764,9 +17809,17 @@ inline int32_t android_handle_input(android_app* app, AInputEvent* e) {
         return 1;
     }
     if (type == AINPUT_EVENT_TYPE_KEY) {
-        // BACK 不消费：交给系统退出 Activity（弹层关闭再退的语义留给 P1）。
         const int32_t code = AKeyEvent_getKeyCode(e);
-        if (code == AKEYCODE_BACK) return 0;
+        if (code == AKEYCODE_BACK) {
+            // 键盘开着：BACK 先收键盘，不退出应用；否则交给系统退出 Activity。
+            if (s->ime_shown && s->app && s->app->activity) {
+                ANativeActivity_hideSoftInput(s->app->activity,
+                                              ANATIVEACTIVITY_HIDE_SOFT_INPUT_IMPLICIT_ONLY);
+                s->ime_shown = false;
+                return 1;
+            }
+            return 0;
+        }
         const int32_t action = AKeyEvent_getAction(e);
         if (action == AKEY_EVENT_ACTION_DOWN) android_handle_key(s, e, true);
         else if (action == AKEY_EVENT_ACTION_UP) android_handle_key(s, e, false);
@@ -17891,6 +17944,19 @@ inline void android_create(Window* self, const WindowConfig& cfg) {
     o->text = tr;
     o->ui.impl->text = tr;
     o->ui.impl->canvas = &o->canvas;
+    // 输入框聚焦时唤出软键盘：Ui 在绘制聚焦输入框的帧里回调 ime_pos，
+    // 这里第一次调用就 showSoftInput —— NDK 公开 C 接口，不需要 Java。
+    // 收起在 render() 帧末统一比对（对应 X11 的 XUnsetICFocus 时机）。
+    Window::Impl* owner = o;
+    o->ui.impl->ime_pos = [owner](float, float, float) {
+        owner->ui.impl->ime_owner = true;   // 组字串照旧由 Ui 自己画（P0 无组字）
+        auto* s = static_cast<AndroidState*>(owner->native);
+        if (s && !s->ime_shown && s->app && s->app->activity) {
+            ANativeActivity_showSoftInput(s->app->activity,
+                                          ANATIVEACTIVITY_SHOW_SOFT_INPUT_IMPLICIT);
+            s->ime_shown = true;
+        }
+    };
     o->need_frame = true;
     android_trace("window created: scale=%.2f cfg(%dx%d)", o->scale, o->client_w, o->client_h);
 }
@@ -17956,6 +18022,12 @@ void Window::render() {
     ui.begin_frame(float(o->canvas.w) / o->scale, float(o->canvas.h) / o->scale, dt, o->scale);
     if (o->frame_cb_ptr) o->frame_cb_ptr();
     ui.end_frame();
+    // 帧末软键盘对账：ime_pos 在本帧没被调过 = 输入框失焦 → 收起。
+    if (!ui.impl->ime_owner && s->ime_shown && s->app && s->app->activity) {
+        ANativeActivity_hideSoftInput(s->app->activity,
+                                      ANATIVEACTIVITY_HIDE_SOFT_INPUT_IMPLICIT_ONLY);
+        s->ime_shown = false;
+    }
     ANativeWindow_unlockAndPost(s->surface);
 }
 

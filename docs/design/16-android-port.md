@@ -133,6 +133,15 @@ Android 7 起应用进程有 linker namespace 隔离，只有 `public.libraries.
 Windows 走 IMM32，X11 走 XIM，Cocoa 走 `NSTextInputClient` —— 都是"窗口系统顺手给的"。
 Android 的软键盘不是：它要给系统一个 `InputConnection`，而这个东西**只有 Java 能实现**。
 
+> **2026-11-26 真机实测补充（OPPO PJE110 / Android 16）**：`ANativeActivity_showSoftInput`
+> 这个 C 接口存在且能调到，但系统在 `PHASE_CLIENT_VIEW_SERVED` 阶段直接拒绝：
+> `InputMethodManager: Ignoring showSoftInput() as view=NativeContentView is not served` ——
+> NativeActivity 自带的 NativeContentView 没有实现 `onCreateInputConnection`，Android 11+
+> 的 ImeTracker 要求目标 View 能提供 InputConnection 才肯弹键盘。**纯 C++ 在现代 Android
+> 上唤不出软键盘，P1 的 Java 桥不可绕过。** 退化路径已实装：硬件键盘 / adb 注入的按键流
+> 仍走 AKEYCODE → 字符映射（`android_keycode_char`），英文/数字打字可用；BACK 在键盘
+> 开启时先收键盘。这些为 P1 的 Java 桥直接复用。
+
 NDK 侧**没有任何 IME API**。现成的桥只有两个，都要 Java 参与：
 
 | 方案 | 形态 | 代价 |
