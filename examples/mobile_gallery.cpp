@@ -297,7 +297,8 @@ void draw_gallery(aino::Ui& ui, MobileApp& a) {
 
     // ---- 滚动内容区 ----
     const Rect view(16, top_h, w - 32, h - top_h);
-    float content_h = 1000.f;
+    // 内容高度按各组实测累加（末组底部留 40 余量，保证末项可达）
+    float content_h = 1492.f + 40.f;
     if (a.page == kPageList) content_h = 200.f + float(kItemsCount) * 76.f;
     else if (a.page == kPageAbout) content_h = 660.f;
     auto sc = ui.scroll(view, content_h);
