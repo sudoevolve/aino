@@ -17361,6 +17361,7 @@ inline void android_ime_call(android_app* app, const char* method) {
 
 } // namespace detail
 
+namespace detail { struct AndroidState; }   // 定义于下方 §8.22 内
 // JNI 入口：Java 侧 AinoImeView.imeCommitText / imeKey 回传。
 // 这些调用来自 IME 的 UI/binder 线程，只入队 + 唤醒，文本在 poll() 里并帧。
 extern "C" JNIEXPORT void JNICALL
@@ -17382,17 +17383,6 @@ extern "C" JNIEXPORT void JNICALL
 Java_dev_aino_mobilegallery_AinoImeView_imeKey(JNIEnv*, jclass, jint keycode) {
     {   std::lock_guard<std::mutex> lock(detail::android_ime_mutex());
         detail::android_ime_keys().push_back(keycode);
-    }
-    if (Window::Impl* o = detail::android_ime_owner()) {
-        o->need_frame = true;
-        o->wake_signal.notify();
-    }
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_dev_aino_mobilegallery_AinoImeView_imeInsets(JNIEnv*, jclass, jint bottom) {
-    {   std::lock_guard<std::mutex> lock(detail::android_ime_mutex());
-        detail::android_ime_inset() = bottom;
     }
     if (Window::Impl* o = detail::android_ime_owner()) {
         o->need_frame = true;
@@ -17438,7 +17428,19 @@ struct AndroidState {
     // Java 桥 showIme / hideIme。ime_inset 是键盘可见高度（物理像素），
     // 视口按它收缩；ime_pan 是"聚焦输入框仍被遮住时"整页呈现的上移量。
     bool ime_shown = false;
+    int  ime_wake_read = -1;            // insets 推送的专用唤醒管道（读端在 looper 上）
+    int  ime_wake_write = -1;           // 写端由 Java 线程（JNI imeInsets）使用
+    // 键盘高度：ime_inset 是**当前动画值**（逐帧收敛），ime_inset_target 是
+    // Java 侧 insets 推来的目标值。动画期间界面向目标平滑逼近 —— 键盘弹收
+    // 的视觉跟随由此实现；动画帧复用上一帧内容做平移，不做全量重绘。
     int  ime_inset = 0;
+    int  ime_inset_target = 0;
+    bool inset_pending = false;         // poll 时发现目标变了
+    bool ime_anim_pending = false;      // 键盘高度收敛未完成，还需排帧
+    bool inset_anim_frame = false;      // 上一帧排下的"纯收敛帧"（唯一允许的快速路径）
+    bool content_render_next = false;   // 源头置位：下一帧需要全量重绘（vs 平移复用）
+    std::vector<uint8_t> frame_content; // 上一帧的未平移完整内容
+    bool frame_content_valid = false;
     int  ime_pan = 0;
     float ime_caret_top = 0.0f, ime_caret_bottom = 0.0f;
 };
@@ -17715,6 +17717,34 @@ private:
 // -----------------------------------------------------------------------------
 //  surface 生命周期与输入
 // -----------------------------------------------------------------------------
+// insets 唤醒管道的 looper 回调：排空字节并排定一帧（与 poll 同线程，无竞争）
+inline int android_ime_wake_cb(int fd, int events, void* data) {
+    auto* s = static_cast<AndroidState*>(data);
+    if (s) {
+        char buf[64];
+        while (::read(fd, buf, sizeof buf) > 0) {}
+        s->inset_pending = true;
+        if (s->owner) s->owner->need_frame = true;
+    }
+    return 1;   // 继续接收
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_dev_aino_mobilegallery_AinoImeView_imeInsets(JNIEnv*, jclass, jint bottom) {
+    {   std::lock_guard<std::mutex> lock(detail::android_ime_mutex());
+        detail::android_ime_inset() = bottom;
+    }
+    // 专用唤醒管道：只触发"平移快速路径"，不当成内容变化全量重绘
+    if (Window::Impl* o = detail::android_ime_owner()) {
+        auto* s = static_cast<AndroidState*>(o->native);
+        if (s && s->ime_wake_write >= 0) {
+            const char byte = 1;
+            ssize_t written = ::write(s->ime_wake_write, &byte, 1);
+            (void)written;
+        }
+    }
+}
+
 // (re)绑定 surface：算密度与 render_scale，设置缓冲几何，刷新逻辑尺寸。
 // 转屏 / 分屏都会走这里；Ui 对象不动，输入框内容和滚动位置得以保留。
 inline void android_surface_resized(AndroidState* s) {
@@ -17842,6 +17872,7 @@ inline void android_handle_key(AndroidState* s, AInputEvent* e, bool down) {
     }
     s->owner->need_frame = true;
     s->owner->move_only = false;
+    s->content_render_next = true;
 }
 
 inline void android_touch_begin(AndroidState* s, float px, float py) {
@@ -17885,6 +17916,9 @@ inline void android_touch_move(AndroidState* s, float px, float py) {
         // 手指向下（py 增大）= 想看上面的内容 = 滚轮向上（正值），与 X11 Button4 同号。
         s->wheel += (py - s->touch_last_y) / (40.0f * ds);
         s->touch_last_y = py;
+        {   static int n = 0;
+            if (n++ < 8) android_diag("wheel: now=%.2f py=%.0f ds=%.1f", s->wheel, py, ds);
+        }
     } else {
         s->mx = px;
         s->my = py;
@@ -17901,6 +17935,9 @@ inline int32_t android_handle_input(android_app* app, AInputEvent* e) {
     auto* s = static_cast<AndroidState*>(app->userData);
     if (!s || !s->owner) return 0;
     const int32_t type = AInputEvent_getType(e);
+    {   static int n = 0;
+        if (n++ < 3) android_diag("input #%d type=%d ud=%p", n, type, app->userData);
+    }
     if (type == AINPUT_EVENT_TYPE_MOTION) {
         // v1 只跟第一根手指：POINTER_DOWN 视为转滚动，POINTER_UP 只在抬起的是
         // 指针 0 时才当作抬手（Android 移除指针后其余指针的下标会前移，不追）。
@@ -17937,6 +17974,7 @@ inline int32_t android_handle_input(android_app* app, AInputEvent* e) {
         }
         s->owner->need_frame = true;
         s->owner->move_only = false;
+        s->content_render_next = true;   // 源头标记：触摸是内容变化，全量重绘
         return 1;
     }
     if (type == AINPUT_EVENT_TYPE_KEY) {
@@ -18003,6 +18041,7 @@ inline void android_handle_cmd(android_app* app, int32_t cmd) {
             break;
         default: break;
     }
+    if (cmd != APP_CMD_PAUSE) s->content_render_next = true;
     o->wake_signal.notify();
 }
 
@@ -18072,6 +18111,31 @@ inline void android_create(Window* self, const WindowConfig& cfg) {
     if (app->window) { s->surface = app->window; android_surface_resized(s); }
     android_ime_owner() = o;   // JNI 回调的投递目标（android_destroy 摘除）
 
+    // insets 推送的专用唤醒管道：挂在 glue 的 looper 上，Java 线程写一个
+    // 字节，UI 线程的 pollOnce 被叫醒后在回调里排空并置 inset_pending
+    {
+        int fds[2] = {-1, -1};
+        if (::pipe(fds) == 0) {
+            for (int fd : fds) {
+                const int flags = fcntl(fd, F_GETFL);
+                const int descriptors = fcntl(fd, F_GETFD);
+                if (flags < 0 || descriptors < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 ||
+                    fcntl(fd, F_SETFD, descriptors | FD_CLOEXEC) < 0) {
+                    ::close(fds[0]); ::close(fds[1]);
+                    fds[0] = fds[1] = -1;
+                    break;
+                }
+            }
+        }
+        if (fds[0] >= 0 && ALooper_addFd(app->looper, fds[0], ALOOPER_POLL_CALLBACK,
+                ALOOPER_EVENT_INPUT, android_ime_wake_cb, s) > 0) {
+            s->ime_wake_read = fds[0];
+            s->ime_wake_write = fds[1];
+        } else {
+            ::close(fds[0]); ::close(fds[1]);
+        }
+    }
+
     // 挂软键盘桥的 View（1x1，serve InputConnection），见 AinoImeView.java
     android_ime_call(app, "attach");
 
@@ -18091,7 +18155,10 @@ inline void android_create(Window* self, const WindowConfig& cfg) {
         // 记下光标盒（布局物理坐标，未含呈现平移）—— render() 帧末用它算平移
         s->ime_caret_top = top;
         s->ime_caret_bottom = bottom;
-        if (!s->ime_shown) {
+        // insets 报告键盘不在屏上（被 IME 自己收起/系统收起）就重新唤出，
+        // 不看 ime_shown 旗标 —— 那个旗标只代表"我们调过 show"，会漏掉
+        // "键盘被别人收走了"的情况（实测：IME 自收后再点输入框唤不出）。
+        if (s->ime_inset <= 0) {
             android_ime_show(s, true);
             s->ime_shown = true;
         }
@@ -18104,6 +18171,11 @@ inline void android_destroy(Window* self) {
     auto* s = static_cast<AndroidState*>(self->impl->native);
     if (!s) return;
     if (s->app && s->app->userData == s) { s->app->userData = nullptr; }
+    if (s->ime_wake_read >= 0) {
+        if (s->app && s->app->looper) ALooper_removeFd(s->app->looper, s->ime_wake_read);
+        ::close(s->ime_wake_read);
+        ::close(s->ime_wake_write);
+    }
     if (android_ime_owner() == self->impl) android_ime_owner() = nullptr;
     delete s;
     self->impl->native = nullptr;
@@ -18115,25 +18187,38 @@ bool Window::poll() {
     Window::Impl* o = impl;
     detail::AndroidState* s = static_cast<detail::AndroidState*>(o->native);
     if (!s || !o->running) return false;
-    if (o->wake_signal.consume()) o->need_frame = true;
-    // IME 桥投递的文字与按键（来自 Java 的 InputConnection 线程）并进本帧
+    // 内容变化的判定只认**源头标记**（content_render_next）：输入/命令回调、
+    // IME 文字与按键、后台 wake 置位。不推断 need_frame 的来历 —— 那无法
+    // 区分"触摸置位"和"动画自排"，一旦误判，触摸帧就会走平移路径拷贝旧帧
+    // （触控失灵）。
+    bool content = s->content_render_next;
+    if (o->wake_signal.consume()) { content = true; s->content_render_next = true; }
+    // IME 桥投递的文字与按键（来自 Java 的 InputConnection 线程）并进本帧。
+    // 文字/按键是**内容变化**：必须置 content_render_next 走全量重绘，
+    // 否则快速路径拷贝旧帧，打字会"看不见"。
     {   std::lock_guard<std::mutex> lock(detail::android_ime_mutex());
         if (!detail::android_ime_text().empty()) {
             s->text_in.append(detail::android_ime_text());
             detail::android_ime_text().clear();
-            o->need_frame = true;
+            s->content_render_next = true;
         }
         for (int32_t code : detail::android_ime_keys()) {
             const int key = detail::android_map_keycode(code);
-            if (key > 0 && key < KEY_COUNT) { s->key_pressed[key] = true; o->need_frame = true; }
+            if (key > 0 && key < KEY_COUNT) {
+                s->key_pressed[key] = true;
+                s->content_render_next = true;
+            }
         }
         detail::android_ime_keys().clear();
-        if (detail::android_ime_inset() != s->ime_inset) {
-            s->ime_inset = detail::android_ime_inset();
-            o->need_frame = true;
+        if (detail::android_ime_inset() != s->ime_inset_target) {
+            s->ime_inset_target = detail::android_ime_inset();
+            s->inset_pending = true;   // 目标变化：平移动画帧，无需全量重绘
         }
     }
     detail::android_pump(s->app, 0);   // 非阻塞：处理就绪的生命周期命令与输入
+    // 键盘高度收敛的自排帧：排帧但不算内容（走平移快速路径）
+    if (s->ime_anim_pending) o->need_frame = true;
+    if (content || s->inset_pending) o->need_frame = true;
     return o->running;
 }
 
@@ -18142,12 +18227,7 @@ void Window::render() {
     detail::AndroidState* s = static_cast<detail::AndroidState*>(o->native);
     if (!s) return;
     // surface 收回 / 后台暂停期间不出帧（need_frame 保持，回来后立即重画）
-    if (!s->surface || s->paused) {
-        static int guard_logs = 0;
-        if (guard_logs++ < 5) detail::android_diag("render guard: surface=%d paused=%d",
-                                                   s->surface ? 1 : 0, s->paused ? 1 : 0);
-        return;
-    }
+    if (!s->surface || s->paused) return;
     if (o->ui.impl->frame_open) { o->need_frame = true; return; }
 
     timespec ts{};
@@ -18156,6 +18236,35 @@ void Window::render() {
     float dt = o->last_frame_ms ? float(now - o->last_frame_ms) / 1000.0f : (1.0f / 60.0f);
     if (dt > 0.25f) { o->ui.impl->caret_blink += dt - 0.25f; dt = 0.25f; }
     o->last_frame_ms = now;
+
+    // 键盘高度向目标值做指数收敛（~300ms，与键盘动画同速）。Java 侧 insets
+    // 只给目标，中间帧由这里自排：动画永远收敛到目标，不会残留半截状态；
+    // 期间自行排帧（need_frame），动画结束自然回到空闲 0% CPU。
+    {
+        const int target = s->ime_inset_target;
+        if (s->ime_inset != target) {
+            const float k = std::min(1.0f, dt * 12.0f);
+            s->ime_inset = int(std::lround(float(s->ime_inset)
+                + float(target - s->ime_inset) * k));
+            if (std::abs(target - s->ime_inset) <= 3) s->ime_inset = target;
+            s->ime_anim_pending = s->ime_inset != target;   // 未收敛 → 再排一帧
+            s->inset_anim_frame = s->ime_anim_pending;      // 下一帧仍是纯收敛帧
+            o->need_frame = true;
+        } else {
+            s->ime_anim_pending = false;
+            s->inset_anim_frame = false;
+        }
+    }
+
+    // 快速路径只允许一种帧：上一帧排下的"纯 insets 收敛帧"（只动平移，
+    // 复用上一帧内容，开销两次内存拷贝）。其余任何来源（触摸/动画续帧/
+    // 文字/命令）一律全量重绘 —— 控件动画的续帧没有 content 标记，靠
+    // inset_anim_frame 的排除语义保证它们不被误判。
+    const bool content_render = s->content_render_next || !s->frame_content_valid
+        || s->frame_content.size() != size_t(o->canvas.h) * size_t(o->canvas.stride)
+        || !s->inset_anim_frame;
+    s->content_render_next = false;
+    s->inset_anim_frame = false;
 
     ANativeWindow_Buffer buffer;
     if (ANativeWindow_lock(s->surface, &buffer, nullptr) != 0 || !buffer.bits) {
@@ -18169,46 +18278,68 @@ void Window::render() {
     o->canvas.h = buffer.height;
     o->canvas.stride = buffer.stride * 4;   // stride 是**像素**，不是字节
 
-    detail::android_feed_input(s);
-    o->need_frame = false;
-    detail::ScopeExit frame_cleanup([o] {
-        if (o->ui.impl->frame_open) { o->ui.impl->abort_frame(); o->need_frame = true; }
-    });
-    Ui& ui = o->ui;
-    // 逻辑尺寸 = 缓冲物理尺寸 / 缩放（缩放含 render_scale，转出来仍是 surface/密度）。
-    // 始终绘制**完整窗口**：键盘会盖住下半屏，但绘制不能缺 —— 否则平移露出
-    // 的区域就是上一帧的残像。跟随键盘的平滑上移由帧末平移实现。
-    ui.begin_frame(float(o->canvas.w) / o->scale, float(o->canvas.h) / o->scale, dt, o->scale);
-    if (o->frame_cb_ptr) o->frame_cb_ptr();
-    ui.end_frame();
-    // 帧末软键盘对账：本帧 ime_pos 没触发 = 输入框失焦 → 收键盘 + 取消平移
-    if (!ui.impl->ime_owner) {
-        if (s->ime_shown) {
+    const size_t bytes = size_t(o->canvas.stride);
+    uint8_t* base = o->canvas.px;
+    {   static int n = 0;
+        if (n++ < 6) detail::android_diag("render #%d content=%d", n, content_render);
+    }
+    if (content_render) {
+        detail::android_feed_input(s);
+        o->need_frame = false;
+        {   static int n = 0;
+            if (n++ < 12) detail::android_diag("full render #%d wheel_in=%.2f", n,
+                                               o->ui.impl->input.wheel);
+        }
+        detail::ScopeExit frame_cleanup([o] {
+            if (o->ui.impl->frame_open) { o->ui.impl->abort_frame(); o->need_frame = true; }
+        });
+        Ui& ui = o->ui;
+        // 始终绘制**完整窗口**：键盘盖住下半屏，但绘制不能缺 —— 平移露出
+        // 的区域才有内容。跟随键盘的平滑上移由帧末平移实现。
+        ui.begin_frame(float(o->canvas.w) / o->scale, float(o->canvas.h) / o->scale, dt, o->scale);
+        if (o->frame_cb_ptr) o->frame_cb_ptr();
+        ui.end_frame();
+        // 帧末软键盘对账（只在内容帧做）：本帧 ime_pos 没触发 = 输入框失焦
+        // → 收键盘。快速动画帧不绘制 UI、ime_owner 恒为 false，若在这里
+        // 对账会把刚弹出的键盘立刻收掉（弹收打架，实测就是这样）。
+        if (!ui.impl->ime_owner && s->ime_shown) {
             android_ime_show(s, false);
             s->ime_shown = false;
+            s->ime_caret_bottom = 0.0f;
         }
-        s->ime_caret_bottom = 0.0f;
+        // 保存未平移的完整内容，供后续键盘动画帧快速复用
+        s->frame_content.resize(size_t(o->canvas.h) * bytes);
+        for (int y = 0; y < o->canvas.h; ++y)
+            std::memcpy(s->frame_content.data() + size_t(y) * bytes,
+                        base + size_t(y) * bytes, bytes);
+        s->frame_content_valid = true;
+    } else {
+        // 快速路径：把上一帧内容拷回锁定缓冲（随后统一做平移）。
+        // 必须清掉 need_frame —— 否则收敛后 run() 仍每轮全速跑这条路径空转。
+        o->need_frame = false;
+        for (int y = 0; y < o->canvas.h; ++y)
+            std::memcpy(base + size_t(y) * bytes,
+                        s->frame_content.data() + size_t(y) * bytes, bytes);
     }
 
-    // 呈现平移：聚焦输入框若被键盘沿挡住，整幅内容上移，露出光标盒。
-    // insets 随键盘动画逐帧更新 → pan 逐帧变化 → 界面跟随键盘平滑上移。
-    // 触摸坐标在 feed_input 里同步 +ime_pan。
+    // 呈现平移：聚焦输入框被键盘沿挡住时整幅内容上移露出光标盒；失焦收键盘
+    // 时随动画退回。触摸坐标在 feed_input 里同步 +ime_pan。
     const int keyboard_top = o->canvas.h - s->ime_inset;
     int pan = 0;
-    if (ui.impl->ime_owner && s->ime_caret_bottom > 0.0f) {
+    if (o->ui.impl->ime_owner && s->ime_caret_bottom > 0.0f) {
         const int margin = int(16.0f * s->device_scale);
         pan = std::max(0, int(s->ime_caret_bottom) + margin - keyboard_top);
         pan = std::min(pan, std::max(0, int(s->ime_caret_top)));   // 不平移过头
         pan = std::min(pan, s->ime_inset);   // 上移量 ≤ 键盘高度，露出区必被键盘盖住
+    } else if (!o->ui.impl->ime_owner && s->ime_inset > 0) {
+        pan = std::min(s->ime_pan, s->ime_inset);   // 失焦收键盘：跟随动画退回
     }
     s->ime_pan = pan;
     if (pan > 0) {
-        const size_t bytes = size_t(o->canvas.stride);
-        uint8_t* base = o->canvas.px;
         for (int y = 0; y < o->canvas.h - pan; ++y)
             std::memmove(base + size_t(y) * bytes, base + size_t(y + pan) * bytes, bytes);
         // 底部露出的条带清成页面底色（该区域此刻正被键盘盖住，仅为严谨）
-        const auto& bg = ui.impl->clear_used ? ui.impl->clear_color : ui.theme().window_bg;
+        const auto& bg = o->ui.impl->clear_used ? o->ui.impl->clear_color : o->ui.theme().window_bg;
         uint8_t row[4] = {};
         row[detail::CH_R] = bg.r; row[detail::CH_G] = bg.g;
         row[detail::CH_B] = bg.b; row[detail::CH_A] = 255;

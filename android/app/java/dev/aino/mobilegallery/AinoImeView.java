@@ -6,10 +6,14 @@ import android.text.InputType;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
+import android.view.WindowInsetsAnimation;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
+
+import java.util.List;
 
 /**
  * aino 的软键盘桥。
@@ -23,6 +27,7 @@ import android.view.inputmethod.InputMethodManager;
  */
 public class AinoImeView extends View {
     private static volatile AinoImeView instance;
+    private static volatile boolean imeAnimating;   // 键盘动画进行中（主线程读写）
 
     static {
         // libmain.so 已被 NativeActivity 加载过，这里只是把它注册进
@@ -50,13 +55,35 @@ public class AinoImeView extends View {
                 // 窗口获得焦点时不自动弹键盘（双保险）
                 activity.getWindow().setSoftInputMode(
                     android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
-                // 键盘高度（ime insets）实时回传 C++：UI 据此收缩视口，
-                // 避免聚焦的输入框被键盘盖住
+                // 键盘高度（ime insets）实时回传 C++：UI 视口随之收缩并上移。
+                // API 30+ 注册动画回调：onProgress 在键盘弹收动画的**每一帧**
+                // 推送当前高度 —— C++ 端界面得以逐帧跟随键盘平滑移动；
+                // 普通监听器只在动画开始就收到终值，会造成界面瞬移。
+                if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    view.setWindowInsetsAnimationCallback(
+                        new WindowInsetsAnimation.Callback(
+                            WindowInsetsAnimation.Callback.DISPATCH_MODE_STOP) {
+                            @Override public void onPrepare(WindowInsetsAnimation animation) {
+                                imeAnimating = true;
+                            }
+                            @Override public WindowInsets onProgress(WindowInsets insets,
+                                    List<WindowInsetsAnimation> animations) {
+                                imeInsets(insets.getInsets(WindowInsets.Type.ime()).bottom);
+                                return insets;
+                            }
+                            @Override public void onEnd(WindowInsetsAnimation animation) {
+                                imeAnimating = false;
+                                imeInsets(view.getRootWindowInsets()
+                                    .getInsets(WindowInsets.Type.ime()).bottom);
+                            }
+                        });
+                }
                 view.setOnApplyWindowInsetsListener((v, insets) -> {
-                    int bottom = android.os.Build.VERSION.SDK_INT >= 30
-                        ? insets.getInsets(android.view.WindowInsets.Type.ime()).bottom
-                        : insets.getSystemWindowInsetBottom();
-                    imeInsets(bottom);
+                    if (!imeAnimating) {
+                        imeInsets(android.os.Build.VERSION.SDK_INT >= 30
+                            ? insets.getInsets(WindowInsets.Type.ime()).bottom
+                            : 0);
+                    }
                     return insets;
                 });
                 decor.addView(view, new ViewGroup.LayoutParams(1, 1));
