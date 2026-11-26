@@ -17428,6 +17428,9 @@ struct AndroidState {
     // Java 桥 showIme / hideIme。ime_inset 是键盘可见高度（物理像素），
     // 视口按它收缩；ime_pan 是"聚焦输入框仍被遮住时"整页呈现的上移量。
     bool ime_shown = false;
+    bool ime_focus_gained = false;      // 本帧焦点刚进入输入框（上一帧无聚焦输入框）
+    bool ime_tap_rearm = false;         // 一次点击完成（抬起且未转滚动）→ 可重新唤出
+    bool ime_prev_owner = false;        // 上一帧是否有聚焦输入框（算 gained 用）
     int  ime_wake_read = -1;            // insets 推送的专用唤醒管道（读端在 looper 上）
     int  ime_wake_write = -1;           // 写端由 Java 线程（JNI imeInsets）使用
     // 键盘高度：ime_inset 是**当前动画值**（逐帧收敛），ime_inset_target 是
@@ -17926,7 +17929,10 @@ inline void android_touch_move(AndroidState* s, float px, float py) {
 }
 
 inline void android_touch_end(AndroidState* s, bool cancel) {
-    if (s->btn_down[0] && s->gesture_axis != 1 && !cancel) s->btn_released[0] = true;
+    if (s->btn_down[0] && s->gesture_axis != 1 && !cancel) {
+        s->btn_released[0] = true;
+        s->ime_tap_rearm = true;   // 一次点击完成：可能意图唤出键盘（由 ime_pos 决定）
+    }
     s->btn_down[0] = false;
     s->gesture_axis = 0;
 }
@@ -17935,9 +17941,6 @@ inline int32_t android_handle_input(android_app* app, AInputEvent* e) {
     auto* s = static_cast<AndroidState*>(app->userData);
     if (!s || !s->owner) return 0;
     const int32_t type = AInputEvent_getType(e);
-    {   static int n = 0;
-        if (n++ < 3) android_diag("input #%d type=%d ud=%p", n, type, app->userData);
-    }
     if (type == AINPUT_EVENT_TYPE_MOTION) {
         // v1 只跟第一根手指：POINTER_DOWN 视为转滚动，POINTER_UP 只在抬起的是
         // 指针 0 时才当作抬手（Android 移除指针后其余指针的下标会前移，不追）。
@@ -18155,12 +18158,15 @@ inline void android_create(Window* self, const WindowConfig& cfg) {
         // 记下光标盒（布局物理坐标，未含呈现平移）—— render() 帧末用它算平移
         s->ime_caret_top = top;
         s->ime_caret_bottom = bottom;
-        // insets 报告键盘不在屏上（被 IME 自己收起/系统收起）就重新唤出，
-        // 不看 ime_shown 旗标 —— 那个旗标只代表"我们调过 show"，会漏掉
-        // "键盘被别人收走了"的情况（实测：IME 自收后再点输入框唤不出）。
-        if (s->ime_inset <= 0) {
+        // 唤出时机（用户期望）：键盘不在屏上，且（焦点刚进入输入框，或用户
+        // 刚点了一次）才唤出。IME 自身收起后焦点仍在，但没有新点击就不再
+        // 自动弹出 —— 否则手动收起的键盘会被立刻拉回。
+        if (s->ime_inset <= 0 && (s->ime_focus_gained || s->ime_tap_rearm)) {
             android_ime_show(s, true);
             s->ime_shown = true;
+            s->ime_tap_rearm = false;
+        } else if (s->ime_inset > 0) {
+            s->ime_tap_rearm = false;   // 键盘已在屏上，点击意图已消费
         }
     };
     o->need_frame = true;
@@ -18280,9 +18286,6 @@ void Window::render() {
 
     const size_t bytes = size_t(o->canvas.stride);
     uint8_t* base = o->canvas.px;
-    {   static int n = 0;
-        if (n++ < 6) detail::android_diag("render #%d content=%d", n, content_render);
-    }
     if (content_render) {
         detail::android_feed_input(s);
         o->need_frame = false;
@@ -18307,6 +18310,8 @@ void Window::render() {
             s->ime_shown = false;
             s->ime_caret_bottom = 0.0f;
         }
+        s->ime_focus_gained = ui.impl->ime_owner && !s->ime_prev_owner;
+        s->ime_prev_owner = ui.impl->ime_owner;
         // 保存未平移的完整内容，供后续键盘动画帧快速复用
         s->frame_content.resize(size_t(o->canvas.h) * bytes);
         for (int y = 0; y < o->canvas.h; ++y)
