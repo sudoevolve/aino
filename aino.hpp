@@ -18333,9 +18333,14 @@ void Window::render() {
     int pan = 0;
     if (o->ui.impl->ime_owner && s->ime_caret_bottom > 0.0f) {
         const int margin = int(16.0f * s->device_scale);
-        pan = std::max(0, int(s->ime_caret_bottom) + margin - keyboard_top);
-        pan = std::min(pan, std::max(0, int(s->ime_caret_top)));   // 不平移过头
-        pan = std::min(pan, s->ime_inset);   // 上移量 ≤ 键盘高度，露出区必被键盘盖住
+        // 平移的**目的**是露出被键盘沿挡住的光标盒：只有真正越过键盘沿
+        // 才平移（margin 只进平移量、不进触发条件 —— 底边在键盘沿上方的
+        // 输入框一个像素都不动）。平移后底边留在键盘沿上方 margin 处。
+        if (int(s->ime_caret_bottom) > keyboard_top) {
+            pan = int(s->ime_caret_bottom) + margin - keyboard_top;
+            pan = std::min(pan, std::max(0, int(s->ime_caret_top)));   // 不平移过头
+            pan = std::min(pan, s->ime_inset);   // 上移量 ≤ 键盘高度，露出区必被键盘盖住
+        }
     } else if (!o->ui.impl->ime_owner && s->ime_inset > 0) {
         pan = std::min(s->ime_pan, s->ime_inset);   // 失焦收键盘：跟随动画退回
     }
