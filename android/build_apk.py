@@ -84,8 +84,39 @@ def build_so() -> Path:
     return so
 
 
-def package_apk(so: Path) -> None:
-    """aapt2 链资源 → 打入 so → 对齐 → 签名。"""
+def build_dex():
+    """ecj（Eclipse 编译器，单 jar 跑在本机 JRE 上）+ d8 编出软键盘桥的
+    classes.dex（Java 源码在 app/java/）。系统只有 JRE 没有 javac 也能工作；
+    ecj 首次使用放到 ~/aino-tools/ecj.jar（约 3MB，Maven Central）。"""
+    java_dir = APP_DIR / "app/java"
+    sources = sorted(java_dir.rglob("*.java"))
+    if not sources:
+        return None
+    java_home = Path(os.environ.get("JAVA_HOME", "/usr/lib/jvm/java-21-openjdk-amd64"))
+    java = str(java_home / "bin/java")
+    classes = BUILD / "classes"
+    classes.mkdir(exist_ok=True)
+
+    ecj = Path.home() / "aino-tools/ecj.jar"
+    if not ecj.exists():
+        ecj.parent.mkdir(exist_ok=True)
+        url = os.environ.get("AINO_ECJ_URL",
+                             "https://repo1.maven.org/maven2/org/eclipse/jdt/ecj/3.33.0/ecj-3.33.0.jar")
+        run(["curl", "-fsSL", "--connect-timeout", "20", "-o", ecj, url])
+    run([java, "-jar", ecj, "-source", "8", "-target", "8", "-encoding", "UTF-8",
+         "-classpath", PLATFORM_JAR, "-d", classes] + sources)
+    d8 = find_tool("d8")
+    run([d8, "--release", "--lib", PLATFORM_JAR, "--output", str(BUILD),
+         *[str(c) for c in sorted(classes.rglob("*.class"))]],
+        env=dict(os.environ, JAVA_HOME=str(java_home)))
+    dex = BUILD / "classes.dex"
+    if not dex.exists():
+        sys.exit("[build_apk] classes.dex 未生成")
+    return dex
+
+
+def package_apk(so: Path, dex) -> None:
+    """aapt2 链资源 → 打入 so / classes.dex → 对齐 → 签名。"""
     aapt2 = find_tool("aapt2")
     compiled = BUILD / "res.flata"
     run([aapt2, "compile", "--dir", APP_DIR / "app/res", "-o", compiled])
@@ -96,14 +127,17 @@ def package_apk(so: Path) -> None:
          "--auto-add-overlay",
          compiled])
 
-    # 注入 lib/<abi>/libmain.so。extractNativeLibs=true（manifest 已声明），
-    # 允许压缩存储，无对齐要求 —— zipalign 的 4 字节对齐即可。
+    # 注入 lib/<abi>/libmain.so 与 classes.dex（软键盘桥）。
+    # extractNativeLibs=true（manifest 已声明），允许压缩存储，无对齐要求 ——
+    # zipalign 的 4 字节对齐即可。
     staged = BUILD / "staged.apk"
     with zipfile.ZipFile(BUILD / "base.apk") as src, \
          zipfile.ZipFile(staged, "w", zipfile.ZIP_DEFLATED) as dst:
         for item in src.infolist():
             dst.writestr(item, src.read(item.filename))
         dst.writestr(f"lib/{ABI}/libmain.so", so.read_bytes())
+        if dex is not None:
+            dst.writestr("classes.dex", dex.read_bytes())
 
     zipalign = find_tool("zipalign")
     run([zipalign, "-f", "4", staged, BUILD / "aligned.apk"])
@@ -143,7 +177,7 @@ def main() -> None:
         BUILD.mkdir(exist_ok=True)
 
     so = build_so()
-    package_apk(so)
+    package_apk(so, build_dex())
 
     if args.install or args.launch:
         run([adb(), "install", "-r", OUT_APK])

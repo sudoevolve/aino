@@ -17247,8 +17247,8 @@ inline void service_clipboard(Window::Impl* o) {
 //    3) 输入是触摸：单指映射成鼠标；拖动超过阈值后合成为滚轮（40 逻辑像素
 //       = 1 格），让现有 begin_scroll/end_scroll 的滚轮滚动直接可用。
 //
-//  本期边界：无软键盘（IME 需要 Java 参与）、无剪贴板、无图像解码、无颜色
-//  emoji；BACK 键不消费，交给系统退出 Activity。
+//  本期边界：软键盘已支持（Java 桥 + insets 视口适配，见下）；无剪贴板、无图像解码、
+//  无颜色 emoji；BACK 键在键盘开启时先收键盘，否则交给系统退出 Activity。
 // =============================================================================
 #ifdef AINO_PLATFORM_ANDROID
 namespace detail {
@@ -17282,6 +17282,126 @@ inline android_app*& android_app_ref() {
     return app;
 }
 
+// -----------------------------------------------------------------------------
+//  软键盘桥（android/app/java/.../AinoImeView.java）
+//  IME 的提交文字/退格回车从 Java 的 InputConnection 线程经 JNI 投进队列，
+//  UI 线程在 poll() 里取走。没有 Java 桥时 Android 11+ 不允许弹软键盘
+//  （ImeTracker 在 PHASE_CLIENT_VIEW_SERVED 拒绝，2026-11-26 真机实测）。
+// -----------------------------------------------------------------------------
+inline std::mutex& android_ime_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+inline std::string& android_ime_text() {
+    static std::string text;
+    return text;
+}
+inline std::vector<int32_t>& android_ime_keys() {
+    static std::vector<int32_t> keys;
+    return keys;
+}
+inline int& android_ime_inset() {
+    static int inset = 0;
+    return inset;
+}
+// IME 回调所属的 Window::Impl（android_create 挂上，android_destroy 摘掉）
+inline Window::Impl*& android_ime_owner() {
+    static Window::Impl* owner = nullptr;
+    return owner;
+}
+
+inline JNIEnv* android_jni_env(android_app* app) {
+    if (!app || !app->activity || !app->activity->vm) return nullptr;
+    JNIEnv* env = nullptr;
+    if (app->activity->vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_OK)
+        return env;
+    // glue 线程通常已被 JVM attach；首次 attach 后不 detach（与进程同寿命）
+    if (app->activity->vm->AttachCurrentThread(&env, nullptr) == JNI_OK) return env;
+    return nullptr;
+}
+
+// AinoImeView 的静态方法调用（attach / showIme / hideIme）。
+// 注意 FindClass 在 AttachCurrentThread 的原生线程上只查系统类加载器，
+// 找不到 APK 里的类 —— 必须经 Activity 的类加载器 loadClass。
+inline void android_ime_call(android_app* app, const char* method) {
+    JNIEnv* env = android_jni_env(app);
+    if (!env) { android_diag("ime: no jni env"); return; }
+    jclass activity_cls = env->GetObjectClass(app->activity->clazz);
+    if (!activity_cls) { env->ExceptionClear(); return; }
+    jmethodID get_loader = env->GetMethodID(activity_cls, "getClassLoader",
+                                            "()Ljava/lang/ClassLoader;");
+    env->DeleteLocalRef(activity_cls);
+    if (!get_loader) { env->ExceptionClear(); return; }
+    auto* loader = env->CallObjectMethod(app->activity->clazz, get_loader);
+    if (!loader) { env->ExceptionClear(); return; }
+    jclass loader_cls = env->GetObjectClass(loader);
+    jmethodID load_class = env->GetMethodID(loader_cls, "loadClass",
+                                            "(Ljava/lang/String;)Ljava/lang/Class;");
+    env->DeleteLocalRef(loader_cls);
+    if (!load_class) { env->ExceptionClear(); env->DeleteLocalRef(loader); return; }
+    jclass cls = static_cast<jclass>(env->CallObjectMethod(loader, load_class,
+        env->NewStringUTF("dev.aino.mobilegallery.AinoImeView")));
+    env->DeleteLocalRef(loader);
+    if (!cls) {
+        env->ExceptionClear();
+        android_diag("ime: AinoImeView loadClass failed");
+        return;
+    }
+    if (jmethodID mid = env->GetStaticMethodID(cls, method, "(Landroid/app/Activity;)V")) {
+        env->CallStaticVoidMethod(cls, mid, app->activity->clazz);
+    } else {
+        android_diag("ime: method %s not found", method);
+    }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        android_diag("ime: %s threw", method);
+    }
+    env->DeleteLocalRef(cls);
+}
+
+} // namespace detail
+
+// JNI 入口：Java 侧 AinoImeView.imeCommitText / imeKey 回传。
+// 这些调用来自 IME 的 UI/binder 线程，只入队 + 唤醒，文本在 poll() 里并帧。
+extern "C" JNIEXPORT void JNICALL
+Java_dev_aino_mobilegallery_AinoImeView_imeCommitText(JNIEnv* env, jclass, jstring text) {
+    const char* utf8 = env->GetStringUTFChars(text, nullptr);
+    if (utf8) {
+        {   std::lock_guard<std::mutex> lock(detail::android_ime_mutex());
+            detail::android_ime_text().append(utf8);
+        }
+        env->ReleaseStringUTFChars(text, utf8);
+    }
+    if (Window::Impl* o = detail::android_ime_owner()) {
+        o->need_frame = true;
+        o->wake_signal.notify();
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_dev_aino_mobilegallery_AinoImeView_imeKey(JNIEnv*, jclass, jint keycode) {
+    {   std::lock_guard<std::mutex> lock(detail::android_ime_mutex());
+        detail::android_ime_keys().push_back(keycode);
+    }
+    if (Window::Impl* o = detail::android_ime_owner()) {
+        o->need_frame = true;
+        o->wake_signal.notify();
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_dev_aino_mobilegallery_AinoImeView_imeInsets(JNIEnv*, jclass, jint bottom) {
+    {   std::lock_guard<std::mutex> lock(detail::android_ime_mutex());
+        detail::android_ime_inset() = bottom;
+    }
+    if (Window::Impl* o = detail::android_ime_owner()) {
+        o->need_frame = true;
+        o->wake_signal.notify();
+    }
+}
+
+namespace detail {
+
 struct AndroidState {
     Window::Impl* owner = nullptr;
     android_app* app = nullptr;
@@ -17314,10 +17434,21 @@ struct AndroidState {
     uint64_t click_time_ms = 0;
     float    click_x = 0.0f, click_y = 0.0f;
 
-    // 软键盘：ime_pos 回调在本帧有输入框聚焦时置位；render() 帧末比对并调
-    // ANativeActivity_showSoftInput / hideSoftInput（NDK 公开 C 接口）。
+    // 软键盘：ime_pos 回调在本帧有输入框聚焦时置位；render() 帧末比对并经
+    // Java 桥 showIme / hideIme。ime_inset 是键盘可见高度（物理像素），
+    // 视口按它收缩；ime_pan 是"聚焦输入框仍被遮住时"整页呈现的上移量。
     bool ime_shown = false;
+    int  ime_inset = 0;
+    int  ime_pan = 0;
+    float ime_caret_top = 0.0f, ime_caret_bottom = 0.0f;
 };
+
+// 通过 Java 侧 AinoImeView 的 showIme/hideIme 弹收软键盘（带 InputConnection
+// 的 View 才有资格 serve，纯 C 的 ANativeActivity_showSoftInput 会被拒绝）
+inline void android_ime_show(AndroidState* s, bool show) {
+    if (!s || !s->app) return;
+    android_ime_call(s->app, show ? "showIme" : "hideIme");
+}
 
 // -----------------------------------------------------------------------------
 //  文字：AFontMatcher 选字 + FreeType 光栅化
@@ -17812,9 +17943,8 @@ inline int32_t android_handle_input(android_app* app, AInputEvent* e) {
         const int32_t code = AKeyEvent_getKeyCode(e);
         if (code == AKEYCODE_BACK) {
             // 键盘开着：BACK 先收键盘，不退出应用；否则交给系统退出 Activity。
-            if (s->ime_shown && s->app && s->app->activity) {
-                ANativeActivity_hideSoftInput(s->app->activity,
-                                              ANATIVEACTIVITY_HIDE_SOFT_INPUT_IMPLICIT_ONLY);
+            if (s->ime_shown) {
+                android_ime_show(s, false);
                 s->ime_shown = false;
                 return 1;
             }
@@ -17883,9 +18013,11 @@ inline void android_feed_input(AndroidState* s) {
     // 触摸坐标是**窗口物理像素**（1080 宽那一侧）；转逻辑坐标只除设备密度，
     // 不能含 render_scale —— 缓冲是低分辨率渲染、系统放大显示的，逻辑坐标
     // 必须回到"窗口/密度"那一侧，否则点击命中区会整体偏移 render_scale 倍。
+    // 软键盘弹出时呈现整页上移 ime_pan：屏幕上的一点对应布局里更低的内容，
+    // 命中判定要加回平移量。
     const float ds = s->device_scale;
     const Vec2 prev = in.mouse;
-    in.mouse = Vec2(s->mx / ds, s->my / ds);
+    in.mouse = Vec2(s->mx / ds, (s->my + float(s->ime_pan)) / ds);
     in.mouse_prev = prev;
     in.mouse_delta = Vec2(in.mouse.x - prev.x, in.mouse.y - prev.y);
     for (int i = 0; i < 3; ++i) { in.pressed[i] = s->btn_pressed[i]; in.released[i] = s->btn_released[i]; in.down[i] = s->btn_down[i]; }
@@ -17938,6 +18070,10 @@ inline void android_create(Window* self, const WindowConfig& cfg) {
     app->onAppCmd = android_handle_cmd;
     app->onInputEvent = android_handle_input;
     if (app->window) { s->surface = app->window; android_surface_resized(s); }
+    android_ime_owner() = o;   // JNI 回调的投递目标（android_destroy 摘除）
+
+    // 挂软键盘桥的 View（1x1，serve InputConnection），见 AinoImeView.java
+    android_ime_call(app, "attach");
 
     AndroidTextRenderer* tr = new AndroidTextRenderer();
     tr->init(o->scale, o->theme.font_family, o->theme.font_family_mono);
@@ -17945,15 +18081,18 @@ inline void android_create(Window* self, const WindowConfig& cfg) {
     o->ui.impl->text = tr;
     o->ui.impl->canvas = &o->canvas;
     // 输入框聚焦时唤出软键盘：Ui 在绘制聚焦输入框的帧里回调 ime_pos，
-    // 这里第一次调用就 showSoftInput —— NDK 公开 C 接口，不需要 Java。
+    // 经 Java 桥（AinoImeView.showIme，它 serve 了 InputConnection）弹出。
     // 收起在 render() 帧末统一比对（对应 X11 的 XUnsetICFocus 时机）。
     Window::Impl* owner = o;
-    o->ui.impl->ime_pos = [owner](float, float, float) {
-        owner->ui.impl->ime_owner = true;   // 组字串照旧由 Ui 自己画（P0 无组字）
+    o->ui.impl->ime_pos = [owner](float x, float top, float bottom) {
+        owner->ui.impl->ime_owner = true;   // 组字串照旧由 Ui 自己画
         auto* s = static_cast<AndroidState*>(owner->native);
-        if (s && !s->ime_shown && s->app && s->app->activity) {
-            ANativeActivity_showSoftInput(s->app->activity,
-                                          ANATIVEACTIVITY_SHOW_SOFT_INPUT_IMPLICIT);
+        if (!s) return;
+        // 记下光标盒（布局物理坐标，未含呈现平移）—— render() 帧末用它算平移
+        s->ime_caret_top = top;
+        s->ime_caret_bottom = bottom;
+        if (!s->ime_shown) {
+            android_ime_show(s, true);
             s->ime_shown = true;
         }
     };
@@ -17965,6 +18104,7 @@ inline void android_destroy(Window* self) {
     auto* s = static_cast<AndroidState*>(self->impl->native);
     if (!s) return;
     if (s->app && s->app->userData == s) { s->app->userData = nullptr; }
+    if (android_ime_owner() == self->impl) android_ime_owner() = nullptr;
     delete s;
     self->impl->native = nullptr;
 }
@@ -17976,6 +18116,23 @@ bool Window::poll() {
     detail::AndroidState* s = static_cast<detail::AndroidState*>(o->native);
     if (!s || !o->running) return false;
     if (o->wake_signal.consume()) o->need_frame = true;
+    // IME 桥投递的文字与按键（来自 Java 的 InputConnection 线程）并进本帧
+    {   std::lock_guard<std::mutex> lock(detail::android_ime_mutex());
+        if (!detail::android_ime_text().empty()) {
+            s->text_in.append(detail::android_ime_text());
+            detail::android_ime_text().clear();
+            o->need_frame = true;
+        }
+        for (int32_t code : detail::android_ime_keys()) {
+            const int key = detail::android_map_keycode(code);
+            if (key > 0 && key < KEY_COUNT) { s->key_pressed[key] = true; o->need_frame = true; }
+        }
+        detail::android_ime_keys().clear();
+        if (detail::android_ime_inset() != s->ime_inset) {
+            s->ime_inset = detail::android_ime_inset();
+            o->need_frame = true;
+        }
+    }
     detail::android_pump(s->app, 0);   // 非阻塞：处理就绪的生命周期命令与输入
     return o->running;
 }
@@ -18018,15 +18175,48 @@ void Window::render() {
         if (o->ui.impl->frame_open) { o->ui.impl->abort_frame(); o->need_frame = true; }
     });
     Ui& ui = o->ui;
-    // 逻辑尺寸 = 缓冲物理尺寸 / 缩放（缩放含 render_scale，转出来仍是 surface/密度）
+    // 逻辑尺寸 = 缓冲物理尺寸 / 缩放（缩放含 render_scale，转出来仍是 surface/密度）。
+    // 始终绘制**完整窗口**：键盘会盖住下半屏，但绘制不能缺 —— 否则平移露出
+    // 的区域就是上一帧的残像。跟随键盘的平滑上移由帧末平移实现。
     ui.begin_frame(float(o->canvas.w) / o->scale, float(o->canvas.h) / o->scale, dt, o->scale);
     if (o->frame_cb_ptr) o->frame_cb_ptr();
     ui.end_frame();
-    // 帧末软键盘对账：ime_pos 在本帧没被调过 = 输入框失焦 → 收起。
-    if (!ui.impl->ime_owner && s->ime_shown && s->app && s->app->activity) {
-        ANativeActivity_hideSoftInput(s->app->activity,
-                                      ANATIVEACTIVITY_HIDE_SOFT_INPUT_IMPLICIT_ONLY);
-        s->ime_shown = false;
+    // 帧末软键盘对账：本帧 ime_pos 没触发 = 输入框失焦 → 收键盘 + 取消平移
+    if (!ui.impl->ime_owner) {
+        if (s->ime_shown) {
+            android_ime_show(s, false);
+            s->ime_shown = false;
+        }
+        s->ime_caret_bottom = 0.0f;
+    }
+
+    // 呈现平移：聚焦输入框若被键盘沿挡住，整幅内容上移，露出光标盒。
+    // insets 随键盘动画逐帧更新 → pan 逐帧变化 → 界面跟随键盘平滑上移。
+    // 触摸坐标在 feed_input 里同步 +ime_pan。
+    const int keyboard_top = o->canvas.h - s->ime_inset;
+    int pan = 0;
+    if (ui.impl->ime_owner && s->ime_caret_bottom > 0.0f) {
+        const int margin = int(16.0f * s->device_scale);
+        pan = std::max(0, int(s->ime_caret_bottom) + margin - keyboard_top);
+        pan = std::min(pan, std::max(0, int(s->ime_caret_top)));   // 不平移过头
+        pan = std::min(pan, s->ime_inset);   // 上移量 ≤ 键盘高度，露出区必被键盘盖住
+    }
+    s->ime_pan = pan;
+    if (pan > 0) {
+        const size_t bytes = size_t(o->canvas.stride);
+        uint8_t* base = o->canvas.px;
+        for (int y = 0; y < o->canvas.h - pan; ++y)
+            std::memmove(base + size_t(y) * bytes, base + size_t(y + pan) * bytes, bytes);
+        // 底部露出的条带清成页面底色（该区域此刻正被键盘盖住，仅为严谨）
+        const auto& bg = ui.impl->clear_used ? ui.impl->clear_color : ui.theme().window_bg;
+        uint8_t row[4] = {};
+        row[detail::CH_R] = bg.r; row[detail::CH_G] = bg.g;
+        row[detail::CH_B] = bg.b; row[detail::CH_A] = 255;
+        for (int y = std::max(0, o->canvas.h - pan); y < o->canvas.h; ++y) {
+            uint8_t* p = base + size_t(y) * bytes;
+            for (int x = 0; x < o->canvas.w; ++x)
+                std::memcpy(p + size_t(x) * 4u, row, 4);
+        }
     }
     ANativeWindow_unlockAndPost(s->surface);
 }

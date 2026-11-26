@@ -1,11 +1,13 @@
 # 16 Android 适配分析
 
-> 状态：**P0 已实施并过真机验收**（2026-11-26，OPPO PJE110 / Android 16 / arm64-v8a）。
+> 状态：**P0 + P1（软键盘）已实施并过真机验收**（2026-11-26，OPPO PJE110 / Android 16 / arm64-v8a）。
 > 已落地：`AINO_PLATFORM_ANDROID` 后端（§8.22）、`WindowConfig::native_surface/render_scale`、
-> AFontMatcher+FreeType 文字、触摸→鼠标/滚轮映射、`android/` 打包工程（无 Gradle）、
-> `examples/mobile_gallery.cpp` 双入口 demo。真机实测：渲染/文字/触摸对准/拖动滚动/
-> 转屏保状态/静置 CPU 0.0% 均通过。
-> 下文的分析与"需实测"条目保留原样作为设计依据；P1（软键盘 IME）起仍未实施。
+> AFontMatcher+FreeType 文字、触摸→鼠标/滚轮映射（方向锁：横拖保留按压、竖拖滚动）、
+> `android/` 打包工程（无 Gradle，FreeType 构建时下载）、`examples/mobile_gallery.cpp` 双入口 demo。
+> P1 软键盘：`android/app/java/.../AinoImeView.java` 提供 InputConnection（纯 C 无法唤出键盘，
+> 见 §2.3 实测），commitText 经 JNI 回传（中文拼音组字提交整串送达），退格/回车退化成按键事件；
+> ime insets 随键盘动画逐帧回传，视口跟随收缩 + 聚焦输入框呈现上移，真机验证键盘弹出/输入/
+> 平滑跟随。剩余未做：惯性滚动、剪贴板、Image::load 解码、颜色 emoji、多点触控、组字串预览。
 
 ---
 

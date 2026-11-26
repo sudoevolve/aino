@@ -160,9 +160,11 @@ Linux 默认使用 X11；`-DAINO_WAYLAND=ON` 构建纯 Wayland，直接以共享
 Android 后端通过 NativeActivity 直接渲染 CPU 像素：文字 = 系统的 `AFontMatcher` 选字 +
 FreeType 光栅化（构建时由 CMake 下载官方源码包，SHA256 校验，不入仓库；离线环境用
 `-DAINO_FREETYPE_DIR` 指向本地解压目录），触摸按"单指=鼠标、拖动=滚轮"映射，
-转屏由 manifest 拦截 configChanges（Ui 状态原地保留），空闲 0% CPU。
-本期边界：无软键盘（IME 需 Java 参与）、无剪贴板/图像解码/颜色 emoji；
-BACK 键交给系统退出应用。方案与取舍见 [Android 适配分析](docs/design/16-android-port.md)。
+软键盘经一个 ~100 行的 Java `InputConnection` 桥唤出并回传文字（含中文拼音组字提交），
+键盘弹出时 UI 视口随 insets 收缩并平滑上移聚焦输入框；转屏由 manifest 拦截
+configChanges（Ui 状态原地保留），空闲 0% CPU。
+本期边界：无剪贴板/图像解码/颜色 emoji/惯性滚动。方案与取舍见
+[Android 适配分析](docs/design/16-android-port.md)。
 
 ```sh
 # 真机构建（需要 Android SDK + NDK 26+；无 Gradle，脚本自动 aapt2/签名）

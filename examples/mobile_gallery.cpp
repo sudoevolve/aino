@@ -165,7 +165,7 @@ void draw_controls_page(aino::Ui& ui, MobileApp& a, const Rect& view, float offs
         y += g.h + 26;
     }
 
-    group_title(ui, "输入（硬件键盘可打字；软键盘唤出需 Java 桥，见 P1）", {x, y, w, 24});
+    group_title(ui, "输入（点击唤出软键盘，支持中文）", {x, y, w, 24});
     y += 28;
     {
         const Rect g = card(ui, {x, y, w, 128});
