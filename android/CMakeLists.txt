@@ -56,7 +56,8 @@ endif()
 add_library(main SHARED
     ${AINO_ROOT}/examples/mobile_gallery.cpp
     ${GLUE_DIR}/android_native_app_glue.c
-    # FreeType 最小闭包：base 拼合层 + TT/SFNT/灰度光栅/PS 名称
+    # FreeType 最小闭包：base 拼合层 + TT/CFF/SFNT/灰度光栅/PS 名称
+    # （CFF 必需：AOSP 的 NotoSansCJK.ttc 是 CFF 轮廓，缺了中文变豆腐）
     ${FT_SOURCE_DIR}/src/base/ftbase.c
     ${FT_SOURCE_DIR}/src/base/ftsystem.c
     ${FT_SOURCE_DIR}/src/base/ftinit.c
@@ -65,6 +66,9 @@ add_library(main SHARED
     ${FT_SOURCE_DIR}/src/base/ftmm.c
     ${FT_SOURCE_DIR}/src/sfnt/sfnt.c
     ${FT_SOURCE_DIR}/src/truetype/truetype.c
+    ${FT_SOURCE_DIR}/src/cff/cff.c
+    ${FT_SOURCE_DIR}/src/psaux/psaux.c
+    ${FT_SOURCE_DIR}/src/pshinter/pshinter.c
     ${FT_SOURCE_DIR}/src/smooth/smooth.c
     ${FT_SOURCE_DIR}/src/psnames/psnames.c
 )
@@ -76,7 +80,8 @@ target_include_directories(main PRIVATE
 )
 
 target_compile_definitions(main PRIVATE
-    # FreeType：注册精简模块集（truetype/sfnt/psnames/smooth），关掉外部压缩库
+    # FreeType：注册精简模块集（truetype/cff/sfnt/psnames/pshinter/psaux/smooth），
+    # 关掉外部压缩库。CFF 必须保留：AOSP 的 NotoSansCJK.ttc 是 CFF 轮廓
     FT2_BUILD_LIBRARY
     FT_CONFIG_MODULES_H="ftmodule_android.h"
     FT_CONFIG_OPTIONS_H="ftoptions_android.h"

@@ -17304,6 +17304,12 @@ inline int& android_ime_inset() {
     static int inset = 0;
     return inset;
 }
+// IME JNI 线程的唤醒信号：线程安全，与窗口 wake_signal 语义分离
+//（这里只触发 poll 的快速路径判定，不当成内容重绘请求）
+inline WakeSignal& android_ime_wake_signal() {
+    static WakeSignal signal;
+    return signal;
+}
 // IME 回调所属的 Window::Impl（android_create 挂上，android_destroy 摘掉）
 inline Window::Impl*& android_ime_owner() {
     static Window::Impl* owner = nullptr;
@@ -17366,6 +17372,8 @@ namespace detail { struct AndroidState; }   // 定义于下方 §8.22 内
 // 这些调用来自 IME 的 UI/binder 线程，只入队 + 唤醒，文本在 poll() 里并帧。
 extern "C" JNIEXPORT void JNICALL
 Java_dev_aino_mobilegallery_AinoImeView_imeCommitText(JNIEnv* env, jclass, jstring text) {
+    // 只入队 + 唤醒：不碰任何窗口状态（need_frame/owner 由 UI 线程在
+    // poll/render 里更新），销毁窗口与这里无数据竞争。
     const char* utf8 = env->GetStringUTFChars(text, nullptr);
     if (utf8) {
         {   std::lock_guard<std::mutex> lock(detail::android_ime_mutex());
@@ -17373,10 +17381,7 @@ Java_dev_aino_mobilegallery_AinoImeView_imeCommitText(JNIEnv* env, jclass, jstri
         }
         env->ReleaseStringUTFChars(text, utf8);
     }
-    if (Window::Impl* o = detail::android_ime_owner()) {
-        o->need_frame = true;
-        o->wake_signal.notify();
-    }
+    detail::android_ime_wake_signal().notify();
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -17384,10 +17389,7 @@ Java_dev_aino_mobilegallery_AinoImeView_imeKey(JNIEnv*, jclass, jint keycode) {
     {   std::lock_guard<std::mutex> lock(detail::android_ime_mutex());
         detail::android_ime_keys().push_back(keycode);
     }
-    if (Window::Impl* o = detail::android_ime_owner()) {
-        o->need_frame = true;
-        o->wake_signal.notify();
-    }
+    detail::android_ime_wake_signal().notify();
 }
 
 namespace detail {
@@ -17720,6 +17722,16 @@ private:
 // -----------------------------------------------------------------------------
 //  surface 生命周期与输入
 // -----------------------------------------------------------------------------
+// 通用唤醒管道的 looper 回调：后台 wake()/IME 提交醒来即重绘（UI 线程执行）
+inline int android_wake_cb(int fd, int events, void* data) {
+    auto* s = static_cast<AndroidState*>(data);
+    if (s && s->owner && s->owner->wake_signal.consume()) {
+        s->owner->need_frame = true;
+        s->content_render_next = true;
+    }
+    return 1;   // 继续接收
+}
+
 // insets 唤醒管道的 looper 回调：排空字节并排定一帧（与 poll 同线程，无竞争）
 inline int android_ime_wake_cb(int fd, int events, void* data) {
     auto* s = static_cast<AndroidState*>(data);
@@ -17734,18 +17746,12 @@ inline int android_ime_wake_cb(int fd, int events, void* data) {
 
 extern "C" JNIEXPORT void JNICALL
 Java_dev_aino_mobilegallery_AinoImeView_imeInsets(JNIEnv*, jclass, jint bottom) {
+    // 只写互斥保护的目标值；唤醒走专用管道（looper 上注册的回调消费），
+    // 不碰任何窗口状态，与窗口销毁无数据竞争。
     {   std::lock_guard<std::mutex> lock(detail::android_ime_mutex());
         detail::android_ime_inset() = bottom;
     }
-    // 专用唤醒管道：只触发"平移快速路径"，不当成内容变化全量重绘
-    if (Window::Impl* o = detail::android_ime_owner()) {
-        auto* s = static_cast<AndroidState*>(o->native);
-        if (s && s->ime_wake_write >= 0) {
-            const char byte = 1;
-            ssize_t written = ::write(s->ime_wake_write, &byte, 1);
-            (void)written;
-        }
-    }
+    detail::android_ime_wake_signal().notify();
 }
 
 // (re)绑定 surface：算密度与 render_scale，设置缓冲几何，刷新逻辑尺寸。
@@ -17919,9 +17925,6 @@ inline void android_touch_move(AndroidState* s, float px, float py) {
         // 手指向下（py 增大）= 想看上面的内容 = 滚轮向上（正值），与 X11 Button4 同号。
         s->wheel += (py - s->touch_last_y) / (40.0f * ds);
         s->touch_last_y = py;
-        {   static int n = 0;
-            if (n++ < 8) android_diag("wheel: now=%.2f py=%.0f ds=%.1f", s->wheel, py, ds);
-        }
     } else {
         s->mx = px;
         s->my = py;
@@ -18137,6 +18140,12 @@ inline void android_create(Window* self, const WindowConfig& cfg) {
         } else {
             ::close(fds[0]); ::close(fds[1]);
         }
+        // 通用唤醒管道（Window::wake / IME 提交）同样挂上 looper：空闲睡眠中
+        // 也能被后台更新与键盘输入叫醒，否则要等下一个无关事件
+        if (!ALooper_addFd(app->looper, o->wake_signal.read_descriptor(),
+                ALOOPER_POLL_CALLBACK, ALOOPER_EVENT_INPUT, android_wake_cb, s)) {
+            android_diag("wake fd 注册失败：后台唤醒将延迟到下一个事件");
+        }
     }
 
     // 挂软键盘桥的 View（1x1，serve InputConnection），见 AinoImeView.java
@@ -18176,13 +18185,19 @@ inline void android_create(Window* self, const WindowConfig& cfg) {
 inline void android_destroy(Window* self) {
     auto* s = static_cast<AndroidState*>(self->impl->native);
     if (!s) return;
-    if (s->app && s->app->userData == s) { s->app->userData = nullptr; }
-    if (s->ime_wake_read >= 0) {
-        if (s->app && s->app->looper) ALooper_removeFd(s->app->looper, s->ime_wake_read);
-        ::close(s->ime_wake_read);
-        ::close(s->ime_wake_write);
+    // 先同步注销：摘掉 looper 注册（此后 insets 回调不再进入）、摘除 JNI
+    // 投递目标，再动窗口状态。fd 故意不关闭——IME 线程可能仍持有写端在
+    // 写（写满/写失败都无害），关闭会让 fd 号被复用后写穿；随进程退出回收。
+    {   std::lock_guard<std::mutex> lock(detail::android_ime_mutex());
+        android_ime_owner() = nullptr;
+        s->inset_pending = false;
+        s->ime_anim_pending = false;
     }
-    if (android_ime_owner() == self->impl) android_ime_owner() = nullptr;
+    if (s->app && s->app->looper) {
+        if (s->ime_wake_read >= 0) ALooper_removeFd(s->app->looper, s->ime_wake_read);
+        ALooper_removeFd(s->app->looper, self->impl->wake_signal.read_descriptor());
+    }
+    if (s->app && s->app->userData == s) s->app->userData = nullptr;
     delete s;
     self->impl->native = nullptr;
 }
@@ -18199,6 +18214,10 @@ bool Window::poll() {
     // （触控失灵）。
     bool content = s->content_render_next;
     if (o->wake_signal.consume()) { content = true; s->content_render_next = true; }
+    if (detail::android_ime_wake_signal().consume()) {
+        content = true;
+        s->content_render_next = true;
+    }
     // IME 桥投递的文字与按键（来自 Java 的 InputConnection 线程）并进本帧。
     // 文字/按键是**内容变化**：必须置 content_render_next 走全量重绘，
     // 否则快速路径拷贝旧帧，打字会"看不见"。
@@ -18289,10 +18308,6 @@ void Window::render() {
     if (content_render) {
         detail::android_feed_input(s);
         o->need_frame = false;
-        {   static int n = 0;
-            if (n++ < 12) detail::android_diag("full render #%d wheel_in=%.2f", n,
-                                               o->ui.impl->input.wheel);
-        }
         detail::ScopeExit frame_cleanup([o] {
             if (o->ui.impl->frame_open) { o->ui.impl->abort_frame(); o->need_frame = true; }
         });

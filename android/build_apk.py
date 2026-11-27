@@ -26,11 +26,14 @@ ABI = "arm64-v8a"
 
 
 def find_tool(name: str) -> str:
-    """在 SDK 里找 aapt2 / zipalign / apksigner / adb。"""
+    """在 SDK 里找 aapt2 / zipalign / apksigner / adb / d8。
+    Windows 上这些工具带 .bat / .exe 后缀，按候选后缀依次查找。"""
+    suffixes = ["", ".bat", ".exe", ".cmd"]
     for bt in sorted((SDK / "build-tools").glob("*"), reverse=True):
-        candidate = bt / name
-        if candidate.exists():
-            return str(candidate)
+        for suffix in suffixes:
+            candidate = bt / f"{name}{suffix}"
+            if candidate.exists():
+                return str(candidate)
     sys.exit(f"[build_apk] 在 {SDK}/build-tools 下找不到 {name}")
 
 
@@ -183,7 +186,7 @@ def main() -> None:
         run([adb(), "install", "-r", OUT_APK])
     if args.launch:
         run([adb(), "shell", "am", "start",
-             "-n", "dev.aino.mobilegallery/android/app/NativeActivity"])
+             "-n", "dev.aino.mobilegallery/android.app.NativeActivity"])
 
 
 if __name__ == "__main__":
