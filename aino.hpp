@@ -3668,6 +3668,11 @@ struct Ui::Impl {
 
     Canvas* canvas = nullptr;
     TextRenderer* text = nullptr;
+    // 本帧 clear() 的页面底色，clear_used 区分"本帧没调用过 clear() 和清成了白色"。
+    // X11 后端拿它同步窗口背景像素（见 x11_update_background）：服务器在尺寸变化
+    // 时只会用背景色补画面。
+    Color clear_color = Color::hex(0xFFFFFF);
+    bool clear_used = false;
 
     // ---- 布局测量模式（见 Ui::begin_measure）----
     // 置位后图元与命中测试都只把 box 并进 measure_acc，不落地。
@@ -4231,6 +4236,7 @@ void Ui::release_state_scope(uint64_t id) {
 void Ui::begin_frame(float w, float h, float dt, float dpi) {
     impl->frame_open = true;
     impl->timed_repaint = false;
+    impl->clear_used = false;
     impl->width = w;
     impl->height = h;
     impl->dt = (dt > 0.0f && dt < 1.0f) ? dt : (1.0f / 60.0f);
@@ -4578,6 +4584,8 @@ inline void rrect_poly(const Ui::Impl* im, const Rect& r, float radius, std::vec
 void Ui::clear(const Color& c) {
     if (impl->measure_on) return;
     if (impl->canvas) impl->canvas->clear(c);
+    impl->clear_color = c;
+    impl->clear_used = true;
 }
 
 void Ui::fill_rect(const Rect& r, const Color& c, float radius) {
@@ -13134,13 +13142,24 @@ struct X11State {
     GC gc = nullptr;
     XImage* img = nullptr;
     std::vector<uint8_t> buffer;
-    Atom wm_delete = 0;
+    Atom wm_delete = 0, wm_protocols = 0; // WM_PROTOCOLS 不是预定义 atom，需要 Intern
     XIM im = nullptr;
     XIC ic = nullptr;
     XFontSet im_font = nullptr;
     bool im_position = false, im_focused = false, window_focused = false;
     XPoint im_spot{-1, -1};
     int pw = 0, ph = 0;
+    // 窗口背景像素。服务器在每次尺寸变化时用它重铺整窗，等客户端重画；首帧之前
+    // 取主题底色，之后跟随 ui.clear() 的页面底色。background_set 区分"没设过"和 0。
+    const Visual* visual = nullptr;
+    unsigned long background = 0;
+    bool background_set = false;
+    // _NET_WM_SYNC_REQUEST（见 x11_init_sync）。sync_serial 是管理器要的计数器
+    // 目标值，0 = 没有待回应的请求。
+    Atom sync_request = 0;
+    unsigned long sync_counter = 0, sync_counter_ext = 0;
+    uint64_t sync_serial = 0;
+    bool sync_extended = false, sync_configured = false, sync_deferred = false;
     ::Window settings_owner = 0;
     Atom settings_selection = 0, settings_property = 0, resource_manager = 0, manager = 0;
     WindowConfig config;
@@ -13360,6 +13379,151 @@ inline int x11_map_keysym(KeySym ks) {
     }
 }
 
+// 8 位分量按窗口 visual 的掩码排成像素值。后备缓冲固定按 0x00RRGGBB 排，背景像素
+// 却要交给服务器按 visual 解释，不能直接复用缓冲里的那个整数。
+inline unsigned long x11_color_pixel(const Visual* visual, const Color& c) {
+    auto channel = [](unsigned long mask, int value) -> unsigned long {
+        if (!mask)
+            return 0;
+        int shift = 0, bits = 0;
+        while (!(mask >> shift & 1))
+            ++shift;
+        for (auto rest = mask; rest; rest >>= 1)
+            bits += int(rest & 1);
+        const unsigned long scaled = (static_cast<unsigned long>(value) * ((1ul << bits) - 1) + 127) / 255;
+        return scaled << shift;
+    };
+    return channel(visual->red_mask, c.r) | channel(visual->green_mask, c.g) |
+           channel(visual->blue_mask, c.b);
+}
+
+// 服务器在窗口尺寸变化时先用背景像素重铺整窗，之后才轮到客户端重画。这个颜色只能
+// 是单色，取 ui.clear() 的页面底色：补出来的画面与页面同色，不再露出一块白。
+// 只在颜色变化时发请求，也不清窗口 —— 已经画好的内容留到下一次暴露。
+inline void x11_update_background(X11State* s, const Color& c) {
+    const unsigned long pixel = x11_color_pixel(s->visual, c);
+    if (s->background_set && s->background == pixel)
+        return;
+    XSetWindowBackground(s->dpy, s->win, pixel);
+    s->background = pixel;
+    s->background_set = true;
+}
+
+// XSync 客户端接口的 ABI 子集。不引 <X11/extensions/Xsync.h>、不加 -lXext：理由同
+// freetype / fontconfig，仓库只依赖 libX11。libXext.so.6 在 X11 桌面上必然存在；
+// 取不到就不声明 _NET_WM_SYNC_REQUEST，窗口照常缩放。
+struct XSyncValue {
+    int hi;
+    unsigned int lo;
+};
+struct XSyncApi {
+    int (*initialize)(Display*, int*, int*) = nullptr;
+    unsigned long (*create_counter)(Display*, XSyncValue) = nullptr;
+    int (*set_counter)(Display*, unsigned long, XSyncValue) = nullptr;
+    int (*destroy_counter)(Display*, unsigned long) = nullptr;
+};
+inline const XSyncApi& x11_sync_api() {
+    // 模块与函数指针都保留到进程退出，和 freetype / fontconfig 的做法一致。
+    static const XSyncApi api = [] {
+        XSyncApi value;
+        void* lib = dlopen("libXext.so.6", RTLD_LAZY | RTLD_LOCAL);
+        if (!lib) {
+            x11_trace("libXext: dlopen 失败: %s", dlerror());
+            return value;
+        }
+        value.initialize = reinterpret_cast<decltype(value.initialize)>(dlsym(lib, "XSyncInitialize"));
+        value.create_counter =
+            reinterpret_cast<decltype(value.create_counter)>(dlsym(lib, "XSyncCreateCounter"));
+        value.set_counter = reinterpret_cast<decltype(value.set_counter)>(dlsym(lib, "XSyncSetCounter"));
+        value.destroy_counter =
+            reinterpret_cast<decltype(value.destroy_counter)>(dlsym(lib, "XSyncDestroyCounter"));
+        if (!value.initialize || !value.create_counter || !value.set_counter || !value.destroy_counter) {
+            dlclose(lib);
+            return XSyncApi{};
+        }
+        return value;
+    }();
+    return api;
+}
+inline void x11_sync_set(X11State* s, unsigned long counter, uint64_t value) {
+    const XSyncApi& api = x11_sync_api();
+    if (!counter || !api.set_counter)
+        return;
+    const XSyncValue parts{int(value >> 32), unsigned(value & 0xffffffffu)};
+    api.set_counter(s->dpy, counter, parts);
+    // 管理器靠计数器告警得知这一帧画完了，别把它压到下一轮事件循环。
+    XFlush(s->dpy);
+}
+inline void x11_release_sync(X11State* s) {
+    const XSyncApi& api = x11_sync_api();
+    for (unsigned long counter : {s->sync_counter, s->sync_counter_ext})
+        if (counter && api.destroy_counter)
+            api.destroy_counter(s->dpy, counter);
+    s->sync_counter = s->sync_counter_ext = 0;
+}
+
+// _NET_WM_SYNC_REQUEST（EWMH）：管理器交互缩放时先发这个请求、再改窗口尺寸，并在
+// 客户端把新尺寸画完之前冻结本窗口的显示（合成器一直显示上一帧）。客户端的应答是
+// 把计数器置到管理器给的序号。属性里放两个计数器：只有一个按旧式协议处理，有两个
+// 则第二个走扩展协议（帧进行中为奇数、画完为偶数）。布局与 GTK 一致。
+inline void x11_init_sync(X11State* s) {
+    const XSyncApi& api = x11_sync_api();
+    int major = 0, minor = 0;
+    if (!api.set_counter || !api.initialize(s->dpy, &major, &minor))
+        return;
+    const XSyncValue zero{0, 0u};
+    s->sync_counter = api.create_counter(s->dpy, zero);
+    s->sync_counter_ext = api.create_counter(s->dpy, zero);
+    if (!s->sync_counter || !s->sync_counter_ext) {
+        x11_release_sync(s);
+        return;
+    }
+    s->sync_request = XInternAtom(s->dpy, "_NET_WM_SYNC_REQUEST", False);
+    x11_trace("sync: counters old=0x%lx extended=0x%lx", s->sync_counter, s->sync_counter_ext);
+    const unsigned long counters[2] = {s->sync_counter, s->sync_counter_ext};
+    XChangeProperty(s->dpy, s->win, XInternAtom(s->dpy, "_NET_WM_SYNC_REQUEST_COUNTER", False), XA_CARDINAL,
+                    32, PropModeReplace, reinterpret_cast<const unsigned char*>(counters), 2);
+}
+
+// 管理器即将改变窗口尺寸：_NET_WM_SYNC_REQUEST 之后紧跟着 ConfigureNotify。
+// 记下它要的计数器值，画完新尺寸那一帧后在 x11_sync_done() 里写入。
+inline void x11_sync_request(X11State* s, const XClientMessageEvent& message) {
+    const uint64_t target =
+        uint64_t(uint32_t(message.data.l[2])) | (uint64_t(uint32_t(message.data.l[3])) << 32);
+    if (!target)
+        return;
+    s->sync_serial = target;
+    s->sync_extended = message.data.l[4] != 0 && s->sync_counter_ext != 0;
+    x11_trace("sync: request target=%llu extended=%d", static_cast<unsigned long long>(target),
+              int(s->sync_extended));
+    s->sync_configured = s->sync_deferred = false;
+    s->owner->need_frame = true;
+    s->owner->next_frame_at = {};
+    // 扩展协议：奇数表示新尺寸的帧正在画，管理器在此期间不再发下一次缩放。
+    if (s->sync_extended)
+        x11_sync_set(s, s->sync_counter_ext, target | 1);
+}
+
+// 新尺寸的帧已经提交，回应 _NET_WM_SYNC_REQUEST。请求先于 ConfigureNotify 送达；
+// 这一帧开始前还没处理到那次尺寸变化的话，它画的就不是管理器要的尺寸，不能拿去
+// 应答 —— 再排一帧。最多推迟一次，请求之后没有配置事件时照常回应，不会空转。
+inline void x11_sync_done(X11State* s) {
+    if (!s->sync_serial)
+        return;
+    if (!s->sync_configured && !s->sync_deferred) {
+        s->sync_deferred = true;
+        s->owner->need_frame = true;
+        return;
+    }
+    const uint64_t target = s->sync_serial;
+    s->sync_serial = 0;
+    x11_trace("sync: done value=%llu",
+              static_cast<unsigned long long>(s->sync_extended ? (target | 1) + 1 : target));
+    // 扩展协议画完是偶数（目标序号本身是偶数时就是它加 2）。
+    x11_sync_set(s, s->sync_extended ? s->sync_counter_ext : s->sync_counter,
+                 s->sync_extended ? (target | 1) + 1 : target);
+}
+
 inline void x11_create_backbuffer(X11State* s, int w, int h) {
     if (w <= 0 || h <= 0 || w > 16384 || h > 16384 || uint64_t(w) * h > 16777216u) return;
     if (s->pw == w && s->ph == h && s->img) return;
@@ -13384,6 +13548,12 @@ inline void x11_create_backbuffer(X11State* s, int w, int h) {
     o->canvas.platform_gc = s->gc;
     o->canvas.clear_clip();
     o->client_w = w; o->client_h = h;
+}
+
+// libX11 的 XFlush 发完请求后会把 socket 里已有的事件读进内部队列（见其 _XFlush），
+// 帧末的 x11_present 就在做这件事。之后这些事件不再出现在 fd 上，只 poll 裸 fd 会漏掉。
+inline bool x11_events_queued(X11State* s) {
+    return s && s->dpy && XEventsQueued(s->dpy, QueuedAfterFlush) > 0;
 }
 
 inline void x11_present(X11State* s) {
@@ -13521,8 +13691,18 @@ inline bool x11_handle(X11State* s, XEvent& e) {
         break;
     case ConfigureNotify:
         if (e.xconfigure.window != s->win) break;
-        x11_create_backbuffer(s, e.xconfigure.width, e.xconfigure.height);
-        o->need_frame = true;
+        {
+            // 尺寸真的变了就不等出帧预算：服务器已经用背景色重铺了整窗，这一帧
+            // 每晚一毫秒就多露一毫秒底色。Windows 后端在 WM_SIZE 里同步出帧同理。
+            const bool resized = s->pw != e.xconfigure.width || s->ph != e.xconfigure.height;
+            if (x11_trace_on() && resized)
+                x11_trace("configure %dx%d", e.xconfigure.width, e.xconfigure.height);
+            x11_create_backbuffer(s, e.xconfigure.width, e.xconfigure.height);
+            s->sync_configured = true;
+            o->need_frame = true;
+            if (resized)
+                o->next_frame_at = {};
+        }
         break;
     case MotionNotify:
         s->mx = float(e.xmotion.x); s->my = float(e.xmotion.y);
@@ -13590,6 +13770,16 @@ inline bool x11_handle(X11State* s, XEvent& e) {
         break;
     }
     case ClientMessage:
+        if (s->sync_request && e.xclient.message_type == s->wm_protocols && e.xclient.format == 32 &&
+            Atom(e.xclient.data.l[0]) == s->sync_request) {
+            x11_sync_request(s, e.xclient);
+            break;
+        }
+        // 扩展协议下管理器画完会回 _NET_WM_FRAME_DRAWN，应用用不上，只留 trace 便于排查握手。
+        if (x11_trace_on() && e.xclient.message_type == XInternAtom(s->dpy, "_NET_WM_FRAME_DRAWN", True))
+            x11_trace("sync: frame drawn serial=%lld",
+                      static_cast<long long>(uint32_t(e.xclient.data.l[0])) |
+                          (static_cast<long long>(uint32_t(e.xclient.data.l[1])) << 32));
         if (e.xclient.message_type == s->manager && e.xclient.format == 32 &&
             Atom(e.xclient.data.l[1]) == s->settings_selection) {
             x11_refresh_scale(s);
@@ -13704,9 +13894,19 @@ inline void x11_create(Window* self, const WindowConfig& cfg) {
     const int h = std::max(1, std::min(int((cfg.height > 0 ? cfg.height : 560) * o->scale + .5f), int(scr_h * .92)));
     const int wx = cfg.center ? (scr_w - w) / 2 : 0;
     const int wy = cfg.center ? (scr_h - h) / 2 : 0;
+    // 背景不能用 WhitePixel：服务器每次改尺寸都先拿背景像素重铺整窗，白色会在
+    // 客户端重画之前整窗露出来（快速缩放时的闪白）。先取黑，下面换成主题底色。
     s->win = XCreateSimpleWindow(s->dpy, root, wx, wy, unsigned(w), unsigned(h), 0,
-                                 BlackPixel(s->dpy, screen), WhitePixel(s->dpy, screen));
+                                 BlackPixel(s->dpy, screen), BlackPixel(s->dpy, screen));
     x11_set_title(s->dpy, s->win, cfg.title);
+    {
+        XWindowAttributes attributes{};
+        // 首帧之前窗口已经可见，先铺主题底色。
+        if (XGetWindowAttributes(s->dpy, s->win, &attributes)) {
+            s->visual = attributes.visual;
+            x11_update_background(s, o->theme.window_bg);
+        }
+    }
     if (!cfg.icon_path.empty()) {
         Image icon;
         std::string error;
@@ -13732,7 +13932,10 @@ inline void x11_create(Window* self, const WindowConfig& cfg) {
                  ButtonPressMask | ButtonReleaseMask | KeyPressMask | KeyReleaseMask |
                  EnterWindowMask | LeaveWindowMask | FocusChangeMask);
     s->wm_delete = XInternAtom(s->dpy, "WM_DELETE_WINDOW", False);
-    XSetWMProtocols(s->dpy, s->win, &s->wm_delete, 1);
+    s->wm_protocols = XInternAtom(s->dpy, "WM_PROTOCOLS", False);
+    x11_init_sync(s);
+    Atom protocols[2] = {s->wm_delete, s->sync_request};
+    XSetWMProtocols(s->dpy, s->win, protocols, s->sync_request ? 2 : 1);
     s->gc = XCreateGC(s->dpy, s->win, 0, nullptr);
 
     // 尺寸约束。X11 没有"不可缩放"这个位，只能把 min 和 max 设成同一个值 ——
@@ -13805,6 +14008,7 @@ inline void x11_destroy(Window* self) {
     // 文本渲染器持有此 Display 的 XFontSet / GC / Pixmap，必须在关闭连接前释放。
     if (o->text) o->text->release();
     if (s->img) { s->img->data = nullptr; XDestroyImage(s->img); s->img = nullptr; }
+    x11_release_sync(s);
     if (s->ic) { XDestroyIC(s->ic); s->ic = nullptr; }
     if (s->im) { XCloseIM(s->im); s->im = nullptr; }
     if (s->im_font) { XFreeFontSet(s->dpy, s->im_font); s->im_font = nullptr; }
@@ -13863,7 +14067,11 @@ void Window::render() {
     ui.end_frame();
     if (!ui.impl->ime_owner && s->ic && s->im_focused) { XUnsetICFocus(s->ic); s->im_focused = false; }
     o->cursor = ui.cursor();
+    // 先换背景再提交：之后任何一次尺寸变化，服务器补的都是这一帧的页面底色。
+    // 不走 clear() 自己铺底的页面跟随主题，免得深色主题下被换回白色。
+    detail::x11_update_background(s, ui.impl->clear_used ? ui.impl->clear_color : ui.theme().window_bg);
     detail::x11_present(s);
+    detail::x11_sync_done(s);
     detail::x11_apply_cursor(s);
 }
 
@@ -17061,6 +17269,12 @@ void Window::run(const std::function<void(Ui&)>& frame) {
             if (o->wake_signal.pending()) limit(0);
             if (o->clipboard_complete) limit(int(std::max<int64_t>(0,
                 std::chrono::ceil<std::chrono::milliseconds>(o->clipboard_deadline - Clock::now()).count())));
+#ifdef AINO_PLATFORM_X11
+            // 帧末 XFlush 读进 Xlib 队列的事件不在 fd 上，队列非空就不能睡，否则一直卡到
+            // 下一个无关事件到来（尺寸变化后新尺寸的那一帧出不来）。
+            if (detail::x11_events_queued(static_cast<detail::X11State*>(o->native)))
+                limit(0);
+#endif
 #ifdef AINO_PLATFORM_WAYLAND
             if (!detail::wayland_can_render(static_cast<detail::WaylandState*>(o->native))) continue;
 #endif

@@ -15,13 +15,23 @@ Windows 离屏夹具直接构造输入，不能替代系统输入法、剪贴板
 | 多窗口与原生关闭 | 同线程事件泵；Gallery 创建、取消、回填已实窗检查 | 同线程回调与关闭已实现；待原生验证 | 主线程回调、原生关闭与资源释放已实现；待原生验证 |
 | 剪贴板 | Unicode 系统读写与成功返回已实现；跨应用另验 | TARGETS/UTF8/TEXT、SelectionRequest 与 INCR 已实现；待原生互通验证 | NSPasteboard UTF-8 读写已实现；待原生互通验证 |
 | 键盘和编辑 | 选区、快捷键和历史隔离已有探针；系统输入另验 | 键值、修饰键和 XIM 路径存在；待原生输入法验证 | 控制键、修饰键、Unicode、IME client 已实现；surrounding text 能力仍有限，待原生验证 |
-| 调整窗口、DPI 和失焦 | 已有事件与缓存更新路径；真实多显示器另验 | 尺寸、XSettings 和 XIM 焦点已实现；待桌面验证 | backing scale、尺寸、失焦和 Retina 缓冲已实现；待原生验证 |
+| 调整窗口、DPI 和失焦 | 已有事件与缓存更新路径；真实多显示器另验 | 尺寸变化后立即出帧、窗口背景跟随页面底色并应答 `_NET_WM_SYNC_REQUEST`；XSettings 和 XIM 焦点已实现；待桌面验证 | backing scale、尺寸、失焦和 Retina 缓冲已实现；待原生验证 |
 | 通用键盘焦点及无障碍 | 尚无通用 Tab/Shift-Tab 遍历、按钮键盘激活和系统无障碍桥接 | 同左，且需配合原生输入验证 | 同左，且需补齐键盘后端 |
 
 源码核对入口为 `aino.hpp` 的 `win_proc`、`Window::poll/run`、`x11_handle`、
 各平台 `Window::try_set_clipboard/request_clipboard` 及 `cocoa_*` 回调。
 画廊素材子窗口入口为 `examples/gallery.cpp` 的 `open_material_window()`。
 上述缺口不会因示例能编译或绘图像素通过而自动消失。
+
+## Linux / X11 缩放
+
+X11 窗口改变尺寸时，服务器先用窗口背景像素补画面，之后才轮到应用重画。后端把窗口背景
+同步为页面 `clear()` 的颜色（本帧没有调用时跟随主题底色），处理完尺寸变化就跳过出帧预算立即
+重画，并应答 EWMH 的 `_NET_WM_SYNC_REQUEST`：支持该协议的窗口管理器（如 Mutter）在交互缩放
+期间保持上一帧，等新尺寸的帧提交后再切换。计数器来自运行时加载的 `libXext.so.6`，不需要
+开发包；加载不到时不声明该协议，窗口照常缩放，只是没有保持上一帧的效果。
+`XFlush` 会把已到达的事件读进 Xlib 内部队列，主循环阻塞前会先检查这个队列，一帧进行中
+到达的事件不会等到下一个事件到来才被处理。对应回归断言是 CTest 的 `resize_flash`。
 
 ## Linux / 原生 Wayland
 

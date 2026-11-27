@@ -30,7 +30,7 @@ Python 脚本建议使用 Python 3.10+。进程采样额外安装 `python -m pip
 `probe/` 里的源码不都是同一种东西，改动前先确认属于哪一类：
 
 1. **进 CTest 的自动断言**：由 `cmake/Tests.cmake` 的 `aino_add_test()` 注册（如 `state_lifetime`、
-   `interaction`、`overlay`、`widget`、`raster_equiv`、`shadow_mask`、`icon_mask`）。
+   `interaction`、`overlay`、`widget`、`raster_equiv`、`shadow_mask`、`icon_mask`、`resize_flash`）。
    发布验收必须保持全绿，日常改动只编译受影响夹具。
 2. **性能台架**：`perf_comp.cpp`、`spin_probe.cpp`、`blur_bench.cpp`、`bench.cpp` 一类，
    手动运行、看数字，不做断言（时间阈值在 CI 上不可靠）。
