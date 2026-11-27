@@ -1,8 +1,13 @@
 # 16 Android 适配分析
 
-> 状态：**分析文档，不含代码改动**，也未提交。
-> 本机没有 NDK、没有真机，所以凡是"在设备上成立"的判断都标了凭据来源；
-> 标「**需实测**」的条目是推理，不是结论。数字只要来自本仓库的测量，都写明出处。
+> 状态：**P0 + P1（软键盘）已实施并过真机验收**（2026-11-26，OPPO PJE110 / Android 16 / arm64-v8a）。
+> 已落地：`AINO_PLATFORM_ANDROID` 后端（§8.22）、`WindowConfig::native_surface/render_scale`、
+> AFontMatcher+FreeType 文字、触摸→鼠标/滚轮映射（方向锁：横拖保留按压、竖拖滚动）、
+> `android/` 打包工程（无 Gradle，FreeType 构建时下载）、`examples/mobile_gallery.cpp` 双入口 demo。
+> P1 软键盘：`android/app/java/.../AinoImeView.java` 提供 InputConnection（纯 C 无法唤出键盘，
+> 见 §2.3 实测），commitText 经 JNI 回传（中文拼音组字提交整串送达），退格/回车退化成按键事件；
+> ime insets 随键盘动画逐帧回传，视口跟随收缩 + 聚焦输入框呈现上移，真机验证键盘弹出/输入/
+> 平滑跟随。剩余未做：惯性滚动、剪贴板、Image::load 解码、颜色 emoji、多点触控、组字串预览。
 
 ---
 
@@ -129,6 +134,15 @@ Android 7 起应用进程有 linker namespace 隔离，只有 `public.libraries.
 
 Windows 走 IMM32，X11 走 XIM，Cocoa 走 `NSTextInputClient` —— 都是"窗口系统顺手给的"。
 Android 的软键盘不是：它要给系统一个 `InputConnection`，而这个东西**只有 Java 能实现**。
+
+> **2026-11-26 真机实测补充（OPPO PJE110 / Android 16）**：`ANativeActivity_showSoftInput`
+> 这个 C 接口存在且能调到，但系统在 `PHASE_CLIENT_VIEW_SERVED` 阶段直接拒绝：
+> `InputMethodManager: Ignoring showSoftInput() as view=NativeContentView is not served` ——
+> NativeActivity 自带的 NativeContentView 没有实现 `onCreateInputConnection`，Android 11+
+> 的 ImeTracker 要求目标 View 能提供 InputConnection 才肯弹键盘。**纯 C++ 在现代 Android
+> 上唤不出软键盘，P1 的 Java 桥不可绕过。** 退化路径已实装：硬件键盘 / adb 注入的按键流
+> 仍走 AKEYCODE → 字符映射（`android_keycode_char`），英文/数字打字可用；BACK 在键盘
+> 开启时先收键盘。这些为 P1 的 Java 桥直接复用。
 
 NDK 侧**没有任何 IME API**。现成的桥只有两个，都要 Java 参与：
 

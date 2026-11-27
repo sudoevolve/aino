@@ -41,7 +41,7 @@ Linux 原生 Wayland 组件画廊（实际 CPU 内容画布）：
 - **单头文件**：核心实现位于 `aino.hpp`，C++17，无第三方 UI 依赖。
 - **事件驱动**：无事件时阻塞等待；仅在需要时重绘，空闲时 CPU 占用接近 0。
 - **CPU 光栅化**：自绘几何、图像和材质效果，配合系统字体与窗口后端。
-- **原生平台后端**：Windows GDI、macOS Cocoa、Linux X11 / Wayland。
+- **原生平台后端**：Windows GDI、macOS Cocoa、Linux X11 / Wayland、Android NativeActivity（实验性）。
 - **完整组件集**：布局、主题、输入控件、表格、图表、浮层与动画等。
 - **图像支持**：PNG、JPEG、BMP 与 GIF 首帧，可加载后复用并绘制。
 
@@ -145,22 +145,51 @@ cmake --build build --config Release --target aino_primitives_demo
 macOS Finder 图标需要 `.app` 和 `.icns`；Linux 桌面图标需要 `.desktop` 入口，
 仅设置窗口图标不会改变文件管理器显示的图标。非 Windows 示例仍需旁置 PNG。详见 [图元文档](docs/wiki/09-primitives.md)。
 
-原生后端：Windows（GDI）、Linux（X11 / Wayland）和 macOS（Cocoa）。
+原生后端：Windows（GDI）、Linux（X11 / Wayland）、macOS（Cocoa）和 Android（NativeActivity，实验性）。
 Linux 默认使用 X11；`-DAINO_WAYLAND=ON` 构建纯 Wayland，直接以共享内存呈现 CPU 像素，
 不依赖 XWayland 或 GPU。[Wayland 接入](docs/wiki/15-wayland.md)说明运行库、输入法和桌面标识。
 不同桌面的系统互通、输入法与混合 DPI 多屏仍需分别验收，详见
 [平台能力矩阵](docs/wiki/14-platform-status.md)。
+
+### Android（实验性）
+
+| <img src="screenshots/mobile_gallery_android.png" alt="aino Android 真机截图" width="240"> | <img src="screenshots/mobile_gallery_android_list.png" alt="aino Android 列表页" width="240"> |
+|---|---|
+| 组件页（OPPO 真机，Android 16） | 触摸滚动列表 |
+
+Android 后端通过 NativeActivity 直接渲染 CPU 像素：文字 = 系统的 `AFontMatcher` 选字 +
+FreeType 光栅化（构建时由 CMake 下载官方源码包，SHA256 校验，不入仓库；离线环境用
+`-DAINO_FREETYPE_DIR` 指向本地解压目录），触摸按"单指=鼠标、拖动=滚轮"映射，
+软键盘经一个 ~100 行的 Java `InputConnection` 桥唤出并回传文字（含中文拼音组字提交），
+键盘弹出时 UI 视口随 insets 收缩并平滑上移聚焦输入框；转屏由 manifest 拦截
+configChanges（Ui 状态原地保留），空闲 0% CPU。
+本期边界：无剪贴板/图像解码/颜色 emoji/惯性滚动。方案与取舍见
+[Android 适配分析](docs/design/16-android-port.md)。
+
+```sh
+# 真机构建（需要 Android SDK + NDK 26+；无 Gradle，脚本自动 aapt2/签名）
+python3 android/build_apk.py --install        # 构建 adb 安装
+python3 android/build_apk.py --launch         # 安装并启动
+# 产物：android/build/aino-gallery.apk（minSdk 29，arm64-v8a）
+# 首次配置联网下载 FreeType；离线构建：cmake -DAINO_FREETYPE_DIR=<解压目录>
+
+# 桌面预览：examples/mobile_gallery.cpp 双端同源，桌面开手机比例窗口调样式
+cmake --build build --target aino_mobile_gallery
+```
 
 ## Project Layout
 
 ```text
 aino.hpp                     核心库
 examples/gallery.cpp         组件画廊
+examples/mobile_gallery.cpp  移动端画廊（Android 与桌面预览双入口）
 examples/sidebar_demo.cpp    侧栏导航与设置
 examples/pomodoro.cpp        番茄钟
 examples/primitives_demo.cpp 基础图元
 examples/function_viewer.cpp 函数可视化
 examples/ssh_client.cpp      SSH/SFTP 客户端（可选依赖）
+android/                     Android 打包工程（NativeActivity，无 Gradle；
+                             FreeType 构建时下载，不入仓库）
 docs/wiki/                   正式教程与 API
 docs/reviews/                工程审查与历史记录
 docs/design/                 设计研究

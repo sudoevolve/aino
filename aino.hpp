@@ -55,6 +55,12 @@
 #  define AINO_PLATFORM_WINDOWS 1
 #elif defined(__APPLE__)
 #  define AINO_PLATFORM_MACOS 1
+#elif defined(__ANDROID__)
+// Android 必须在 __linux__ 之前判定：NDK 的 clang 同样定义 __linux__，
+// 不拦住就会误进 X11 分支、链接期找不到 libX11。
+// Android 不定义 AINO_PLATFORM_UNIX：那一条线绑定了 X11/Wayland、fontconfig、
+// posix_spawn 图标子进程和 gdk-pixbuf 图像解码，全部与 Android 无关。
+#  define AINO_PLATFORM_ANDROID 1
 #elif defined(__linux__) || defined(__unix__)
 #  if defined(AINO_WAYLAND)
 #    define AINO_PLATFORM_WAYLAND 1
@@ -1197,6 +1203,18 @@ struct WindowConfig {
 
     /** @brief Wayland 的桌面标识，应与 .desktop 文件名一致；其他后端忽略。 */
     std::string app_id = "aino";
+
+    // ---- Android（NativeActivity）----
+    // 窗口不是程序创建的：系统在 APP_CMD_INIT_WINDOW 时才把 ANativeWindow 递过来。
+    // android_main 的胶水层（aino::android_run）会在窗口就绪后带着它构造 Window；
+    // 其它平台留空 = 自建窗口，行为与现在完全一致。
+    void* native_surface = nullptr;
+
+    // 渲染密度上限（0 = 跟满窗口物理分辨率，默认）。Android 的缓冲按
+    // window*render_scale 设置并由 SurfaceFlinger 放大，窗口尺寸变化时按新
+    // 尺寸重分配 —— 转屏/分屏自动跟随。小于 1 可用像素数换帧预算（省电），
+    // 逻辑布局不受影响。桌面端忽略此字段。
+    float render_scale = 0.0f;
 };
 
 /** @brief 原生窗口与事件循环；除 wake()/close() 外，在所属 UI 线程操作。
@@ -1314,6 +1332,23 @@ int system_icon_worker_entry(int argc, char** argv);
 #  include <X11/cursorfont.h>   // XC_left_ptr / XC_hand2 ...
 #  include <X11/keysym.h>
 #  include <X11/Xatom.h>
+#elif defined(AINO_PLATFORM_ANDROID)
+#  include <unistd.h>
+#  include <time.h>
+#  include <android/log.h>
+#  include <android/looper.h>
+#  include <android/input.h>
+#  include <android/configuration.h>
+#  include <android/font.h>            // AFont_getFontFilePath（API 29+）
+#  include <android/font_matcher.h>    // AFontMatcher：按文字 run 选字体（API 29+）
+#  include <android/native_activity.h> // 会带上 native_window / rect / window 等头
+#  include <android_native_app_glue.h> // android_app / APP_CMD_*：构建侧需把 NDK 的
+                                       // sources/android/native_app_glue 加进 include
+                                       // 路径并编译同名 .c（android/CMakeLists 已配）
+#  include <ft2build.h>                // FreeType：不在仓库里，Android 构建由
+                                       // CMake 下载官方源码包静态链接（见
+                                       // android/CMakeLists.txt）
+#  include FT_FREETYPE_H
 #endif
 #if defined(AINO_PLATFORM_UNIX)
 #  include <unistd.h>
@@ -1620,9 +1655,10 @@ inline std::string font_family_from_file(const std::string& path) {
 
 // =============================================================================
 //  8.2  像素画布 + CPU 光栅化
-//     内存布局：4 字节/像素。Windows / Linux 是 BGRA，macOS 是 RGBA。
+//     内存布局：4 字节/像素。Windows / Linux 是 BGRA，macOS 和 Android 是 RGBA
+//     （ANativeWindow 锁出来的 RGBA_8888 缓冲与 CoreText 位图同序）。
 // =============================================================================
-#ifdef AINO_PLATFORM_MACOS
+#if defined(AINO_PLATFORM_MACOS) || defined(AINO_PLATFORM_ANDROID)
 static const int CH_R = 0, CH_G = 1, CH_B = 2, CH_A = 3;
 #else
 static const int CH_B = 0, CH_G = 1, CH_R = 2, CH_A = 3;
@@ -3369,6 +3405,9 @@ void wayland_destroy(Window* self);
 #elif defined(AINO_PLATFORM_MACOS)
 void cocoa_create(Window* self, const WindowConfig& cfg);
 void cocoa_destroy(Window* self);
+#elif defined(AINO_PLATFORM_ANDROID)
+void android_create(Window* self, const WindowConfig& cfg);
+void android_destroy(Window* self);
 #endif
 } // namespace detail
 
@@ -10992,6 +11031,8 @@ Window::Window(const WindowConfig& cfg) : impl(new Impl()) {
     detail::wayland_create(this, impl->cfg);
 #elif defined(AINO_PLATFORM_MACOS)
     detail::cocoa_create(this, impl->cfg);
+#elif defined(AINO_PLATFORM_ANDROID)
+    detail::android_create(this, impl->cfg);
 #endif
 }
 
@@ -11006,6 +11047,8 @@ Window::~Window() {
     detail::wayland_destroy(this);
 #elif defined(AINO_PLATFORM_MACOS)
     detail::cocoa_destroy(this);
+#elif defined(AINO_PLATFORM_ANDROID)
+    detail::android_destroy(this);
 #endif
     delete impl;
     impl = nullptr;
@@ -17190,6 +17233,1194 @@ inline void service_clipboard(Window::Impl* o) {
 }
 } // namespace detail
 
+// =============================================================================
+//  8.22  Android 后端（NativeActivity）
+//
+//  与四个桌面后端的差别只有三件事的"归属"变了：
+//    1) 窗口是 Activity 给的：APP_CMD_INIT_WINDOW 时才出现，TERM_WINDOW 时收回。
+//       胶水入口 aino::android_run 等窗口就绪后用 cfg.native_surface 构造 Window；
+//       surface 收回期间 Canvas.px 置空，render() 的守卫直接跳过，窗口对象与
+//       Ui 状态原地保留，等重新挂载后继续用（转屏不打断输入框内容）。
+//    2) 文字 = AFontMatcher 选字 + 静态 FreeType 光栅化。系统字体文件直接
+//       fopen（/system/fonts 对应用可读），按字符匹配出的字体路径换字体画，
+//       中文/emoji 的回退链由系统 matcher 负责，不再需要 fontconfig。
+//    3) 输入是触摸：单指映射成鼠标；拖动超过阈值后合成为滚轮（40 逻辑像素
+//       = 1 格），让现有 begin_scroll/end_scroll 的滚轮滚动直接可用。
+//
+//  本期边界：软键盘已支持（Java 桥 + insets 视口适配，见下）；无剪贴板、无图像解码、
+//  无颜色 emoji；BACK 键在键盘开启时先收键盘，否则交给系统退出 Activity。
+// =============================================================================
+#ifdef AINO_PLATFORM_ANDROID
+namespace detail {
+
+inline void android_trace(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    __android_log_vprint(ANDROID_LOG_INFO, "aino", fmt, args);
+    va_end(args);
+}
+
+// 诊断用：部分 OEM 的 logcat 会过滤 INFO，诊断信息走 WARN。
+inline void android_diag(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    __android_log_vprint(ANDROID_LOG_WARN, "aino-diag", fmt, args);
+    va_end(args);
+}
+
+inline uint64_t android_now_ms() {
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return uint64_t(ts.tv_sec) * 1000u + uint64_t(ts.tv_nsec / 1000000);
+}
+
+// android_run() 记下 android_app 指针，Window 构造函数（android_create）来取。
+// Android 只有一个窗口，全局静态即可；Android 不定义 AINO_PLATFORM_UNIX，
+// 所有 UNIX 分支（X11/Wayland/fontconfig/图标子进程）都不会编译进来。
+inline android_app*& android_app_ref() {
+    static android_app* app = nullptr;
+    return app;
+}
+
+// -----------------------------------------------------------------------------
+//  软键盘桥（android/app/java/.../AinoImeView.java）
+//  IME 的提交文字/退格回车从 Java 的 InputConnection 线程经 JNI 投进队列，
+//  UI 线程在 poll() 里取走。没有 Java 桥时 Android 11+ 不允许弹软键盘
+//  （ImeTracker 在 PHASE_CLIENT_VIEW_SERVED 拒绝，2026-11-26 真机实测）。
+// -----------------------------------------------------------------------------
+inline std::mutex& android_ime_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+inline std::string& android_ime_text() {
+    static std::string text;
+    return text;
+}
+inline std::vector<int32_t>& android_ime_keys() {
+    static std::vector<int32_t> keys;
+    return keys;
+}
+inline int& android_ime_inset() {
+    static int inset = 0;
+    return inset;
+}
+// IME JNI 线程的唤醒信号：线程安全，与窗口 wake_signal 语义分离
+//（这里只触发 poll 的快速路径判定，不当成内容重绘请求）
+inline WakeSignal& android_ime_wake_signal() {
+    static WakeSignal signal;
+    return signal;
+}
+// IME 回调所属的 Window::Impl（android_create 挂上，android_destroy 摘掉）
+inline Window::Impl*& android_ime_owner() {
+    static Window::Impl* owner = nullptr;
+    return owner;
+}
+
+inline JNIEnv* android_jni_env(android_app* app) {
+    if (!app || !app->activity || !app->activity->vm) return nullptr;
+    JNIEnv* env = nullptr;
+    if (app->activity->vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_OK)
+        return env;
+    // glue 线程通常已被 JVM attach；首次 attach 后不 detach（与进程同寿命）
+    if (app->activity->vm->AttachCurrentThread(&env, nullptr) == JNI_OK) return env;
+    return nullptr;
+}
+
+// AinoImeView 的静态方法调用（attach / showIme / hideIme）。
+// 注意 FindClass 在 AttachCurrentThread 的原生线程上只查系统类加载器，
+// 找不到 APK 里的类 —— 必须经 Activity 的类加载器 loadClass。
+inline void android_ime_call(android_app* app, const char* method) {
+    JNIEnv* env = android_jni_env(app);
+    if (!env) { android_diag("ime: no jni env"); return; }
+    jclass activity_cls = env->GetObjectClass(app->activity->clazz);
+    if (!activity_cls) { env->ExceptionClear(); return; }
+    jmethodID get_loader = env->GetMethodID(activity_cls, "getClassLoader",
+                                            "()Ljava/lang/ClassLoader;");
+    env->DeleteLocalRef(activity_cls);
+    if (!get_loader) { env->ExceptionClear(); return; }
+    auto* loader = env->CallObjectMethod(app->activity->clazz, get_loader);
+    if (!loader) { env->ExceptionClear(); return; }
+    jclass loader_cls = env->GetObjectClass(loader);
+    jmethodID load_class = env->GetMethodID(loader_cls, "loadClass",
+                                            "(Ljava/lang/String;)Ljava/lang/Class;");
+    env->DeleteLocalRef(loader_cls);
+    if (!load_class) { env->ExceptionClear(); env->DeleteLocalRef(loader); return; }
+    jclass cls = static_cast<jclass>(env->CallObjectMethod(loader, load_class,
+        env->NewStringUTF("dev.aino.mobilegallery.AinoImeView")));
+    env->DeleteLocalRef(loader);
+    if (!cls) {
+        env->ExceptionClear();
+        android_diag("ime: AinoImeView loadClass failed");
+        return;
+    }
+    if (jmethodID mid = env->GetStaticMethodID(cls, method, "(Landroid/app/Activity;)V")) {
+        env->CallStaticVoidMethod(cls, mid, app->activity->clazz);
+    } else {
+        android_diag("ime: method %s not found", method);
+    }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        android_diag("ime: %s threw", method);
+    }
+    env->DeleteLocalRef(cls);
+}
+
+} // namespace detail
+
+namespace detail { struct AndroidState; }   // 定义于下方 §8.22 内
+// JNI 入口：Java 侧 AinoImeView.imeCommitText / imeKey 回传。
+// 这些调用来自 IME 的 UI/binder 线程，只入队 + 唤醒，文本在 poll() 里并帧。
+extern "C" JNIEXPORT void JNICALL
+Java_dev_aino_mobilegallery_AinoImeView_imeCommitText(JNIEnv* env, jclass, jstring text) {
+    // 只入队 + 唤醒：不碰任何窗口状态（need_frame/owner 由 UI 线程在
+    // poll/render 里更新），销毁窗口与这里无数据竞争。
+    const char* utf8 = env->GetStringUTFChars(text, nullptr);
+    if (utf8) {
+        {   std::lock_guard<std::mutex> lock(detail::android_ime_mutex());
+            detail::android_ime_text().append(utf8);
+        }
+        env->ReleaseStringUTFChars(text, utf8);
+    }
+    detail::android_ime_wake_signal().notify();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_dev_aino_mobilegallery_AinoImeView_imeKey(JNIEnv*, jclass, jint keycode) {
+    {   std::lock_guard<std::mutex> lock(detail::android_ime_mutex());
+        detail::android_ime_keys().push_back(keycode);
+    }
+    detail::android_ime_wake_signal().notify();
+}
+
+namespace detail {
+
+struct AndroidState {
+    Window::Impl* owner = nullptr;
+    android_app* app = nullptr;
+    ANativeWindow* surface = nullptr;   // TERM_WINDOW 到 INIT_WINDOW 之间为空
+    bool paused = false;                // APP_CMD_PAUSE 期间必须真停帧（后台耗电）
+    int pw = 0, ph = 0;                 // surface 物理像素
+    float device_scale = 1.0f;          // 密度 / 160（render_scale 之前的原始值）
+    float render_scale = 1.0f;
+
+    // 输入缓存：字段与 X11State 同构，坐标为窗口物理像素，feed 时统一除 scale。
+    float mx = -1e6f, my = -1e6f;
+    bool  btn_down[3] = {false, false, false};
+    bool  btn_pressed[3] = {false, false, false};
+    bool  btn_released[3] = {false, false, false};
+    float wheel = 0.0f;
+    int   clicks = 0;
+    std::string text_in;
+    bool  key_down[KEY_COUNT] = {};
+    bool  key_pressed[KEY_COUNT] = {};
+    unsigned char key_repeat[KEY_COUNT] = {};
+    bool  key_ctrl[KEY_COUNT]  = {};
+    bool  key_shift[KEY_COUNT] = {};
+    bool  key_alt[KEY_COUNT]   = {};
+
+    // 触摸手势：按下后先不定方向，位移超过阈值时按主导轴锁定 ——
+    // 竖向进滚动模式（撤销按压、合成滚轮），横向保持按压拖动（滑块/拖动条）。
+    // 0 = 未定，1 = 竖向（滚动），2 = 横向（拖动）。
+    int      gesture_axis = 0;
+    float    touch_start_x = 0.0f, touch_start_y = 0.0f, touch_last_y = 0.0f;
+    uint64_t click_time_ms = 0;
+    float    click_x = 0.0f, click_y = 0.0f;
+
+    // 软键盘：ime_pos 回调在本帧有输入框聚焦时置位；render() 帧末比对并经
+    // Java 桥 showIme / hideIme。ime_inset 是键盘可见高度（物理像素），
+    // 视口按它收缩；ime_pan 是"聚焦输入框仍被遮住时"整页呈现的上移量。
+    bool ime_shown = false;
+    bool ime_focus_gained = false;      // 本帧焦点刚进入输入框（上一帧无聚焦输入框）
+    bool ime_tap_rearm = false;         // 一次点击完成（抬起且未转滚动）→ 可重新唤出
+    bool ime_prev_owner = false;        // 上一帧是否有聚焦输入框（算 gained 用）
+    int  ime_wake_read = -1;            // insets 推送的专用唤醒管道（读端在 looper 上）
+    int  ime_wake_write = -1;           // 写端由 Java 线程（JNI imeInsets）使用
+    // 键盘高度：ime_inset 是**当前动画值**（逐帧收敛），ime_inset_target 是
+    // Java 侧 insets 推来的目标值。动画期间界面向目标平滑逼近 —— 键盘弹收
+    // 的视觉跟随由此实现；动画帧复用上一帧内容做平移，不做全量重绘。
+    int  ime_inset = 0;
+    int  ime_inset_target = 0;
+    bool inset_pending = false;         // poll 时发现目标变了
+    bool ime_anim_pending = false;      // 键盘高度收敛未完成，还需排帧
+    bool inset_anim_frame = false;      // 上一帧排下的"纯收敛帧"（唯一允许的快速路径）
+    bool content_render_next = false;   // 源头置位：下一帧需要全量重绘（vs 平移复用）
+    std::vector<uint8_t> frame_content; // 上一帧的未平移完整内容
+    bool frame_content_valid = false;
+    int  ime_pan = 0;
+    float ime_caret_top = 0.0f, ime_caret_bottom = 0.0f;
+};
+
+// 通过 Java 侧 AinoImeView 的 showIme/hideIme 弹收软键盘（带 InputConnection
+// 的 View 才有资格 serve，纯 C 的 ANativeActivity_showSoftInput 会被拒绝）
+inline void android_ime_show(AndroidState* s, bool show) {
+    if (!s || !s->app) return;
+    android_ime_call(s->app, show ? "showIme" : "hideIme");
+}
+
+// -----------------------------------------------------------------------------
+//  文字：AFontMatcher 选字 + FreeType 光栅化
+// -----------------------------------------------------------------------------
+class AndroidTextRenderer final : public TextRenderer {
+public:
+    void init(float dpi_scale, const std::string& family, const std::string& mono) override {
+        (void)dpi_scale;
+        family_ = family.empty() ? std::string("sans-serif") : family;
+        mono_   = mono.empty() ? std::string("monospace") : mono;
+        // FreeType：Android 上没有可 dlopen 的公开 libfreetype，构建脚本在
+        // 配置期下载官方源码包并静态链接（裁剪到 truetype+sfnt+smooth+psnames）。
+        ready_ = FT_Init_FreeType(&ft_) == 0;
+        matcher_ = AFontMatcher_create();
+        if (!ready_ || !matcher_)
+            android_diag("text init failed: freetype=%d matcher=%d family='%s' mono='%s'",
+                         ready_ ? 1 : 0, matcher_ ? 1 : 0, family_.c_str(), mono_.c_str());
+    }
+
+    void release() override {
+        for (auto& kv : faces_) if (kv.second.face) FT_Done_Face(kv.second.face);
+        faces_.clear();
+        glyphs_.clear();
+        glyph_bytes_ = 0;
+        match_cache_.clear();
+        metrics_.clear();
+        if (matcher_) { AFontMatcher_destroy(matcher_); matcher_ = nullptr; }
+        if (ft_) { FT_Done_FreeType(ft_); ft_ = nullptr; }
+        ready_ = false;
+    }
+
+    float measure(const std::string& utf8, float size, int weight) override {
+        float w = 0.0f;
+        if (sum_advances(utf8, size, weight, false, w)) return w;
+        return float(utf8_count(utf8)) * size * 0.55f;
+    }
+    float measure_mono(const std::string& utf8, float size, int weight) override {
+        float w = 0.0f;
+        if (sum_advances(utf8, size, weight, true, w)) return w;
+        return measure(utf8, size, weight);
+    }
+    float ascent(float size, int weight) override {
+        if (const Metrics* m = metrics_for(size, weight, false)) return float(m->asc);
+        return size * 0.8f;
+    }
+    float ascent_mono(float size, int weight) override {
+        if (const Metrics* m = metrics_for(size, weight, true)) return float(m->asc);
+        return ascent(size, weight);
+    }
+    float line_height(float size, int weight) override {
+        if (const Metrics* m = metrics_for(size, weight, false)) return float(m->asc + m->desc);
+        return size * 1.4f;
+    }
+    void draw(Canvas& cv, const std::string& utf8, float x, float y_top,
+              float size, int weight, const Color& c, const Rect& clip) override {
+        draw_impl(cv, utf8, x, y_top, size, weight, c, clip, false);
+    }
+    void draw_mono(Canvas& cv, const std::string& utf8, float x, float y_top,
+                   float size, int weight, const Color& c, const Rect& clip) override {
+        draw_impl(cv, utf8, x, y_top, size, weight, c, clip, true);
+    }
+
+private:
+    struct Face {
+        FT_Face face = nullptr;
+        int index = 0;
+        int px = 0;             // 当前设置的像素字号（换字号要重新 FT_Set_Pixel_Sizes）
+    };
+    struct Glyph {
+        int left = 0, top = 0, w = 0, h = 0;
+        int adv = 0;            // 26.6 定点
+        std::vector<uint8_t> gray;
+    };
+    struct Metrics { int asc = 0, desc = 0; };
+    struct FontRef { std::string path; int index = 0; bool valid = false; };
+
+    // Ui 的字重取值五花八门（400/510/610/730…），Android 的静态字重是离散档位，
+    // 按区间折到最近的一档。AFontMatcher_setStyle 的权重语义与 CSS 一致。
+    static uint32_t weight_bucket(int weight) {
+        if (weight < 350) return AFONT_WEIGHT_LIGHT;        // 300
+        if (weight < 450) return AFONT_WEIGHT_NORMAL;       // 400
+        if (weight < 550) return AFONT_WEIGHT_MEDIUM;       // 500
+        if (weight < 650) return AFONT_WEIGHT_SEMI_BOLD;    // 600
+        return AFONT_WEIGHT_BOLD;                           // 700
+    }
+    static uint64_t cache_key(bool mono, int wb, uint32_t cp, int px) {
+        return (uint64_t(mono ? 1 : 0) << 57) | (uint64_t(uint32_t(wb) & 0x3FF) << 47)
+             | (uint64_t(cp) << 11) | uint64_t(uint32_t(px) & 0x7FF);
+    }
+    static uint64_t font_key(bool mono, int wb, uint32_t cp) {
+        return (uint64_t(mono ? 1 : 0) << 57) | (uint64_t(uint32_t(wb) & 0x3FF) << 47) | cp;
+    }
+    static uint64_t face_key(const FontRef& ref) {
+        return uint64_t(std::hash<std::string>{}(ref.path)) ^ (uint64_t(uint32_t(ref.index)) << 32) ^ 0x9E3779B9u;
+    }
+
+    // 按字符找字体：matcher 以"这个码点"为输入，命中结果按 (家族槽, 字重档, 码点)
+    // 缓存 —— 选字只跟家族/字重/文字有关，跟字号无关，暖机后零开销。
+    const FontRef& resolve_font(uint32_t cp, int wb, bool mono) {
+        const uint64_t key = font_key(mono, wb, cp);
+        const auto found = match_cache_.find(key);
+        if (found != match_cache_.end()) return found->second;
+        FontRef ref;
+        if (matcher_) {
+            uint16_t units[2] = {0, 0};
+            uint32_t n = 1;
+            if (cp >= 0x10000) {
+                const uint32_t v = cp - 0x10000;
+                units[0] = uint16_t(0xD800 + (v >> 10));
+                units[1] = uint16_t(0xDC00 + (v & 0x3FF));
+                n = 2;
+            } else units[0] = uint16_t(cp);
+            AFontMatcher_setStyle(matcher_, uint32_t(weight_bucket(wb)), false);
+            uint32_t run = 0;
+            AFont* font = AFontMatcher_match(matcher_, mono ? mono_.c_str() : family_.c_str(),
+                                             units, n, &run);
+            if (font) {
+                const char* path = AFont_getFontFilePath(font);
+                if (path && *path) { ref.path = path; ref.index = int(AFont_getCollectionIndex(font)); ref.valid = true; }
+                AFont_close(font);
+            }
+        }
+        return match_cache_.emplace(key, ref).first->second;
+    }
+
+    Face* obtain_face(const FontRef& ref) {
+        if (!ref.valid || !ready_) return nullptr;
+        const uint64_t key = face_key(ref);
+        const auto found = faces_.find(key);
+        if (found != faces_.end()) return &found->second;
+        FT_Face face = nullptr;
+        const FT_Error open_error = FT_New_Face(ft_, ref.path.c_str(), ref.index, &face);
+        if (open_error != 0) {
+            android_diag("FT_New_Face FAILED: %s idx=%d err=0x%x", ref.path.c_str(), ref.index, open_error);
+            // 记住失败结果，别对同一个文件反复打开
+            return &(faces_.emplace(key, Face{}).first->second);
+        }
+        Face entry;
+        entry.face = face;
+        entry.index = ref.index;
+        return &(faces_.emplace(key, entry).first->second);
+    }
+
+    // 主字体的全局度量（ascent/line_height 的稳定来源）
+    const Metrics* metrics_for(float size, int weight, bool mono) {
+        const int px = std::max(1, int(size + 0.5f));
+        const int wb = int(weight_bucket(weight));
+        const uint64_t key = cache_key(mono, wb, 0x20, px);   // 用空格所在的主字体
+        const auto found = metrics_.find(key);
+        if (found != metrics_.end()) return found->second.valid ? &found->second : nullptr;
+        Face* f = obtain_face(resolve_font(' ', wb, mono));
+        MetricsEntry m;
+        if (f && f->face) {
+            if (f->px != px) { FT_Set_Pixel_Sizes(f->face, 0, unsigned(px)); f->px = px; }
+            m.asc  = int((f->face->size->metrics.ascender + 63) / 64);
+            m.desc = int((64 - f->face->size->metrics.descender + 63) / 64);
+            m.valid = true;
+        } else { m.asc = int(size * 0.8f); m.desc = int(size * 0.35f); m.valid = false; }
+        return &(metrics_.emplace(key, m).first->second);
+    }
+
+    const Glyph& glyph_for(uint32_t cp, float size, int weight, bool mono) {
+        const int px = std::max(1, int(size + 0.5f));
+        const int wb = int(weight_bucket(weight));
+        const uint64_t key = cache_key(mono, wb, cp, px);
+        const auto found = glyphs_.find(key);
+        if (found != glyphs_.end()) return found->second;
+        // 缓存预算：超了整体清空（X11 用逐条 reap；这里是 P0，先选简单正确的）
+        if (glyph_bytes_ > uint64_t(4u << 20)) {
+            glyphs_.clear();
+            glyph_bytes_ = 0;
+        }
+        Glyph g;
+        const FontRef& ref = resolve_font(cp, wb, mono);
+        if (Face* f = obtain_face(ref); f && f->face) {
+            if (f->px != px) { FT_Set_Pixel_Sizes(f->face, 0, unsigned(px)); f->px = px; }
+            const uint32_t gi = FT_Get_Char_Index(f->face, cp);
+            if (gi && FT_Load_Glyph(f->face, gi, FT_LOAD_RENDER | FT_LOAD_TARGET_NORMAL) == 0) {
+                const FT_GlyphSlot slot = f->face->glyph;
+                const FT_Bitmap& bm = slot->bitmap;
+                g.left = slot->bitmap_left;
+                g.top  = slot->bitmap_top;
+                g.adv  = int(slot->advance.x);
+                if (bm.pitch >= 0 && (bm.pixel_mode == FT_PIXEL_MODE_GRAY || bm.pixel_mode == FT_PIXEL_MODE_NONE)) {
+                    g.w = int(bm.width);
+                    g.h = int(bm.rows);
+                    g.gray.resize(size_t(g.w) * size_t(g.h));
+                    for (int r = 0; r < g.h; ++r)
+                        std::memcpy(&g.gray[size_t(r) * size_t(g.w)], bm.buffer + size_t(r) * size_t(bm.pitch),
+                                    size_t(g.w));
+                }
+                glyph_bytes_ += uint64_t(g.gray.capacity());
+            }
+            if (!g.adv) g.adv = int(px) << 6;
+        } else {
+            g.adv = int(size * 0.6f * 64.0f);   // 没有可用字体：给个宽度让布局不至于塌
+        }
+        return glyphs_.emplace(key, std::move(g)).first->second;
+    }
+
+    bool sum_advances(const std::string& utf8, float size, int weight, bool mono, float& out) {
+        if (utf8.empty() || !ready_) return false;
+        out = 0.0f;
+        size_t i = 0;
+        while (i < utf8.size()) {
+            uint32_t cp = 0;
+            const int n = utf8_decode_n(utf8.c_str() + i, utf8.size() - i, &cp);
+            i += size_t(n < 1 ? 1 : n);
+            out += float(glyph_for(cp, size, weight, mono).adv) * (1.0f / 64.0f);
+        }
+        return true;
+    }
+
+    void draw_impl(Canvas& cv, const std::string& utf8, float x, float y_top,
+                   float size, int weight, const Color& c, const Rect& clip, bool mono) {
+        if (utf8.empty() || !ready_) return;
+        const Metrics* m = metrics_for(size, weight, mono);
+        const int baseline = int(y_top + 0.5f) + (m ? m->asc : int(size * 0.8f));
+        int pen = int(x * 64.0f + 0.5f);   // 26.6 定点，避免逐字累积误差
+        const bool use_clip = clip.w >= 0.0f;
+        size_t i = 0;
+        while (i < utf8.size()) {
+            uint32_t cp = 0;
+            const int n = utf8_decode_n(utf8.c_str() + i, utf8.size() - i, &cp);
+            i += size_t(n < 1 ? 1 : n);
+            const Glyph& g = glyph_for(cp, size, weight, mono);
+            const int gx = (pen >> 6) + g.left;
+            const int gy = baseline - g.top;
+            if (g.w > 0 && g.h > 0) {
+                const bool inside = !use_clip
+                    || (float(gx + g.w) > clip.x && float(gx) < clip.right()
+                        && float(gy + g.h) > clip.y && float(gy) < clip.bottom());
+                if (inside) {
+                    for (int r = 0; r < g.h; ++r) {
+                        const int py = gy + r;
+                        if (use_clip && (float(py) < clip.y || float(py) >= clip.bottom())) continue;
+                        const uint8_t* row = &g.gray[size_t(r) * size_t(g.w)];
+                        for (int q = 0; q < g.w; ++q) {
+                            const uint8_t a = row[q];
+                            if (!a) continue;
+                            const int px = gx + q;
+                            if (use_clip && (float(px) < clip.x || float(px) >= clip.right())) continue;
+                            cv.blend(px, py, c, float(a) * (1.0f / 255.0f));
+                        }
+                    }
+                }
+            }
+            pen += g.adv;
+        }
+    }
+
+    FT_Library ft_ = nullptr;
+    AFontMatcher* matcher_ = nullptr;
+    bool ready_ = false;
+    std::string family_, mono_;
+    std::unordered_map<uint64_t, Face> faces_;
+    std::unordered_map<uint64_t, Glyph> glyphs_;
+    std::unordered_map<uint64_t, FontRef> match_cache_;
+    struct MetricsEntry : Metrics { bool valid = false; };
+    std::unordered_map<uint64_t, MetricsEntry> metrics_;
+    uint64_t glyph_bytes_ = 0;
+};
+
+// -----------------------------------------------------------------------------
+//  surface 生命周期与输入
+// -----------------------------------------------------------------------------
+// 通用唤醒管道的 looper 回调：后台 wake()/IME 提交醒来即重绘（UI 线程执行）
+inline int android_wake_cb(int fd, int events, void* data) {
+    auto* s = static_cast<AndroidState*>(data);
+    if (s && s->owner && s->owner->wake_signal.consume()) {
+        s->owner->need_frame = true;
+        s->content_render_next = true;
+    }
+    return 1;   // 继续接收
+}
+
+// insets 唤醒管道的 looper 回调：排空字节并排定一帧（与 poll 同线程，无竞争）
+inline int android_ime_wake_cb(int fd, int events, void* data) {
+    auto* s = static_cast<AndroidState*>(data);
+    if (s) {
+        char buf[64];
+        while (::read(fd, buf, sizeof buf) > 0) {}
+        s->inset_pending = true;
+        if (s->owner) s->owner->need_frame = true;
+    }
+    return 1;   // 继续接收
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_dev_aino_mobilegallery_AinoImeView_imeInsets(JNIEnv*, jclass, jint bottom) {
+    // 只写互斥保护的目标值；唤醒走专用管道（looper 上注册的回调消费），
+    // 不碰任何窗口状态，与窗口销毁无数据竞争。
+    {   std::lock_guard<std::mutex> lock(detail::android_ime_mutex());
+        detail::android_ime_inset() = bottom;
+    }
+    detail::android_ime_wake_signal().notify();
+}
+
+// (re)绑定 surface：算密度与 render_scale，设置缓冲几何，刷新逻辑尺寸。
+// 转屏 / 分屏都会走这里；Ui 对象不动，输入框内容和滚动位置得以保留。
+inline void android_surface_resized(AndroidState* s) {
+    Window::Impl* o = s->owner;
+    ANativeWindow* win = s->surface;
+    if (!o || !win) return;
+    int32_t density = ACONFIGURATION_DENSITY_NONE;
+    if (s->app && s->app->config) density = AConfiguration_getDensity(s->app->config);
+    if (density <= 0) density = 160;
+    const float ds = o->cfg.high_dpi ? clampf(float(density) / 160.0f, 1.0f, 4.0f) : 1.0f;
+    // render_scale：0 = 跟满当前窗口的物理分辨率（清晰度优先；每次窗口尺寸
+    // 变化都按新尺寸重设缓冲，转屏/分屏自动跟随）。想省电可以显式给 <1 的值。
+    float rs = o->cfg.render_scale;
+    if (rs <= 0.0f) rs = 1.0f;
+    rs = clampf(rs, 0.25f, 1.0f);
+    const int32_t pw = ANativeWindow_getWidth(win);
+    const int32_t ph = ANativeWindow_getHeight(win);
+    if (pw <= 0 || ph <= 0) return;
+    s->device_scale = ds;
+    s->render_scale = rs;
+    s->pw = pw;
+    s->ph = ph;
+    const int bw = std::max(1, int(float(pw) * rs + 0.5f));
+    const int bh = std::max(1, int(float(ph) * rs + 0.5f));
+    ANativeWindow_setBuffersGeometry(win, bw, bh, WINDOW_FORMAT_RGBA_8888);
+    o->scale = ds * rs;
+    o->client_w = bw;
+    o->client_h = bh;
+    o->need_frame = true;
+}
+
+inline int android_map_keycode(int32_t keycode) {
+    if (keycode >= AKEYCODE_A && keycode <= AKEYCODE_Z) return int('A') + (keycode - AKEYCODE_A);
+    if (keycode >= AKEYCODE_0 && keycode <= AKEYCODE_9) return int('0') + (keycode - AKEYCODE_0);
+    switch (keycode) {
+        case AKEYCODE_DEL:         return KEY_BACKSPACE;
+        case AKEYCODE_FORWARD_DEL: return KEY_DELETE;
+        case AKEYCODE_TAB:         return KEY_TAB;
+        case AKEYCODE_ENTER:
+        case AKEYCODE_NUMPAD_ENTER:return KEY_ENTER;
+        case AKEYCODE_ESCAPE:      return KEY_ESC;
+        case AKEYCODE_SPACE:       return KEY_SPACE;
+        case AKEYCODE_DPAD_LEFT:   return KEY_LEFT;
+        case AKEYCODE_DPAD_RIGHT:  return KEY_RIGHT;
+        case AKEYCODE_DPAD_UP:     return KEY_UP;
+        case AKEYCODE_DPAD_DOWN:   return KEY_DOWN;
+        case AKEYCODE_MOVE_HOME:   return KEY_HOME;
+        case AKEYCODE_MOVE_END:    return KEY_END;
+        case AKEYCODE_PAGE_UP:     return KEY_PAGEUP;
+        case AKEYCODE_PAGE_DOWN:   return KEY_PAGEDOWN;
+        case AKEYCODE_SHIFT_LEFT:
+        case AKEYCODE_SHIFT_RIGHT: return KEY_SHIFT;
+        case AKEYCODE_CTRL_LEFT:
+        case AKEYCODE_CTRL_RIGHT:  return KEY_CTRL;
+        case AKEYCODE_ALT_LEFT:
+        case AKEYCODE_ALT_RIGHT:   return KEY_ALT;
+        case AKEYCODE_F1: return KEY_F1;  case AKEYCODE_F2: return KEY_F2;
+        case AKEYCODE_F3: return KEY_F3;  case AKEYCODE_F4: return KEY_F4;
+        case AKEYCODE_F5: return KEY_F5;  case AKEYCODE_F6: return KEY_F6;
+        case AKEYCODE_F7: return KEY_F7;  case AKEYCODE_F8: return KEY_F8;
+        case AKEYCODE_F9: return KEY_F9;  case AKEYCODE_F10: return KEY_F10;
+        case AKEYCODE_F11: return KEY_F11; case AKEYCODE_F12: return KEY_F12;
+        default: return 0;
+    }
+}
+
+// 字符级输入：软键盘在没有 InputConnection 时会退化成硬件风格的按键流，
+// 硬件键盘也是同一通道 —— 把 AKEYCODE 折算成 ASCII 塞进 text_in。
+// 组合输入（拼音组字等走 commitText 的 IME 路径）没有 C 接口，仍需 Java 桥。
+inline int android_keycode_char(int32_t keycode, bool shift) {
+    if (keycode >= AKEYCODE_A && keycode <= AKEYCODE_Z)
+        return (shift ? 'A' : 'a') + (keycode - AKEYCODE_A);
+    if (keycode >= AKEYCODE_0 && keycode <= AKEYCODE_9)
+        return '0' + (keycode - AKEYCODE_0);
+    switch (keycode) {
+        case AKEYCODE_SPACE:          return ' ';
+        case AKEYCODE_COMMA:          return ',';
+        case AKEYCODE_PERIOD:         return '.';
+        case AKEYCODE_MINUS:          return shift ? '_' : '-';
+        case AKEYCODE_EQUALS:         return shift ? '+' : '=';
+        case AKEYCODE_LEFT_BRACKET:   return shift ? '{' : '[';
+        case AKEYCODE_RIGHT_BRACKET:  return shift ? '}' : ']';
+        case AKEYCODE_BACKSLASH:      return shift ? '|' : '\\';
+        case AKEYCODE_SEMICOLON:      return shift ? ':' : ';';
+        case AKEYCODE_APOSTROPHE:     return shift ? '"' : '\'';
+        case AKEYCODE_SLASH:          return shift ? '?' : '/';
+        case AKEYCODE_AT:             return '@';
+        case AKEYCODE_PLUS:           return '+';
+        case AKEYCODE_STAR:           return '*';
+        case AKEYCODE_POUND:          return '#';
+        default:                      return 0;
+    }
+}
+
+inline void android_handle_key(AndroidState* s, AInputEvent* e, bool down) {
+    const int32_t code = AKeyEvent_getKeyCode(e);
+    // 字符级输入：首按与自动重复都产字；Ctrl/Alt 组合键不产字
+    //（与桌面 WM_CHAR / XLookupString 的语义一致）。
+    if (down && !s->key_down[KEY_CTRL] && !s->key_down[KEY_ALT]) {
+        const bool shift = (AKeyEvent_getMetaState(e) & AMETA_SHIFT_ON) != 0;
+        const int ch = android_keycode_char(code, shift);
+        if (ch) {
+            s->text_in.push_back(char(ch));
+            s->owner->need_frame = true;
+        }
+    }
+    const int key = android_map_keycode(code);
+    if (key <= 0 || key >= KEY_COUNT) return;
+    if (down) {
+        const int32_t os_repeat = AKeyEvent_getRepeatCount(e);
+        if (s->key_down[key] && os_repeat > 0) {
+            // 按住不放：只累计 key_repeat（对齐 Win32 WM_KEYDOWN bit30 的语义）
+            const int32_t count = std::max(1, os_repeat);
+            s->key_repeat[key] = uint8_t(std::min(255, int(s->key_repeat[key]) + int(count)));
+        } else if (!s->key_down[key]) {
+            // 首按。修饰位在按下这一刻定格
+            s->key_down[key] = true;
+            s->key_pressed[key] = true;
+            s->key_ctrl[key]  = s->key_down[KEY_CTRL];
+            s->key_shift[key] = s->key_down[KEY_SHIFT];
+            s->key_alt[key]   = s->key_down[KEY_ALT];
+        }
+    } else {
+        s->key_down[key] = false;
+    }
+    s->owner->need_frame = true;
+    s->owner->move_only = false;
+    s->content_render_next = true;
+}
+
+inline void android_touch_begin(AndroidState* s, float px, float py) {
+    const float ds = s->owner->scale / s->render_scale;
+    const uint64_t now = android_now_ms();
+    s->mx = px;
+    s->my = py;
+    // 双击判定与 Wayland 同款：400ms 内、位移小于约 5 逻辑像素。
+    const float dx = px - s->click_x, dy = py - s->click_y;
+    s->clicks = (now - s->click_time_ms < 400 && dx * dx + dy * dy < 25.0f * ds * ds) ? 2 : 1;
+    s->click_time_ms = now;
+    s->click_x = px;
+    s->click_y = py;
+    s->gesture_axis = 0;
+    s->touch_start_x = px;
+    s->touch_start_y = py;
+    s->touch_last_y = py;
+    s->btn_down[0] = true;
+    s->btn_pressed[0] = true;
+}
+
+inline void android_touch_move(AndroidState* s, float px, float py) {
+    const float ds = s->owner->scale / s->render_scale;
+    if (!s->btn_down[0] && s->gesture_axis != 1) { s->mx = px; s->my = py; return; }
+    const float dx = px - s->touch_start_x, dy = py - s->touch_start_y;
+    if (s->gesture_axis == 0) {
+        // 方向未定：任一轴超过 ~10 逻辑像素就按主导轴锁死，本次触摸不再改判。
+        const float threshold = 10.0f * ds;
+        if (std::fabs(dx) < threshold && std::fabs(dy) < threshold) return;
+        if (std::fabs(dy) >= std::fabs(dx)) {
+            s->gesture_axis = 1;   // 竖向 → 滚动。撤销按压：控件看不到"按住"，
+            s->btn_down[0] = false;   // 抬手也不会误触发点击。
+            s->btn_pressed[0] = false;
+            s->mx = s->touch_start_x;
+            s->my = s->touch_start_y;
+        } else {
+            s->gesture_axis = 2;   // 横向 → 保持按压拖动（滑块、拖动条跟手）。
+        }
+    }
+    if (s->gesture_axis == 1) {
+        // 手指向下（py 增大）= 想看上面的内容 = 滚轮向上（正值），与 X11 Button4 同号。
+        s->wheel += (py - s->touch_last_y) / (40.0f * ds);
+        s->touch_last_y = py;
+    } else {
+        s->mx = px;
+        s->my = py;
+    }
+}
+
+inline void android_touch_end(AndroidState* s, bool cancel) {
+    if (s->btn_down[0] && s->gesture_axis != 1 && !cancel) {
+        s->btn_released[0] = true;
+        s->ime_tap_rearm = true;   // 一次点击完成：可能意图唤出键盘（由 ime_pos 决定）
+    }
+    s->btn_down[0] = false;
+    s->gesture_axis = 0;
+}
+
+inline int32_t android_handle_input(android_app* app, AInputEvent* e) {
+    auto* s = static_cast<AndroidState*>(app->userData);
+    if (!s || !s->owner) return 0;
+    const int32_t type = AInputEvent_getType(e);
+    if (type == AINPUT_EVENT_TYPE_MOTION) {
+        // v1 只跟第一根手指：POINTER_DOWN 视为转滚动，POINTER_UP 只在抬起的是
+        // 指针 0 时才当作抬手（Android 移除指针后其余指针的下标会前移，不追）。
+        const uint32_t action = uint32_t(AMotionEvent_getAction(e)) & AMOTION_EVENT_ACTION_MASK;
+        const float px = AMotionEvent_getX(e, 0);
+        const float py = AMotionEvent_getY(e, 0);
+        switch (action) {
+            case AMOTION_EVENT_ACTION_DOWN:
+                android_touch_begin(s, px, py);
+                break;
+            case AMOTION_EVENT_ACTION_POINTER_DOWN:
+                if (s->gesture_axis != 1) {   // 第二根手指：一律转入滚动
+                    s->gesture_axis = 1;
+                    s->btn_down[0] = false;
+                    s->btn_pressed[0] = false;
+                    s->touch_last_y = py;
+                }
+                break;
+            case AMOTION_EVENT_ACTION_MOVE:
+                android_touch_move(s, px, py);
+                break;
+            case AMOTION_EVENT_ACTION_UP:
+                android_touch_end(s, false);
+                break;
+            case AMOTION_EVENT_ACTION_POINTER_UP: {
+                const uint32_t index = (uint32_t(AMotionEvent_getAction(e)) & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >> 8;
+                if (index == 0) android_touch_end(s, false);
+                break;
+            }
+            case AMOTION_EVENT_ACTION_CANCEL:
+                android_touch_end(s, true);
+                break;
+            default: return 0;
+        }
+        s->owner->need_frame = true;
+        s->owner->move_only = false;
+        s->content_render_next = true;   // 源头标记：触摸是内容变化，全量重绘
+        return 1;
+    }
+    if (type == AINPUT_EVENT_TYPE_KEY) {
+        const int32_t code = AKeyEvent_getKeyCode(e);
+        if (code == AKEYCODE_BACK) {
+            // 键盘开着：BACK 先收键盘，不退出应用；否则交给系统退出 Activity。
+            if (s->ime_shown) {
+                android_ime_show(s, false);
+                s->ime_shown = false;
+                return 1;
+            }
+            return 0;
+        }
+        const int32_t action = AKeyEvent_getAction(e);
+        if (action == AKEY_EVENT_ACTION_DOWN) android_handle_key(s, e, true);
+        else if (action == AKEY_EVENT_ACTION_UP) android_handle_key(s, e, false);
+        return 1;
+    }
+    return 0;
+}
+
+inline void android_handle_cmd(android_app* app, int32_t cmd) {
+    // Window 还没构造（android_run 等窗口阶段）：只有 DESTROY 值得理会，
+    // 它由 destroyRequested 体现，其余命令等窗口就绪后再来。
+    auto* s = static_cast<AndroidState*>(app->userData);
+    if (!s) return;
+    Window::Impl* o = s->owner;
+    switch (cmd) {
+        case APP_CMD_INIT_WINDOW:
+            if (app->window && app->window != s->surface) s->surface = app->window;
+            android_surface_resized(s);
+            o->need_frame = true;
+            break;
+        case APP_CMD_TERM_WINDOW:
+            s->surface = nullptr;
+            o->canvas.px = nullptr;      // render() 守卫见 surface 为空即跳过
+            break;
+        case APP_CMD_WINDOW_RESIZED:
+        case APP_CMD_CONTENT_RECT_CHANGED:
+            if (s->surface) android_surface_resized(s);
+            break;
+        case APP_CMD_GAINED_FOCUS:
+            o->need_frame = true;
+            break;
+        case APP_CMD_LOST_FOCUS:
+            // 失焦清修饰键与按住状态（对齐桌面端 WM_KILLFOCUS / FocusOut 语义）
+            for (int i = 0; i < KEY_COUNT; ++i) s->key_down[i] = false;
+            for (int i = 0; i < 3; ++i) s->btn_down[i] = false;
+            s->gesture_axis = 0;
+            o->need_frame = true;
+            break;
+        case APP_CMD_PAUSE:
+            s->paused = true;
+            break;
+        case APP_CMD_RESUME:
+            s->paused = false;
+            o->need_frame = true;
+            break;
+        case APP_CMD_DESTROY:
+            s->paused = true;
+            s->surface = nullptr;
+            o->canvas.px = nullptr;
+            o->running = false;
+            break;
+        default: break;
+    }
+    if (cmd != APP_CMD_PAUSE) s->content_render_next = true;
+    o->wake_signal.notify();
+}
+
+inline void android_feed_input(AndroidState* s) {
+    Window::Impl* o = s->owner;
+    Ui::Impl* u = o->ui.impl;
+    Input& in = u->input;
+    // 触摸坐标是**窗口物理像素**（1080 宽那一侧）；转逻辑坐标只除设备密度，
+    // 不能含 render_scale —— 缓冲是低分辨率渲染、系统放大显示的，逻辑坐标
+    // 必须回到"窗口/密度"那一侧，否则点击命中区会整体偏移 render_scale 倍。
+    // 软键盘弹出时呈现整页上移 ime_pan：屏幕上的一点对应布局里更低的内容，
+    // 命中判定要加回平移量。
+    const float ds = s->device_scale;
+    const Vec2 prev = in.mouse;
+    in.mouse = Vec2(s->mx / ds, (s->my + float(s->ime_pan)) / ds);
+    in.mouse_prev = prev;
+    in.mouse_delta = Vec2(in.mouse.x - prev.x, in.mouse.y - prev.y);
+    for (int i = 0; i < 3; ++i) { in.pressed[i] = s->btn_pressed[i]; in.released[i] = s->btn_released[i]; in.down[i] = s->btn_down[i]; }
+    in.wheel = s->wheel;
+    in.double_click = (s->clicks >= 2);
+    in.click_count = s->clicks;
+    in.text_input = s->text_in;
+    for (int i = 0; i < KEY_COUNT; ++i) {
+        in.key_down[i] = s->key_down[i]; in.key_pressed[i] = s->key_pressed[i];
+        in.key_repeat[i] = s->key_repeat[i];
+        in.key_ctrl[i] = s->key_ctrl[i]; in.key_shift[i] = s->key_shift[i]; in.key_alt[i] = s->key_alt[i];
+    }
+    in.dragging = s->btn_down[0];
+    for (int i = 0; i < 3; ++i) { s->btn_pressed[i] = false; s->btn_released[i] = false; }
+    s->wheel = 0.0f; s->clicks = 0; s->text_in.clear();
+    for (int i = 0; i < KEY_COUNT; ++i) { s->key_pressed[i] = false; s->key_repeat[i] = 0; }
+}
+
+// 驱动 glue 的 ALooper 源（cmd + input），把就绪的命令与输入事件全部处理掉。
+// timeout_ms = 0 不等待；<0 阻塞到有事件。
+inline void android_pump(android_app* app, int timeout_ms) {
+    for (;;) {
+        int events = 0;
+        android_poll_source* source = nullptr;
+        const int result = ALooper_pollOnce(timeout_ms, nullptr, &events,
+                                            reinterpret_cast<void**>(&source));
+        if (result < 0 || !source || !source->process) return;
+        source->process(app, source);
+        if (timeout_ms == 0) continue;   // 非阻塞：排干所有已就绪的源
+        return;                          // 阻塞后处理一个就够，剩下的交给下一轮
+    }
+}
+
+inline void android_create(Window* self, const WindowConfig& cfg) {
+    Window::Impl* o = self->impl;
+    android_app* app = android_app_ref();
+    if (!app) {
+        android_trace("android_create: 不在 android_run 内，无法创建窗口");
+        return;   // ok() == false
+    }
+    if (!cfg.native_surface) {
+        android_trace("android_create: 需要 WindowConfig::native_surface（由 android_run 提供）");
+        return;
+    }
+    auto* s = new AndroidState();
+    s->owner = o;
+    s->app = app;
+    o->native = s;
+    app->userData = s;
+    app->onAppCmd = android_handle_cmd;
+    app->onInputEvent = android_handle_input;
+    if (app->window) { s->surface = app->window; android_surface_resized(s); }
+    android_ime_owner() = o;   // JNI 回调的投递目标（android_destroy 摘除）
+
+    // insets 推送的专用唤醒管道：挂在 glue 的 looper 上，Java 线程写一个
+    // 字节，UI 线程的 pollOnce 被叫醒后在回调里排空并置 inset_pending
+    {
+        int fds[2] = {-1, -1};
+        if (::pipe(fds) == 0) {
+            for (int fd : fds) {
+                const int flags = fcntl(fd, F_GETFL);
+                const int descriptors = fcntl(fd, F_GETFD);
+                if (flags < 0 || descriptors < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 ||
+                    fcntl(fd, F_SETFD, descriptors | FD_CLOEXEC) < 0) {
+                    ::close(fds[0]); ::close(fds[1]);
+                    fds[0] = fds[1] = -1;
+                    break;
+                }
+            }
+        }
+        if (fds[0] >= 0 && ALooper_addFd(app->looper, fds[0], ALOOPER_POLL_CALLBACK,
+                ALOOPER_EVENT_INPUT, android_ime_wake_cb, s) > 0) {
+            s->ime_wake_read = fds[0];
+            s->ime_wake_write = fds[1];
+        } else {
+            ::close(fds[0]); ::close(fds[1]);
+        }
+        // 通用唤醒管道（Window::wake / IME 提交）同样挂上 looper：空闲睡眠中
+        // 也能被后台更新与键盘输入叫醒，否则要等下一个无关事件
+        if (!ALooper_addFd(app->looper, o->wake_signal.read_descriptor(),
+                ALOOPER_POLL_CALLBACK, ALOOPER_EVENT_INPUT, android_wake_cb, s)) {
+            android_diag("wake fd 注册失败：后台唤醒将延迟到下一个事件");
+        }
+    }
+
+    // 挂软键盘桥的 View（1x1，serve InputConnection），见 AinoImeView.java
+    android_ime_call(app, "attach");
+
+    AndroidTextRenderer* tr = new AndroidTextRenderer();
+    tr->init(o->scale, o->theme.font_family, o->theme.font_family_mono);
+    o->text = tr;
+    o->ui.impl->text = tr;
+    o->ui.impl->canvas = &o->canvas;
+    // 输入框聚焦时唤出软键盘：Ui 在绘制聚焦输入框的帧里回调 ime_pos，
+    // 经 Java 桥（AinoImeView.showIme，它 serve 了 InputConnection）弹出。
+    // 收起在 render() 帧末统一比对（对应 X11 的 XUnsetICFocus 时机）。
+    Window::Impl* owner = o;
+    o->ui.impl->ime_pos = [owner](float x, float top, float bottom) {
+        owner->ui.impl->ime_owner = true;   // 组字串照旧由 Ui 自己画
+        auto* s = static_cast<AndroidState*>(owner->native);
+        if (!s) return;
+        // 记下光标盒（布局物理坐标，未含呈现平移）—— render() 帧末用它算平移
+        s->ime_caret_top = top;
+        s->ime_caret_bottom = bottom;
+        // 唤出时机（用户期望）：键盘不在屏上，且（焦点刚进入输入框，或用户
+        // 刚点了一次）才唤出。IME 自身收起后焦点仍在，但没有新点击就不再
+        // 自动弹出 —— 否则手动收起的键盘会被立刻拉回。
+        if (s->ime_inset <= 0 && (s->ime_focus_gained || s->ime_tap_rearm)) {
+            android_ime_show(s, true);
+            s->ime_shown = true;
+            s->ime_tap_rearm = false;
+        } else if (s->ime_inset > 0) {
+            s->ime_tap_rearm = false;   // 键盘已在屏上，点击意图已消费
+        }
+    };
+    o->need_frame = true;
+    android_trace("window created: scale=%.2f cfg(%dx%d)", o->scale, o->client_w, o->client_h);
+}
+
+inline void android_destroy(Window* self) {
+    auto* s = static_cast<AndroidState*>(self->impl->native);
+    if (!s) return;
+    // 先同步注销：摘掉 looper 注册（此后 insets 回调不再进入）、摘除 JNI
+    // 投递目标，再动窗口状态。fd 故意不关闭——IME 线程可能仍持有写端在
+    // 写（写满/写失败都无害），关闭会让 fd 号被复用后写穿；随进程退出回收。
+    {   std::lock_guard<std::mutex> lock(detail::android_ime_mutex());
+        android_ime_owner() = nullptr;
+        s->inset_pending = false;
+        s->ime_anim_pending = false;
+    }
+    if (s->app && s->app->looper) {
+        if (s->ime_wake_read >= 0) ALooper_removeFd(s->app->looper, s->ime_wake_read);
+        ALooper_removeFd(s->app->looper, self->impl->wake_signal.read_descriptor());
+    }
+    if (s->app && s->app->userData == s) s->app->userData = nullptr;
+    delete s;
+    self->impl->native = nullptr;
+}
+
+} // namespace detail
+
+bool Window::poll() {
+    Window::Impl* o = impl;
+    detail::AndroidState* s = static_cast<detail::AndroidState*>(o->native);
+    if (!s || !o->running) return false;
+    // 内容变化的判定只认**源头标记**（content_render_next）：输入/命令回调、
+    // IME 文字与按键、后台 wake 置位。不推断 need_frame 的来历 —— 那无法
+    // 区分"触摸置位"和"动画自排"，一旦误判，触摸帧就会走平移路径拷贝旧帧
+    // （触控失灵）。
+    bool content = s->content_render_next;
+    if (o->wake_signal.consume()) { content = true; s->content_render_next = true; }
+    if (detail::android_ime_wake_signal().consume()) {
+        content = true;
+        s->content_render_next = true;
+    }
+    // IME 桥投递的文字与按键（来自 Java 的 InputConnection 线程）并进本帧。
+    // 文字/按键是**内容变化**：必须置 content_render_next 走全量重绘，
+    // 否则快速路径拷贝旧帧，打字会"看不见"。
+    {   std::lock_guard<std::mutex> lock(detail::android_ime_mutex());
+        if (!detail::android_ime_text().empty()) {
+            s->text_in.append(detail::android_ime_text());
+            detail::android_ime_text().clear();
+            s->content_render_next = true;
+        }
+        for (int32_t code : detail::android_ime_keys()) {
+            const int key = detail::android_map_keycode(code);
+            if (key > 0 && key < KEY_COUNT) {
+                s->key_pressed[key] = true;
+                s->content_render_next = true;
+            }
+        }
+        detail::android_ime_keys().clear();
+        if (detail::android_ime_inset() != s->ime_inset_target) {
+            s->ime_inset_target = detail::android_ime_inset();
+            s->inset_pending = true;   // 目标变化：平移动画帧，无需全量重绘
+        }
+    }
+    detail::android_pump(s->app, 0);   // 非阻塞：处理就绪的生命周期命令与输入
+    // 键盘高度收敛的自排帧：排帧但不算内容（走平移快速路径）
+    if (s->ime_anim_pending) o->need_frame = true;
+    if (content || s->inset_pending) o->need_frame = true;
+    return o->running;
+}
+
+void Window::render() {
+    Window::Impl* o = impl;
+    detail::AndroidState* s = static_cast<detail::AndroidState*>(o->native);
+    if (!s) return;
+    // surface 收回 / 后台暂停期间不出帧（need_frame 保持，回来后立即重画）
+    if (!s->surface || s->paused) return;
+    if (o->ui.impl->frame_open) { o->need_frame = true; return; }
+
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const uint64_t now = uint64_t(ts.tv_sec) * 1000u + uint64_t(ts.tv_nsec / 1000000);
+    float dt = o->last_frame_ms ? float(now - o->last_frame_ms) / 1000.0f : (1.0f / 60.0f);
+    if (dt > 0.25f) { o->ui.impl->caret_blink += dt - 0.25f; dt = 0.25f; }
+    o->last_frame_ms = now;
+
+    // 键盘高度向目标值做指数收敛（~300ms，与键盘动画同速）。Java 侧 insets
+    // 只给目标，中间帧由这里自排：动画永远收敛到目标，不会残留半截状态；
+    // 期间自行排帧（need_frame），动画结束自然回到空闲 0% CPU。
+    {
+        const int target = s->ime_inset_target;
+        if (s->ime_inset != target) {
+            const float k = std::min(1.0f, dt * 12.0f);
+            s->ime_inset = int(std::lround(float(s->ime_inset)
+                + float(target - s->ime_inset) * k));
+            if (std::abs(target - s->ime_inset) <= 3) s->ime_inset = target;
+            s->ime_anim_pending = s->ime_inset != target;   // 未收敛 → 再排一帧
+            s->inset_anim_frame = s->ime_anim_pending;      // 下一帧仍是纯收敛帧
+            o->need_frame = true;
+        } else {
+            s->ime_anim_pending = false;
+            s->inset_anim_frame = false;
+        }
+    }
+
+    // 快速路径只允许一种帧：上一帧排下的"纯 insets 收敛帧"（只动平移，
+    // 复用上一帧内容，开销两次内存拷贝）。其余任何来源（触摸/动画续帧/
+    // 文字/命令）一律全量重绘 —— 控件动画的续帧没有 content 标记，靠
+    // inset_anim_frame 的排除语义保证它们不被误判。
+    const bool content_render = s->content_render_next || !s->frame_content_valid
+        || s->frame_content.size() != size_t(o->canvas.h) * size_t(o->canvas.stride)
+        || !s->inset_anim_frame;
+    s->content_render_next = false;
+    s->inset_anim_frame = false;
+
+    ANativeWindow_Buffer buffer;
+    if (ANativeWindow_lock(s->surface, &buffer, nullptr) != 0 || !buffer.bits) {
+        static int lock_fails = 0;
+        if (lock_fails++ < 3) detail::android_diag("ANativeWindow_lock FAILED (第 %d 次)", lock_fails);
+        o->need_frame = true;   // BufferQueue 偶发拒锁，下一帧重试
+        return;
+    }
+    o->canvas.px = static_cast<uint8_t*>(buffer.bits);
+    o->canvas.w = buffer.width;
+    o->canvas.h = buffer.height;
+    o->canvas.stride = buffer.stride * 4;   // stride 是**像素**，不是字节
+
+    const size_t bytes = size_t(o->canvas.stride);
+    uint8_t* base = o->canvas.px;
+    if (content_render) {
+        detail::android_feed_input(s);
+        o->need_frame = false;
+        detail::ScopeExit frame_cleanup([o] {
+            if (o->ui.impl->frame_open) { o->ui.impl->abort_frame(); o->need_frame = true; }
+        });
+        Ui& ui = o->ui;
+        // 始终绘制**完整窗口**：键盘盖住下半屏，但绘制不能缺 —— 平移露出
+        // 的区域才有内容。跟随键盘的平滑上移由帧末平移实现。
+        ui.begin_frame(float(o->canvas.w) / o->scale, float(o->canvas.h) / o->scale, dt, o->scale);
+        if (o->frame_cb_ptr) o->frame_cb_ptr();
+        ui.end_frame();
+        // 帧末软键盘对账（只在内容帧做）：本帧 ime_pos 没触发 = 输入框失焦
+        // → 收键盘。快速动画帧不绘制 UI、ime_owner 恒为 false，若在这里
+        // 对账会把刚弹出的键盘立刻收掉（弹收打架，实测就是这样）。
+        if (!ui.impl->ime_owner && s->ime_shown) {
+            android_ime_show(s, false);
+            s->ime_shown = false;
+            s->ime_caret_bottom = 0.0f;
+        }
+        s->ime_focus_gained = ui.impl->ime_owner && !s->ime_prev_owner;
+        s->ime_prev_owner = ui.impl->ime_owner;
+        // 保存未平移的完整内容，供后续键盘动画帧快速复用
+        s->frame_content.resize(size_t(o->canvas.h) * bytes);
+        for (int y = 0; y < o->canvas.h; ++y)
+            std::memcpy(s->frame_content.data() + size_t(y) * bytes,
+                        base + size_t(y) * bytes, bytes);
+        s->frame_content_valid = true;
+    } else {
+        // 快速路径：把上一帧内容拷回锁定缓冲（随后统一做平移）。
+        // 必须清掉 need_frame —— 否则收敛后 run() 仍每轮全速跑这条路径空转。
+        o->need_frame = false;
+        for (int y = 0; y < o->canvas.h; ++y)
+            std::memcpy(base + size_t(y) * bytes,
+                        s->frame_content.data() + size_t(y) * bytes, bytes);
+    }
+
+    // 呈现平移：聚焦输入框被键盘沿挡住时整幅内容上移露出光标盒；失焦收键盘
+    // 时随动画退回。触摸坐标在 feed_input 里同步 +ime_pan。
+    const int keyboard_top = o->canvas.h - s->ime_inset;
+    int pan = 0;
+    if (o->ui.impl->ime_owner && s->ime_caret_bottom > 0.0f) {
+        const int margin = int(16.0f * s->device_scale);
+        // 平移的**目的**是露出被键盘沿挡住的光标盒：只有真正越过键盘沿
+        // 才平移（margin 只进平移量、不进触发条件 —— 底边在键盘沿上方的
+        // 输入框一个像素都不动）。平移后底边留在键盘沿上方 margin 处。
+        if (int(s->ime_caret_bottom) > keyboard_top) {
+            pan = int(s->ime_caret_bottom) + margin - keyboard_top;
+            pan = std::min(pan, std::max(0, int(s->ime_caret_top)));   // 不平移过头
+            pan = std::min(pan, s->ime_inset);   // 上移量 ≤ 键盘高度，露出区必被键盘盖住
+        }
+    } else if (!o->ui.impl->ime_owner && s->ime_inset > 0) {
+        pan = std::min(s->ime_pan, s->ime_inset);   // 失焦收键盘：跟随动画退回
+    }
+    s->ime_pan = pan;
+    if (pan > 0) {
+        for (int y = 0; y < o->canvas.h - pan; ++y)
+            std::memmove(base + size_t(y) * bytes, base + size_t(y + pan) * bytes, bytes);
+        // 底部露出的条带清成页面底色（该区域此刻正被键盘盖住，仅为严谨）
+        const auto& bg = o->ui.impl->clear_used ? o->ui.impl->clear_color : o->ui.theme().window_bg;
+        uint8_t row[4] = {};
+        row[detail::CH_R] = bg.r; row[detail::CH_G] = bg.g;
+        row[detail::CH_B] = bg.b; row[detail::CH_A] = 255;
+        for (int y = std::max(0, o->canvas.h - pan); y < o->canvas.h; ++y) {
+            uint8_t* p = base + size_t(y) * bytes;
+            for (int x = 0; x < o->canvas.w; ++x)
+                std::memcpy(p + size_t(x) * 4u, row, 4);
+        }
+    }
+    ANativeWindow_unlockAndPost(s->surface);
+}
+
+void Window::set_title(const std::string&) {
+    // 标题由系统（任务栏 / 最近任务）管理
+}
+void Window::set_size(int, int) {
+    // 尺寸由系统与用户手势决定
+}
+
+bool Window::try_set_clipboard(const std::string&) {
+    return false;   // v1：剪贴板需要 JNI，见 docs/design/16-android-port.md P3
+}
+std::string Window::clipboard() const {
+    return {};      // request_clipboard 的共享实现会经此交付空串
+}
+
+// -----------------------------------------------------------------------------
+//  入口胶水：把 android_main 的控制流接到这里
+// -----------------------------------------------------------------------------
+// 用法（见 examples/mobile_gallery.cpp）：
+//     void demo_main(android_app* app);   // 内部构造 Window 并 run()
+//     AINO_ANDROID_MAIN(demo_main);
+inline void android_run(android_app* app, const std::function<void(android_app*)>& body) {
+    detail::android_app_ref() = app;
+    // 等 INIT_WINDOW 或 DESTROY。glue 已把 cmd/input 两个源挂到 app->looper，
+    // 这里只驱动它们；userData 还没挂 AndroidState，命令回调会自行忽略。
+    while (!app->destroyRequested && !app->window) {
+        int events = 0;
+        android_poll_source* source = nullptr;
+        const int result = ALooper_pollOnce(-1, nullptr, &events,
+                                            reinterpret_cast<void**>(&source));
+        if (result >= 0 && source && source->process) source->process(app, source);
+    }
+    if (!app->destroyRequested && app->window) body(app);
+    // body 返回即销毁流程收尾：DESTROY 命令已把 Window::running 置假、run() 退出。
+    // Activity 重建（转屏且 manifest 未拦截 configChanges）会重新进 android_main，
+    // 本函数可重入。
+    detail::android_app_ref() = nullptr;
+}
+
+/** @brief 把 `void fn(android_app*)` 挂成 NativeActivity 入口（aino_android 模块名对应）。 */
+#define AINO_ANDROID_MAIN(fn) \
+    void android_main(struct android_app* app) { aino::android_run(app, fn); }
+
+#endif // AINO_PLATFORM_ANDROID
+
 void Window::set_frame_callback(std::function<void(Ui&)> frame) {
     auto& windows = detail::scheduled_windows();
     if (frame) {
@@ -17243,6 +18474,11 @@ void Window::run(const std::function<void(Ui&)>& frame) {
 #ifdef AINO_PLATFORM_WAYLAND
             if (!detail::wayland_can_render(static_cast<detail::WaylandState*>(o->native))) continue;
 #endif
+#ifdef AINO_PLATFORM_ANDROID
+            // surface 被系统收回 / 应用暂停时不能出帧；need_frame 保持到重新挂载。
+            {   auto* state = static_cast<detail::AndroidState*>(o->native);
+                if (!state || !state->surface || state->paused) continue; }
+#endif
             const auto now = Clock::now();
             if ((o->need_frame || o->ui.animating() || o->ui.impl->repaint_timeout_ms() == 0)
                 && now >= o->next_frame_at) {
@@ -17278,6 +18514,10 @@ void Window::run(const std::function<void(Ui&)>& frame) {
 #ifdef AINO_PLATFORM_WAYLAND
             if (!detail::wayland_can_render(static_cast<detail::WaylandState*>(o->native))) continue;
 #endif
+#ifdef AINO_PLATFORM_ANDROID
+            {   auto* state = static_cast<detail::AndroidState*>(o->native);
+                if (!state || !state->surface || state->paused) continue; }
+#endif
             const int until_frame = int(std::max<int64_t>(0,
                 std::chrono::ceil<std::chrono::milliseconds>(o->next_frame_at - Clock::now()).count()));
             const int timer = o->ui.impl->repaint_timeout_ms();
@@ -17311,6 +18551,10 @@ void Window::run(const std::function<void(Ui&)>& frame) {
         ::poll(descriptors.data(), descriptors.size(), timeout);
 #elif defined(AINO_PLATFORM_MACOS)
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, timeout < 0 ? 1e9 : double(timeout) / 1000.0, true);
+#elif defined(AINO_PLATFORM_ANDROID)
+        // 在 glue 的 ALooper 上带超时阻塞：cmd / input / wake pipe 三个源任意就绪
+        // 都会返回。事件本体由下一轮 poll() 处理，这里只负责"醒来"。
+        detail::android_pump(static_cast<detail::AndroidState*>(impl->native)->app, timeout);
 #endif
     }
 }
@@ -17728,6 +18972,177 @@ inline SystemIconMask load_system_icon(SystemIcon icon, int size) {
             CGContextRelease(context);
         } else mask = SystemIconMask{};
     }
+#elif defined(AINO_PLATFORM_ANDROID)
+    // Android 没有 SF Symbols / Segoe Fluent Icons，也没有可靠的符号字体，
+    // 常用符号用平台无关图元在临时画布上自绘成 alpha 掩膜（24 单位设计网格）。
+    // 未实现的条目返回空掩膜 —— Ui::system_icon 画不出就跳过，不占布局。
+    static const int kCount = int(SystemIcon::Count);
+    if (size <= 0 || size > 512 || int(icon) >= kCount) return mask;
+    const int side = size;
+    std::vector<uint8_t> buffer(size_t(side) * size_t(side) * 4u, 0);
+    Canvas cv;
+    cv.px = buffer.data();
+    cv.w = cv.h = side;
+    cv.stride = side * 4;
+    const Color white(255, 255, 255, 255);
+    const float u = float(side) / 24.0f;
+    auto line = [&](float x0, float y0, float x1, float y1, float w = 2.0f) {
+        raster_line(cv, x0 * u, y0 * u, x1 * u, y1 * u, white, w * u);
+    };
+    auto dot = [&](float x, float y, float r) { raster_circle(cv, x * u, y * u, r * u, white); };
+    auto ring = [&](float x, float y, float r, float w = 2.0f) {
+        raster_arc(cv, x * u, y * u, r * u, w * u, white, 0.0f, float(M_PI) * 2.0f, 0.0f);
+    };
+    auto poly = [&](std::initializer_list<Vec2> pts) {
+        std::vector<Vec2> scaled;
+        scaled.reserve(pts.size());
+        for (const Vec2& p : pts) scaled.push_back(Vec2(p.x * u, p.y * u));
+        raster_poly(cv, scaled, white);
+    };
+    switch (icon) {
+        case SystemIcon::ChevronDown: line(6.5f, 9.5f, 12.0f, 15.0f); line(12.0f, 15.0f, 17.5f, 9.5f); break;
+        case SystemIcon::ChevronUp:   line(6.5f, 14.5f, 12.0f, 9.0f);  line(12.0f, 9.0f, 17.5f, 14.5f); break;
+        case SystemIcon::Prev:        line(14.5f, 6.5f, 9.0f, 12.0f);  line(9.0f, 12.0f, 14.5f, 17.5f); break;
+        case SystemIcon::Next:        line(9.5f, 6.5f, 15.0f, 12.0f);  line(15.0f, 12.0f, 9.5f, 17.5f); break;
+        case SystemIcon::Close:       line(7, 7, 17, 17); line(17, 7, 7, 17); break;
+        case SystemIcon::Plus:        line(12, 6, 12, 18); line(6, 12, 18, 12); break;
+        case SystemIcon::Minus:       line(6, 12, 18, 12); break;
+        case SystemIcon::Check:       line(6, 12.5f, 10.5f, 17.0f); line(10.5f, 17.0f, 18.0f, 8.0f); break;
+        case SystemIcon::More:        dot(5.5f, 12, 1.6f); dot(12, 12, 1.6f); dot(18.5f, 12, 1.6f); break;
+        case SystemIcon::Search:      ring(11, 11, 6.0f); line(15.4f, 15.4f, 19.5f, 19.5f, 2.4f); break;
+        case SystemIcon::Eye:         // 眼睛：上下睑两段弧拼出杏仁形 + 瞳孔
+            raster_arc(cv, 12 * u, 15.0f * u, 8.0f * u, 1.8f * u, white,
+                       -float(M_PI) * 0.88f, float(M_PI) * 0.76f, 0.0f);
+            raster_arc(cv, 12 * u, 9.0f * u, 8.0f * u, 1.8f * u, white,
+                       float(M_PI) * 0.12f, float(M_PI) * 0.76f, 0.0f);
+            dot(12, 12, 2.6f);
+            break;
+        case SystemIcon::Moon:
+            raster_crescent(cv, 12 * u, 12 * u, 7.5f * u, 16.5f * u, 9.5f * u, 6.5f * u, white);
+            break;
+        case SystemIcon::Sun:
+            ring(12, 12, 4.2f);
+            for (int i = 0; i < 8; ++i) {
+                const float a = float(i) * float(M_PI) / 4.0f;
+                const float c = std::cos(a), s = std::sin(a);
+                line(12 + 6.4f * c, 12 + 6.4f * s, 12 + 9.0f * c, 12 + 9.0f * s, 1.8f);
+            }
+            break;
+        case SystemIcon::Play:        poly({Vec2(9, 6.5f), Vec2(18.5f, 12), Vec2(9, 17.5f)}); break;
+        case SystemIcon::Pause:
+            raster_rrect(cv, Rect(7.5f * u, 7 * u, 3.0f * u, 10.0f * u), white, 1.0f * u);
+            raster_rrect(cv, Rect(13.5f * u, 7 * u, 3.0f * u, 10.0f * u), white, 1.0f * u);
+            break;
+        case SystemIcon::PreviousTrack:
+            poly({Vec2(16.5f, 6.5f), Vec2(8.0f, 12), Vec2(16.5f, 17.5f)});
+            raster_rrect(cv, Rect(5.5f * u, 6.5f * u, 2.0f * u, 11.0f * u), white, 0.8f * u);
+            break;
+        case SystemIcon::NextTrack:
+            poly({Vec2(7.5f, 6.5f), Vec2(16.0f, 12), Vec2(7.5f, 17.5f)});
+            raster_rrect(cv, Rect(16.5f * u, 6.5f * u, 2.0f * u, 11.0f * u), white, 0.8f * u);
+            break;
+        case SystemIcon::List:
+            for (int i = 0; i < 3; ++i) {
+                dot(5.5f, 7.5f + 4.5f * i, 1.4f);
+                line(9.5f, 7.5f + 4.5f * i, 19.0f, 7.5f + 4.5f * i, 1.8f);
+            }
+            break;
+        case SystemIcon::Info:
+            ring(12, 12, 8.0f);
+            raster_rrect(cv, Rect(11.0f * u, 11.0f * u, 2.0f * u, 6.0f * u), white, 1.0f * u);
+            dot(12, 8.0f, 1.2f);
+            break;
+        case SystemIcon::Upload:    // 托盘 + 向上箭头（描边风格，与 chevron 一致）
+            line(7.5f, 9.8f, 12.0f, 5.0f);
+            line(12.0f, 5.0f, 16.5f, 9.8f);
+            line(12, 5.2f, 12, 16.4f);
+            line(5.5f, 19.0f, 18.5f, 19.0f, 2.0f);
+            break;
+        case SystemIcon::Download:  // 托盘 + 向下箭头
+            line(7.5f, 10.2f, 12.0f, 15.0f);
+            line(12.0f, 15.0f, 16.5f, 10.2f);
+            line(12, 5.0f, 12, 15.0f);
+            line(5.5f, 19.0f, 18.5f, 19.0f, 2.0f);
+            break;
+        case SystemIcon::Network:   // Wi-Fi：圆点在收拢点，三层弧向上展开
+            raster_arc(cv, 12 * u, 16.5f * u, 3.2f * u, 1.9f * u, white,
+                       -float(M_PI) * 0.76f, float(M_PI) * 0.52f, 0.0f);
+            raster_arc(cv, 12 * u, 16.5f * u, 6.6f * u, 1.9f * u, white,
+                       -float(M_PI) * 0.76f, float(M_PI) * 0.52f, 0.0f);
+            raster_arc(cv, 12 * u, 16.5f * u, 10.0f * u, 1.9f * u, white,
+                       -float(M_PI) * 0.76f, float(M_PI) * 0.52f, 0.0f);
+            dot(12, 16.5f, 1.7f);
+            break;
+        case SystemIcon::Bell:      // 铃铛：穹顶弧 + 裙边 + 底缘 + 铃舌
+            raster_arc(cv, 12 * u, 14.0f * u, 6.0f * u, 2.0f * u, white, float(M_PI), float(M_PI), 0.0f);
+            line(6.0f, 14.0f, 6.0f, 16.2f);
+            line(18.0f, 14.0f, 18.0f, 16.2f);
+            line(5.2f, 16.6f, 18.8f, 16.6f);
+            dot(12, 19.2f, 1.5f);
+            break;
+        case SystemIcon::Timer:     // 秒表：表盘 + 指针 + 顶部按钮柄
+            ring(12, 13.6f, 6.2f);
+            line(12, 13.6f, 12, 9.8f);
+            line(12, 13.6f, 14.8f, 13.6f);
+            line(12, 4.6f, 12, 6.6f, 1.8f);
+            line(9.8f, 4.6f, 14.2f, 4.6f, 1.8f);
+            break;
+        case SystemIcon::Settings:  // 齿轮：厚圆环 + 八齿
+            ring(12, 12, 4.0f, 2.6f);
+            for (int i = 0; i < 8; ++i) {
+                const float a = float(i) * float(M_PI) / 4.0f;
+                const float c = std::cos(a), s = std::sin(a);
+                line(12 + 4.9f * c, 12 + 4.9f * s, 12 + 7.6f * c, 12 + 7.6f * s, 2.8f);
+            }
+            break;
+        case SystemIcon::Calendar:
+            raster_rrect_stroke(cv, Rect(4.5f * u, 6 * u, 15 * u, 13.5f * u), white, 2.0f * u, 1.6f * u);
+            line(4.5f, 10.2f, 19.5f, 10.2f, 1.6f);
+            line(8.2f, 4.2f, 8.2f, 7.4f, 1.8f);
+            line(15.8f, 4.2f, 15.8f, 7.4f, 1.8f);
+            break;
+        case SystemIcon::Edit: {    // 铅笔：连续四边形笔杆 + 三角笔尖（共享边无接缝）
+            poly({Vec2(16.9f, 2.1f), Vec2(19.7f, 4.9f), Vec2(8.9f, 15.6f), Vec2(6.2f, 12.8f)});
+            poly({Vec2(6.2f, 12.8f), Vec2(8.9f, 15.6f), Vec2(4.4f, 17.6f)});
+            break;
+        }
+        case SystemIcon::Text:      // "A" 字形
+            line(12, 5.5f, 6.5f, 18.5f, 2.0f);
+            line(12, 5.5f, 17.5f, 18.5f, 2.0f);
+            line(8.4f, 14.0f, 15.6f, 14.0f, 2.0f);
+            break;
+        case SystemIcon::People:    // 人形：头 + 肩弧
+            ring(12, 9.0f, 3.0f);
+            raster_arc(cv, 12 * u, 19.5f * u, 6.0f * u, 2.0f * u, white, float(M_PI) * 1.05f, float(M_PI) * 0.9f, 0.0f);
+            break;
+        case SystemIcon::Image:
+            raster_rrect_stroke(cv, Rect(4.5f * u, 5.5f * u, 15 * u, 13 * u), white, 1.5f * u, 1.6f * u);
+            dot(9.0f, 9.5f, 1.5f);
+            poly({Vec2(6.0f, 16.5f), Vec2(11.0f, 11.5f), Vec2(14.0f, 14.5f), Vec2(16.5f, 12.0f), Vec2(18.5f, 16.5f)});
+            break;
+        case SystemIcon::Card:
+            raster_rrect_stroke(cv, Rect(4.5f * u, 5.5f * u, 15 * u, 13 * u), white, 1.5f * u, 1.6f * u);
+            line(7.0f, 10.0f, 17.0f, 10.0f, 1.6f);
+            line(7.0f, 13.5f, 14.0f, 13.5f, 1.6f);
+            break;
+        case SystemIcon::Toggle:
+            raster_rrect_stroke(cv, Rect(4.5f * u, 7.5f * u, 15 * u, 9 * u), white, 4.5f * u, 1.8f * u);
+            dot(15.5f, 12, 2.2f);
+            break;
+        case SystemIcon::Copy:
+            raster_rrect_stroke(cv, Rect(8.5f * u, 8.5f * u, 11 * u, 11 * u), white, 2.0f * u, 1.6f * u);
+            line(6.5f, 6.5f, 15.5f, 6.5f, 1.6f);
+            line(6.5f, 6.5f, 6.5f, 15.5f, 1.6f);
+            break;
+        default: return mask;
+    }
+    // 临时画布黑底白字：画过的地方 R = 覆盖度×255，直接当 8bit 掩膜搬走
+    mask.width = mask.height = side;
+    mask.alpha.resize(size_t(side) * size_t(side));
+    for (int y = 0; y < side; ++y)
+        for (int x = 0; x < side; ++x)
+            mask.alpha[size_t(y) * side + x] = buffer[(size_t(y) * side + x) * 4u + CH_R];
+    return mask;
 #elif defined(AINO_PLATFORM_UNIX)
     return x11_load_system_icon(icon, size);
 #else
@@ -17948,7 +19363,7 @@ int system_icon_worker_entry(int argc, char** argv) {
 bool Ui::system_icon(SystemIcon icon, const Rect& box, const Color& color) {
     if (impl->measure_on) { impl->measure_add(box); return true; }
     if (!impl->canvas || box.empty() || color.a == 0) return false;
-#if defined(AINO_PLATFORM_WINDOWS) || defined(AINO_PLATFORM_MACOS) || defined(AINO_PLATFORM_UNIX)
+#if defined(AINO_PLATFORM_WINDOWS) || defined(AINO_PLATFORM_MACOS) || defined(AINO_PLATFORM_UNIX) || defined(AINO_PLATFORM_ANDROID)
     const Rect physical = impl->xf_phys(box);
     const int size = std::max(1, int(std::floor(std::min(physical.w, physical.h))));
     const uint64_t key = uint64_t(icon) << 32 | uint32_t(size);
